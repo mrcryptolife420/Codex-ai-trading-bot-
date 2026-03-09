@@ -182,6 +182,83 @@ export class ExecutionEngine {
     };
   }
 
+  simulatePaperFill({
+    marketSnapshot,
+    side,
+    requestedQuoteAmount = 0,
+    requestedQuantity = 0,
+    plan = {},
+    latencyMs = 0,
+    fallbackStyle = null,
+    makerFillFloor = this.config.paperMakerFillFloor,
+    minPartialFillRatio = this.config.paperPartialFillMinRatio
+  }) {
+    const book = marketSnapshot.book || {};
+    const market = marketSnapshot.market || {};
+    const referencePrice = side === "BUY" ? safeNumber(book.ask, book.mid) : safeNumber(book.bid, book.mid);
+    const spreadBps = safeNumber(book.spreadBps);
+    const depthConfidence = safeNumber(plan.depthConfidence || book.depthConfidence || book.localBook?.depthConfidence);
+    const queueImbalance = safeNumber(plan.queueImbalance || book.queueImbalance || book.localBook?.queueImbalance);
+    const queueRefreshScore = safeNumber(plan.queueRefreshScore || book.queueRefreshScore || book.localBook?.queueRefreshScore);
+    const tradeFlow = safeNumber(plan.tradeFlow || book.tradeFlowImbalance || book.tradeFlow);
+    const volatility = safeNumber(market.realizedVolPct || book.realizedVolPct || 0.01);
+    const expectedImpactBps = safeNumber(plan.expectedImpactBps || book.entryEstimate?.touchSlippageBps || book.exitEstimate?.touchSlippageBps || 0.8);
+    const expectedMidSlippageBps = safeNumber(plan.expectedSlippageBps || book.entryEstimate?.midSlippageBps || book.exitEstimate?.midSlippageBps || expectedImpactBps * 0.8);
+    const isMaker = ["limit_maker", "pegged_limit_maker"].includes(plan.entryStyle);
+    const isPegged = plan.entryStyle === "pegged_limit_maker";
+    const fallbackMode = fallbackStyle || plan.fallbackStyle || "none";
+    const workingTimeMs = isMaker ? Math.round((plan.makerPatienceMs || 0) * clamp(0.72 + depthConfidence * 0.45 - queueImbalance * 0.14, 0.45, 1.2)) : Math.round(latencyMs || 0);
+    const latencyBps = clamp((latencyMs / 1000) * (volatility * 520 + spreadBps * 0.05 + Math.abs(tradeFlow) * 1.6), 0, 18);
+    const makerCompletion = isMaker
+      ? clamp(
+          safeNumber(plan.expectedMakerFillPct, 0.32) +
+            depthConfidence * 0.18 +
+            queueRefreshScore * 0.12 +
+            queueImbalance * 0.08 -
+            volatility * 2.4 -
+            spreadBps / 180 +
+            (isPegged ? 0.08 : 0),
+          makerFillFloor,
+          0.98
+        )
+      : 0;
+    const completionRatio = isMaker
+      ? clamp(makerCompletion + (fallbackMode === "cancel_replace_market" ? (1 - makerCompletion) * 0.96 : 0), minPartialFillRatio, 1)
+      : 1;
+    const makerFillRatio = isMaker ? clamp(Math.min(makerCompletion, completionRatio), 0, 1) : 0;
+    const takerFillRatio = clamp(completionRatio - makerFillRatio, 0, 1);
+    const styleImpact = !isMaker ? 1 : isPegged ? 0.22 : 0.38;
+    const queuePenaltyBps = isMaker ? clamp((1 - depthConfidence) * 1.4 + Math.max(0, -queueImbalance) * 1.2, 0, 4.5) : 0;
+    const executionBps = Math.max(0.01, expectedImpactBps * styleImpact + expectedMidSlippageBps * 0.25 + latencyBps * (isMaker ? 0.55 : 1) + queuePenaltyBps);
+    const fillPrice = referencePrice
+      ? side === "BUY"
+        ? referencePrice * (1 + executionBps / 10_000)
+        : referencePrice * (1 - executionBps / 10_000)
+      : 0;
+    const executedQuote = requestedQuoteAmount > 0 ? requestedQuoteAmount * completionRatio : requestedQuantity * fillPrice * completionRatio;
+    const executedQuantity = requestedQuantity > 0 ? requestedQuantity * completionRatio : fillPrice > 0 ? executedQuote / fillPrice : 0;
+
+    return {
+      referencePrice,
+      fillPrice,
+      completionRatio,
+      makerFillRatio,
+      takerFillRatio,
+      expectedImpactBps: executionBps,
+      expectedMidSlippageBps,
+      workingTimeMs,
+      latencyBps,
+      executedQuote,
+      executedQuantity,
+      notes: [
+        `completion:${completionRatio.toFixed(2)}`,
+        `maker:${makerFillRatio.toFixed(2)}`,
+        `latency_bps:${latencyBps.toFixed(2)}`,
+        `working_ms:${workingTimeMs}`
+      ]
+    };
+  }
+
   buildExecutionQuality({ marketSnapshot, fillPrice, side }) {
     const referencePrice = side === "BUY" ? marketSnapshot.book.ask : marketSnapshot.book.bid;
     const mid = marketSnapshot.book.mid || referencePrice || 0;
@@ -261,7 +338,8 @@ export class ExecutionEngine {
         `touch_slippage_bps:${safeNumber(touchSlippageBps, 0).toFixed(2)}`,
         `impact_bps:${safeNumber(plan.expectedImpactBps, 0).toFixed(2)}`,
         `queue:${safeNumber(plan.queueImbalance, 0).toFixed(2)}`,
-        `depth_conf:${safeNumber(plan.depthConfidence, 0).toFixed(2)}`
+        `depth_conf:${safeNumber(plan.depthConfidence, 0).toFixed(2)}`,
+        ...((orderTelemetry.notes || []).slice(0, 4))
       ]
     };
   }

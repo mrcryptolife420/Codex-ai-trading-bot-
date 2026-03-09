@@ -61,7 +61,9 @@ export class UniverseSelector {
     const queueRefreshScore = safeNumber(book.queueRefreshScore || book.localBook?.queueRefreshScore);
     const depthAgeMs = safeNumber(book.depthAgeMs || book.localBook?.depthAgeMs);
     const localBookSynced = Boolean(book.localBookSynced ?? book.localBook?.synced);
+    const resilienceScore = safeNumber(book.resilienceScore || book.localBook?.resilienceScore);
     const previousRank = safeNumber(previousDecision?.rankScore);
+    const previousFit = safeNumber(previousDecision?.strategy?.fitScore || previousDecision?.strategySummary?.fitScore);
     const universeMinDepthUsd = safeNumber(this.config.universeMinDepthUsd, 60000);
     const universeTargetVolPct = safeNumber(this.config.universeTargetVolPct, 0.018);
 
@@ -102,12 +104,15 @@ export class UniverseSelector {
     const freshnessScore = localBookSynced
       ? clamp(1 - depthAgeMs / Math.max(this.config.maxDepthEventAgeMs * 2, 1), 0, 1)
       : 0.42;
+    const spreadStabilityScore = clamp(0.45 + spreadScore * 0.4 + depthConfidence * 0.18 - Math.abs(book.microPriceEdgeBps || 0) / 8, 0, 1);
+    const executionScore = clamp(0.42 + resilienceScore * 0.26 + queueRefreshScore * 0.18 + depthConfidence * 0.14, 0, 1);
     const carryScore = clamp(
       (hasOpenPosition ? 0.15 : 0) +
         (previousDecision?.allow ? 0.08 : 0) +
-        clamp(previousRank * 0.22, -0.03, 0.08),
+        clamp(previousRank * 0.22, -0.03, 0.08) +
+        clamp(previousFit * 0.08, 0, 0.06),
       0,
-      0.26
+      0.3
     );
 
     const blockers = [];
@@ -125,6 +130,9 @@ export class UniverseSelector {
     }
     if (!hasOpenPosition && recentTradeCount < 2 && spreadBps > this.config.maxSpreadBps * 0.65) {
       blockers.push("universe_low_activity");
+    }
+    if (!hasOpenPosition && executionScore < 0.32) {
+      blockers.push("universe_execution_quality_weak");
     }
 
     const reasons = [];
@@ -146,6 +154,12 @@ export class UniverseSelector {
     if (volatilityScore >= 0.56) {
       reasons.push("clean_volatility_profile");
     }
+    if (spreadStabilityScore >= 0.58) {
+      reasons.push("stable_spread_profile");
+    }
+    if (executionScore >= 0.56) {
+      reasons.push("execution_ready_book");
+    }
     if (hasOpenPosition) {
       reasons.push("existing_position_carried");
     } else if (previousDecision?.allow) {
@@ -153,13 +167,15 @@ export class UniverseSelector {
     }
 
     const score = clamp(
-      spreadScore * 0.2 +
-        liquidityScore * 0.24 +
-        activityScore * 0.12 +
-        orderflowScore * 0.16 +
-        volatilityScore * 0.1 +
-        trendScore * 0.14 +
-        freshnessScore * 0.06 +
+      spreadScore * 0.16 +
+        liquidityScore * 0.22 +
+        activityScore * 0.1 +
+        orderflowScore * 0.14 +
+        volatilityScore * 0.09 +
+        trendScore * 0.13 +
+        freshnessScore * 0.05 +
+        spreadStabilityScore * 0.06 +
+        executionScore * 0.05 +
         carryScore,
       0,
       1.25
@@ -182,6 +198,8 @@ export class UniverseSelector {
       orderflowScore: num(orderflowScore),
       volatilityScore: num(volatilityScore),
       trendScore: num(trendScore),
+      spreadStabilityScore: num(spreadStabilityScore),
+      executionScore: num(executionScore),
       carryScore: num(carryScore),
       reasons,
       blockers
@@ -285,6 +303,8 @@ export class UniverseSelector {
         orderflowScore: entry.orderflowScore,
         volatilityScore: entry.volatilityScore,
         trendScore: entry.trendScore,
+        spreadStabilityScore: entry.spreadStabilityScore,
+        executionScore: entry.executionScore,
         carryScore: entry.carryScore
       })),
       skipped: annotatedEntries

@@ -13,12 +13,21 @@ function ensurePaperState(runtime, startingCash) {
   }
 }
 
+function buildExitPlan(position) {
+  return {
+    ...(position.executionPlan || {}),
+    entryStyle: "market",
+    fallbackStyle: "none",
+    preferMaker: false,
+    usePeggedOrder: false
+  };
+}
+
 export class PaperBroker {
   constructor(config, logger) {
     this.config = config;
     this.logger = logger;
     this.feeRate = config.paperFeeBps / 10_000;
-    this.slippageRate = config.paperSlippageBps / 10_000;
     this.execution = new ExecutionEngine(config);
   }
 
@@ -79,11 +88,15 @@ export class PaperBroker {
       strategySummary: strategySummary || decision.strategySummary || entryRationale?.strategy || {},
       portfolioSummary: decision.portfolioSummary || {}
     });
-    const fillEstimate = marketSnapshot.book.entryEstimate || null;
-    const styleImpact = executionPlan.entryStyle === "market" ? 1 : executionPlan.entryStyle === "pegged_limit_maker" ? 0.16 : 0.35;
-    const estimatePrice = fillEstimate?.averagePrice || marketSnapshot.book.ask;
-    const executionPrice = estimatePrice * (1 + this.slippageRate * styleImpact);
-    const size = resolveMarketBuyQuantity(quoteAmount, executionPrice, rules);
+    const fillEstimate = this.execution.simulatePaperFill({
+      marketSnapshot,
+      side: "BUY",
+      requestedQuoteAmount: quoteAmount,
+      plan: executionPlan,
+      latencyMs: this.config.paperLatencyMs
+    });
+    const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.ask;
+    const size = resolveMarketBuyQuantity(fillEstimate.executedQuote, executionPrice, rules);
     if (!size.valid) {
       throw new Error(`Paper buy rejected: ${size.reason}`);
     }
@@ -106,6 +119,12 @@ export class PaperBroker {
       executedQuote: size.notional,
       executedQuantity: size.quantity,
       fillEstimate,
+      orderTelemetry: {
+        makerFillRatio: fillEstimate.makerFillRatio,
+        takerFillRatio: fillEstimate.takerFillRatio,
+        workingTimeMs: fillEstimate.workingTimeMs,
+        notes: fillEstimate.notes
+      },
       brokerMode: "paper"
     });
 
@@ -158,22 +177,37 @@ export class PaperBroker {
       throw new Error(`Invalid paper scale-out fraction for ${position.symbol}.`);
     }
 
-    const executionPrice = (marketSnapshot.book.exitEstimate?.averagePrice || marketSnapshot.book.bid) * (1 - this.slippageRate * 0.6);
-    const grossProceeds = quantity * executionPrice;
+    const exitPlan = buildExitPlan(position);
+    const fillEstimate = this.execution.simulatePaperFill({
+      marketSnapshot,
+      side: "SELL",
+      requestedQuantity: quantity,
+      plan: exitPlan,
+      latencyMs: this.config.paperLatencyMs
+    });
+    const executedQuantity = fillEstimate.executedQuantity || quantity;
+    const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.bid;
+    const grossProceeds = executedQuantity * executionPrice;
     const fee = grossProceeds * this.feeRate;
     const netProceeds = grossProceeds - fee;
-    const proportion = quantity / position.quantity;
+    const proportion = executedQuantity / position.quantity;
     const allocatedCost = position.totalCost * proportion;
     const realizedPnl = netProceeds - allocatedCost;
     const exitExecutionAttribution = this.execution.buildExecutionAttribution({
-      plan: position.executionPlan || { entryStyle: "market", fallbackStyle: "none", preferMaker: false },
+      plan: exitPlan,
       marketSnapshot,
       side: "SELL",
       fillPrice: executionPrice,
       requestedQuoteAmount: allocatedCost,
       executedQuote: grossProceeds,
-      executedQuantity: quantity,
-      fillEstimate: marketSnapshot.book.exitEstimate || null,
+      executedQuantity,
+      fillEstimate,
+      orderTelemetry: {
+        makerFillRatio: fillEstimate.makerFillRatio,
+        takerFillRatio: fillEstimate.takerFillRatio,
+        workingTimeMs: fillEstimate.workingTimeMs,
+        notes: fillEstimate.notes
+      },
       brokerMode: "paper"
     });
 
@@ -181,7 +215,7 @@ export class PaperBroker {
     runtime.paperPortfolio.feesPaid += fee;
     runtime.paperPortfolio.realizedPnl += realizedPnl;
 
-    position.quantity -= quantity;
+    position.quantity -= executedQuantity;
     position.totalCost -= allocatedCost;
     position.notional = position.entryPrice * position.quantity;
     position.entryFee = Math.max(0, position.entryFee - position.entryFee * proportion);
@@ -195,8 +229,8 @@ export class PaperBroker {
       positionId: position.id,
       symbol: position.symbol,
       at: nowIso(),
-      fraction: effectiveFraction,
-      quantity,
+      fraction: executedQuantity / (executedQuantity + position.quantity),
+      quantity: executedQuantity,
       price: executionPrice,
       grossProceeds,
       netProceeds,
@@ -211,9 +245,17 @@ export class PaperBroker {
 
   async exitPosition({ position, marketSnapshot, reason, runtime }) {
     ensurePaperState(runtime, this.config.startingCash);
-    const fillEstimate = marketSnapshot.book.exitEstimate || null;
-    const executionPrice = (fillEstimate?.averagePrice || marketSnapshot.book.bid) * (1 - this.slippageRate);
-    const grossProceeds = position.quantity * executionPrice;
+    const exitPlan = buildExitPlan(position);
+    const fillEstimate = this.execution.simulatePaperFill({
+      marketSnapshot,
+      side: "SELL",
+      requestedQuantity: position.quantity,
+      plan: exitPlan,
+      latencyMs: this.config.paperLatencyMs
+    });
+    const executedQuantity = fillEstimate.executedQuantity || position.quantity;
+    const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.bid;
+    const grossProceeds = executedQuantity * executionPrice;
     const fee = grossProceeds * this.feeRate;
     const netProceeds = grossProceeds - fee;
     const pnlQuote = netProceeds - position.totalCost;
@@ -230,14 +272,20 @@ export class PaperBroker {
       side: "SELL"
     });
     const exitExecutionAttribution = this.execution.buildExecutionAttribution({
-      plan: position.executionPlan || { entryStyle: "market", fallbackStyle: "none", preferMaker: false },
+      plan: exitPlan,
       marketSnapshot,
       side: "SELL",
       fillPrice: executionPrice,
       requestedQuoteAmount: position.notional || position.totalCost || 0,
       executedQuote: grossProceeds,
-      executedQuantity: position.quantity,
+      executedQuantity,
       fillEstimate,
+      orderTelemetry: {
+        makerFillRatio: fillEstimate.makerFillRatio,
+        takerFillRatio: fillEstimate.takerFillRatio,
+        workingTimeMs: fillEstimate.workingTimeMs,
+        notes: fillEstimate.notes
+      },
       brokerMode: "paper"
     });
 
@@ -253,7 +301,7 @@ export class PaperBroker {
       exitAt: nowIso(),
       entryPrice: position.entryPrice,
       exitPrice: executionPrice,
-      quantity: position.quantity,
+      quantity: executedQuantity,
       totalCost: position.totalCost,
       proceeds: netProceeds,
       pnlQuote,
@@ -261,6 +309,7 @@ export class PaperBroker {
       mfePct,
       maePct,
       executionQualityScore,
+      captureEfficiency: position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0,
       entryExecutionAttribution: position.entryExecutionAttribution || null,
       exitExecutionAttribution,
       regimeAtEntry: position.regimeAtEntry || "range",

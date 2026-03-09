@@ -75,6 +75,15 @@ function finalizeBucket(bucket, config) {
   };
 }
 
+function mapLeaderBucket(items = []) {
+  return items.slice(0, 6).map((item) => ({
+    id: item.id,
+    tradeCount: item.tradeCount || 0,
+    realizedPnl: num(item.realizedPnl || 0, 2),
+    winRate: num(item.winRate || 0, 4)
+  }));
+}
+
 export class ResearchRegistry {
   constructor(config) {
     this.config = config;
@@ -145,6 +154,8 @@ export class ResearchRegistry {
           realizedPnl: num(run.realizedPnl || 0, 2),
           averageSharpe: num(run.averageSharpe || 0, 3)
         })),
+      familyLeaders: mapLeaderBucket(latestSummary?.topFamilies || []),
+      regimeLeaders: mapLeaderBucket(latestSummary?.topRegimes || []),
       governance: {
         promotionCandidates,
         observeList,

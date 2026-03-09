@@ -1,4 +1,4 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -25,4 +25,35 @@ export async function saveJson(filePath, value) {
   const serialized = `${JSON.stringify(value, null, 2)}\n`;
   await fs.writeFile(tempFile, serialized, "utf8");
   await fs.rename(tempFile, filePath);
+}
+
+export async function appendJsonLine(filePath, value) {
+  const parentDir = path.dirname(filePath);
+  await ensureDir(parentDir);
+  const serialized = `${JSON.stringify(value)}\n`;
+  await fs.appendFile(filePath, serialized, "utf8");
+}
+
+export async function listFiles(dirPath) {
+  try {
+    const items = await fs.readdir(dirPath, { withFileTypes: true });
+    return items
+      .filter((item) => item.isFile())
+      .map((item) => path.join(dirPath, item.name));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+export async function removeFile(filePath) {
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
 }

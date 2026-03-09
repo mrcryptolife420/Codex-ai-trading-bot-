@@ -18,8 +18,8 @@ Een safety-first Binance Spot trading bot met een lokaal webdashboard voor paper
 - Transformer-style multi-horizon challenger, specialist multi-agent committee en RL execution policy voor slimmere entry/execution-beslissingen
 - Harde risk gates voor spread, volatiliteit, cooldowns, exposure caps, loss streaks, orderbook pressure, calendar risk en official notice risk
 - Live broker met exchange-native OCO protectie, pegged maker-orders, keep-priority amends, STP-telemetry en runtime reconciliation
-- Dashboard met start/stop, live-paper switch, losse cyclus, rolling stats, session/drift/self-heal monitoring, stable-model backup zichtbaarheid, pair-search in Top AI setups, compactere why-trade uitleg, why-not-trade blockers, trade replay, strategy-keuze, transformer/committee/RL/meta-gate uitleg, scale-out context, universe focus, strategy attribution, research-registry governance en research-lab triggers
-- Windows 11 install- en startscripts
+- Dashboard met start/stop, live-paper switch, losse cyclus, rolling stats, session/drift/self-heal monitoring, stable-model backup zichtbaarheid, pair-search in Top AI setups, compactere why-trade uitleg, why-not-trade blockers, trade replay, strategy-keuze, transformer/committee/RL/meta-gate uitleg, scale-out context, universe focus, strategy attribution, research-registry governance, PnL attribution, operations/recovery panels en research-lab triggers
+- Windows 11 install-, dashboard- en watchdog/service-scripts
 
 ## Belangrijk
 
@@ -66,20 +66,25 @@ Daarin kun je:
 - trade replay zien met entry-, exit- en scale-out context
 - vanuit het dashboard een research-run starten en walk-forward samenvattingen terugzien
 - current session-, drift- en self-heal status volgen inclusief low-liquidity, funding windows, cooldowns en rollback-backups
+- PnL attribution bekijken per strategie, regime, execution-style en nieuwsbron
+- operations/recovery volgen met feature-store activiteit, model registry en state backups
 
 Standaard draait het dashboard lokaal op `http://127.0.0.1:3011`. Pas dit aan met `DASHBOARD_PORT` in [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example).
 
 ## Windows 11 installatie
 
-1. Installeer Node.js 22 of nieuwer.
-2. Voer [Install-Windows11.cmd](/C:/Users/highlife/Documents/Playground/Install-Windows11.cmd) uit.
-3. Vul daarna je Binance API keys in `.env` in als je live wilt traden.
-4. Start het dashboard met [Start-Dashboard.cmd](/C:/Users/highlife/Documents/Playground/Start-Dashboard.cmd).
+1. Zet Git long-path support aan: `git config --global core.longpaths true`.
+2. Clone de repo bij voorkeur naar een kort pad, bijvoorbeeld `C:\code\Codex-ai-trading-bot`.
+3. Installeer Node.js 22 of nieuwer.
+4. Voer [Install-Windows11.cmd](/C:/Users/highlife/Documents/Playground/Install-Windows11.cmd) uit.
+5. Vul daarna je Binance API keys in `.env` in als je live wilt traden.
+6. Start het dashboard met [Start-Dashboard.cmd](/C:/Users/highlife/Documents/Playground/Start-Dashboard.cmd) of de watchdog met [Start-BotService.cmd](/C:/Users/highlife/Documents/Playground/Start-BotService.cmd).
 
 Het installscript:
 
 - maakt automatisch een `.env` aan als die ontbreekt
-- maakt `data/runtime` aan
+- zet `git config --global core.longpaths true` als Git aanwezig is
+- maakt `data/runtime`, `data/runtime/feature-store` en `data/runtime/backups` aan
 - draait `npm.cmd test`
 - draait `node src/cli.js doctor`
 
@@ -124,6 +129,8 @@ node src/cli.js backtest BTCUSDT
 node src/cli.js research BTCUSDT
 node src/cli.js dashboard
 node src/cli.js run
+npm.cmd run service:windows
+Start-BotService.cmd
 ```
 
 ## Hoe de AI beslist
@@ -175,9 +182,25 @@ Je kunt handmatig eigen events toevoegen in [event-calendar.json](/C:/Users/high
 - `src/ai`: online model, regime model, calibration en adaptive deployment
 - `src/risk`: risk rules, sizing, exposure caps en portfolio intelligence
 - `src/execution`: paper broker en live broker met OCO protectie
-- `src/runtime`: bot-loop, streams, doctor, rapportage, manager en backtest
+- `src/runtime`: bot-loop, streams, doctor, rapportage, research, feature-store recorder, model registry, backups en manager
 - `src/dashboard`: lokale dashboardserver en frontend
 - `src/storage`: model, runtime en journal persistence
+
+## Runtime opslag en herstel
+
+Nieuwe productie-hardened lagen:
+
+- `data/runtime/feature-store`: JSONL-opslag van cycles, decisions, trades en research-runs voor replay en retraining
+- `data/runtime/backups`: automatische runtime-backups voor crash recovery en rollback
+- model registry: quality scoring per modelsnapshot met rollback-kandidaat in dashboard en doctor-output
+- Windows watchdog: [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) herstart de bot-loop automatisch als die crasht, met restart-limiet per uur
+
+Start de watchdog lokaal met:
+
+```powershell
+Start-BotService.cmd
+npm.cmd run service:windows
+```
 
 ## Belangrijkste extra env-keys
 
@@ -200,6 +223,9 @@ Zie [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example) voor 
 - Meta gate, canary en scale-out: `ENABLE_META_DECISION_GATE`, `META_*`, `ENABLE_CANARY_LIVE_MODE`, `CANARY_*`, `DAILY_RISK_BUDGET_FLOOR`, `MAX_ENTRIES_PER_DAY`, `SCALE_OUT_*`
 - Universe selector, exit AI en attribution: `ENABLE_UNIVERSE_SELECTOR`, `UNIVERSE_*`, `ENABLE_EXIT_INTELLIGENCE`, `EXIT_INTELLIGENCE_*`, `STRATEGY_ATTRIBUTION_MIN_TRADES`
 - Research lab en governance: `RESEARCH_*`, `RESEARCH_PROMOTION_*`
+- Execution realism: `PAPER_LATENCY_MS`, `PAPER_MAKER_FILL_FLOOR`, `PAPER_PARTIAL_FILL_MIN_RATIO`, `BACKTEST_LATENCY_MS`, `BACKTEST_SYNTHETIC_DEPTH_USD`
+- Recorder / registry / backups: `DATA_RECORDER_*`, `MODEL_REGISTRY_*`, `STATE_BACKUP_*`
+- Windows watchdog: `SERVICE_RESTART_DELAY_SECONDS`, `SERVICE_MAX_RESTARTS_PER_HOUR`, `GIT_SHORT_CLONE_PATH`
 - Portfolio intelligence: `TARGET_ANNUALIZED_VOLATILITY`, `MAX_PAIR_CORRELATION`, `MAX_CLUSTER_POSITIONS`, `MAX_SECTOR_POSITIONS`
 
 ## Arbitrage roadmap
@@ -229,6 +255,7 @@ Lokaal geverifieerd met:
 - [Decrypt RSS](https://decrypt.co/feed)
 - [Blockworks RSS](https://blockworks.com/feed)
 - [BLS release calendar](https://www.bls.gov/schedule/news_release/)
+
 
 
 

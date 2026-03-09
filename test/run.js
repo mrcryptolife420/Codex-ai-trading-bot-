@@ -23,6 +23,7 @@ import { StrategyAttribution } from "../src/ai/strategyAttribution.js";
 import { ExitIntelligence } from "../src/ai/exitIntelligence.js";
 import { MetaDecisionGate } from "../src/ai/metaDecisionGate.js";
 import { ResearchRegistry } from "../src/runtime/researchRegistry.js";
+import { ModelRegistry } from "../src/runtime/modelRegistry.js";
 import { UniverseSelector } from "../src/runtime/universeSelector.js";
 import { buildSessionSummary } from "../src/runtime/sessionManager.js";
 import { DriftMonitor } from "../src/runtime/driftMonitor.js";
@@ -198,6 +199,22 @@ function makeConfig(overrides = {}) {
     researchStepCandles: 72,
     researchMaxWindows: 6,
     researchMaxSymbols: 4,
+    paperLatencyMs: 220,
+    paperMakerFillFloor: 0.22,
+    paperPartialFillMinRatio: 0.35,
+    backtestLatencyMs: 260,
+    backtestSyntheticDepthUsd: 140000,
+    dataRecorderEnabled: true,
+    dataRecorderRetentionDays: 21,
+    modelRegistryMinScore: 0.56,
+    modelRegistryRollbackDrawdownPct: 0.08,
+    modelRegistryMaxEntries: 12,
+    stateBackupEnabled: true,
+    stateBackupIntervalMinutes: 30,
+    stateBackupRetention: 6,
+    serviceRestartDelaySeconds: 8,
+    serviceMaxRestartsPerHour: 20,
+    gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
     ...overrides
   };
 }
@@ -1394,6 +1411,80 @@ await runCheck("strategy attribution builds a positive adjustment for hot strate
   });
   assert.equal(snapshot.topStrategies[0].id, "ema_trend");
   assert.ok(adjustment.rankBoost > 0);
+});
+
+await runCheck("performance report builds pnl attribution buckets", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        {
+          symbol: "BTCUSDT",
+          entryAt: "2026-03-08T08:00:00.000Z",
+          exitAt: "2026-03-08T10:00:00.000Z",
+          pnlQuote: 14,
+          netPnlPct: 0.011,
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryExecutionAttribution: { entryStyle: "pegged_limit_maker" },
+          entryRationale: { providerBreakdown: [{ name: "cointelegraph" }] }
+        },
+        {
+          symbol: "ETHUSDT",
+          entryAt: "2026-03-08T11:00:00.000Z",
+          exitAt: "2026-03-08T12:30:00.000Z",
+          pnlQuote: -3,
+          netPnlPct: -0.004,
+          strategyAtEntry: "vwap_reversion",
+          regimeAtEntry: "range",
+          entryExecutionAttribution: { entryStyle: "market" },
+          entryRationale: { providerBreakdown: [{ name: "google_news" }] }
+        }
+      ]
+    },
+    runtime: { openPositions: [] },
+    config: { reportLookbackTrades: 50 }
+  });
+  assert.equal(report.attribution.strategies[0].id, "ema_trend");
+  assert.equal(report.attribution.executionStyles[0].id, "pegged_limit_maker");
+  assert.equal(report.attribution.newsProviders[0].id, "cointelegraph");
+});
+
+await runCheck("model registry picks a healthy rollback candidate", async () => {
+  const registry = new ModelRegistry(makeConfig());
+  const snapshot = registry.buildRegistry({
+    snapshots: [
+      {
+        at: "2026-03-08T10:00:00.000Z",
+        reason: "stable",
+        tradeCount: 14,
+        winRate: 0.64,
+        realizedPnl: 180,
+        averageSharpe: 0.74,
+        maxDrawdownPct: 0.04,
+        calibrationEce: 0.06,
+        deploymentActive: "champion"
+      },
+      {
+        at: "2026-03-07T10:00:00.000Z",
+        reason: "weak",
+        tradeCount: 8,
+        winRate: 0.42,
+        realizedPnl: -60,
+        averageSharpe: -0.2,
+        maxDrawdownPct: 0.16,
+        calibrationEce: 0.22,
+        deploymentActive: "challenger"
+      }
+    ],
+    report: { realizedPnl: 120, winRate: 0.58, maxDrawdownPct: 0.05 },
+    researchRegistry: { governance: { promotionCandidates: [{ symbol: "BTCUSDT", governanceScore: 0.72, status: "promote" }] }, leaderboard: [{ averageSharpe: 0.66 }] },
+    calibration: { expectedCalibrationError: 0.08 },
+    deployment: { active: "champion" },
+    nowIso: "2026-03-09T12:00:00.000Z"
+  });
+  assert.equal(snapshot.rollbackCandidate?.reason, "stable");
+  assert.equal(snapshot.promotionHint?.symbol, "BTCUSDT");
+  assert.ok(snapshot.currentQualityScore > 0.5);
 });
 
 await runCheck("research registry surfaces promotion candidates from walk-forward results", async () => {

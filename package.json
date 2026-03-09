@@ -11,6 +11,7 @@
     "report": "node src/cli.js report",
     "backtest": "node src/cli.js backtest",
     "dashboard": "node src/cli.js dashboard",
+    "service:windows": "powershell -ExecutionPolicy Bypass -File .\\Run-BotService.ps1",
     "install:windows": "powershell -ExecutionPolicy Bypass -File .\\Install-Windows11.ps1",
     "test": "node test/run.js"
   }

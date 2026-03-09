@@ -1,4 +1,4 @@
-﻿import { assertValidConfig } from "../config/validate.js";
+import { assertValidConfig } from "../config/validate.js";
 import { AdaptiveTradingModel } from "../ai/adaptiveModel.js";
 import { MultiAgentCommittee } from "../ai/multiAgentCommittee.js";
 import { ReinforcementExecutionPolicy } from "../ai/rlExecutionPolicy.js";
@@ -21,6 +21,9 @@ import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
 import { StateStore } from "../storage/stateStore.js";
 import { buildPerformanceReport } from "./reportBuilder.js";
+import { DataRecorder } from "./dataRecorder.js";
+import { ModelRegistry } from "./modelRegistry.js";
+import { StateBackupManager } from "./stateBackupManager.js";
 import { runResearchLab } from "./researchLab.js";
 import { ResearchRegistry } from "./researchRegistry.js";
 import { UniverseSelector } from "./universeSelector.js";
@@ -320,11 +323,14 @@ function summarizeExitIntelligence(summary = {}) {
     confidence: num(summary.confidence || 0, 4),
     holdScore: num(summary.holdScore || 0, 4),
     trimScore: num(summary.trimScore || 0, 4),
+    tightenScore: num(summary.tightenScore || 0, 4),
     exitScore: num(summary.exitScore || 0, 4),
     pnlPct: num(summary.pnlPct || 0, 4),
     drawdownFromHighPct: num(summary.drawdownFromHighPct || 0, 4),
     heldMinutes: num(summary.heldMinutes || 0, 1),
     progressToScaleOut: num(summary.progressToScaleOut || 0, 4),
+    suggestedStopLossPrice: num(summary.suggestedStopLossPrice || 0, 6),
+    shouldTightenStop: Boolean(summary.shouldTightenStop),
     positiveReasons: [...(summary.positiveReasons || [])],
     riskReasons: [...(summary.riskReasons || [])],
     nextReviewBias: summary.nextReviewBias || "hold"
@@ -367,6 +373,51 @@ function summarizeResearchRegistry(registry = {}) {
       stableSnapshotCount: registry.governance?.stableSnapshotCount || 0,
       notes: [...(registry.governance?.notes || [])]
     }
+  };
+}
+function summarizeModelRegistry(registry = {}) {
+  return {
+    generatedAt: registry.generatedAt || null,
+    currentQualityScore: num(registry.currentQualityScore || 0, 4),
+    latestSnapshotAt: registry.latestSnapshotAt || null,
+    latestReason: registry.latestReason || null,
+    latestDeployment: registry.latestDeployment || null,
+    registrySize: registry.registrySize || 0,
+    rollbackCandidate: registry.rollbackCandidate
+      ? {
+          at: registry.rollbackCandidate.at || null,
+          reason: registry.rollbackCandidate.reason || null,
+          tradeCount: registry.rollbackCandidate.tradeCount || 0,
+          winRate: num(registry.rollbackCandidate.winRate || 0, 4),
+          realizedPnl: num(registry.rollbackCandidate.realizedPnl || 0, 2),
+          averageSharpe: num(registry.rollbackCandidate.averageSharpe || 0, 3),
+          maxDrawdownPct: num(registry.rollbackCandidate.maxDrawdownPct || 0, 4),
+          qualityScore: num(registry.rollbackCandidate.qualityScore || 0, 4),
+          rollbackReady: Boolean(registry.rollbackCandidate.rollbackReady)
+        }
+      : null,
+    promotionHint: registry.promotionHint
+      ? {
+          symbol: registry.promotionHint.symbol || null,
+          governanceScore: num(registry.promotionHint.governanceScore || 0, 4),
+          status: registry.promotionHint.status || null
+        }
+      : null,
+    entries: arr(registry.entries || []).slice(0, 8).map((entry) => ({
+      at: entry.at || null,
+      reason: entry.reason || null,
+      tradeCount: entry.tradeCount || 0,
+      winRate: num(entry.winRate || 0, 4),
+      realizedPnl: num(entry.realizedPnl || 0, 2),
+      averageSharpe: num(entry.averageSharpe || 0, 3),
+      maxDrawdownPct: num(entry.maxDrawdownPct || 0, 4),
+      calibrationEce: num(entry.calibrationEce || 0, 4),
+      deploymentActive: entry.deploymentActive || null,
+      source: entry.source || null,
+      qualityScore: num(entry.qualityScore || 0, 4),
+      rollbackReady: Boolean(entry.rollbackReady)
+    })),
+    notes: [...(registry.notes || [])]
   };
 }
 
@@ -894,6 +945,9 @@ export class TradingBot {
     this.exitIntelligence = new ExitIntelligence(config);
     this.metaGate = new MetaDecisionGate(config);
     this.researchRegistry = new ResearchRegistry(config);
+    this.modelRegistry = new ModelRegistry(config);
+    this.dataRecorder = new DataRecorder({ runtimeDir: config.runtimeDir, config, logger });
+    this.backupManager = new StateBackupManager({ runtimeDir: config.runtimeDir, config, logger });
     this.universeSelector = new UniverseSelector(config);
     this.stream = new StreamCoordinator({ client: this.client, config, logger });
     this.symbolRules = {};
@@ -1010,6 +1064,22 @@ export class TradingBot {
 
   async close() {
     this.runtime.stream = this.stream.getStatus();
+    this.runtime.lifecycle = this.runtime.lifecycle || {};
+    this.runtime.lifecycle.activeRun = false;
+    this.runtime.lifecycle.lastShutdownAt = nowIso();
+    this.runtime.recovery = {
+      ...(this.runtime.recovery || {}),
+      uncleanShutdownDetected: false,
+      latestBackupAt: this.backupManager.getSummary().lastBackupAt || this.runtime.recovery?.latestBackupAt || null
+    };
+    await this.backupManager.maybeBackup({
+      runtime: this.runtime,
+      journal: this.journal,
+      modelState: this.model.getState(),
+      modelBackups: this.modelBackups,
+      modelRegistry: this.runtime.modelRegistry
+    }, { reason: "shutdown", force: true, nowIso: nowIso() }).catch(() => {});
+    this.runtime.stateBackups = this.backupManager.getSummary();
     await this.persist().catch(() => {});
     await this.stream.close().catch(() => {});
   }
@@ -1017,6 +1087,8 @@ export class TradingBot {
   async persist() {
     this.runtime.stream = this.stream.getStatus();
     this.runtime.executionPolicyState = this.rlPolicy.getState();
+    this.runtime.dataRecorder = this.dataRecorder.getSummary();
+    this.runtime.stateBackups = this.backupManager.getSummary();
     await this.store.saveRuntime(this.runtime);
     await this.store.saveJournal(this.journal);
     await this.store.saveModel(this.model.getState());
@@ -1056,29 +1128,56 @@ export class TradingBot {
         return null;
       }
     }
-    const snapshot = {
-      at: nowIso(),
+    const snapshot = this.modelRegistry.createSnapshot({
       reason,
-      tradeCount: allTime.tradeCount || 0,
-      winRate: num(allTime.winRate || 0, 4),
-      realizedPnl: num(allTime.realizedPnl || 0, 2),
-      calibrationEce: num(calibration.expectedCalibrationError || 0, 4),
-      deploymentActive: this.model.getDeploymentSummary().active,
-      modelState: this.model.getState()
-    };
+      report: evaluation,
+      calibration,
+      deployment: this.model.getDeploymentSummary(),
+      modelState: this.model.getState(),
+      source: "runtime",
+      nowIso: nowIso()
+    });
     this.modelBackups = [snapshot, ...this.modelBackups].slice(0, this.config.stableModelMaxSnapshots);
     this.recordEvent("stable_model_snapshot", { reason, snapshotAt: snapshot.at, tradeCount: snapshot.tradeCount, winRate: snapshot.winRate });
     return snapshot;
   }
 
   restoreLatestStableModel(reason = "self_heal_restore") {
-    const snapshot = this.modelBackups[0];
+    const preferred = this.modelRegistry.chooseRollback(this.modelBackups || []);
+    const snapshot = (this.modelBackups || []).find((item) => item.at === preferred?.at) || this.modelBackups[0];
     if (!snapshot?.modelState) {
       return null;
     }
     this.model = new AdaptiveTradingModel(snapshot.modelState, this.config);
     this.recordEvent("stable_model_restored", { reason, snapshotAt: snapshot.at });
     return snapshot;
+  }
+
+  refreshGovernanceViews(referenceNow = nowIso()) {
+    const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    const rawResearchRegistry = this.researchRegistry.buildRegistry({
+      journal: this.journal,
+      latestSummary: this.runtime.researchLab?.latestSummary || null,
+      modelBackups: this.modelBackups || [],
+      nowIso: referenceNow
+    });
+    this.runtime.strategyAttribution = summarizeAttributionSnapshot(
+      this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: referenceNow })
+    );
+    this.runtime.researchRegistry = summarizeResearchRegistry(rawResearchRegistry);
+    this.runtime.modelRegistry = summarizeModelRegistry(
+      this.modelRegistry.buildRegistry({
+        snapshots: this.modelBackups || [],
+        report,
+        researchRegistry: rawResearchRegistry,
+        calibration: this.model.getCalibrationSummary(),
+        deployment: this.model.getDeploymentSummary(),
+        nowIso: referenceNow
+      })
+    );
+    this.runtime.dataRecorder = this.dataRecorder.getSummary();
+    this.runtime.stateBackups = this.backupManager.getSummary();
+    return { report, rawResearchRegistry };
   }
 
   updateSafetyState({ now = new Date(), candidateSummaries = arr(this.runtime.latestDecisions) } = {}) {
@@ -1169,17 +1268,8 @@ export class TradingBot {
       this.maybeCaptureStableModelSnapshot(learning.promotion ? "promotion_snapshot" : "post_trade_snapshot", undefined, Boolean(learning.promotion));
     }
 
-    this.runtime.strategyAttribution = summarizeAttributionSnapshot(
-      this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: nowIso() })
-    );
-    this.runtime.researchRegistry = summarizeResearchRegistry(
-      this.researchRegistry.buildRegistry({
-        journal: this.journal,
-        latestSummary: this.runtime.researchLab?.latestSummary || null,
-        modelBackups: this.modelBackups || [],
-        nowIso: nowIso()
-      })
-    );
+    await this.dataRecorder.recordTrade(trade);
+    this.refreshGovernanceViews(nowIso());
 
     this.logger.info(logLabel, {
       symbol: trade.symbol,
@@ -1891,6 +1981,14 @@ export class TradingBot {
             nowIso: nowIso()
           })
         : summarizeExitIntelligence({ action: "disabled", nextReviewBias: "disabled" });
+      if (exitIntelligenceSummary.shouldTightenStop && exitIntelligenceSummary.suggestedStopLossPrice > (position.stopLossPrice || 0)) {
+        position.stopLossPrice = exitIntelligenceSummary.suggestedStopLossPrice;
+        this.recordEvent("position_stop_tightened", {
+          symbol: position.symbol,
+          stopLossPrice: position.stopLossPrice,
+          reason: exitIntelligenceSummary.reason || "protect_winner"
+        });
+      }
       const exitDecision = this.risk.evaluateExit({
         position,
         currentPrice: marketSnapshot.book.mid,
@@ -2259,19 +2357,21 @@ export class TradingBot {
       latestSummary: result
     };
     this.journal.researchRuns.push(result);
-    this.runtime.researchRegistry = summarizeResearchRegistry(
-      this.researchRegistry.buildRegistry({
-        journal: this.journal,
-        latestSummary: result,
-        modelBackups: this.modelBackups || [],
-        nowIso: nowIso()
-      })
-    );
+    await this.dataRecorder.recordResearch(result);
+    this.refreshGovernanceViews(nowIso());
     this.recordEvent("research_run_completed", {
       symbolCount: result.symbolCount,
       bestSymbol: result.bestSymbol,
       realizedPnl: result.realizedPnl
     });
+    await this.backupManager.maybeBackup({
+      runtime: this.runtime,
+      journal: this.journal,
+      modelState: this.model.getState(),
+      modelBackups: this.modelBackups,
+      modelRegistry: this.runtime.modelRegistry
+    }, { reason: "research", force: true, nowIso: result.generatedAt });
+    this.runtime.stateBackups = this.backupManager.getSummary();
     this.trimJournal();
     await this.persist();
     return result;
@@ -2309,6 +2409,35 @@ export class TradingBot {
     this.runtime.lastCycleAt = cycleAt;
     this.runtime.lastAnalysisAt = cycleAt;
     this.runtime.lastAnalysisError = null;
+    this.refreshGovernanceViews(cycleAt);
+    await this.dataRecorder.recordDecisions({ at: cycleAt, candidates });
+    await this.dataRecorder.recordCycle({
+      at: cycleAt,
+      mode: this.config.botMode,
+      candidates,
+      openedPosition,
+      overview: {
+        equity: portfolio.equity,
+        quoteFree: portfolio.balance.quoteFree,
+        openPositions: this.runtime.openPositions.length
+      },
+      safety: {
+        session: this.runtime.session,
+        drift: this.runtime.drift,
+        selfHeal: this.runtime.selfHeal
+      },
+      marketSentiment: this.runtime.marketSentiment,
+      volatility: this.runtime.volatilityContext
+    });
+    await this.backupManager.maybeBackup({
+      runtime: this.runtime,
+      journal: this.journal,
+      modelState: this.model.getState(),
+      modelBackups: this.modelBackups,
+      modelRegistry: this.runtime.modelRegistry
+    }, { reason: openedPosition ? "cycle_with_entry" : "cycle", nowIso: cycleAt });
+    this.runtime.dataRecorder = this.dataRecorder.getSummary();
+    this.runtime.stateBackups = this.backupManager.getSummary();
     return {
       cycleAt,
       openedPosition,
@@ -2512,6 +2641,9 @@ export class TradingBot {
       .filter((event) => event.positionId === trade.id)
       .map((event) => this.buildScaleOutView(event));
     const rationale = trade.entryRationale || {};
+    const headlines = arr(rationale.headlines || []).slice(0, 3).map((item) => item.title || item);
+    const committee = rationale.committee || {};
+    const gateDetail = `model ${num(rationale.probability || trade.probabilityAtEntry || 0, 3)} | gate ${num(rationale.threshold || 0, 3)} | conf ${num(rationale.confidence || 0, 3)}`;
     return {
       id: trade.id,
       symbol: trade.symbol,
@@ -2529,9 +2661,19 @@ export class TradingBot {
       scaleOuts,
       meta: summarizeMeta(rationale.meta || {}),
       blockersAtEntry: arr(rationale.blockerReasons || []).slice(0, 5),
+      pnlAttribution: {
+        executionStyle: trade.entryExecutionAttribution?.entryStyle || null,
+        provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
+        captureEfficiency: num(trade.captureEfficiency || 0, 4)
+      },
       timeline: [
+        { at: trade.entryAt, type: "analysis", label: "Gate", detail: gateDetail },
         { at: trade.entryAt, type: "entry", label: "Entry", detail: rationale.summary || `${trade.symbol} entry` },
+        { at: trade.entryAt, type: "committee", label: "Committee", detail: `agree ${num(committee.agreement || 0, 3)} | net ${num(committee.netScore || 0, 3)} | vetoes ${(committee.vetoes || []).length}` },
+        ...(headlines.length ? [{ at: trade.entryAt, type: "news", label: "Nieuws", detail: headlines.join(" | ") }] : []),
+        ...(arr(rationale.checks || []).slice(0, 3).map((check) => ({ at: trade.entryAt, type: "check", label: check.label || "Check", detail: `${check.passed ? "pass" : "fail"} | ${check.detail || ""}`.trim() }))),
         ...scaleOuts.map((event) => ({ at: event.at, type: "scale_out", label: "Scale-out", detail: `${event.reason || "partial_exit"} | ${num((event.fraction || 0) * 100, 1)}% | ${num(event.realizedPnl || 0, 2)} USD` })),
+        ...(trade.exitIntelligenceSummary ? [{ at: trade.exitAt, type: "exit_ai", label: "Exit AI", detail: `${trade.exitIntelligenceSummary.action || "hold"} | ${(trade.exitIntelligenceSummary.riskReasons || []).slice(0, 3).join(", ")}` }] : []),
         { at: trade.exitAt, type: "exit", label: "Exit", detail: `${trade.reason || "exit"} | ${num(trade.pnlQuote || 0, 2)} USD` }
       ]
     };
@@ -2549,6 +2691,8 @@ export class TradingBot {
       realizedPnl: num(summary.realizedPnl || 0, 2),
       averageSharpe: num(summary.averageSharpe || 0, 3),
       averageWinRate: num(summary.averageWinRate || 0, 4),
+      topFamilies: arr(summary.topFamilies || []).slice(0, 6),
+      topRegimes: arr(summary.topRegimes || []).slice(0, 6),
       reports: arr(summary.reports || []).slice(0, 6).map((report) => ({
         symbol: report.symbol,
         experimentCount: report.experimentCount || 0,
@@ -2557,6 +2701,9 @@ export class TradingBot {
         averageWinRate: num(report.averageWinRate || 0, 4),
         averageSharpe: num(report.averageSharpe || 0, 3),
         maxDrawdownPct: num(report.maxDrawdownPct || 0, 4),
+        strategyLeaders: [...(report.strategyLeaders || [])],
+        familyLeaders: arr(report.familyLeaders || []).slice(0, 4),
+        regimeLeaders: arr(report.regimeLeaders || []).slice(0, 4),
         experiments: arr(report.experiments || []).slice(0, 4).map((item) => ({
           testStartAt: item.testStartAt,
           testEndAt: item.testEndAt,
@@ -2565,7 +2712,9 @@ export class TradingBot {
           winRate: num(item.winRate || 0, 4),
           sharpe: num(item.sharpe || 0, 3),
           expectancy: num(item.expectancy || 0, 2),
-          strategyLeaders: [...(item.strategyLeaders || [])]
+          strategyLeaders: [...(item.strategyLeaders || [])],
+          familyLeaders: arr(item.familyLeaders || []).slice(0, 4),
+          regimeLeaders: arr(item.regimeLeaders || []).slice(0, 4)
         }))
       }))
     };
@@ -2612,6 +2761,7 @@ export class TradingBot {
       marketSentiment: summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT),
       volatility: summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT),
       stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
+      dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
       report: {
         ...report,
         recentTrades: report.recentTrades.map((trade) => this.buildTradeView(trade)),
@@ -2665,13 +2815,16 @@ export class TradingBot {
         rlPolicy: this.rlPolicy.getSummary(),
         committee: topDecision.committee || leadPosition?.entryRationale?.committee || summarizeCommittee({}),
         strategy: topDecision.strategy || topDecision.strategySummary || leadPosition?.entryRationale?.strategy || summarizeStrategy({}),
-        optimizer: this.runtime.aiTelemetry?.strategyOptimizer || summarizeOptimizer(this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: nowIso() }))
+        optimizer: this.runtime.aiTelemetry?.strategyOptimizer || summarizeOptimizer(this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: nowIso() })),
+        modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {})
       },
       safety: {
         session: topDecision.session || this.runtime.session || leadPosition?.entryRationale?.session || summarizeSession({}),
         drift: summarizeDrift(this.runtime.drift || {}),
         selfHeal: summarizeSelfHeal(this.runtime.selfHeal || {}),
-        stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup)
+        stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
+        backups: this.runtime.stateBackups || this.backupManager.getSummary(),
+        recovery: this.runtime.recovery || {}
       },
       portfolio: this.buildPortfolioView(),
       exchange: exchangeOverview,
@@ -2689,12 +2842,14 @@ export class TradingBot {
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
       research: this.buildResearchView(),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
+      dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
       report: {
         ...report,
         realizedPnl: num(report.realizedPnl || 0, 2),
         averagePnlPct: num(report.averagePnlPct || 0, 4),
         maxDrawdownPct: num(report.maxDrawdownPct || 0, 4),
         openExposure: num(report.openExposure || 0, 2),
+        attribution: report.attribution || {},
         executionSummary: {
           ...(report.executionSummary || {}),
           avgEntryTouchSlippageBps: num(report.executionSummary?.avgEntryTouchSlippageBps || 0, 2),
@@ -2817,6 +2972,31 @@ export class TradingBot {
     };
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

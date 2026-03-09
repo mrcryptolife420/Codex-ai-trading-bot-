@@ -16,6 +16,7 @@ const elements = {
   portfolioSummary: document.querySelector("#portfolioSummary"),
   newsSummary: document.querySelector("#newsSummary"),
   marketStructureSummary: document.querySelector("#marketStructureSummary"),
+  volatilitySummary: document.querySelector("#volatilitySummary"),
   calendarSummary: document.querySelector("#calendarSummary"),
   driftSummary: document.querySelector("#driftSummary"),
   safetySummary: document.querySelector("#safetySummary"),
@@ -36,8 +37,12 @@ const elements = {
   universeList: document.querySelector("#universeList"),
   attributionSummary: document.querySelector("#attributionSummary"),
   attributionList: document.querySelector("#attributionList"),
+  pnlAttributionSummary: document.querySelector("#pnlAttributionSummary"),
+  pnlAttributionList: document.querySelector("#pnlAttributionList"),
   governanceSummary: document.querySelector("#governanceSummary"),
   registryList: document.querySelector("#registryList"),
+  opsSummary: document.querySelector("#opsSummary"),
+  opsList: document.querySelector("#opsList"),
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   cycleBtn: document.querySelector("#cycleBtn"),
@@ -692,21 +697,26 @@ function renderIntelligence(snapshot) {
   const portfolio = snapshot.dashboard.portfolio || {};
   const exchange = snapshot.dashboard.exchange || {};
   const marketStructure = snapshot.dashboard.marketStructure || {};
+  const volatility = snapshot.dashboard.volatility || {};
   const calendar = snapshot.dashboard.calendar || {};
   const safety = snapshot.dashboard.safety || {};
   const session = safety.session || {};
   const drift = safety.drift || {};
   const selfHeal = safety.selfHeal || {};
   const stableSnapshots = safety.stableModelSnapshots || [];
+  const backups = safety.backups || {};
+  const recovery = safety.recovery || {};
   const topCluster = (portfolio.clusters || [])[0];
   const topSector = (portfolio.sectors || [])[0];
   const topDecision = (snapshot.dashboard.topDecisions || [])[0] || {};
+  const recorder = snapshot.dashboard.dataRecorder || {};
 
   const transformer = snapshot.dashboard.ai?.transformer || {};
   const rlPolicy = snapshot.dashboard.ai?.rlPolicy || {};
   const committee = snapshot.dashboard.ai?.committee || {};
   const strategy = snapshot.dashboard.ai?.strategy || {};
   const optimizer = snapshot.dashboard.ai?.optimizer || {};
+  const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
   const executionReport = snapshot.dashboard.report?.executionSummary || {};
   const latestStableSnapshot = stableSnapshots[0] || {};
   const topPolicy = (rlPolicy.topPolicies || [])[0] || {};
@@ -722,7 +732,8 @@ function renderIntelligence(snapshot) {
     insightCard("Committee", `${formatPct(committee.agreement || 0, 1)} agree`, `net ${formatNumber(committee.netScore || 0, 3)}`, (committee.agreement || 0) > 0.5 ? "positive" : "neutral"),
     insightCard("RL policy", topPolicy.action || "-", topPolicy.bucket ? `${topPolicy.bucket} | ${formatNumber(topPolicy.value || 0, 3)}` : "Nog geen policy-data", (rlPolicy.averageReward || 0) > 0 ? "positive" : (rlPolicy.averageReward || 0) < 0 ? "negative" : "neutral"),
     insightCard("Strategy", strategy.strategyLabel || topDecision.strategy?.strategyLabel || "-", `fit ${formatPct(strategy.fitScore || topDecision.strategy?.fitScore || 0, 1)} | conf ${formatPct(strategy.confidence || topDecision.strategy?.confidence || 0, 1)}`, (strategy.fitScore || topDecision.strategy?.fitScore || 0) > 0.55 ? "positive" : "neutral"),
-    insightCard("Promoties", `${(deployment.promotions || []).length}`, deployment.lastPromotionAt ? `Laatste ${formatDate(deployment.lastPromotionAt)}` : "Nog geen promoties")
+    insightCard("Promoties", `${(deployment.promotions || []).length}`, deployment.lastPromotionAt ? `Laatste ${formatDate(deployment.lastPromotionAt)}` : "Nog geen promoties"),
+    insightCard("Model registry", `${formatPct(modelRegistry.currentQualityScore || 0, 1)}`, modelRegistry.rollbackCandidate?.at ? `rollback ${formatDate(modelRegistry.rollbackCandidate.at)} | q ${formatNumber(modelRegistry.rollbackCandidate.qualityScore || 0, 2)}` : "Nog geen rollback-kandidaat", (modelRegistry.currentQualityScore || 0) >= 0.6 ? "positive" : "neutral")
   ].join("");
 
   elements.optimizerSummary.innerHTML = [
@@ -789,7 +800,10 @@ function renderIntelligence(snapshot) {
     insightCard("Session", session.sessionLabel || session.session || "-", `${session.dayLabel || "-"} | ${session.utcHour == null ? "-" : `${formatNumber(session.utcHour, 2)} UTC`}`, session.lowLiquidity || session.inHardFundingBlock ? "negative" : session.isWeekend || session.inFundingCaution ? "neutral" : "positive"),
     insightCard("Funding window", session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 2)}u`, `liq ${formatPct(session.lowLiquidityScore || 0, 1)} | risk ${formatPct(session.riskScore || 0, 1)}`, session.inHardFundingBlock ? "negative" : session.inFundingCaution ? "neutral" : "positive"),
     insightCard("Self-heal", (selfHeal.mode || "normal").replaceAll("_", " "), selfHeal.cooldownUntil ? `cooldown tot ${formatDate(selfHeal.cooldownUntil)}` : selfHeal.reason || "Geen actieve cooldown", selfHeal.active ? (selfHeal.mode === "paper_fallback" || selfHeal.mode === "paused" ? "negative" : "neutral") : "positive"),
-    insightCard("Stable model", latestStableSnapshot.at ? `${latestStableSnapshot.tradeCount || 0} trades` : "Nog geen snapshot", latestStableSnapshot.at ? `${formatDate(latestStableSnapshot.at)} | win ${formatPct(latestStableSnapshot.winRate || 0, 1)}` : "Rollback backup nog leeg", latestStableSnapshot.at ? "positive" : "neutral")
+    insightCard("Stable model", latestStableSnapshot.at ? `${latestStableSnapshot.tradeCount || 0} trades` : "Nog geen snapshot", latestStableSnapshot.at ? `${formatDate(latestStableSnapshot.at)} | win ${formatPct(latestStableSnapshot.winRate || 0, 1)}` : "Rollback backup nog leeg", latestStableSnapshot.at ? "positive" : "neutral"),
+    insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)} | ${backups.lastReason || "backup"}` : "Nog geen backup", (backups.backupCount || 0) > 0 ? "positive" : "neutral"),
+    insightCard("Feature store", `${recorder.filesWritten || 0} frames`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)}` : "Nog geen recorder-data", (recorder.filesWritten || 0) > 0 ? "positive" : "neutral"),
+    insightCard("Recovery", recovery.uncleanShutdownDetected ? "Waarschuwing" : "Schoon", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")
   ].join("");
 
   const upcomingEvents = snapshot.dashboard.upcomingEvents || [];
@@ -1039,6 +1053,71 @@ function renderAttribution(snapshot) {
     : `<div class="empty">Nog geen attribution-history beschikbaar.</div>`;
 }
 
+function renderPnlAttribution(snapshot) {
+  const attribution = snapshot.dashboard.report?.attribution || {};
+  const topStrategy = (attribution.strategies || [])[0] || {};
+  const topRegime = (attribution.regimes || [])[0] || {};
+  const topStyle = (attribution.executionStyles || [])[0] || {};
+  const topProvider = (attribution.newsProviders || [])[0] || {};
+  elements.pnlAttributionSummary.innerHTML = [
+    insightCard("Top strategie", topStrategy.id || "-", topStrategy.tradeCount ? `${topStrategy.tradeCount} trades | ${formatMoney(topStrategy.realizedPnl || 0)}` : "Nog geen attributie"),
+    insightCard("Top regime", topRegime.id || "-", topRegime.tradeCount ? `${formatPct(topRegime.winRate || 0, 1)} win | ${formatMoney(topRegime.realizedPnl || 0)}` : "Nog geen regime-attributie"),
+    insightCard("Top exec-style", topStyle.id || "-", topStyle.tradeCount ? `${formatPct(topStyle.winRate || 0, 1)} win | ${formatMoney(topStyle.realizedPnl || 0)}` : "Nog geen execution-attributie"),
+    insightCard("Top newsbron", topProvider.id || "-", topProvider.tradeCount ? `${topProvider.tradeCount} trades | ${formatMoney(topProvider.realizedPnl || 0)}` : "Nog geen bron-attributie")
+  ].join("");
+
+  const cards = [
+    ...(attribution.strategies || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "strategie" })),
+    ...(attribution.regimes || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "regime" })),
+    ...(attribution.executionStyles || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "execution" })),
+    ...(attribution.newsProviders || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "nieuwsbron" }))
+  ];
+  elements.pnlAttributionList.innerHTML = cards.length
+    ? cards
+        .map(
+          (item) => `
+            <article class="attribution-card">
+              <div class="section-head compact">
+                <div>
+                  <div class="kicker">${escapeHtml(item.bucketLabel || "bucket")}</div>
+                  <h3>${escapeHtml(item.id || "Attributie")}</h3>
+                </div>
+                <div class="pill ${toneClass(item.realizedPnl || 0)}">${formatMoney(item.realizedPnl || 0)}</div>
+              </div>
+              <div class="mini-grid">
+                <div class="mini-stat"><span class="kicker">Trades</span><strong>${item.tradeCount || 0}</strong></div>
+                <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(item.winRate || 0, 1)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Gem. PnL</span><strong class="${toneClass(item.averagePnlPct || 0)}">${formatPct(item.averagePnlPct || 0, 2)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Duur</span><strong>${formatNumber(item.averageDurationMinutes || 0, 1)} min</strong></div>
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen PnL-attributie beschikbaar.</div>`;
+}
+
+function renderOperations(snapshot) {
+  const recorder = snapshot.dashboard.dataRecorder || {};
+  const backups = snapshot.dashboard.safety?.backups || {};
+  const recovery = snapshot.dashboard.safety?.recovery || {};
+  const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
+  elements.opsSummary.innerHTML = [
+    insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)}` : "Nog geen recorder-run"),
+    insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
+    insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.latestSnapshotAt ? `laatst ${formatDate(modelRegistry.latestSnapshotAt)}` : "Nog geen modelsnapshot"),
+    insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")
+  ].join("");
+
+  const notes = [
+    ...(modelRegistry.notes || []),
+    backups.lastReason ? `Laatste backup reden: ${backups.lastReason}` : "",
+    recorder.rootDir ? `Feature store: ${recorder.rootDir}` : ""
+  ].filter(Boolean);
+  elements.opsList.innerHTML = notes.length
+    ? notes.map((note) => `<div class="event-row"><div>${escapeHtml(note)}</div></div>`).join("")
+    : `<div class="empty">Nog geen operations-notities.</div>`;
+}
 function renderGovernance(snapshot) {
   const registry = snapshot.dashboard.researchRegistry || {};
   const governance = registry.governance || {};
@@ -1109,7 +1188,9 @@ function render(snapshot) {
   renderTradeReplays(snapshot);
   renderUniverse(snapshot);
   renderAttribution(snapshot);
+  renderPnlAttribution(snapshot);
   renderGovernance(snapshot);
+  renderOperations(snapshot);
   renderTrades(snapshot);
   renderIntelligence(snapshot);
   renderWeights(snapshot);
@@ -1196,6 +1277,13 @@ window.setInterval(() => {
     }
   });
 }, POLL_MS);
+
+
+
+
+
+
+
 
 
 

@@ -1,4 +1,4 @@
-﻿function safeDivide(numerator, denominator, fallback = 0) {
+function safeDivide(numerator, denominator, fallback = 0) {
   return denominator ? numerator / denominator : fallback;
 }
 
@@ -165,6 +165,49 @@ function buildExecutionSummary(trades) {
   };
 }
 
+function buildAttributionBuckets(trades = [], keyFn) {
+  const buckets = new Map();
+  for (const trade of trades) {
+    const id = keyFn(trade) || "unknown";
+    if (!buckets.has(id)) {
+      buckets.set(id, { id, tradeCount: 0, winCount: 0, realizedPnl: 0, pnlPctSum: 0, durationMinutes: 0 });
+    }
+    const bucket = buckets.get(id);
+    bucket.tradeCount += 1;
+    bucket.winCount += (trade.pnlQuote || 0) > 0 ? 1 : 0;
+    bucket.realizedPnl += trade.pnlQuote || 0;
+    bucket.pnlPctSum += trade.netPnlPct || 0;
+    if (trade.entryAt && trade.exitAt) {
+      bucket.durationMinutes += Math.max(0, (new Date(trade.exitAt).getTime() - new Date(trade.entryAt).getTime()) / 60000);
+    }
+  }
+  return [...buckets.values()]
+    .map((bucket) => ({
+      id: bucket.id,
+      tradeCount: bucket.tradeCount,
+      winRate: safeDivide(bucket.winCount, bucket.tradeCount),
+      realizedPnl: bucket.realizedPnl,
+      averagePnlPct: safeDivide(bucket.pnlPctSum, bucket.tradeCount),
+      averageDurationMinutes: safeDivide(bucket.durationMinutes, bucket.tradeCount)
+    }))
+    .sort((left, right) => right.realizedPnl - left.realizedPnl)
+    .slice(0, 8);
+}
+
+function topNewsProvider(trade) {
+  return trade.entryRationale?.providerBreakdown?.[0]?.name || trade.newsSummary?.providerBreakdown?.[0]?.name || "none";
+}
+
+function buildAttributionSummary(trades = []) {
+  return {
+    strategies: buildAttributionBuckets(trades, (trade) => trade.strategyAtEntry || "unknown"),
+    regimes: buildAttributionBuckets(trades, (trade) => trade.regimeAtEntry || "unknown"),
+    symbols: buildAttributionBuckets(trades, (trade) => trade.symbol || "unknown"),
+    executionStyles: buildAttributionBuckets(trades, (trade) => trade.entryExecutionAttribution?.entryStyle || "unknown"),
+    newsProviders: buildAttributionBuckets(trades, topNewsProvider)
+  };
+}
+
 export function buildPerformanceReport({ journal, runtime, config, now = new Date() }) {
   const trades = [...(journal.trades || [])];
   const scaleOuts = [...(journal.scaleOuts || [])];
@@ -186,6 +229,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     openPositions: (runtime.openPositions || []).length,
     recentTrades: lookbackTrades.slice(-25).reverse(),
     executionSummary: buildExecutionSummary(lookbackTrades),
+    attribution: buildAttributionSummary(trades),
     scaleOutSummary: buildScaleOutSummary(scaleOuts),
     windows: {
       today: buildWindowStats(trades, localDayStartMs),

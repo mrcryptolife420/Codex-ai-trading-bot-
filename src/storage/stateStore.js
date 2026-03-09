@@ -36,6 +36,19 @@ const DEFAULT_RUNTIME = {
   universe: {},
   strategyAttribution: {},
   researchRegistry: {},
+  modelRegistry: {},
+  dataRecorder: {},
+  stateBackups: {},
+  recovery: {
+    uncleanShutdownDetected: false,
+    restoredFromBackupAt: null,
+    latestBackupAt: null
+  },
+  lifecycle: {
+    activeRun: false,
+    lastBootAt: null,
+    lastShutdownAt: null
+  },
   health: {
     consecutiveFailures: 0,
     circuitOpen: false,
@@ -102,5 +115,3 @@ export class StateStore {
     await saveJson(this.modelBackupsPath, backups);
   }
 }
-
-
