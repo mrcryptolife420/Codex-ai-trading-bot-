@@ -1,0 +1,17 @@
+{
+  "name": "binance-ai-trading-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/cli.js run",
+    "once": "node src/cli.js once",
+    "status": "node src/cli.js status",
+    "doctor": "node src/cli.js doctor",
+    "report": "node src/cli.js report",
+    "backtest": "node src/cli.js backtest",
+    "dashboard": "node src/cli.js dashboard",
+    "install:windows": "powershell -ExecutionPolicy Bypass -File .\\Install-Windows11.ps1",
+    "test": "node test/run.js"
+  }
+}

@@ -1,0 +1,10 @@
+data/runtime/
+.env
+.DS_Store
+Thumbs.db
+docs-*.html
+dashboard-*.log
+doctor-latest.json
+*-feed.xml
+binance-announcements.html
+src/news/tmp-test.js

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Trading Bot Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <section class="hero panel">
+        <div>
+          <p class="eyebrow">Binance Spot AI Control Center</p>
+          <h1>Trading dashboard voor live en paper mode</h1>
+          <p class="lede">
+            Schakel veilig tussen modi, bekijk waarom de AI een positie opende en volg
+            winst, verlies en risico in een overzicht.
+          </p>
+          <div class="status-row">
+            <span class="badge" id="modeBadge">MODE</span>
+            <span class="badge muted" id="runStateBadge">STATUS</span>
+            <span class="badge muted" id="healthBadge">HEALTH</span>
+          </div>
+        </div>
+        <div class="control-panel">
+          <div class="control-group control-group-extended">
+            <button id="startBtn">Start bot</button>
+            <button id="stopBtn" class="danger">Stop bot</button>
+            <button id="cycleBtn" class="secondary">1 cyclus</button>
+            <button id="refreshBtn" class="secondary">Analyse verversen</button>
+            <button id="researchBtn" class="secondary">Research lab</button>
+          </div>
+          <div class="mode-switch">
+            <button id="paperBtn" class="secondary">Paper trading</button>
+            <button id="liveBtn" class="secondary warn">Live trading</button>
+          </div>
+          <p class="hint" id="controlHint"></p>
+        </div>
+      </section>
+
+      <section class="metrics" id="metrics"></section>
+
+      <section class="grid two-up">
+        <article class="panel chart-panel">
+          <div class="section-head">
+            <div>
+              <h2>Equity curve</h2>
+              <p>Kapitaalontwikkeling over de recente bot-cycli.</p>
+            </div>
+            <span class="subtle" id="equityMeta"></span>
+          </div>
+          <div id="equityChart" class="chart"></div>
+        </article>
+        <article class="panel chart-panel">
+          <div class="section-head">
+            <div>
+              <h2>15D / 30D / all-time</h2>
+              <p>Snelle blik op rollende performance-statistieken.</p>
+            </div>
+          </div>
+          <div id="windowCards" class="window-cards"></div>
+        </article>
+      </section>
+
+      <section class="grid two-up">
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Open posities</h2>
+              <p>Inclusief reden van entry, targets en actuele P/L.</p>
+            </div>
+          </div>
+          <div id="positionsList" class="stack"></div>
+        </article>
+        <article class="panel">
+          <div class="section-head setup-head">
+            <div>
+              <h2>Top AI setups</h2>
+              <p>De beste kandidaten uit de laatste analyse-run.</p>
+            </div>
+            <div class="setup-toolbar">
+              <input id="decisionSearch" type="search" placeholder="Zoek pair: BTC of ETHUSDT" />
+              <label class="toggle-chip">
+                <input id="decisionAllowedOnly" type="checkbox" />
+                Alleen tradebaar
+              </label>
+              <span id="decisionMeta" class="subtle"></span>
+            </div>
+          </div>
+          <div id="decisionsList" class="stack compact"></div>
+        </article>
+      </section>
+
+      <section class="grid two-up">
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Why not trades</h2>
+              <p>Geblokkeerde setups met heldere no-go redenen.</p>
+            </div>
+          </div>
+          <div id="blockedList" class="stack compact"></div>
+        </article>
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Trade replay</h2>
+              <p>Entry, scale-out en exit in een compacte timeline.</p>
+            </div>
+          </div>
+          <div id="replayList" class="stack compact"></div>
+        </article>
+      </section>
+
+      <section class="grid three-up">
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Universe focus</h2>
+              <p>Welke pairs de AI nu echt de moeite waard vindt om diep te scannen.</p>
+            </div>
+          </div>
+          <div id="universeSummary" class="insight-grid"></div>
+          <div id="universeList" class="stack compact"></div>
+        </article>
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Strategy attribution</h2>
+              <p>Welke strategieen, families en regimes momenteel echt leveren.</p>
+            </div>
+          </div>
+          <div id="attributionSummary" class="insight-grid"></div>
+          <div id="attributionList" class="stack compact"></div>
+        </article>
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Research registry</h2>
+              <p>Walk-forward scorebord en governance voor promotie of observatie.</p>
+            </div>
+          </div>
+          <div id="governanceSummary" class="insight-grid"></div>
+          <div id="registryList" class="stack compact"></div>
+        </article>
+      </section>
+
+      <section class="grid two-up">
+        <article class="panel table-panel">
+          <div class="section-head">
+            <div>
+              <h2>Recente trades</h2>
+              <p>Gesloten trades met duidelijke winst/verlies-registratie.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Coin</th>
+                  <th>Open</th>
+                  <th>Sluit</th>
+                  <th>Style</th>
+                  <th>Reden</th>
+                  <th>P/L</th>
+                  <th>Rendement</th>
+                  <th>Exec</th>
+                </tr>
+              </thead>
+              <tbody id="tradesBody"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Model en events</h2>
+              <p>AI-status, stream-health, portfolio-clusters en runtime-signalen.</p>
+            </div>
+          </div>
+          <div id="aiSummary" class="insight-grid"></div>
+          <div id="optimizerSummary" class="insight-grid"></div>
+          <div id="streamSummary" class="insight-grid"></div>
+          <div id="executionSummary" class="insight-grid"></div>
+          <div id="portfolioSummary" class="insight-grid"></div>
+          <div id="newsSummary" class="insight-grid"></div>
+          <div id="marketStructureSummary" class="insight-grid"></div>
+          <div id="calendarSummary" class="insight-grid"></div>
+          <div id="driftSummary" class="insight-grid"></div>
+          <div id="safetySummary" class="insight-grid"></div>
+          <div class="dual-stack">
+            <div>
+              <h3>Komende events</h3>
+              <div id="upcomingEventsList" class="stack compact"></div>
+            </div>
+            <div>
+              <h3>Officiele Binance notices</h3>
+              <div id="officialNoticeList" class="stack compact"></div>
+            </div>
+          </div>
+          <div class="dual-stack">
+            <div>
+              <h3>Top model weights</h3>
+              <div id="weightsList" class="stack compact"></div>
+            </div>
+            <div>
+              <h3>Recente events</h3>
+              <div id="eventsList" class="stack compact"></div>
+            </div>
+          </div>
+          <div>
+            <h3>Research lab</h3>
+            <div id="researchList" class="stack compact"></div>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+
+
+
+
+
+
+
+
+

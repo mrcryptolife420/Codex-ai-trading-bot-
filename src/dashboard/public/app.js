@@ -1,0 +1,1235 @@
+const POLL_MS = 5000;
+
+const elements = {
+  modeBadge: document.querySelector("#modeBadge"),
+  runStateBadge: document.querySelector("#runStateBadge"),
+  healthBadge: document.querySelector("#healthBadge"),
+  controlHint: document.querySelector("#controlHint"),
+  metrics: document.querySelector("#metrics"),
+  equityChart: document.querySelector("#equityChart"),
+  equityMeta: document.querySelector("#equityMeta"),
+  windowCards: document.querySelector("#windowCards"),
+  aiSummary: document.querySelector("#aiSummary"),
+  optimizerSummary: document.querySelector("#optimizerSummary"),
+  streamSummary: document.querySelector("#streamSummary"),
+  executionSummary: document.querySelector("#executionSummary"),
+  portfolioSummary: document.querySelector("#portfolioSummary"),
+  newsSummary: document.querySelector("#newsSummary"),
+  marketStructureSummary: document.querySelector("#marketStructureSummary"),
+  calendarSummary: document.querySelector("#calendarSummary"),
+  driftSummary: document.querySelector("#driftSummary"),
+  safetySummary: document.querySelector("#safetySummary"),
+  upcomingEventsList: document.querySelector("#upcomingEventsList"),
+  officialNoticeList: document.querySelector("#officialNoticeList"),
+  positionsList: document.querySelector("#positionsList"),
+  decisionsList: document.querySelector("#decisionsList"),
+  decisionSearch: document.querySelector("#decisionSearch"),
+  decisionAllowedOnly: document.querySelector("#decisionAllowedOnly"),
+  decisionMeta: document.querySelector("#decisionMeta"),
+  blockedList: document.querySelector("#blockedList"),
+  replayList: document.querySelector("#replayList"),
+  tradesBody: document.querySelector("#tradesBody"),
+  weightsList: document.querySelector("#weightsList"),
+  eventsList: document.querySelector("#eventsList"),
+  researchList: document.querySelector("#researchList"),
+  universeSummary: document.querySelector("#universeSummary"),
+  universeList: document.querySelector("#universeList"),
+  attributionSummary: document.querySelector("#attributionSummary"),
+  attributionList: document.querySelector("#attributionList"),
+  governanceSummary: document.querySelector("#governanceSummary"),
+  registryList: document.querySelector("#registryList"),
+  startBtn: document.querySelector("#startBtn"),
+  stopBtn: document.querySelector("#stopBtn"),
+  cycleBtn: document.querySelector("#cycleBtn"),
+  refreshBtn: document.querySelector("#refreshBtn"),
+  researchBtn: document.querySelector("#researchBtn"),
+  paperBtn: document.querySelector("#paperBtn"),
+  liveBtn: document.querySelector("#liveBtn")
+};
+
+let latestSnapshot = null;
+let busy = false;
+let transientMessage = "";
+let decisionSearchQuery = "";
+let decisionAllowedOnly = false;
+
+function escapeHtml(value) {
+  return `${value ?? ""}`
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatMoney(value) {
+  return new Intl.NumberFormat("nl-NL", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2
+  }).format(Number(value || 0));
+}
+
+function formatPct(value, digits = 2) {
+  return `${(Number(value || 0) * 100).toFixed(digits)}%`;
+}
+
+function formatSignedPct(value, digits = 2) {
+  const numeric = Number(value || 0);
+  const prefix = numeric > 0 ? "+" : "";
+  return `${prefix}${(numeric * 100).toFixed(digits)}%`;
+}
+
+function formatNumber(value, digits = 2) {
+  return Number(value || 0).toFixed(digits);
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "-";
+  }
+  return new Intl.DateTimeFormat("nl-NL", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function toneClass(value) {
+  if (value > 0) {
+    return "positive";
+  }
+  if (value < 0) {
+    return "negative";
+  }
+  return "neutral";
+}
+
+function healthTone(value) {
+  const normalized = `${value || "neutral"}`.toLowerCase();
+  if (["hot", "healthy", "positive", "promotion_candidate", "promote"].includes(normalized)) {
+    return "positive";
+  }
+  if (["cold", "blocked", "negative", "hold", "paused"].includes(normalized)) {
+    return "negative";
+  }
+  return "neutral";
+}
+
+function formatBreakdown(items = []) {
+  return items.length
+    ? items.map((item) => `${item.name}: ${item.count}`).join(" | ")
+    : "Geen";
+}
+
+function renderDriverCards(items = [], emptyText = "Geen drivers beschikbaar.") {
+  if (!items.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return items
+    .map(
+      (item) => `
+        <div class="mini-stat">
+          <span class="kicker">${escapeHtml(item.provider || item.source || "Nieuws")}</span>
+          <strong>${escapeHtml(item.title || item.name || "Signaal")}</strong>
+          <div class="meta">${escapeHtml(item.dominantEventType || "general")} | ${item.freshnessHours == null ? "-" : `${formatNumber(item.freshnessHours, 1)}u`}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderCalendarCards(items = [], emptyText = "Geen agenda-events beschikbaar.") {
+  if (!items.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return items
+    .map(
+      (item) => `
+        <div class="mini-stat">
+          <span class="kicker">${escapeHtml(item.type || "event")}</span>
+          <strong>${escapeHtml(item.title || item.nextEventTitle || "Kalender-event")}</strong>
+          <div class="meta">${item.at ? formatDate(item.at) : "-"} | impact ${formatNumber(item.impact || item.riskScore || 0, 2)}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderAgentCards(items = [], emptyText = "Geen agent-signalen beschikbaar.") {
+  if (!items.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return items
+    .map(
+      (item) => `
+        <div class="mini-stat">
+          <span class="kicker">${escapeHtml(item.label || item.id || "agent")}</span>
+          <strong class="${item.direction === "bullish" ? "positive" : item.direction === "bearish" ? "negative" : "neutral"}">${formatNumber(item.stance || 0, 3)}</strong>
+          <div class="meta">conf ${formatPct(item.confidence || 0, 1)} | ${escapeHtml((item.reasons || []).slice(0, 2).join(" | ") || "geen notities")}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderAttentionCards(items = [], emptyText = "Geen transformer-attention beschikbaar.") {
+  if (!items.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return items
+    .map(
+      (item) => `
+        <div class="mini-stat">
+          <span class="kicker">Candle -${escapeHtml(item.offset ?? "?")}</span>
+          <strong>${formatPct(item.weight || 0, 1)}</strong>
+          <div class="meta">ret ${formatPct(item.returnPct || 0, 2)} | loc ${formatNumber(item.closeLocation || 0, 2)}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderStrategyCards(items = [], emptyText = "Geen strategy-ranking beschikbaar.") {
+  if (!items.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return items
+    .map(
+      (item) => `
+        <div class="mini-stat">
+          <span class="kicker">${escapeHtml(item.label || item.id || "strategy")}</span>
+          <strong>${formatPct(item.fitScore || 0, 1)}</strong>
+          <div class="meta">${escapeHtml(item.familyLabel || item.family || "family")} | conf ${formatPct(item.confidence || 0, 1)} | hist ${item.historicalTradeCount || 0} trades | boost ${formatPct(item.optimizerBoost || 0, 1)}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+function normalizeReasonLabel(value) {
+  return `${value || ""}`.replaceAll("_", " ");
+}
+
+function renderTagList(items = [], emptyText = "Geen extra redenen") {
+  if (!items.length) {
+    return `<span class="empty">${escapeHtml(emptyText)}</span>`;
+  }
+  return items.map((item) => `<span class="note-pill">${escapeHtml(normalizeReasonLabel(item))}</span>`).join("");
+}
+
+function formatExecutionMeta(execution = {}) {
+  if (!execution || (!execution.entryStyle && execution.expectedImpactBps == null && execution.realizedTouchSlippageBps == null)) {
+    return "Geen execution-attributie";
+  }
+  const parts = [];
+  if (execution.entryStyle) {
+    parts.push(execution.entryStyle);
+  }
+  if (execution.realizedTouchSlippageBps != null) {
+    parts.push(`slip ${formatNumber(execution.realizedTouchSlippageBps || 0, 2)} bps`);
+  } else if (execution.expectedImpactBps != null) {
+    parts.push(`impact ${formatNumber(execution.expectedImpactBps || 0, 2)} bps`);
+  }
+  if (execution.makerFillRatio != null) {
+    parts.push(`maker ${formatPct(execution.makerFillRatio || 0, 1)}`);
+  }
+  if (execution.peggedOrder) {
+    parts.push("pegged");
+  }
+  if (execution.preventedMatchCount) {
+    parts.push(`stp ${execution.preventedMatchCount}`);
+  }
+  return parts.join(" | ");
+}
+
+function summarizeHealth(health) {
+  if (health?.circuitOpen) {
+    return "Circuit open";
+  }
+  if ((health?.warnings || []).length) {
+    return "Waarschuwingen";
+  }
+  return "Gezond";
+}
+
+async function api(path, method = "GET", body) {
+  const response = await fetch(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+function metricCard(label, value, foot, tone = "neutral") {
+  return `
+    <article class="metric-card panel">
+      <div class="metric-label">${escapeHtml(label)}</div>
+      <div class="metric-value ${tone}">${escapeHtml(value)}</div>
+      <div class="metric-foot">${escapeHtml(foot)}</div>
+    </article>
+  `;
+}
+
+function insightCard(label, value, meta, tone = "neutral") {
+  return `
+    <article class="insight-card">
+      <div class="kicker">${escapeHtml(label)}</div>
+      <strong class="${tone}">${escapeHtml(value)}</strong>
+      <div class="meta">${escapeHtml(meta)}</div>
+    </article>
+  `;
+}
+
+function renderMetrics(snapshot) {
+  const overview = snapshot.dashboard.overview;
+  const windows = snapshot.dashboard.report.windows;
+  const today = windows.today || {};
+  const days30 = windows.days30 || {};
+  const openCount = overview.openPositionCount || 0;
+
+  elements.metrics.innerHTML = [
+    metricCard("Mode", snapshot.manager.currentMode.toUpperCase(), `Loop: ${snapshot.manager.runState}`),
+    metricCard("Vrije cash", formatMoney(overview.quoteFree), `Laatste update ${formatDate(overview.lastPortfolioUpdateAt)}`),
+    metricCard("Equity", formatMoney(overview.equity), `Open exposure ${formatMoney(overview.openExposure)}`),
+    metricCard("Open P/L", formatMoney(overview.totalUnrealizedPnl), `${openCount} open posities`, toneClass(overview.totalUnrealizedPnl)),
+    metricCard("Vandaag", formatMoney(today.realizedPnl), `${today.tradeCount || 0} trades vandaag`, toneClass(today.realizedPnl)),
+    metricCard("30 dagen", formatMoney(days30.realizedPnl), `${formatPct(days30.winRate || 0, 1)} win rate`, toneClass(days30.realizedPnl))
+  ].join("");
+}
+
+function buildSparkline(series) {
+  if (!series.length) {
+    return `<div class="empty">Nog geen equity-data beschikbaar.</div>`;
+  }
+  const values = series.map((item) => Number(item.equity || 0));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const width = 920;
+  const height = 220;
+  const pad = 20;
+  const scaleX = (index) => pad + (index / Math.max(series.length - 1, 1)) * (width - pad * 2);
+  const scaleY = (value) => {
+    if (max === min) {
+      return height / 2;
+    }
+    return height - pad - ((value - min) / (max - min)) * (height - pad * 2);
+  };
+  const line = values.map((value, index) => `${scaleX(index)},${scaleY(value)}`).join(" ");
+  const area = `${pad},${height - pad} ${line} ${width - pad},${height - pad}`;
+
+  return `
+    <svg class="sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Equity curve">
+      <defs>
+        <linearGradient id="eq-fill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stop-color="rgba(31,122,90,0.42)" />
+          <stop offset="100%" stop-color="rgba(31,122,90,0.02)" />
+        </linearGradient>
+      </defs>
+      <polygon points="${area}" fill="url(#eq-fill)"></polygon>
+      <polyline points="${line}" fill="none" stroke="#1f7a5a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      <text x="${pad}" y="18">Start ${escapeHtml(formatMoney(values[0]))}</text>
+      <text x="${width - 150}" y="18">Nu ${escapeHtml(formatMoney(values.at(-1)))}</text>
+      <text x="${pad}" y="${height - 4}">Min ${escapeHtml(formatMoney(min))}</text>
+      <text x="${width - 150}" y="${height - 4}">Max ${escapeHtml(formatMoney(max))}</text>
+    </svg>
+  `;
+}
+
+function renderChart(snapshot) {
+  const series = snapshot.dashboard.report.equitySeries || [];
+  elements.equityChart.innerHTML = buildSparkline(series);
+  elements.equityMeta.textContent = `${series.length} datapunten`;
+}
+
+function renderWindowCards(snapshot) {
+  const order = ["today", "days7", "days15", "days30", "allTime"];
+  const labels = {
+    today: "Vandaag",
+    days7: "7 dagen",
+    days15: "15 dagen",
+    days30: "30 dagen",
+    allTime: "All-time"
+  };
+  elements.windowCards.innerHTML = order
+    .map((key) => {
+      const stats = snapshot.dashboard.report.windows[key] || {};
+      return `
+        <article class="window-card">
+          <div class="kicker">${labels[key]}</div>
+          <div class="metric-value ${toneClass(stats.realizedPnl || 0)}">${formatMoney(stats.realizedPnl)}</div>
+          <div class="meta">${stats.tradeCount || 0} trades</div>
+          <div class="meta">Win rate ${formatPct(stats.winRate || 0, 1)}</div>
+          <div class="meta">Gem. trade ${formatPct(stats.averagePnlPct || 0, 2)}</div>
+          <div class="meta">Profit factor ${stats.profitFactor == null ? "-" : formatNumber(stats.profitFactor, 2)}</div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderPositions(snapshot) {
+  const positions = snapshot.dashboard.positions || [];
+  if (!positions.length) {
+    elements.positionsList.innerHTML = `<div class="empty">Geen open posities.</div>`;
+    return;
+  }
+
+  elements.positionsList.innerHTML = positions
+    .map((position) => {
+      const rationale = position.entryRationale || {};
+      const latestStructure = position.latestMarketStructureSummary || rationale.marketStructure || {};
+      const latestCalendar = position.latestCalendarSummary || rationale.calendar || {};
+      const latestExchange = position.latestExchangeSummary || rationale.exchange || {};
+      const execution = position.entryExecutionAttribution || rationale.executionAttribution || {};
+      const session = rationale.session || {};
+      const drift = rationale.drift || {};
+      const selfHeal = rationale.selfHeal || {};
+      const marketSentiment = rationale.marketSentiment || {};
+      const volatility = rationale.volatility || {};
+      const signals = (rationale.topSignals || [])
+        .slice(0, 4)
+        .map((signal) => `<div class="mini-stat"><span class="kicker">${escapeHtml(signal.name)}</span><strong class="${toneClass(signal.contribution)}">${formatNumber(signal.contribution, 3)}</strong></div>`)
+        .join("");
+      const checks = (rationale.checks || [])
+        .slice(0, 6)
+        .map((check) => `<div class="mini-stat"><span class="kicker">${escapeHtml(check.label)}</span><strong class="${check.passed ? "positive" : "negative"}">${check.passed ? "Pass" : "Fail"}</strong><div class="meta">${escapeHtml(check.detail)}</div></div>`)
+        .join("");
+      const headlines = (rationale.headlines || [])
+        .slice(0, 4)
+        .map((headline) => `<div class="mini-stat"><span class="kicker">${escapeHtml(headline.source || "Nieuws")}</span><strong>${escapeHtml(headline.title)}</strong><div class="meta">${escapeHtml(headline.provider || "source")} | ${formatDate(headline.publishedAt)}</div></div>`)
+        .join("");
+      const bullishDrivers = renderDriverCards(rationale.bullishDrivers || [], "Geen bullish drivers gevonden.");
+      const bearishDrivers = renderDriverCards(rationale.bearishDrivers || [], "Geen bearish drivers gevonden.");
+      const officialNotices = renderDriverCards(rationale.officialNotices || [], "Geen officiele Binance notices.");
+      const calendarEvents = renderCalendarCards(rationale.calendarEvents || latestCalendar.items || [], "Geen komende events.");
+      const providerMeta = formatBreakdown(rationale.providerBreakdown || []);
+      const sourceMeta = formatBreakdown(rationale.sourceBreakdown || []);
+      const noticeMeta = formatBreakdown(rationale.announcementBreakdown || []);
+
+      return `
+        <article class="position-card">
+          <div class="card-top">
+            <div>
+              <div class="pill">${escapeHtml(position.symbol)} | ${escapeHtml(position.brokerMode.toUpperCase())}</div>
+              <h3>${escapeHtml(position.symbol)} positie</h3>
+              <p class="meta">Open sinds ${formatDate(position.entryAt)} | ${formatNumber(position.ageMinutes, 1)} min actief</p>
+            </div>
+            <div class="pill ${toneClass(position.unrealizedPnl)}">${formatMoney(position.unrealizedPnl)} | ${formatPct(position.unrealizedPnlPct, 2)}</div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Entry</span><strong>${formatNumber(position.entryPrice, 6)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Nu</span><strong>${formatNumber(position.currentPrice, 6)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Stop loss</span><strong>${formatNumber(position.stopLossPrice, 6)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Take profit</span><strong>${formatNumber(position.takeProfitPrice, 6)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Regime</span><strong>${escapeHtml(position.regimeAtEntry || "-")}</strong></div>
+            <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(position.executionPlan?.entryStyle || "-")}</strong></div>
+            <div class="mini-stat"><span class="kicker">Setup</span><strong>${escapeHtml(rationale.setupStyle || "-")}</strong></div>
+            <div class="mini-stat"><span class="kicker">Freshness</span><strong>${rationale.freshnessHours == null ? "-" : `${formatNumber(rationale.freshnessHours, 1)}u`}</strong></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Providers</span><strong>${rationale.providerDiversity || 0}</strong><div class="meta">${escapeHtml(providerMeta)}</div></div>
+            <div class="mini-stat"><span class="kicker">Bronnen</span><strong>${rationale.sourceDiversity || 0}</strong><div class="meta">${escapeHtml(sourceMeta)}</div></div>
+            <div class="mini-stat"><span class="kicker">Nieuws kwaliteit</span><strong>${formatNumber(rationale.sourceQualityScore || 0, 2)}</strong><div class="meta">rel ${formatNumber(rationale.reliabilityScore || 0, 2)}</div></div>
+            <div class="mini-stat"><span class="kicker">Social</span><strong>${rationale.socialCoverage || 0}</strong><div class="meta">sent ${formatPct(rationale.socialSentiment || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Sentiment / risk</span><strong>${formatPct(rationale.newsSentiment || 0, 1)} / ${formatPct(rationale.newsRisk || 0, 1)}</strong></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(latestStructure.fundingRate || 0, 6)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Basis</span><strong>${formatNumber(latestStructure.basisBps || 0, 2)} bps</strong></div>
+            <div class="mini-stat"><span class="kicker">OI 5m</span><strong>${formatPct(latestStructure.openInterestChangePct || 0, 2)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Liquidaties</span><strong>${latestStructure.liquidationCount || 0}</strong><div class="meta">${formatMoney(latestStructure.liquidationNotional || 0)}</div></div>
+            <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(rationale.orderBook?.bookPressure || 0, 2)}</strong><div class="meta">micro ${formatNumber(rationale.orderBook?.microPriceEdgeBps || 0, 2)} bps</div></div>
+            <div class="mini-stat"><span class="kicker">Pattern</span><strong>${escapeHtml(rationale.patterns?.dominantPattern || "none")}</strong><div class="meta">bull ${formatNumber(rationale.patterns?.bullishPatternScore || 0, 2)} / bear ${formatNumber(rationale.patterns?.bearishPatternScore || 0, 2)}</div></div>
+            <div class="mini-stat"><span class="kicker">Strategy</span><strong>${escapeHtml(rationale.strategy?.strategyLabel || position.strategyAtEntry || "-")}</strong><div class="meta">fit ${formatPct(rationale.strategy?.fitScore || 0, 1)} | conf ${formatPct(rationale.strategy?.confidence || 0, 1)}</div></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Strategy gap</span><strong>${formatPct(rationale.strategy?.agreementGap || 0, 1)}</strong><div class="meta">${escapeHtml(rationale.strategy?.setupStyle || "-")}</div></div>
+            <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(rationale.transformer?.probability || 0, 1)}</strong><div class="meta">conf ${formatPct(rationale.transformer?.confidence || 0, 1)} | ${escapeHtml(rationale.transformer?.dominantHead || "trend")}</div></div>
+            <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(rationale.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(rationale.committee?.agreement || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Vetoes</span><strong>${(rationale.committee?.vetoes || []).length}</strong><div class="meta">net ${formatNumber(rationale.committee?.netScore || 0, 3)}</div></div>
+            <div class="mini-stat"><span class="kicker">RL action</span><strong>${escapeHtml(rationale.rlPolicy?.action || "balanced")}</strong><div class="meta">reward ${formatNumber(rationale.rlPolicy?.expectedReward || 0, 3)}</div></div>
+            <div class="mini-stat"><span class="kicker">RL size</span><strong>${formatNumber(rationale.rlPolicy?.sizeMultiplier || 1, 2)}x</strong><div class="meta">pat ${formatNumber(rationale.rlPolicy?.patienceMultiplier || 1, 2)}x</div></div>
+            <div class="mini-stat"><span class="kicker">RL bucket</span><strong>${escapeHtml(rationale.rlPolicy?.bucket || "-")}</strong><div class="meta">boost ${formatNumber(rationale.rlPolicy?.preferMakerBoost || 0, 2)}</div></div>
+            <div class="mini-stat"><span class="kicker">Exec impact</span><strong>${formatNumber(execution.expectedImpactBps || 0, 2)} bps</strong><div class="meta">slip ${formatNumber(execution.realizedTouchSlippageBps || 0, 2)} bps</div></div>
+            <div class="mini-stat"><span class="kicker">Maker / queue</span><strong>${formatPct(execution.makerFillRatio || 0, 1)}</strong><div class="meta">queue ${formatNumber(execution.queueImbalance || 0, 2)} | depth ${formatNumber(execution.depthConfidence || 0, 2)}</div></div>
+            <div class="mini-stat"><span class="kicker">Pegged / STP</span><strong>${execution.peggedOrder ? "Ja" : "Nee"}</strong><div class="meta">stp ${(execution.preventedMatchCount || 0)} | qty ${formatNumber(execution.preventedQuantity || 0, 6)}</div></div>
+            <div class="mini-stat"><span class="kicker">Amend / replace</span><strong>${(execution.amendmentCount || 0)}</strong><div class="meta">keep ${(execution.keepPriorityCount || 0)} | repl ${(execution.cancelReplaceCount || 0)}</div></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Macro sentiment</span><strong>${marketSentiment.fearGreedValue == null ? "-" : `${formatNumber(marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(marketSentiment.fearGreedClassification || "fear/greed")} | dom ${marketSentiment.btcDominancePct == null ? "-" : `${formatNumber(marketSentiment.btcDominancePct, 1)}%`}</div></div>
+            <div class="mini-stat"><span class="kicker">Options vol</span><strong>${volatility.marketOptionIv == null ? "-" : `${formatNumber(volatility.marketOptionIv, 1)}`}</strong><div class="meta">${escapeHtml(volatility.regime || "unknown")} | prem ${formatNumber(volatility.ivPremium || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(session.sessionLabel || session.session || "-")}</strong><div class="meta">${session.utcHour == null ? "-" : `${formatNumber(session.utcHour, 2)} UTC`} | ${escapeHtml(session.dayLabel || "-")}</div></div>
+            <div class="mini-stat"><span class="kicker">Funding window</span><strong>${session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 2)}u`}</strong><div class="meta">liq ${formatPct(session.lowLiquidityScore || 0, 1)} | risk ${formatPct(session.riskScore || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Drift</span><strong>${escapeHtml((drift.status || "normal").toUpperCase())}</strong><div class="meta">sev ${formatPct(drift.severity || 0, 1)} | conf ${formatPct(drift.averageCandidateConfidence || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((selfHeal.mode || "normal").replaceAll("_", " "))}</strong><div class="meta">thr ${formatPct(selfHeal.thresholdPenalty || 0, 1)} | size ${formatNumber(selfHeal.sizeMultiplier || 1, 2)}x</div></div>
+          </div>
+          <div>
+            <p class="kicker">Waarom geopend</p>
+            <p>${escapeHtml(rationale.summary || "Geen rationale beschikbaar.")}</p>
+          </div>
+          <div class="note-line"><span class="kicker">Regime-redenen</span><div class="tag-list">${renderTagList(rationale.regimeReasons || [], "Geen regime-redenen")}</div></div>
+          <div class="note-line"><span class="kicker">Execution-notes</span><div class="tag-list">${renderTagList(rationale.executionReasons || [], "Geen execution-notes")}</div></div>
+          <div class="note-line"><span class="kicker">Execution-attributie</span><div class="tag-list">${renderTagList(execution.notes || [], formatExecutionMeta(execution))}</div></div>
+          <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList(rationale.blockerReasons || [], "Geen blokkerende redenen")}</div></div>
+          <div class="note-line"><span class="kicker">Strategy redenen</span><div class="tag-list">${renderTagList(rationale.strategy?.reasons || [], "Geen strategy-redenen")}</div></div>
+          <div class="note-line"><span class="kicker">Strategy blockers</span><div class="tag-list">${renderTagList(rationale.strategy?.blockers || [], "Geen strategy-blockers")}</div></div>
+          <div class="note-line"><span class="kicker">Committee vetoes</span><div class="tag-list">${renderTagList((rationale.committee?.vetoes || []).map((item) => item.label || item.id), "Geen vetoes")}</div></div>
+          <div class="note-line"><span class="kicker">RL redenen</span><div class="tag-list">${renderTagList(rationale.rlPolicy?.reasons || [], "Geen RL-notities")}</div></div>
+          <div class="note-line"><span class="kicker">Kalender</span><div class="tag-list">${renderTagList((latestCalendar.blockerReasons || []).concat(rationale.calendarBlockers || []), "Geen kalender-blockers")}</div></div>
+          <div class="note-line"><span class="kicker">Macro</span><div class="tag-list">${renderTagList((rationale.marketSentiment?.reasons || []).concat(rationale.volatility?.reasons || []), "Geen macro/vol-context")}</div></div>
+          <div class="note-line"><span class="kicker">Session</span><div class="tag-list">${renderTagList((rationale.sessionReasons || []).concat(rationale.sessionBlockers || []), "Geen session-notities")}</div></div>
+          <div class="note-line"><span class="kicker">Drift</span><div class="tag-list">${renderTagList((rationale.driftReasons || []).concat(rationale.driftBlockers || []), "Geen drift-waarschuwingen")}</div></div>
+          <div class="note-line"><span class="kicker">Self-heal</span><div class="tag-list">${renderTagList(rationale.selfHealIssues || [], "Self-heal normaal")}</div></div>
+          <div class="note-line"><span class="kicker">Official notices</span><div class="tag-list">${renderTagList((rationale.announcementBreakdown || []).map((item) => `${item.name}:${item.count}`), noticeMeta || "Geen officiele notices")}</div></div>
+          <div class="signal-list">${signals || `<div class="empty">Geen top-signalen beschikbaar.</div>`}</div>
+          <div class="driver-grid">
+            <div>
+              <p class="kicker">Bullish drivers</p>
+              <div class="headline-list">${bullishDrivers}</div>
+            </div>
+            <div>
+              <p class="kicker">Bearish drivers</p>
+              <div class="headline-list">${bearishDrivers}</div>
+            </div>
+          </div>
+          <div class="driver-grid">
+            <div>
+              <p class="kicker">Officiele notices</p>
+              <div class="headline-list">${officialNotices}</div>
+            </div>
+            <div>
+              <p class="kicker">Kalender-events</p>
+              <div class="headline-list">${calendarEvents}</div>
+            </div>
+          </div>
+          <div class="driver-grid">
+            <div>
+              <p class="kicker">Strategy ranking</p>
+              <div class="headline-list">${renderStrategyCards(rationale.strategy?.strategies || [], "Geen strategy-ranking.")}</div>
+            </div>
+            <div>
+              <p class="kicker">Bullish agents</p>
+              <div class="headline-list">${renderAgentCards(rationale.committee?.bullishAgents || [], "Geen bullish agent-confirmaties.")}</div>
+            </div>
+          </div>
+          <div class="driver-grid">
+            <div>
+              <p class="kicker">Transformer attention</p>
+              <div class="headline-list">${renderAttentionCards(rationale.transformer?.attention || [], "Geen transformer attention.")}</div>
+            </div>
+            <div>
+              <p class="kicker">Strategy backup</p>
+              <div class="headline-list">${renderStrategyCards((rationale.strategy?.strategies || []).slice(1), "Geen alternatieve strategieen.")}</div>
+            </div>
+          </div>
+          <div class="check-list">${checks || `<div class="empty">Geen checks beschikbaar.</div>`}</div>
+          <div class="headline-list">${headlines || `<div class="empty">Geen headlines beschikbaar.</div>`}</div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderDecisions(snapshot) {
+  const decisions = snapshot.dashboard.topDecisions || [];
+  const filtered = decisions.filter((decision) => {
+    const matchesQuery = !decisionSearchQuery || `${decision.symbol || ""}`.toLowerCase().includes(decisionSearchQuery);
+    const matchesMode = !decisionAllowedOnly || decision.allow;
+    return matchesQuery && matchesMode;
+  });
+
+  if (elements.decisionMeta) {
+    elements.decisionMeta.textContent = `${filtered.length}/${decisions.length} setups zichtbaar`;
+  }
+
+  if (!filtered.length) {
+    elements.decisionsList.innerHTML = `<div class="empty">Geen setups voor deze filter.</div>`;
+    return;
+  }
+
+  elements.decisionsList.innerHTML = filtered
+    .slice(0, 12)
+    .map((decision) => {
+      const edge = Number(decision.edgeToThreshold ?? (decision.probability || 0) - (decision.threshold || 0));
+      const verdictTone = decision.allow ? "positive" : edge < 0 ? "negative" : "neutral";
+      const verdictLabel = decision.allow
+        ? `${formatSignedPct(edge, 1)} boven gate`
+        : `${formatSignedPct(edge, 1)} vs gate`;
+      const leadBull = decision.bullishSignals?.[0]?.name || decision.bullishDrivers?.[0]?.title || "geen sterke bull-driver";
+      const leadBear = decision.blockerReasons?.[0] || decision.bearishSignals?.[0]?.name || decision.bearishDrivers?.[0]?.title || "geen grote blocker";
+      const thresholdGap = Math.max(0, (decision.threshold || 0) - (decision.probability || 0));
+      const whyText = decision.allow
+        ? `Doorgelaten omdat model, strategy en committee samen genoeg edge gaven.`
+        : `Geblokkeerd omdat de gate nog ${formatPct(thresholdGap, 1)} te hoog lag of een risk-veto actief was.`;
+      return `
+        <article class="decision-card">
+          <div class="card-top">
+            <div>
+              <div class="reason-pill ${decision.allow ? "" : "blocked"}">${decision.allow ? "Trade toegestaan" : "Geblokkeerd"}</div>
+              <h3>${escapeHtml(decision.symbol)}</h3>
+              <p class="meta">${escapeHtml(whyText)}</p>
+            </div>
+            <div class="pill ${verdictTone}">Model ${formatPct(decision.probability, 1)}</div>
+          </div>
+          <div class="mini-grid compact-grid">
+            <div class="mini-stat"><span class="kicker">Gate</span><strong>${formatPct(decision.threshold, 1)}</strong><div class="meta">base ${formatPct(decision.baseThreshold || decision.threshold || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Edge</span><strong class="${verdictTone}">${verdictLabel}</strong><div class="meta">rank ${formatNumber(decision.rankScore || 0, 3)}</div></div>
+            <div class="mini-stat"><span class="kicker">Setup</span><strong>${escapeHtml(decision.setupStyle || "-")}</strong><div class="meta">${escapeHtml(decision.strategy?.strategyLabel || decision.strategySummary?.strategyLabel || "-")}</div></div>
+            <div class="mini-stat"><span class="kicker">Waarom hoog</span><strong>${escapeHtml(normalizeReasonLabel(leadBull))}</strong><div class="meta">top positive driver</div></div>
+            <div class="mini-stat"><span class="kicker">Waarom niet</span><strong>${escapeHtml(normalizeReasonLabel(leadBear))}</strong><div class="meta">top blocker</div></div>
+          </div>
+          <p>${escapeHtml(decision.summary || "Geen samenvatting beschikbaar.")}</p>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Confidence</span><strong>${formatPct(decision.confidence, 1)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Calibration</span><strong>${formatPct(decision.calibrationConfidence, 1)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Regime</span><strong>${escapeHtml(decision.regime || "-")}</strong></div>
+            <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(decision.executionStyle || "market")}</strong></div>
+            <div class="mini-stat"><span class="kicker">Providers</span><strong>${decision.providerDiversity || 0}</strong><div class="meta">${escapeHtml(formatBreakdown(decision.providerBreakdown || []))}</div></div>
+            <div class="mini-stat"><span class="kicker">Freshness</span><strong>${decision.freshnessHours == null ? "-" : `${formatNumber(decision.freshnessHours, 1)}u`}</strong></div>
+            <div class="mini-stat"><span class="kicker">Social</span><strong>${decision.socialCoverage || 0}</strong><div class="meta">sent ${formatPct(decision.socialSentiment || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Nieuws risk</span><strong>${formatPct(decision.newsRisk, 1)}</strong></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(decision.marketStructure?.fundingRate || 0, 6)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Basis</span><strong>${formatNumber(decision.marketStructure?.basisBps || 0, 2)} bps</strong></div>
+            <div class="mini-stat"><span class="kicker">OI 5m</span><strong>${formatPct(decision.marketStructure?.openInterestChangePct || 0, 2)}</strong></div>
+            <div class="mini-stat"><span class="kicker">Long/short</span><strong>${formatNumber(decision.marketStructure?.globalLongShortRatio || 1, 2)}</strong><div class="meta">top ${formatNumber(decision.marketStructure?.topTraderLongShortRatio || 1, 2)} | lev ${formatNumber(decision.marketStructure?.leverageBuildupScore || 0, 2)}</div></div>
+            <div class="mini-stat"><span class="kicker">Liquidaties</span><strong>${decision.marketStructure?.liquidationCount || 0}</strong><div class="meta">${formatMoney(decision.marketStructure?.liquidationNotional || 0)}</div></div>
+            <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(decision.orderBook?.bookPressure || 0, 2)}</strong><div class="meta">micro ${formatNumber(decision.orderBook?.microPriceEdgeBps || 0, 2)} bps</div></div>
+            <div class="mini-stat"><span class="kicker">Pattern</span><strong>${escapeHtml(decision.patterns?.dominantPattern || "none")}</strong><div class="meta">bull ${formatNumber(decision.patterns?.bullishPatternScore || 0, 2)} / bear ${formatNumber(decision.patterns?.bearishPatternScore || 0, 2)}</div></div>
+            <div class="mini-stat"><span class="kicker">Macro</span><strong>${decision.marketSentiment?.fearGreedValue == null ? "-" : `${formatNumber(decision.marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(decision.marketSentiment?.fearGreedClassification || "fear/greed")} | dom ${decision.marketSentiment?.btcDominancePct == null ? "-" : `${formatNumber(decision.marketSentiment.btcDominancePct, 1)}%`}</div></div>
+            <div class="mini-stat"><span class="kicker">Options vol</span><strong>${decision.volatility?.marketOptionIv == null ? "-" : `${formatNumber(decision.volatility.marketOptionIv, 1)}`}</strong><div class="meta">${escapeHtml(decision.volatility?.regime || "unknown")} | prem ${formatNumber(decision.volatility?.ivPremium || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Strategy</span><strong>${escapeHtml(decision.strategy?.strategyLabel || decision.strategySummary?.strategyLabel || "-")}</strong><div class="meta">fit ${formatPct((decision.strategy?.fitScore || decision.strategySummary?.fitScore || 0), 1)} | conf ${formatPct((decision.strategy?.confidence || decision.strategySummary?.confidence || 0), 1)}</div></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(decision.transformer?.probability || 0, 1)}</strong><div class="meta">conf ${formatPct(decision.transformer?.confidence || 0, 1)} | ${escapeHtml(decision.transformer?.dominantHead || "trend")}</div></div>
+            <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(decision.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(decision.committee?.agreement || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Vetoes</span><strong>${(decision.committee?.vetoes || []).length}</strong><div class="meta">net ${formatNumber(decision.committee?.netScore || 0, 3)}</div></div>
+            <div class="mini-stat"><span class="kicker">RL action</span><strong>${escapeHtml(decision.rlPolicy?.action || "balanced")}</strong><div class="meta">reward ${formatNumber(decision.rlPolicy?.expectedReward || 0, 3)}</div></div>
+            <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(decision.session?.sessionLabel || decision.session?.session || "-")}</strong><div class="meta">${decision.session?.utcHour == null ? "-" : `${formatNumber(decision.session.utcHour, 2)} UTC`} | ${escapeHtml(decision.session?.dayLabel || "-")}</div></div>
+            <div class="mini-stat"><span class="kicker">Drift</span><strong>${escapeHtml((decision.drift?.status || "normal").toUpperCase())}</strong><div class="meta">sev ${formatPct(decision.drift?.severity || 0, 1)} | feature ${formatPct(decision.drift?.featureDriftScore || 0, 1)}</div></div>
+            <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((decision.selfHeal?.mode || "normal").replaceAll("_", " "))}</strong><div class="meta">thr ${formatPct(decision.selfHeal?.thresholdPenalty || 0, 1)} | size ${formatNumber(decision.selfHeal?.sizeMultiplier || 1, 2)}x</div></div>
+          </div>
+          <div class="note-line"><span class="kicker">Trade gates</span><div class="tag-list">${renderTagList([`model ${formatPct(decision.probability || 0, 1)}`, `gate ${formatPct(decision.threshold || 0, 1)}`, `edge ${formatSignedPct(edge || 0, 1)}`], "Geen gates")}</div></div>
+          <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList(decision.blockerReasons || [], "Geen blokkerende redenen")}</div></div>
+          <div class="note-line"><span class="kicker">Top positieve signalen</span><div class="tag-list">${renderTagList((decision.bullishSignals || []).map((item) => `${item.name}:${formatNumber(item.contribution || 0, 2)}`), "Geen bullish signalen")}</div></div>
+          <div class="note-line"><span class="kicker">Top negatieve signalen</span><div class="tag-list">${renderTagList((decision.bearishSignals || []).map((item) => `${item.name}:${formatNumber(item.contribution || 0, 2)}`), "Geen bearish signalen")}</div></div>
+          <div class="note-line"><span class="kicker">Execution</span><div class="tag-list">${renderTagList(decision.executionReasons || [], "Geen execution-notes")}</div></div>
+          <div class="note-line"><span class="kicker">Execution-attributie</span><div class="tag-list">${renderTagList(decision.executionAttribution?.notes || [], formatExecutionMeta(decision.executionAttribution || {}))}</div></div>
+          <div class="note-line"><span class="kicker">Macro + vol</span><div class="tag-list">${renderTagList((decision.marketSentiment?.reasons || []).concat(decision.volatility?.reasons || []), "Geen macro/vol-signalen")}</div></div>
+          <div class="note-line"><span class="kicker">Strategy redenen</span><div class="tag-list">${renderTagList(decision.strategy?.reasons || decision.strategySummary?.reasons || [], "Geen strategy-redenen")}</div></div>
+          <div class="note-line"><span class="kicker">Strategy blockers</span><div class="tag-list">${renderTagList(decision.strategy?.blockers || decision.strategySummary?.blockers || [], "Geen strategy-blockers")}</div></div>
+          <div class="note-line"><span class="kicker">Committee vetoes</span><div class="tag-list">${renderTagList((decision.committee?.vetoes || []).map((item) => item.label || item.id), "Geen vetoes")}</div></div>
+          <div class="note-line"><span class="kicker">RL redenen</span><div class="tag-list">${renderTagList(decision.rlPolicy?.reasons || [], "Geen RL-notities")}</div></div>
+          <div class="note-line"><span class="kicker">Market structure</span><div class="tag-list">${renderTagList(decision.marketStructure?.reasons || [], "Geen perp-signalen")}</div></div>
+          <div class="note-line"><span class="kicker">Kalender-blockers</span><div class="tag-list">${renderTagList(decision.calendar?.blockerReasons || [], "Geen kalender-blockers")}</div></div>
+          <div class="note-line"><span class="kicker">Session</span><div class="tag-list">${renderTagList((decision.sessionReasons || []).concat(decision.sessionBlockers || []), "Geen session-notities")}</div></div>
+          <div class="note-line"><span class="kicker">Drift</span><div class="tag-list">${renderTagList((decision.driftReasons || []).concat(decision.driftBlockers || []), "Geen drift-waarschuwingen")}</div></div>
+          <div class="note-line"><span class="kicker">Self-heal</span><div class="tag-list">${renderTagList(decision.selfHealIssues || [], "Self-heal normaal")}</div></div>
+          <div class="driver-grid">
+            <div>
+              <p class="kicker">Bullish drivers</p>
+              <div class="headline-list">${renderDriverCards(decision.bullishDrivers || [], "Geen bullish drivers.")}</div>
+            </div>
+            <div>
+              <p class="kicker">Bearish drivers</p>
+              <div class="headline-list">${renderDriverCards(decision.bearishDrivers || [], "Geen bearish drivers.")}</div>
+            </div>
+          </div>
+          <div class="driver-grid">
+            <div>
+              <p class="kicker">Officiele notices</p>
+              <div class="headline-list">${renderDriverCards(decision.officialNotices || [], "Geen officiele notices.")}</div>
+            </div>
+            <div>
+              <p class="kicker">Komende events</p>
+              <div class="headline-list">${renderCalendarCards(decision.calendarEvents || [], "Geen komende events.")}</div>
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+function renderTrades(snapshot) {
+  const trades = snapshot.dashboard.report.recentTrades || [];
+  if (!trades.length) {
+    elements.tradesBody.innerHTML = `<tr><td colspan="8" class="empty">Nog geen gesloten trades.</td></tr>`;
+    return;
+  }
+
+  elements.tradesBody.innerHTML = trades
+    .map(
+      (trade) => `
+        <tr>
+          <td>${escapeHtml(trade.symbol)}</td>
+          <td>${formatDate(trade.entryAt)}</td>
+          <td>${formatDate(trade.exitAt)}</td>
+          <td>${escapeHtml(trade.entryExecutionAttribution?.entryStyle || "-")}</td>
+          <td>${escapeHtml(trade.reason || "-")}</td>
+          <td class="${toneClass(trade.pnlQuote)}">${formatMoney(trade.pnlQuote)}</td>
+          <td class="${toneClass(trade.netPnlPct)}">${formatPct(trade.netPnlPct, 2)}</td>
+          <td>${escapeHtml(formatExecutionMeta(trade.exitExecutionAttribution?.entryStyle ? trade.exitExecutionAttribution : trade.entryExecutionAttribution))}</td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+function renderTextList(items = []) {
+  return items.length ? items.join(" | ") : "Geen";
+}
+function renderIntelligence(snapshot) {
+  const calibration = snapshot.dashboard.ai?.calibration || {};
+  const deployment = snapshot.dashboard.ai?.deployment || {};
+  const stream = snapshot.dashboard.stream || {};
+  const portfolio = snapshot.dashboard.portfolio || {};
+  const exchange = snapshot.dashboard.exchange || {};
+  const marketStructure = snapshot.dashboard.marketStructure || {};
+  const calendar = snapshot.dashboard.calendar || {};
+  const safety = snapshot.dashboard.safety || {};
+  const session = safety.session || {};
+  const drift = safety.drift || {};
+  const selfHeal = safety.selfHeal || {};
+  const stableSnapshots = safety.stableModelSnapshots || [];
+  const topCluster = (portfolio.clusters || [])[0];
+  const topSector = (portfolio.sectors || [])[0];
+  const topDecision = (snapshot.dashboard.topDecisions || [])[0] || {};
+
+  const transformer = snapshot.dashboard.ai?.transformer || {};
+  const rlPolicy = snapshot.dashboard.ai?.rlPolicy || {};
+  const committee = snapshot.dashboard.ai?.committee || {};
+  const strategy = snapshot.dashboard.ai?.strategy || {};
+  const optimizer = snapshot.dashboard.ai?.optimizer || {};
+  const executionReport = snapshot.dashboard.report?.executionSummary || {};
+  const latestStableSnapshot = stableSnapshots[0] || {};
+  const topPolicy = (rlPolicy.topPolicies || [])[0] || {};
+  const adaptiveGate = topDecision.optimizerApplied || {};
+  const adaptiveThreshold = adaptiveGate.effectiveThreshold ?? topDecision.threshold ?? 0;
+  const adaptiveBaseThreshold = adaptiveGate.baseThreshold ?? topDecision.baseThreshold ?? adaptiveThreshold;
+  const adaptiveStrategyFloor = adaptiveGate.strategyConfidenceFloor ?? topDecision.strategyConfidenceFloor ?? strategy.confidence ?? 0;
+
+  elements.aiSummary.innerHTML = [
+    insightCard("Actief model", (deployment.active || "champion").toUpperCase(), `${deployment.shadowTradeCount || 0} shadow trades`),
+    insightCard("Calibration", `${formatNumber((calibration.expectedCalibrationError || 0) * 100, 1)}% ECE`, `${calibration.observations || 0} observaties`, (calibration.expectedCalibrationError || 0) < 0.1 ? "positive" : "neutral"),
+    insightCard("Transformer", transformer.averageError == null ? "Nog leeg" : `${formatNumber((transformer.averageError || 0) * 100, 1)}% fout`, `${transformer.observations || 0} learns`, transformer.averageError != null && transformer.averageError < 0.2 ? "positive" : "neutral"),
+    insightCard("Committee", `${formatPct(committee.agreement || 0, 1)} agree`, `net ${formatNumber(committee.netScore || 0, 3)}`, (committee.agreement || 0) > 0.5 ? "positive" : "neutral"),
+    insightCard("RL policy", topPolicy.action || "-", topPolicy.bucket ? `${topPolicy.bucket} | ${formatNumber(topPolicy.value || 0, 3)}` : "Nog geen policy-data", (rlPolicy.averageReward || 0) > 0 ? "positive" : (rlPolicy.averageReward || 0) < 0 ? "negative" : "neutral"),
+    insightCard("Strategy", strategy.strategyLabel || topDecision.strategy?.strategyLabel || "-", `fit ${formatPct(strategy.fitScore || topDecision.strategy?.fitScore || 0, 1)} | conf ${formatPct(strategy.confidence || topDecision.strategy?.confidence || 0, 1)}`, (strategy.fitScore || topDecision.strategy?.fitScore || 0) > 0.55 ? "positive" : "neutral"),
+    insightCard("Promoties", `${(deployment.promotions || []).length}`, deployment.lastPromotionAt ? `Laatste ${formatDate(deployment.lastPromotionAt)}` : "Nog geen promoties")
+  ].join("");
+
+  elements.optimizerSummary.innerHTML = [
+    insightCard("Optimizer sample", `${optimizer.sampleSize || 0} trades`, `confidence ${formatPct(optimizer.sampleConfidence || 0, 1)}`),
+    insightCard("Adaptive gate", `${formatPct(adaptiveThreshold || 0, 1)}`, `base ${formatPct(adaptiveBaseThreshold || 0, 1)} | delta ${formatPct(adaptiveGate.thresholdAdjustment || 0, 1)}`, (adaptiveGate.thresholdAdjustment || 0) >= 0 ? "positive" : (adaptiveGate.thresholdAdjustment || 0) < 0 ? "negative" : "neutral"),
+    insightCard("Strategy floor", `${formatPct(adaptiveStrategyFloor || 0, 1)}`, `family ${formatPct(adaptiveGate.familyConfidenceTilt || 0, 1)} | strategy ${formatPct(adaptiveGate.strategyConfidenceTilt || 0, 1)}`, (adaptiveGate.strategyConfidenceAdjustment || 0) >= 0 ? "positive" : (adaptiveGate.strategyConfidenceAdjustment || 0) < 0 ? "negative" : "neutral"),
+    insightCard("Top strategy", optimizer.topStrategies?.[0]?.label || "-", optimizer.topStrategies?.[0] ? `${formatPct(optimizer.topStrategies[0].winRate || 0, 1)} win | ${optimizer.topStrategies[0].tradeCount} trades` : "Nog geen optimizer-history"),
+    insightCard("Top family", optimizer.topFamilies?.[0]?.label || "-", optimizer.topFamilies?.[0] ? `${formatPct(optimizer.topFamilies[0].winRate || 0, 1)} win | ${optimizer.topFamilies[0].tradeCount} trades` : "Nog geen family-prior"),
+    insightCard("Global tilts", `thr ${formatPct(optimizer.thresholdTilt || 0, 1)}`, `conf ${formatPct(optimizer.confidenceTilt || 0, 1)}`, (optimizer.thresholdTilt || 0) >= 0 ? "positive" : (optimizer.thresholdTilt || 0) < 0 ? "negative" : "neutral")
+  ].join("");
+
+  elements.streamSummary.innerHTML = [
+    insightCard("Market stream", stream.publicStreamConnected ? "Verbonden" : "Niet verbonden", stream.lastPublicMessageAt ? `Laatste tick ${formatDate(stream.lastPublicMessageAt)}` : "Nog geen tick", stream.publicStreamConnected ? "positive" : "negative"),
+    insightCard("Liquidation stream", stream.futuresStreamConnected ? "Verbonden" : "Niet verbonden", stream.lastFuturesMessageAt ? `Laatste liquidation ${formatDate(stream.lastFuturesMessageAt)}` : "Nog geen liquidation-tick", stream.futuresStreamConnected ? "positive" : "neutral"),
+    insightCard("User stream", stream.userStreamConnected ? "Verbonden" : "Inactief", stream.lastUserMessageAt ? `Laatste event ${formatDate(stream.lastUserMessageAt)}` : "Geen account-events", stream.userStreamConnected ? "positive" : "neutral")
+  ].join("");
+
+  elements.executionSummary.innerHTML = [
+    insightCard("Local book", `${stream.localBook?.healthySymbols || 0}/${stream.localBook?.trackedSymbols || 0}`, `conf ${formatNumber(stream.localBook?.averageDepthConfidence || 0, 2)} | resync ${stream.localBook?.totalResyncs || 0}`, (stream.localBook?.healthySymbols || 0) > 0 ? "positive" : "neutral"),
+    insightCard("Entry slippage", `${formatNumber(executionReport.avgEntryTouchSlippageBps || 0, 2)} bps`, `exit ${formatNumber(executionReport.avgExitTouchSlippageBps || 0, 2)} bps`, (executionReport.avgEntryTouchSlippageBps || 0) <= 1.5 ? "positive" : "neutral"),
+    insightCard("Maker ratio", `${formatPct(executionReport.avgMakerFillRatio || 0, 1)}`, `${executionReport.peggedCount || 0} pegged fills`, (executionReport.avgMakerFillRatio || 0) >= 0.35 ? "positive" : "neutral"),
+    insightCard("STP / SOR", `${executionReport.preventedMatchCount || 0} matches`, `qty ${formatNumber(executionReport.totalPreventedQuantity || 0, 6)} | sor ${executionReport.sorCount || 0}`, (executionReport.preventedMatchCount || 0) === 0 ? "positive" : "neutral"),
+    insightCard("Top style", executionReport.styles?.[0]?.style || "-", executionReport.styles?.[0] ? `${executionReport.styles[0].tradeCount} trades | ${formatMoney(executionReport.styles[0].realizedPnl || 0)}` : "Nog geen execution-history"),
+    insightCard("Style slip", executionReport.styles?.[0] ? `${formatNumber(executionReport.styles[0].avgEntryTouchSlippageBps || 0, 2)} bps` : "-", executionReport.styles?.[0] ? `maker ${formatPct(executionReport.styles[0].avgMakerFillRatio || 0, 1)}` : "Nog geen style-stats")
+  ].join("");
+
+  elements.portfolioSummary.innerHTML = [
+    insightCard("Top cluster", topCluster ? topCluster.name : "-", topCluster ? formatMoney(topCluster.exposure) : "Geen exposure"),
+    insightCard("Top sector", topSector ? topSector.name : "-", topSector ? formatMoney(topSector.exposure) : "Geen exposure"),
+    insightCard("Open clusters", `${(portfolio.clusters || []).length}`, `${(portfolio.sectors || []).length} sectoren actief`)
+  ].join("");
+
+  elements.newsSummary.innerHTML = [
+    insightCard("Nieuws mesh", `${topDecision.providerDiversity || 0} providers`, topDecision.providerBreakdown ? formatBreakdown(topDecision.providerBreakdown) : "Nog geen bronverdeling"),
+    insightCard("Dominant event", topDecision.dominantEventType || "-", topDecision.sourceBreakdown ? formatBreakdown(topDecision.sourceBreakdown) : "Nog geen bronverdeling"),
+    insightCard("Freshness", topDecision.freshnessHours == null ? "-" : `${formatNumber(topDecision.freshnessHours, 1)} uur`, topDecision.sourceQualityScore == null ? "Nog geen nieuwsdata" : `kwaliteit ${formatNumber(topDecision.sourceQualityScore || 0, 2)} | rel ${formatNumber(topDecision.reliabilityScore || 0, 2)}`)
+  ].join("");
+
+  elements.marketStructureSummary.innerHTML = [
+    insightCard("Funding", `${formatNumber(marketStructure.fundingRate || 0, 6)}`, marketStructure.nextFundingTime ? `Next funding ${formatDate(marketStructure.nextFundingTime)}` : "Nog geen funding-data", toneClass(-(marketStructure.fundingRate || 0))),
+    insightCard("Basis", `${formatNumber(marketStructure.basisBps || 0, 2)} bps`, marketStructure.reasons ? renderTextList(marketStructure.reasons) : "Nog geen basis-signalen"),
+    insightCard("Liquidaties", `${marketStructure.liquidationCount || 0}`, `${formatMoney(marketStructure.liquidationNotional || 0)} | risk ${formatNumber(marketStructure.riskScore || 0, 2)}`)
+  ].join("");
+
+  elements.volatilitySummary.innerHTML = [
+    insightCard("Option IV", volatility.marketOptionIv == null ? "-" : `${formatNumber(volatility.marketOptionIv, 1)}`, volatility.marketHistoricalVol == null ? "Geen Deribit context" : `hist ${formatNumber(volatility.marketHistoricalVol || 0, 1)} | prem ${formatNumber(volatility.ivPremium || 0, 1)}`, (volatility.riskScore || 0) >= 0.75 ? "negative" : (volatility.regime || "calm") === "calm" ? "positive" : "neutral"),
+    insightCard("Vol regime", volatility.regime || "unknown", volatility.coverage ? `${volatility.coverage} bronnen` : "Nog geen vol-feed", (volatility.regime || "unknown") === "stress" ? "negative" : (volatility.regime || "unknown") === "calm" ? "positive" : "neutral"),
+    insightCard("Vol risk", `${formatPct(volatility.riskScore || 0, 1)}`, renderTextList(volatility.reasons || []), (volatility.riskScore || 0) >= 0.75 ? "negative" : "neutral")
+  ].join("");
+
+  elements.calendarSummary.innerHTML = [
+    insightCard("Volgend event", calendar.nextEventType || "-", calendar.nextEventTitle || "Geen event in venster"),
+    insightCard("Proximity", calendar.proximityHours == null ? "-" : `${formatNumber(calendar.proximityHours, 1)}u`, `risk ${formatNumber(calendar.riskScore || 0, 2)} | urgency ${formatNumber(calendar.urgencyScore || 0, 2)}`),
+    insightCard("Exchange notices", `${exchange.coverage || 0}`, exchange.categoryCounts ? formatBreakdown(exchange.categoryCounts) : "Nog geen officiele notices")
+  ].join("");
+
+  elements.driftSummary.innerHTML = [
+    insightCard("Drift status", (drift.status || "normal").toUpperCase(), `sev ${formatPct(drift.severity || 0, 1)} | avg conf ${formatPct(drift.averageCandidateConfidence || 0, 1)}`, (drift.severity || 0) >= 0.82 ? "negative" : (drift.severity || 0) >= 0.45 ? "neutral" : "positive"),
+    insightCard("Feature drift", `${formatPct(drift.featureDriftScore || 0, 1)}`, `source ${formatPct(drift.sourceDriftScore || 0, 1)} | data ${formatPct(drift.dataScore || 0, 1)}`, (drift.featureDriftScore || 0) >= 0.55 ? "negative" : "positive"),
+    insightCard("Cal / exec drift", `ECE ${formatPct(drift.calibrationScore || 0, 1)}`, `slip ${formatPct(drift.executionScore || 0, 1)} | perf ${formatPct(drift.performanceScore || 0, 1)}`, (drift.calibrationScore || 0) >= 0.4 || (drift.executionScore || 0) >= 0.45 ? "negative" : "neutral")
+  ].join("");
+
+  elements.safetySummary.innerHTML = [
+    insightCard("Session", session.sessionLabel || session.session || "-", `${session.dayLabel || "-"} | ${session.utcHour == null ? "-" : `${formatNumber(session.utcHour, 2)} UTC`}`, session.lowLiquidity || session.inHardFundingBlock ? "negative" : session.isWeekend || session.inFundingCaution ? "neutral" : "positive"),
+    insightCard("Funding window", session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 2)}u`, `liq ${formatPct(session.lowLiquidityScore || 0, 1)} | risk ${formatPct(session.riskScore || 0, 1)}`, session.inHardFundingBlock ? "negative" : session.inFundingCaution ? "neutral" : "positive"),
+    insightCard("Self-heal", (selfHeal.mode || "normal").replaceAll("_", " "), selfHeal.cooldownUntil ? `cooldown tot ${formatDate(selfHeal.cooldownUntil)}` : selfHeal.reason || "Geen actieve cooldown", selfHeal.active ? (selfHeal.mode === "paper_fallback" || selfHeal.mode === "paused" ? "negative" : "neutral") : "positive"),
+    insightCard("Stable model", latestStableSnapshot.at ? `${latestStableSnapshot.tradeCount || 0} trades` : "Nog geen snapshot", latestStableSnapshot.at ? `${formatDate(latestStableSnapshot.at)} | win ${formatPct(latestStableSnapshot.winRate || 0, 1)}` : "Rollback backup nog leeg", latestStableSnapshot.at ? "positive" : "neutral")
+  ].join("");
+
+  const upcomingEvents = snapshot.dashboard.upcomingEvents || [];
+  elements.upcomingEventsList.innerHTML = upcomingEvents.length
+    ? upcomingEvents
+        .map((event) => `
+          <div class="event-row">
+            <div class="kicker">${escapeHtml(event.type || "event")}</div>
+            <div>${escapeHtml(event.title || event.nextEventTitle || "Kalender-event")}</div>
+            <div class="meta">${event.at ? formatDate(event.at) : "-"}</div>
+          </div>
+        `)
+        .join("")
+    : `<div class="empty">Geen komende events.</div>`;
+
+  const officialNotices = snapshot.dashboard.officialNotices || [];
+  elements.officialNoticeList.innerHTML = officialNotices.length
+    ? officialNotices
+        .map((item) => `
+          <div class="event-row">
+            <div class="kicker">${escapeHtml(item.dominantEventType || item.provider || "notice")}</div>
+            <div>${escapeHtml(item.title || "Official notice")}</div>
+            <div class="meta">${formatDate(item.publishedAt)}</div>
+          </div>
+        `)
+        .join("")
+    : `<div class="empty">Geen officiele Binance notices.</div>`;
+}
+
+function renderWeights(snapshot) {
+  const weights = snapshot.dashboard.modelWeights || [];
+  elements.weightsList.innerHTML = weights.length
+    ? weights
+        .map(
+          (weight) => `
+            <div class="weight-row">
+              <div class="kicker">${escapeHtml(weight.name)}</div>
+              <div class="metric-value ${toneClass(weight.weight)}">${formatNumber(weight.weight, 4)}</div>
+            </div>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen modelgewichten beschikbaar.</div>`;
+}
+
+function renderEvents(snapshot) {
+  const events = snapshot.dashboard.report.recentEvents || [];
+  elements.eventsList.innerHTML = events.length
+    ? events
+        .map(
+          (event) => `
+            <div class="event-row">
+              <div class="kicker">${escapeHtml(event.type || "event")}</div>
+              <div>${escapeHtml(event.symbol || event.error || event.rationale || "Runtime update")}</div>
+              <div class="meta">${formatDate(event.at)}</div>
+            </div>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen runtime-events.</div>`;
+}
+
+function renderTimelineRows(items = [], emptyText = "Nog geen timeline-data.") {
+  if (!items.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return `<div class="timeline">${items
+    .map(
+      (item) => `
+        <div class="timeline-row">
+          <div class="kicker">${escapeHtml(item.label || item.type || "moment")}</div>
+          <div class="meta">${formatDate(item.at)}</div>
+          <div>${escapeHtml(item.detail || item.reason || "-")}</div>
+        </div>
+      `
+    )
+    .join("")}</div>`;
+}
+
+function renderBlockedSetups(snapshot) {
+  const blocked = snapshot.dashboard.blockedSetups || [];
+  elements.blockedList.innerHTML = blocked.length
+    ? blocked
+        .map(
+          (item) => `
+            <article class="blocked-card">
+              <div class="section-head compact">
+                <div>
+                  <div class="kicker">${escapeHtml(item.symbol || "setup")}</div>
+                  <h3>${escapeHtml(item.strategy?.strategyLabel || item.setupStyle || "Geblokkeerde setup")}</h3>
+                </div>
+                <div class="reason-pill blocked">No trade</div>
+              </div>
+              <div class="driver-grid">
+                <div class="mini-stat"><span class="kicker">Score</span><strong>${formatPct(item.probability || 0, 1)}</strong><div class="meta">threshold ${formatPct(item.threshold || 0, 1)} | edge ${formatPct(item.edgeToThreshold || 0, 1)}</div></div>
+                <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(item.strategy?.familyLabel || item.strategy?.family || "-")}</strong><div class="meta">${escapeHtml(item.strategy?.strategyLabel || item.setupStyle || "-")} | fit ${formatPct(item.strategy?.fitScore || 0, 1)}</div></div>
+                <div class="mini-stat"><span class="kicker">Meta gate</span><strong>${formatPct(item.meta?.score || 0, 1)}</strong><div class="meta">budget ${formatPct(item.meta?.dailyBudgetFactor || 0, 1)} | canary ${item.meta?.canaryActive ? "aan" : "uit"}</div></div>
+              </div>
+              <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList(item.blockerReasons || item.reasons || [], "Geen blockers")}</div></div>
+              <div class="note-line"><span class="kicker">Regime</span><div class="tag-list">${renderTagList(item.regimeReasons || [], "Geen regime-redenen")}</div></div>
+              <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])], "Geen extra safety-flags")}</div></div>
+              <div class="meta">${escapeHtml(item.summary || "Geen samenvatting beschikbaar.")}</div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty">Geen recente geblokkeerde setups.</div>`;
+}
+
+function renderTradeReplays(snapshot) {
+  const replays = snapshot.dashboard.tradeReplays || [];
+  elements.replayList.innerHTML = replays.length
+    ? replays
+        .map(
+          (trade) => `
+            <article class="replay-card">
+              <div class="section-head compact">
+                <div>
+                  <div class="kicker">${escapeHtml(trade.symbol || "trade")}</div>
+                  <h3>${escapeHtml(trade.strategy || trade.regime || "Trade replay")}</h3>
+                </div>
+                <div class="metric-value ${toneClass(trade.pnlQuote || 0)}">${formatMoney(trade.pnlQuote || 0)}</div>
+              </div>
+              <div class="driver-grid">
+                <div class="mini-stat"><span class="kicker">Rendement</span><strong class="${toneClass(trade.netPnlPct || 0)}">${formatPct(trade.netPnlPct || 0, 2)}</strong><div class="meta">regime ${escapeHtml(trade.regime || "-")}</div></div>
+                <div class="mini-stat"><span class="kicker">Entry exec</span><strong>${escapeHtml(formatExecutionMeta(trade.entryExecution || {}))}</strong><div class="meta">open ${formatDate(trade.entryAt)}</div></div>
+                <div class="mini-stat"><span class="kicker">Exit exec</span><strong>${escapeHtml(formatExecutionMeta(trade.exitExecution || {}))}</strong><div class="meta">sluit ${formatDate(trade.exitAt)}</div></div>
+              </div>
+              <div class="note-line"><span class="kicker">Waarom open</span><div class="meta">${escapeHtml(trade.whyOpened || "Geen uitleg beschikbaar")}</div></div>
+              <div class="note-line"><span class="kicker">Waarom dicht</span><div class="tag-list">${renderTagList([trade.whyClosed].filter(Boolean), "Geen exit-reden")}</div></div>
+              <div class="note-line"><span class="kicker">Exit AI</span><div class="tag-list">${renderTagList([`${(trade.exitIntelligence?.action || "hold").replaceAll("_", " ")}`, ...(trade.exitIntelligence?.riskReasons || []), ...(trade.exitIntelligence?.positiveReasons || [])], "Geen exit-AI notities")}</div></div>
+              <div class="note-line"><span class="kicker">Blockers bij entry</span><div class="tag-list">${renderTagList(trade.blockersAtEntry || [], "Geen blockers op entry")}</div></div>
+              ${renderTimelineRows(trade.timeline || [], "Nog geen replay-timeline.")}
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen trade replays beschikbaar.</div>`;
+}
+
+function renderResearch(snapshot) {
+  const research = snapshot.dashboard.research;
+  if (!research?.generatedAt) {
+    elements.researchList.innerHTML = `<div class="empty">Nog geen research-run uitgevoerd.</div>`;
+    return;
+  }
+
+  const leadReport = (research.reports || [])[0] || {};
+  const leadExperiments = (leadReport.experiments || []).slice(0, 4).map((item) => ({
+    label: `${item.tradeCount || 0} trades`,
+    at: item.testEndAt || research.generatedAt,
+    detail: `${formatMoney(item.realizedPnl || 0)} | win ${formatPct(item.winRate || 0, 1)} | sharpe ${formatNumber(item.sharpe || 0, 2)}${item.strategyLeaders?.length ? ` | ${item.strategyLeaders.join(", ")}` : ""}`
+  }));
+
+  elements.researchList.innerHTML = `
+    <article class="research-card">
+      <div class="section-head compact">
+        <div>
+          <div class="kicker">Laatste research</div>
+          <h3>${escapeHtml(research.bestSymbol || leadReport.symbol || "Research lab")}</h3>
+        </div>
+        <div class="meta">${formatDate(research.generatedAt)}</div>
+      </div>
+      <div class="driver-grid">
+        <div class="mini-stat"><span class="kicker">Symbols</span><strong>${research.symbolCount || 0}</strong><div class="meta">beste ${escapeHtml(research.bestSymbol || "-")}</div></div>
+        <div class="mini-stat"><span class="kicker">Trades</span><strong>${research.totalTrades || 0}</strong><div class="meta">PnL ${formatMoney(research.realizedPnl || 0)}</div></div>
+        <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(research.averageWinRate || 0, 1)}</strong><div class="meta">Sharpe ${formatNumber(research.averageSharpe || 0, 2)}</div></div>
+      </div>
+      <div class="note-line"><span class="kicker">Lead report</span><div class="tag-list">${renderTagList((leadReport.experiments || []).flatMap((item) => item.strategyLeaders || []).slice(0, 6), "Nog geen strategy leaders")}</div></div>
+      ${renderTimelineRows(leadExperiments, "Nog geen experiment-vensters beschikbaar.")}
+    </article>
+  `;
+}
+
+function renderUniverse(snapshot) {
+  const universe = snapshot.dashboard.universe || {};
+  const selected = universe.selected || [];
+  elements.universeSummary.innerHTML = [
+    insightCard("Geselecteerd", `${universe.selectedCount || 0}/${universe.configuredSymbolCount || 0}`, `${formatPct(universe.selectionRate || 0, 1)} focus rate`, (universe.selectionRate || 0) >= 0.35 ? "positive" : "neutral"),
+    insightCard("Eligible", `${universe.eligibleCount || 0}`, universe.suggestions?.[0] || "Geen universe-opmerking"),
+    insightCard("Gem. score", `${formatPct(universe.averageScore || 0, 1)}`, selected[0] ? `${selected[0].symbol} leidt` : "Nog geen lead")
+  ].join("");
+
+  elements.universeList.innerHTML = selected.length
+    ? selected
+        .map(
+          (item) => `
+            <article class="universe-card">
+              <div class="section-head compact">
+                <div>
+                  <div class="kicker">${escapeHtml(item.symbol)}</div>
+                  <h3>${escapeHtml(item.health || "watch")}</h3>
+                </div>
+                <div class="pill ${healthTone(item.health)}">${formatPct(item.score || 0, 1)}</div>
+              </div>
+              <div class="mini-grid">
+                <div class="mini-stat"><span class="kicker">Spread</span><strong>${formatNumber(item.spreadBps || 0, 2)} bps</strong></div>
+                <div class="mini-stat"><span class="kicker">Depth</span><strong>${formatMoney(item.totalDepthNotional || 0)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Book conf</span><strong>${formatPct(item.depthConfidence || 0, 1)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Tape</span><strong>${item.recentTradeCount || 0}</strong><div class="meta">rv ${formatPct(item.realizedVolPct || 0, 2)}</div></div>
+              </div>
+              <div class="note-line"><span class="kicker">Waarom erin</span><div class="tag-list">${renderTagList(item.reasons || [], "Geen universe-redenen")}</div></div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen universe-selectie beschikbaar.</div>`;
+}
+
+function renderAttribution(snapshot) {
+  const attribution = snapshot.dashboard.strategyAttribution || {};
+  const hottestStrategy = (attribution.topStrategies || [])[0] || {};
+  const hottestFamily = (attribution.topFamilies || [])[0] || {};
+  const hottestRegime = (attribution.topRegimes || [])[0] || {};
+  elements.attributionSummary.innerHTML = [
+    insightCard("Trades", `${attribution.sampleSize || 0}`, hottestStrategy.label ? `${hottestStrategy.label} bovenaan` : "Nog geen history"),
+    insightCard("Top family", hottestFamily.label || "-", hottestFamily.edge == null ? "Geen edge" : `edge ${formatNumber(hottestFamily.edge || 0, 3)}`, healthTone(hottestFamily.health)),
+    insightCard("Top regime", hottestRegime.label || "-", hottestRegime.winRate == null ? "Geen regime-data" : `win ${formatPct(hottestRegime.winRate || 0, 1)}`, healthTone(hottestRegime.health))
+  ].join("");
+
+  const cards = [
+    ...(attribution.topStrategies || []).slice(0, 3).map((item) => ({ ...item, bucketLabel: "strategie" })),
+    ...(attribution.topFamilies || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "family" }))
+  ];
+  elements.attributionList.innerHTML = cards.length
+    ? cards
+        .map(
+          (item) => `
+            <article class="attribution-card">
+              <div class="section-head compact">
+                <div>
+                  <div class="kicker">${escapeHtml(item.bucketLabel || "bucket")}</div>
+                  <h3>${escapeHtml(item.label || item.id || "Attribution")}</h3>
+                </div>
+                <div class="pill ${healthTone(item.health)}">${escapeHtml(item.health || "neutral")}</div>
+              </div>
+              <div class="mini-grid">
+                <div class="mini-stat"><span class="kicker">Edge</span><strong class="${toneClass(item.edge || 0)}">${formatNumber(item.edge || 0, 3)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(item.winRate || 0, 1)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Gem. PnL</span><strong class="${toneClass(item.avgPnlQuote || 0)}">${formatMoney(item.avgPnlQuote || 0)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Confidence</span><strong>${formatPct(item.confidence || 0, 1)}</strong><div class="meta">${item.tradeCount || 0} trades</div></div>
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen attribution-history beschikbaar.</div>`;
+}
+
+function renderGovernance(snapshot) {
+  const registry = snapshot.dashboard.researchRegistry || {};
+  const governance = registry.governance || {};
+  const leader = (registry.leaderboard || [])[0] || {};
+  elements.governanceSummary.innerHTML = [
+    insightCard("Research runs", `${registry.runCount || 0}`, registry.lastRunAt ? `laatst ${formatDate(registry.lastRunAt)}` : "Nog geen run"),
+    insightCard("Promo kandidaten", `${(governance.promotionCandidates || []).length}`, leader.symbol ? `${leader.symbol} leidt` : "Nog geen kandidaat", (governance.promotionCandidates || []).length ? "positive" : "neutral"),
+    insightCard("Snapshots", `${governance.stableSnapshotCount || 0}`, governance.notes?.[0] || "Geen governance-notitie")
+  ].join("");
+
+  elements.registryList.innerHTML = (registry.leaderboard || []).length
+    ? (registry.leaderboard || [])
+        .slice(0, 5)
+        .map(
+          (item) => `
+            <article class="registry-card">
+              <div class="section-head compact">
+                <div>
+                  <div class="kicker">${escapeHtml(item.symbol || "symbol")}</div>
+                  <h3>${escapeHtml((item.status || "hold").replaceAll("_", " "))}</h3>
+                </div>
+                <div class="pill ${healthTone(item.status)}">${formatNumber(item.governanceScore || 0, 3)}</div>
+              </div>
+              <div class="mini-grid">
+                <div class="mini-stat"><span class="kicker">PnL</span><strong class="${toneClass(item.realizedPnl || 0)}">${formatMoney(item.realizedPnl || 0)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Sharpe</span><strong>${formatNumber(item.averageSharpe || 0, 2)}</strong></div>
+                <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(item.averageWinRate || 0, 1)}</strong></div>
+                <div class="mini-stat"><span class="kicker">DD max</span><strong>${formatPct(item.maxDrawdownPct || 0, 1)}</strong><div class="meta">${item.totalTrades || 0} trades</div></div>
+              </div>
+              <div class="note-line"><span class="kicker">Leidende strategieen</span><div class="tag-list">${renderTagList(item.leaders || [], "Nog geen leaders")}</div></div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty">Nog geen research-registry beschikbaar.</div>`;
+}
+
+function renderStatus(snapshot) {
+  const { manager, dashboard } = snapshot;
+  elements.modeBadge.textContent = `Mode: ${manager.currentMode.toUpperCase()}`;
+  elements.runStateBadge.textContent = `Bot: ${manager.runState}`;
+  elements.healthBadge.textContent = summarizeHealth(dashboard.health);
+
+  const message = transientMessage || manager.lastError?.message || dashboard.analysis?.lastError?.message || `Laatste cyclus ${formatDate(dashboard.overview.lastCycleAt)} | Laatste analyse ${formatDate(dashboard.overview.lastAnalysisAt)}`;
+  elements.controlHint.textContent = message;
+
+  const running = manager.runState === "running";
+  elements.startBtn.disabled = busy || running;
+  elements.stopBtn.disabled = busy || manager.runState === "stopped";
+  elements.cycleBtn.disabled = busy || running;
+  elements.refreshBtn.disabled = busy || running;
+  elements.researchBtn.disabled = busy || running;
+  elements.paperBtn.disabled = busy || manager.currentMode === "paper";
+  elements.liveBtn.disabled = busy || manager.currentMode === "live";
+  elements.decisionSearch.value = decisionSearchQuery;
+  elements.decisionAllowedOnly.checked = decisionAllowedOnly;
+}
+
+function render(snapshot) {
+  latestSnapshot = snapshot;
+  renderStatus(snapshot);
+  renderMetrics(snapshot);
+  renderChart(snapshot);
+  renderWindowCards(snapshot);
+  renderPositions(snapshot);
+  renderDecisions(snapshot);
+  renderBlockedSetups(snapshot);
+  renderTradeReplays(snapshot);
+  renderUniverse(snapshot);
+  renderAttribution(snapshot);
+  renderGovernance(snapshot);
+  renderTrades(snapshot);
+  renderIntelligence(snapshot);
+  renderWeights(snapshot);
+  renderEvents(snapshot);
+  renderResearch(snapshot);
+}
+
+function pickSnapshot(payload) {
+  return payload.snapshot || payload;
+}
+
+async function refreshSnapshot() {
+  const snapshot = await api("/api/snapshot");
+  render(snapshot);
+}
+
+async function runAction(label, action) {
+  if (busy) {
+    return;
+  }
+  busy = true;
+  transientMessage = `${label}...`;
+  if (latestSnapshot) {
+    renderStatus(latestSnapshot);
+  }
+  try {
+    const payload = await action();
+    transientMessage = `${label} voltooid`;
+    render(pickSnapshot(payload));
+    window.setTimeout(() => {
+      transientMessage = "";
+      if (latestSnapshot) {
+        renderStatus(latestSnapshot);
+      }
+    }, 2200);
+  } catch (error) {
+    transientMessage = error.message;
+    if (latestSnapshot) {
+      renderStatus(latestSnapshot);
+    }
+  } finally {
+    busy = false;
+    if (latestSnapshot) {
+      renderStatus(latestSnapshot);
+    }
+  }
+}
+
+elements.startBtn.addEventListener("click", () => runAction("Bot starten", () => api("/api/start", "POST")));
+elements.stopBtn.addEventListener("click", () => runAction("Bot stoppen", () => api("/api/stop", "POST")));
+elements.cycleBtn.addEventListener("click", () => runAction("Losse cyclus draaien", () => api("/api/cycle", "POST")));
+elements.refreshBtn.addEventListener("click", () => runAction("Analyse verversen", () => api("/api/refresh", "POST")));
+elements.researchBtn.addEventListener("click", () => runAction("Research lab draaien", () => api("/api/research", "POST", { symbols: [] })));
+elements.paperBtn.addEventListener("click", () => runAction("Naar paper trading schakelen", () => api("/api/mode", "POST", { mode: "paper" })));
+elements.liveBtn.addEventListener("click", () => {
+  const approved = window.confirm("Live trading stuurt echte orders naar Binance. Alleen doorgaan als je API keys en veiligheidsinstellingen kloppen.");
+  if (!approved) {
+    return;
+  }
+  runAction("Naar live trading schakelen", () => api("/api/mode", "POST", { mode: "live" }));
+});
+elements.decisionSearch.addEventListener("input", (event) => {
+  decisionSearchQuery = `${event.target.value || ""}`.trim().toLowerCase();
+  if (latestSnapshot) {
+    renderDecisions(latestSnapshot);
+  }
+});
+elements.decisionAllowedOnly.addEventListener("change", (event) => {
+  decisionAllowedOnly = Boolean(event.target.checked);
+  if (latestSnapshot) {
+    renderDecisions(latestSnapshot);
+  }
+});
+
+refreshSnapshot().catch((error) => {
+  transientMessage = error.message;
+  elements.controlHint.textContent = error.message;
+});
+window.setInterval(() => {
+  refreshSnapshot().catch((error) => {
+    transientMessage = error.message;
+    if (latestSnapshot) {
+      renderStatus(latestSnapshot);
+    }
+  });
+}, POLL_MS);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

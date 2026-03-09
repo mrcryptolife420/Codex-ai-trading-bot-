@@ -1,0 +1,20 @@
+﻿export const coinAliases = {
+  BTCUSDT: ["BTC", "Bitcoin"],
+  ETHUSDT: ["ETH", "Ethereum"],
+  BNBUSDT: ["BNB", "Binance Coin"],
+  SOLUSDT: ["SOL", "Solana"],
+  XRPUSDT: ["XRP", "Ripple"],
+  ADAUSDT: ["ADA", "Cardano"],
+  LINKUSDT: ["LINK", "Chainlink"],
+  AVAXUSDT: ["AVAX", "Avalanche"],
+  DOGEUSDT: ["DOGE", "Dogecoin"],
+  TRXUSDT: ["TRX", "Tron"],
+  LTCUSDT: ["LTC", "Litecoin"],
+  DOTUSDT: ["DOT", "Polkadot"],
+  UNIUSDT: ["UNI", "Uniswap"],
+  AAVEUSDT: ["AAVE", "Aave"],
+  NEARUSDT: ["NEAR", "Near", "NEAR Protocol"],
+  SUIUSDT: ["SUI", "Sui"],
+  APTUSDT: ["APT", "Aptos"],
+  BCHUSDT: ["BCH", "Bitcoin Cash"]
+};

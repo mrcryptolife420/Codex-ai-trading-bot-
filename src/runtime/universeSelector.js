@@ -1,0 +1,308 @@
+import { clamp } from "../utils/math.js";
+
+function safeNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function average(values = []) {
+  return values.length ? values.reduce((total, value) => total + value, 0) / values.length : 0;
+}
+
+function num(value, digits = 4) {
+  return Number(safeNumber(value).toFixed(digits));
+}
+
+function buildHealth(score) {
+  if (score >= 0.72) {
+    return "prime";
+  }
+  if (score >= 0.58) {
+    return "ready";
+  }
+  if (score >= 0.42) {
+    return "watch";
+  }
+  return "cold";
+}
+
+export class UniverseSelector {
+  constructor(config) {
+    this.config = config;
+  }
+
+  scoreSymbol({ symbol, snapshot, hasOpenPosition = false, previousDecision = null }) {
+    if (!snapshot) {
+      return {
+        symbol,
+        eligible: false,
+        selected: false,
+        score: 0,
+        health: "cold",
+        spreadBps: null,
+        depthConfidence: 0,
+        totalDepthNotional: 0,
+        recentTradeCount: 0,
+        realizedVolPct: 0,
+        reasons: [],
+        blockers: ["missing_market_snapshot"]
+      };
+    }
+
+    const book = snapshot.book || {};
+    const market = snapshot.market || {};
+    const stream = snapshot.stream || {};
+    const spreadBps = safeNumber(book.spreadBps);
+    const depthConfidence = safeNumber(book.depthConfidence || book.localBook?.depthConfidence);
+    const totalDepthNotional = safeNumber(book.totalDepthNotional || book.localBook?.totalDepthNotional);
+    const realizedVolPct = safeNumber(market.realizedVolPct);
+    const recentTradeCount = safeNumber(stream.recentTradeCount || book.recentTradeCount);
+    const tradeFlowImbalance = safeNumber(stream.tradeFlowImbalance || book.tradeFlowImbalance);
+    const bookPressure = safeNumber(book.bookPressure);
+    const queueRefreshScore = safeNumber(book.queueRefreshScore || book.localBook?.queueRefreshScore);
+    const depthAgeMs = safeNumber(book.depthAgeMs || book.localBook?.depthAgeMs);
+    const localBookSynced = Boolean(book.localBookSynced ?? book.localBook?.synced);
+    const previousRank = safeNumber(previousDecision?.rankScore);
+    const universeMinDepthUsd = safeNumber(this.config.universeMinDepthUsd, 60000);
+    const universeTargetVolPct = safeNumber(this.config.universeTargetVolPct, 0.018);
+
+    const spreadScore = clamp(
+      1 - Math.max(0, spreadBps - 1) / Math.max(this.config.maxSpreadBps * 1.4 - 1, 1),
+      0,
+      1
+    );
+    const liquidityScore = clamp(
+      clamp(totalDepthNotional / Math.max(universeMinDepthUsd * 8, 1), 0, 1) * 0.58 + depthConfidence * 0.42,
+      0,
+      1
+    );
+    const activityScore = clamp(
+      clamp(recentTradeCount / 28, 0, 1) * 0.6 + clamp((safeNumber(market.volumeZ) + 1.5) / 3.5, 0, 1) * 0.4,
+      0,
+      1
+    );
+    const orderflowScore = clamp(
+      0.5 + bookPressure * 0.34 + tradeFlowImbalance * 0.16 + queueRefreshScore * 0.12,
+      0,
+      1
+    );
+    const volatilityScore = clamp(
+      1 - Math.abs(realizedVolPct - universeTargetVolPct) / Math.max(universeTargetVolPct, 0.01),
+      0,
+      1
+    );
+    const trendScore = clamp(
+      0.46 +
+        safeNumber(market.emaTrendScore) * 2.1 +
+        safeNumber(market.breakoutPct) * 18 +
+        safeNumber(market.structureBreakScore) * 0.26 +
+        Math.max(0, safeNumber(market.momentum20)) * 3.4,
+      0,
+      1
+    );
+    const freshnessScore = localBookSynced
+      ? clamp(1 - depthAgeMs / Math.max(this.config.maxDepthEventAgeMs * 2, 1), 0, 1)
+      : 0.42;
+    const carryScore = clamp(
+      (hasOpenPosition ? 0.15 : 0) +
+        (previousDecision?.allow ? 0.08 : 0) +
+        clamp(previousRank * 0.22, -0.03, 0.08),
+      0,
+      0.26
+    );
+
+    const blockers = [];
+    if (spreadBps > this.config.maxSpreadBps * 1.35) {
+      blockers.push("universe_spread_guard");
+    }
+    if (!hasOpenPosition && depthConfidence < this.config.universeMinDepthConfidence) {
+      blockers.push("universe_thin_local_book");
+    }
+    if (!hasOpenPosition && totalDepthNotional < universeMinDepthUsd * 0.35) {
+      blockers.push("universe_shallow_depth");
+    }
+    if (this.config.enableLocalOrderBook && localBookSynced && depthAgeMs > this.config.maxDepthEventAgeMs * 2) {
+      blockers.push("universe_stale_depth");
+    }
+    if (!hasOpenPosition && recentTradeCount < 2 && spreadBps > this.config.maxSpreadBps * 0.65) {
+      blockers.push("universe_low_activity");
+    }
+
+    const reasons = [];
+    if (spreadScore >= 0.78) {
+      reasons.push("tight_spread");
+    }
+    if (liquidityScore >= 0.62) {
+      reasons.push("healthy_depth");
+    }
+    if (activityScore >= 0.55) {
+      reasons.push("active_tape");
+    }
+    if (orderflowScore >= 0.58) {
+      reasons.push("supportive_orderflow");
+    }
+    if (trendScore >= 0.58) {
+      reasons.push("trend_or_breakout_ready");
+    }
+    if (volatilityScore >= 0.56) {
+      reasons.push("clean_volatility_profile");
+    }
+    if (hasOpenPosition) {
+      reasons.push("existing_position_carried");
+    } else if (previousDecision?.allow) {
+      reasons.push("carried_from_previous_top_setup");
+    }
+
+    const score = clamp(
+      spreadScore * 0.2 +
+        liquidityScore * 0.24 +
+        activityScore * 0.12 +
+        orderflowScore * 0.16 +
+        volatilityScore * 0.1 +
+        trendScore * 0.14 +
+        freshnessScore * 0.06 +
+        carryScore,
+      0,
+      1.25
+    );
+    const eligible = blockers.length === 0 && score >= this.config.universeMinScore;
+
+    return {
+      symbol,
+      eligible,
+      selected: false,
+      score: num(score),
+      health: buildHealth(score),
+      spreadBps: num(spreadBps, 2),
+      depthConfidence: num(depthConfidence, 3),
+      totalDepthNotional: num(totalDepthNotional, 2),
+      recentTradeCount: Math.round(recentTradeCount),
+      realizedVolPct: num(realizedVolPct, 4),
+      liquidityScore: num(liquidityScore),
+      activityScore: num(activityScore),
+      orderflowScore: num(orderflowScore),
+      volatilityScore: num(volatilityScore),
+      trendScore: num(trendScore),
+      carryScore: num(carryScore),
+      reasons,
+      blockers
+    };
+  }
+
+  buildSnapshot({
+    symbols = [],
+    snapshotMap = {},
+    openPositions = [],
+    latestDecisions = [],
+    nowIso = new Date().toISOString()
+  } = {}) {
+    const openSet = new Set((openPositions || []).map((position) => position.symbol));
+    const previousMap = Object.fromEntries((latestDecisions || []).map((decision) => [decision.symbol, decision]));
+    const entries = symbols.map((symbol) =>
+      this.scoreSymbol({
+        symbol,
+        snapshot: snapshotMap[symbol],
+        hasOpenPosition: openSet.has(symbol),
+        previousDecision: previousMap[symbol] || null
+      })
+    );
+    entries.sort((left, right) => right.score - left.score);
+
+    const selected = [];
+    const seen = new Set();
+    const preferredCarry = [
+      ...new Set([
+        ...(openPositions || []).map((position) => position.symbol),
+        ...(latestDecisions || []).filter((decision) => decision.allow).slice(0, 2).map((decision) => decision.symbol)
+      ])
+    ];
+
+    const pushSelection = (symbol) => {
+      if (seen.has(symbol)) {
+        return;
+      }
+      const entry = entries.find((item) => item.symbol === symbol);
+      if (!entry) {
+        return;
+      }
+      seen.add(symbol);
+      selected.push({ ...entry, selected: true });
+    };
+
+    for (const symbol of preferredCarry) {
+      pushSelection(symbol);
+    }
+
+    for (const entry of entries) {
+      if (selected.length >= this.config.universeMaxSymbols) {
+        break;
+      }
+      if (!entry.eligible) {
+        continue;
+      }
+      pushSelection(entry.symbol);
+    }
+
+    const selectedSymbols = selected.map((entry) => entry.symbol);
+    const annotatedEntries = entries.map((entry) => ({
+      ...entry,
+      selected: selectedSymbols.includes(entry.symbol)
+    }));
+    const averageScore = average(selected.map((entry) => entry.score));
+    const eligibleCount = annotatedEntries.filter((entry) => entry.eligible).length;
+    const suggestions = [
+      selected[0]
+        ? `${selected[0].symbol} leidt de focus-universe met score ${selected[0].score.toFixed(2)}.`
+        : "Nog geen symbool scoort hoog genoeg voor de focus-universe.",
+      eligibleCount > this.config.universeMaxSymbols
+        ? `${eligibleCount} symbols waren universe-waardig; de bot focust nu op de beste ${selected.length}.`
+        : `Universe-dekking ${selected.length}/${symbols.length} symbols.`,
+      annotatedEntries.some((entry) => entry.blockers.length)
+        ? `${annotatedEntries.filter((entry) => entry.blockers.length).length} symbols werden geweerd door spread/depth/activity guards.`
+        : "Geen extra universe-blockers actief."
+    ];
+
+    return {
+      generatedAt: nowIso,
+      configuredSymbolCount: symbols.length,
+      selectedCount: selected.length,
+      eligibleCount,
+      selectionRate: num(symbols.length ? selected.length / symbols.length : 0),
+      averageScore: num(averageScore),
+      selectedSymbols,
+      selected: selected.map((entry) => ({
+        symbol: entry.symbol,
+        score: entry.score,
+        health: entry.health,
+        spreadBps: entry.spreadBps,
+        depthConfidence: entry.depthConfidence,
+        totalDepthNotional: entry.totalDepthNotional,
+        recentTradeCount: entry.recentTradeCount,
+        realizedVolPct: entry.realizedVolPct,
+        reasons: [...entry.reasons],
+        blockers: [...entry.blockers],
+        liquidityScore: entry.liquidityScore,
+        activityScore: entry.activityScore,
+        orderflowScore: entry.orderflowScore,
+        volatilityScore: entry.volatilityScore,
+        trendScore: entry.trendScore,
+        carryScore: entry.carryScore
+      })),
+      skipped: annotatedEntries
+        .filter((entry) => !entry.selected)
+        .slice(0, 12)
+        .map((entry) => ({
+          symbol: entry.symbol,
+          score: entry.score,
+          health: entry.health,
+          spreadBps: entry.spreadBps,
+          depthConfidence: entry.depthConfidence,
+          totalDepthNotional: entry.totalDepthNotional,
+          recentTradeCount: entry.recentTradeCount,
+          realizedVolPct: entry.realizedVolPct,
+          reasons: [...entry.reasons],
+          blockers: [...entry.blockers]
+        })),
+      suggestions
+    };
+  }
+}
