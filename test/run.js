@@ -30,6 +30,7 @@ import { ResearchRegistry } from "../src/runtime/researchRegistry.js";
 import { ModelRegistry } from "../src/runtime/modelRegistry.js";
 import { UniverseSelector } from "../src/runtime/universeSelector.js";
 import { buildDeepScanPlan, buildLightweightSnapshot } from "../src/runtime/scanPlanner.js";
+import { resolveDynamicWatchlist } from "../src/runtime/watchlistResolver.js";
 import { buildSessionSummary } from "../src/runtime/sessionManager.js";
 import { DriftMonitor } from "../src/runtime/driftMonitor.js";
 import { SelfHealManager } from "../src/runtime/selfHealManager.js";
@@ -1383,7 +1384,7 @@ await runCheck("risk manager exits on spread shock and orderbook reversal", asyn
   assert.ok(["spread_shock_exit", "orderbook_reversal_exit", "liquidation_shock_exit"].includes(decision.reason));
 });
 await runCheck("session manager flags weekend funding and low liquidity windows", async () => {
-  const summary = buildSessionSummary({
+  const paperSummary = buildSessionSummary({
     now: new Date("2026-03-08T23:55:00.000Z"),
     marketSnapshot: {
       book: { spreadBps: 9, totalDepthNotional: 50000, depthConfidence: 0.2 },
@@ -1392,11 +1393,23 @@ await runCheck("session manager flags weekend funding and low liquidity windows"
     marketStructureSummary: { nextFundingTime: "2026-03-09T00:00:00.000Z" },
     config: makeConfig()
   });
-  assert.equal(summary.isWeekend, true);
-  assert.equal(summary.inFundingCaution, true);
-  assert.equal(summary.inHardFundingBlock, true);
-  assert.equal(summary.lowLiquidity, true);
-  assert.ok(summary.blockerReasons.includes("funding_settlement_window"));
+  assert.equal(paperSummary.isWeekend, true);
+  assert.equal(paperSummary.inFundingCaution, true);
+  assert.equal(paperSummary.inHardFundingBlock, true);
+  assert.equal(paperSummary.lowLiquidity, true);
+  assert.ok(!paperSummary.blockerReasons.includes("funding_settlement_window"));
+  assert.ok(paperSummary.reasons.includes("funding_settlement_window_watch"));
+
+  const liveSummary = buildSessionSummary({
+    now: new Date("2026-03-08T23:55:00.000Z"),
+    marketSnapshot: {
+      book: { spreadBps: 9, totalDepthNotional: 50000, depthConfidence: 0.2 },
+      market: { realizedVolPct: 0.05 }
+    },
+    marketStructureSummary: { nextFundingTime: "2026-03-09T00:00:00.000Z" },
+    config: makeConfig({ botMode: "live" })
+  });
+  assert.ok(liveSummary.blockerReasons.includes("funding_settlement_window"));
 });
 
 await runCheck("adaptive model reports feature drift after learning a baseline", async () => {
@@ -1765,6 +1778,44 @@ await runCheck("research lab builds walk-forward windows and summary", async () 
   assert.ok(report.experimentCount >= 1);
 });
 
+await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {
+  const config = makeConfig({ watchlistTopN: 5, dynamicWatchlistMinSymbols: 1 });
+  const client = {
+    async getExchangeInfo() {
+      return {
+        symbols: [
+          { symbol: "BTCUSDT", status: "TRADING", baseAsset: "BTC", quoteAsset: "USDT" },
+          { symbol: "USD1USDT", status: "TRADING", baseAsset: "USD1", quoteAsset: "USDT" },
+          { symbol: "PYUSDUSDT", status: "TRADING", baseAsset: "PYUSD", quoteAsset: "USDT" }
+        ]
+      };
+    },
+    async publicRequest() {
+      return [
+        { symbol: "BTCUSDT", quoteVolume: "150000000" },
+        { symbol: "USD1USDT", quoteVolume: "125000000" },
+        { symbol: "PYUSDUSDT", quoteVolume: "95000000" }
+      ];
+    }
+  };
+  const watchlist = await resolveDynamicWatchlist({
+    client,
+    config,
+    logger: { warn() {} },
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return [
+          { symbol: "usd1", name: "World Liberty Financial USD", market_cap_rank: 40, market_cap: 1000000000 },
+          { symbol: "pyusd", name: "PayPal USD", market_cap_rank: 60, market_cap: 900000000 },
+          { symbol: "btc", name: "Bitcoin", market_cap_rank: 1, market_cap: 1000000000000 }
+        ];
+      }
+    })
+  });
+  assert.deepEqual(watchlist.watchlist, ["BTCUSDT"]);
+});
+
 await runCheck("universe selector focuses liquid symbols and carries open positions", async () => {
   const selector = new UniverseSelector(makeConfig({ universeMaxSymbols: 2 }));
   const snapshot = selector.buildSnapshot({
@@ -2027,6 +2078,9 @@ await runCheck("research registry surfaces promotion candidates from walk-forwar
 });
 
 console.log("All checks passed.");
+
+
+
 
 
 

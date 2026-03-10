@@ -10,6 +10,13 @@ const STABLE_OR_FIAT_ASSETS = new Set([
   "DAI",
   "USDP",
   "USDS",
+  "USDE",
+  "USDD",
+  "USD1",
+  "PYUSD",
+  "RLUSD",
+  "USDB",
+  "GHO",
   "EUR",
   "EURC",
   "TRY",
@@ -84,10 +91,14 @@ function guessProfile({ symbol, baseAsset, coinName = "", marketCapRank = 999 })
 
 function isStableOrFiatAsset(baseAsset, coinName = "") {
   const upper = normalizeSymbol(baseAsset);
+  const normalizedName = `${coinName || ""}`.toLowerCase();
   if (STABLE_OR_FIAT_ASSETS.has(upper)) {
     return true;
   }
-  return /\bstable\b|usd\b|fiat\b/.test(coinName.toLowerCase());
+  if (/^(usd|eur|gbp|aud|brl|try|jpy|rub|uah|zar)\w{0,3}$/.test(upper)) {
+    return true;
+  }
+  return /\bstable\b|\bfiat\b|\bsynthetic dollar\b|\bdigital dollar\b|\busd[0-9a-z]*\b|\beur[0-9a-z]*\b|\bdollar\b/.test(normalizedName);
 }
 
 function isLeveragedToken(baseAsset, coinName = "") {
@@ -322,3 +333,4 @@ export async function resolveDynamicWatchlist({ client, config, logger, fetchImp
     }
   };
 }
+

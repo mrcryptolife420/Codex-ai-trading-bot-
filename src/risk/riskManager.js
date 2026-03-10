@@ -1,4 +1,4 @@
-﻿import { clamp } from "../utils/math.js";
+import { clamp } from "../utils/math.js";
 import { minutesBetween, sameUtcDay } from "../utils/time.js";
 
 function safeValue(value) {
@@ -296,7 +296,7 @@ export class RiskManager {
     if ((driftSummary.severity || 0) >= 0.45 && (score.calibrationConfidence || 0) < this.config.minCalibrationConfidence + 0.05) {
       reasons.push("drift_confidence_guard");
     }
-    if (selfHealState.lowRiskOnly && !lowRiskCandidate) {
+    if (selfHealState.lowRiskOnly && !lowRiskCandidate && this.config.botMode !== "paper") {
       reasons.push("self_heal_low_risk_only");
     }
     if ((metaSummary.dailyTradeCount || 0) >= this.config.maxEntriesPerDay) {
@@ -308,10 +308,11 @@ export class RiskManager {
 
     const recentTrade = this.getRecentTradeForSymbol(journal, symbol);
     const dailyEntriesForSymbol = this.getDailyEntryCountForSymbol(journal, runtime, symbol, nowIso);
-    if (dailyEntriesForSymbol >= this.config.maxEntriesPerSymbolPerDay) {
+    if (dailyEntriesForSymbol >= this.config.maxEntriesPerSymbolPerDay && this.config.botMode !== "paper") {
       reasons.push("symbol_entry_budget_reached");
     }
     if (
+      this.config.botMode !== "paper" &&
       recentTrade?.exitAt &&
       (recentTrade.pnlQuote || 0) < 0 &&
       minutesBetween(recentTrade.exitAt, nowIso) < this.config.symbolLossCooldownMinutes
@@ -600,6 +601,8 @@ export class RiskManager {
     };
   }
 }
+
+
 
 
 

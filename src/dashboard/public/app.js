@@ -1,4 +1,4 @@
-﻿const POLL_MS = 5000;
+const POLL_MS = 5000;
 const THEME_STORAGE_KEY = "dashboard-theme";
 const DETAIL_STATE_STORAGE_KEY = "dashboard-detail-state";
 const TOP_DECISION_RENDER_LIMIT = 6;
@@ -291,7 +291,7 @@ function truncateText(value, maxLength = 220) {
   if (input.length <= maxLength) {
     return input;
   }
-  return `${input.slice(0, maxLength - 1).trimEnd()}…`;
+  return `${input.slice(0, maxLength - 1).trimEnd()}�`;
 }
 
 function collectHighlights(items = [], limit = 4) {
@@ -801,8 +801,10 @@ function renderDecisions(snapshot) {
       decision.summary,
       decision.strategy?.strategyLabel,
       decision.strategy?.familyLabel,
+      decision.entryStatus,
       ...(decision.reasons || []),
-      ...(decision.blockerReasons || [])
+      ...(decision.blockerReasons || []),
+      ...(decision.executionBlockers || [])
     ].filter(Boolean).join(" ").toLowerCase();
     const matchesQuery = !decisionSearchQuery || searchIndex.includes(decisionSearchQuery);
     const matchesMode = !decisionAllowedOnly || decision.allow;
@@ -819,30 +821,56 @@ function renderDecisions(snapshot) {
     return;
   }
 
+  const statusMap = {
+    opened: { label: "Opened", pill: "Open", tone: "positive" },
+    eligible: { label: "Eligible", pill: "Ready", tone: "neutral" },
+    standby: { label: "Standby", pill: "Wait", tone: "neutral" },
+    runtime_blocked: { label: "Geblokkeerd", pill: "Blocked", tone: "negative" },
+    entry_failed: { label: "Entry fout", pill: "Retry", tone: "negative" },
+    blocked: { label: "Skip", pill: "Skip", tone: "negative" },
+    opened_elsewhere: { label: "Andere setup", pill: "Wait", tone: "neutral" }
+  };
+
   elements.decisionsList.innerHTML = filtered
     .slice(0, Math.min(decisionLimit, TOP_DECISION_RENDER_LIMIT))
-    .map((decision, index) => {
+    .map((decision) => {
       const edge = Number(decision.edgeToThreshold ?? (decision.probability || 0) - (decision.threshold || 0));
       const strategyLabel = decision.strategy?.strategyLabel || decision.strategySummary?.strategyLabel || decision.setupStyle || "setup";
       const familyLabel = decision.strategy?.familyLabel || decision.strategy?.family || "family";
       const leadBull = normalizeReasonLabel(decision.bullishSignals?.[0]?.name || decision.bullishDrivers?.[0]?.title || decision.reasons?.[0] || "sterkste driver");
       const leadBear = normalizeReasonLabel(decision.blockerReasons?.[0] || decision.bearishSignals?.[0]?.name || decision.bearishDrivers?.[0]?.title || "geen blocker");
+      const leadExecutionBlocker = normalizeReasonLabel(decision.executionBlockers?.[0] || "niet uitgevoerd");
       const qualityScore = decision.meta?.qualityScore ?? decision.meta?.score ?? 0;
       const qualityBand = decision.meta?.qualityBand || (qualityScore >= 0.62 ? "sterk" : qualityScore >= 0.5 ? "ok" : "zwak");
-      const summary = decision.allow
-        ? `${strategyLabel} is toegestaan. Hoofdreden: ${leadBull}.`
-        : `${strategyLabel} is overgeslagen. Hoofdreden: ${leadBear}.`;
-      const keyPills = decision.allow
-        ? collectHighlights([leadBull, strategyLabel, familyLabel, decision.executionStyle || decision.executionAttribution?.entryStyle], 4)
-        : collectHighlights([leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], 4);
+      const entryStatus = decision.entryStatus || (decision.allow ? "eligible" : "blocked");
+      const statusMeta = statusMap[entryStatus] || statusMap.blocked;
+      let summary = `${strategyLabel} is overgeslagen. Hoofdreden: ${leadBear}.`;
+      if (entryStatus === "opened") {
+        summary = `${strategyLabel} is echt geopend. Hoofdreden: ${leadBull}.`;
+      } else if (entryStatus === "eligible") {
+        summary = `${strategyLabel} is eligible. Hoofdreden: ${leadBull}.`;
+      } else if (entryStatus === "standby" || entryStatus === "opened_elsewhere") {
+        summary = `${strategyLabel} was goed genoeg, maar een sterkere setup kreeg voorrang.`;
+      } else if (entryStatus === "runtime_blocked") {
+        summary = `${strategyLabel} was eligible, maar runtime blokkeerde de entry door ${leadExecutionBlocker}.`;
+      } else if (entryStatus === "entry_failed") {
+        summary = `${strategyLabel} was eligible, maar de entry faalde door ${leadExecutionBlocker}.`;
+      }
+
+      const keyPills = !decision.allow
+        ? collectHighlights([leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], 4)
+        : entryStatus === "opened"
+          ? collectHighlights([leadBull, strategyLabel, familyLabel, "positie geopend"], 4)
+          : collectHighlights([leadBull, strategyLabel, familyLabel, statusMeta.label], 4);
       const compactView = `
         <div class="mini-grid compact-data-grid">
           <div class="mini-stat"><span class="kicker">Model / gate</span><strong>${formatPct(decision.probability || 0, 1)} / ${formatPct(decision.threshold || 0, 1)}</strong><div class="meta">edge ${formatSignedPct(edge, 1)}</div></div>
           <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">${escapeHtml(familyLabel)}</div></div>
+          <div class="mini-stat"><span class="kicker">Status</span><strong>${escapeHtml(statusMeta.label)}</strong><div class="meta">${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</div></div>
           <div class="mini-stat"><span class="kicker">Quality</span><strong>${formatPct(qualityScore || 0, 1)}</strong><div class="meta">${escapeHtml(qualityBand)}</div></div>
-          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</strong><div class="meta">${decision.freshnessHours == null ? "-" : `${formatNumber(decision.freshnessHours, 1)}u oud`}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
+        ${decision.allow && decision.executionBlockers?.length ? `<div class="note-line"><span class="kicker">Niet uitgevoerd door</span><div class="tag-list">${renderTagList((decision.executionBlockers || []).slice(0, 3).map(normalizeReasonLabel), "Geen runtime blocker")}</div></div>` : ""}
       `;
       const contextView = `
         <div class="mini-grid compact-data-grid">
@@ -853,17 +881,17 @@ function renderDecisions(snapshot) {
         </div>
       `;
       return `
-        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}"${detailAttrs(`decision:${decision.symbol}:${decision.allow ? "go" : "skip"}`, false)}>
+        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}"${detailAttrs(`decision:${decision.symbol}:${entryStatus}`, false)}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
-                <div class="reason-pill ${decision.allow ? "" : "blocked"}">${decision.allow ? "Trade" : "Skip"}</div>
+                <div class="reason-pill ${statusMeta.tone === "negative" ? "blocked" : ""}">${escapeHtml(statusMeta.label)}</div>
                 <h3>${escapeHtml(decision.symbol)}</h3>
                 <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(decision.regime || "unknown")}</p>
                 <p class="decision-blurb">${escapeHtml(summary)}</p>
               </div>
               <div class="fold-stats">
-                <span class="pill ${decision.allow ? "positive" : "negative"}">${decision.allow ? "Go" : "No"}</span>
+                <span class="pill ${statusMeta.tone}">${escapeHtml(statusMeta.pill)}</span>
                 <span class="pill">${formatPct(decision.probability || 0, 1)}</span>
               </div>
             </div>
@@ -871,7 +899,7 @@ function renderDecisions(snapshot) {
           </summary>
           <div class="fold-body compact-body">
             ${compactView}
-            ${renderDetailSection("Meer context", "Alleen de kernsignalen", contextView, false, `decision-context:${decision.symbol}:${decision.allow ? "go" : "skip"}`)}
+            ${renderDetailSection("Meer context", "Alleen de kernsignalen", contextView, false, `decision-context:${decision.symbol}:${entryStatus}`)}
           </div>
         </details>
       `;
@@ -1490,6 +1518,7 @@ window.setInterval(() => {
     }
   });
 }, POLL_MS);
+
 
 
 

@@ -93,7 +93,13 @@ export function buildSessionSummary({
     reasons.push("funding_window");
   }
   if (inHardFundingBlock) {
-    blockerReasons.push("funding_settlement_window");
+    if (config.botMode === "paper") {
+      reasons.push("funding_settlement_window_watch");
+      sizeMultiplier *= 0.82;
+      thresholdPenalty += 0.01;
+    } else {
+      blockerReasons.push("funding_settlement_window");
+    }
   }
   if (lowLiquidityScore >= 0.88) {
     blockerReasons.push("extreme_low_liquidity");
@@ -123,3 +129,4 @@ export function buildSessionSummary({
     blockerReasons
   };
 }
+

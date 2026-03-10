@@ -1,4 +1,4 @@
-﻿import { assertValidConfig } from "../config/validate.js";
+import { assertValidConfig } from "../config/validate.js";
 import { AdaptiveTradingModel } from "../ai/adaptiveModel.js";
 import { MultiAgentCommittee } from "../ai/multiAgentCommittee.js";
 import { ReinforcementExecutionPolicy } from "../ai/rlExecutionPolicy.js";
@@ -32,6 +32,7 @@ import { HealthMonitor } from "./healthMonitor.js";
 import { DriftMonitor } from "./driftMonitor.js";
 import { SelfHealManager } from "./selfHealManager.js";
 import { StreamCoordinator } from "./streamCoordinator.js";
+import { buildDeepScanPlan, buildLightweightSnapshot } from "./scanPlanner.js";
 import { buildSessionSummary } from "./sessionManager.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
@@ -147,6 +148,81 @@ function num(value, decimals = 4, fallback = 0) {
 
 function arr(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function isSnapshotCacheFresh(snapshot, cacheMinutes = 0, nowMs = Date.now()) {
+  const ttlMs = Math.max(0, Number(cacheMinutes || 0)) * 60_000;
+  const cachedAtMs = new Date(snapshot?.cachedAt || 0).getTime();
+  return ttlMs > 0 && Number.isFinite(cachedAtMs) && nowMs - cachedAtMs <= ttlMs;
+}
+
+function buildCachedSnapshotView({ symbol, cachedSnapshot, streamFeatures = {}, localBookSnapshot = null }) {
+  if (!cachedSnapshot) {
+    return null;
+  }
+
+  const fallbackBid = Number(localBookSnapshot?.bestBid || cachedSnapshot.book?.bid || 0);
+  const fallbackAsk = Number(localBookSnapshot?.bestAsk || cachedSnapshot.book?.ask || 0);
+  const effectiveTicker = streamFeatures.latestBookTicker?.bid && streamFeatures.latestBookTicker?.ask
+    ? {
+        bidPrice: streamFeatures.latestBookTicker.bid,
+        askPrice: streamFeatures.latestBookTicker.ask
+      }
+    : {
+        bidPrice: fallbackBid,
+        askPrice: fallbackAsk
+      };
+  const effectiveOrderBook = localBookSnapshot?.bids?.length && localBookSnapshot?.asks?.length
+    ? {
+        bids: localBookSnapshot.bids,
+        asks: localBookSnapshot.asks
+      }
+    : cachedSnapshot.book?.localBook?.bids?.length && cachedSnapshot.book?.localBook?.asks?.length
+      ? {
+          bids: cachedSnapshot.book.localBook.bids,
+          asks: cachedSnapshot.book.localBook.asks
+        }
+      : {
+          bids: [],
+          asks: []
+        };
+  const refreshedBook = computeOrderBookFeatures(effectiveTicker, effectiveOrderBook);
+  const bid = Number(refreshedBook.bid || fallbackBid || 0);
+  const ask = Number(refreshedBook.ask || fallbackAsk || 0);
+  const mid = Number(
+    refreshedBook.mid ||
+    cachedSnapshot.book?.mid ||
+    (bid && ask ? (bid + ask) / 2 : bid || ask || 0)
+  );
+
+  return {
+    ...cachedSnapshot,
+    symbol,
+    book: {
+      ...(cachedSnapshot.book || {}),
+      ...refreshedBook,
+      bid,
+      ask,
+      mid,
+      spreadBps: Number.isFinite(refreshedBook.spreadBps) ? refreshedBook.spreadBps : Number(cachedSnapshot.book?.spreadBps || 0),
+      tradeFlowImbalance: Number(streamFeatures.tradeFlowImbalance ?? cachedSnapshot.book?.tradeFlowImbalance ?? 0),
+      microTrend: Number(streamFeatures.microTrend ?? cachedSnapshot.book?.microTrend ?? 0),
+      recentTradeCount: Number(streamFeatures.recentTradeCount ?? cachedSnapshot.book?.recentTradeCount ?? 0),
+      localBook: localBookSnapshot || cachedSnapshot.book?.localBook || null,
+      localBookSynced: Boolean(localBookSnapshot?.synced ?? cachedSnapshot.book?.localBookSynced),
+      queueImbalance: Number(localBookSnapshot?.queueImbalance ?? cachedSnapshot.book?.queueImbalance ?? 0),
+      queueRefreshScore: Number(localBookSnapshot?.queueRefreshScore ?? cachedSnapshot.book?.queueRefreshScore ?? 0),
+      resilienceScore: Number(localBookSnapshot?.resilienceScore ?? cachedSnapshot.book?.resilienceScore ?? 0),
+      depthConfidence: Number(localBookSnapshot?.depthConfidence ?? cachedSnapshot.book?.depthConfidence ?? 0),
+      depthAgeMs: localBookSnapshot?.depthAgeMs ?? cachedSnapshot.book?.depthAgeMs ?? null,
+      totalDepthNotional: Number(localBookSnapshot?.totalDepthNotional ?? cachedSnapshot.book?.totalDepthNotional ?? 0)
+    },
+    stream: {
+      ...(cachedSnapshot.stream || {}),
+      ...streamFeatures
+    },
+    fromCache: true
+  };
 }
 
 function defaultProfile(symbol) {
@@ -1426,9 +1502,14 @@ export class TradingBot {
   }
 
   async getMarketSnapshot(symbol) {
+    const cachedSnapshot = this.marketCache[symbol] || null;
+    const streamFeatures = this.stream.getSymbolStreamFeatures(symbol);
+    const localBookSnapshot = this.stream.getOrderBookSnapshot?.(symbol) || null;
+    if (isSnapshotCacheFresh(cachedSnapshot, this.config.marketSnapshotCacheMinutes)) {
+      return buildCachedSnapshotView({ symbol, cachedSnapshot, streamFeatures, localBookSnapshot }) || cachedSnapshot;
+    }
+
     try {
-      const streamFeatures = this.stream.getSymbolStreamFeatures(symbol);
-      const localBookSnapshot = this.stream.getOrderBookSnapshot?.(symbol) || null;
       const useLocalBook = Boolean(
         this.config.enableLocalOrderBook &&
         localBookSnapshot?.synced &&
@@ -1475,7 +1556,15 @@ export class TradingBot {
       book.depthConfidence = localBookSnapshot?.depthConfidence || 0;
       book.depthAgeMs = localBookSnapshot?.depthAgeMs ?? null;
       book.totalDepthNotional = localBookSnapshot?.totalDepthNotional || 0;
-      const snapshot = { symbol, candles, market: computeMarketFeatures(candles), book, stream: streamFeatures };
+      const snapshot = {
+        symbol,
+        candles,
+        market: computeMarketFeatures(candles),
+        book,
+        stream: streamFeatures,
+        cachedAt: nowIso(),
+        fromCache: false
+      };
       const issues = this.health.validateSnapshot(symbol, snapshot, this.runtime, nowIso());
       if (issues.length) {
         throw new Error(`Market snapshot invalid for ${symbol}: ${issues.join(",")}`);
@@ -1483,9 +1572,9 @@ export class TradingBot {
       this.marketCache[symbol] = snapshot;
       return snapshot;
     } catch (error) {
-      if (this.marketCache[symbol]) {
+      if (cachedSnapshot) {
         this.logger.warn("Using cached market snapshot", { symbol, error: error.message });
-        return this.marketCache[symbol];
+        return buildCachedSnapshotView({ symbol, cachedSnapshot, streamFeatures, localBookSnapshot }) || cachedSnapshot;
       }
       throw error;
     }
@@ -2186,52 +2275,44 @@ export class TradingBot {
   async scanCandidates(balance) {
     const now = new Date();
     const symbols = [...new Set([...this.config.watchlist, ...this.runtime.openPositions.map((position) => position.symbol)])];
-    const snapshotEntries = await Promise.all(symbols.map(async (symbol) => {
+    const shallowSnapshotMap = Object.fromEntries(symbols.map((symbol) => [
+      symbol,
+      buildLightweightSnapshot({
+        symbol,
+        config: this.config,
+        streamFeatures: this.stream.getSymbolStreamFeatures(symbol),
+        localBookSnapshot: this.stream.getOrderBookSnapshot?.(symbol) || null,
+        cachedSnapshot: this.marketCache[symbol] || null
+      })
+    ]));
+    const scanPlan = buildDeepScanPlan({
+      config: this.config,
+      watchlist: this.config.watchlist,
+      openPositions: this.runtime.openPositions,
+      latestDecisions: this.runtime.latestDecisions,
+      shallowSnapshotMap,
+      universeSelector: this.universeSelector,
+      nowIso: now.toISOString()
+    });
+    this.stream.setLocalBookUniverse(scanPlan.localBookSymbols || []);
+    const snapshotEntries = await mapWithConcurrency(scanPlan.deepScanSymbols || symbols, this.config.marketSnapshotConcurrency || 4, async (symbol) => {
       try {
         return [symbol, await this.getMarketSnapshot(symbol)];
       } catch (error) {
         this.logger.warn("Snapshot prefetch failed", { symbol, error: error.message });
         return [symbol, null];
       }
-    }));
-    const snapshotMap = Object.fromEntries(snapshotEntries.filter(([, snapshot]) => snapshot));
+    });
+    const snapshotMap = {
+      ...shallowSnapshotMap,
+      ...Object.fromEntries(snapshotEntries.filter(([, snapshot]) => snapshot))
+    };
     const openPositionContexts = this.buildOpenPositionContexts(snapshotMap);
     const optimizerSnapshot = this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
     const attributionSnapshot = this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
     this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
     this.runtime.strategyAttribution = summarizeAttributionSnapshot(attributionSnapshot);
-    const universeSnapshot = this.config.enableUniverseSelector
-      ? this.universeSelector.buildSnapshot({
-          symbols: this.config.watchlist,
-          snapshotMap,
-          openPositions: this.runtime.openPositions,
-          latestDecisions: this.runtime.latestDecisions,
-          journal: this.journal,
-          nowIso: now.toISOString()
-        })
-      : {
-          generatedAt: now.toISOString(),
-          configuredSymbolCount: this.config.watchlist.length,
-          selectedCount: this.config.watchlist.length,
-          eligibleCount: this.config.watchlist.length,
-          selectionRate: 1,
-          averageScore: 0,
-          selectedSymbols: [...this.config.watchlist],
-          selected: this.config.watchlist.map((symbol) => ({
-            symbol,
-            score: 0,
-            health: "watch",
-            spreadBps: 0,
-            depthConfidence: 0,
-            totalDepthNotional: 0,
-            recentTradeCount: 0,
-            realizedVolPct: 0,
-            reasons: ["universe_selector_disabled"],
-            blockers: []
-          })),
-          skipped: [],
-          suggestions: ["Universe selector uitgeschakeld; volledige watchlist wordt ge?valueerd."]
-        };
+    const universeSnapshot = scanPlan.universeSnapshot;
     this.runtime.universe = summarizeUniverseSelection(universeSnapshot);
     this.journal.universeRuns.push({
       at: now.toISOString(),
@@ -2370,7 +2451,11 @@ export class TradingBot {
       driftReasons: [...(candidate.driftSummary?.reasons || [])],
       driftBlockers: [...(candidate.driftSummary?.blockerReasons || [])],
       selfHealIssues: [...(candidate.selfHealState?.issues || [])],
-      headlines: arr(candidate.newsSummary.headlines).slice(0, 3).map(summarizeHeadline)
+      headlines: arr(candidate.newsSummary.headlines).slice(0, 3).map(summarizeHeadline),
+      entryStatus: candidate.decision.allow ? "eligible" : "blocked",
+      entryOpened: false,
+      entryAttempted: false,
+      executionBlockers: []
     }));
     const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
@@ -2390,40 +2475,120 @@ export class TradingBot {
     return candidates;
   }
 
-  async openBestCandidate(candidates) {
+  async openBestCandidate(candidates, { executionBlockers = [] } = {}) {
+    const attempt = {
+      status: "idle",
+      selectedSymbol: null,
+      openedPosition: null,
+      attemptedSymbols: [],
+      blockedReasons: [...(executionBlockers || [])],
+      entryErrors: []
+    };
     if (!this.health.canEnterNewPositions(this.runtime)) {
-      return null;
+      attempt.status = "health_blocked";
+      attempt.blockedReasons.push("health_circuit_open");
+      return attempt;
     }
-    const candidate = candidates.find((item) => item.decision.allow);
-    if (!candidate) {
-      return null;
+    if (attempt.blockedReasons.length) {
+      attempt.status = "runtime_blocked";
+      return attempt;
     }
-    const entryRationale = this.buildEntryRationale(candidate);
-    const position = await this.broker.enterPosition({
-      symbol: candidate.symbol,
-      quoteAmount: candidate.decision.quoteAmount,
-      rules: this.symbolRules[candidate.symbol],
-      marketSnapshot: candidate.marketSnapshot,
-      decision: candidate.decision,
-      score: candidate.score,
-      rawFeatures: candidate.rawFeatures,
-      strategySummary: candidate.strategySummary,
-      newsSummary: candidate.newsSummary,
-      entryRationale,
-      runtime: this.runtime
+    const allowedCandidates = candidates.filter((item) => item.decision.allow);
+    if (!allowedCandidates.length) {
+      attempt.status = "no_allowed_candidates";
+      return attempt;
+    }
+
+    for (const candidate of allowedCandidates) {
+      attempt.selectedSymbol = attempt.selectedSymbol || candidate.symbol;
+      attempt.attemptedSymbols.push(candidate.symbol);
+      const entryRationale = this.buildEntryRationale(candidate);
+      try {
+        const position = await this.broker.enterPosition({
+          symbol: candidate.symbol,
+          quoteAmount: candidate.decision.quoteAmount,
+          rules: this.symbolRules[candidate.symbol],
+          marketSnapshot: candidate.marketSnapshot,
+          decision: candidate.decision,
+          score: candidate.score,
+          rawFeatures: candidate.rawFeatures,
+          strategySummary: candidate.strategySummary,
+          newsSummary: candidate.newsSummary,
+          entryRationale,
+          runtime: this.runtime
+        });
+        this.recordEvent("position_opened", {
+          symbol: position.symbol,
+          probability: candidate.score.probability,
+          regime: candidate.regimeSummary.regime,
+          strategy: candidate.strategySummary?.activeStrategy || null,
+          executionStyle: candidate.decision.executionPlan?.entryStyle || "market",
+          rationale: entryRationale.summary,
+          protectiveOrderListId: position.protectiveOrderListId || null,
+          metaScore: candidate.metaSummary?.score || 0,
+          canaryActive: Boolean(candidate.metaSummary?.canaryActive)
+        });
+        attempt.status = "opened";
+        attempt.selectedSymbol = candidate.symbol;
+        attempt.openedPosition = position;
+        return attempt;
+      } catch (error) {
+        this.logger.warn("Position entry failed", { symbol: candidate.symbol, error: error.message });
+        this.recordEvent("position_open_failed", { symbol: candidate.symbol, error: error.message });
+        attempt.entryErrors.push({ symbol: candidate.symbol, error: error.message });
+      }
+    }
+
+    attempt.status = attempt.entryErrors.length ? "entry_failed" : "no_allowed_candidates";
+    return attempt;
+  }
+
+  applyEntryAttemptToDecisions(entryAttempt = {}) {
+    const openedSymbol = entryAttempt.openedPosition?.symbol || null;
+    const attemptedSymbols = new Set(arr(entryAttempt.attemptedSymbols));
+    const errorMap = new Map(arr(entryAttempt.entryErrors).map((item) => [item.symbol, item.error]));
+    const primaryBlockedReasons = arr(entryAttempt.blockedReasons);
+    const firstAllowedSymbol = arr(this.runtime.latestDecisions).find((decision) => decision.allow)?.symbol || null;
+
+    this.runtime.latestDecisions = arr(this.runtime.latestDecisions).map((decision) => {
+      let entryStatus = decision.allow ? "eligible" : "blocked";
+      let executionBlockers = arr(decision.executionBlockers);
+      const entryAttempted = attemptedSymbols.has(decision.symbol);
+
+      if (!decision.allow) {
+        entryStatus = "blocked";
+        executionBlockers = arr(decision.blockerReasons);
+      } else if (openedSymbol && decision.symbol === openedSymbol) {
+        entryStatus = "opened";
+        executionBlockers = [];
+      } else if (errorMap.has(decision.symbol)) {
+        entryStatus = "entry_failed";
+        executionBlockers = [errorMap.get(decision.symbol)];
+      } else if (primaryBlockedReasons.length && decision.symbol === firstAllowedSymbol) {
+        entryStatus = "runtime_blocked";
+        executionBlockers = [...primaryBlockedReasons];
+      } else if (openedSymbol) {
+        entryStatus = decision.symbol === firstAllowedSymbol ? "opened_elsewhere" : "standby";
+        executionBlockers = decision.symbol === firstAllowedSymbol ? [] : ["higher_ranked_setup_selected"];
+      }
+
+      return {
+        ...decision,
+        entryStatus,
+        entryOpened: entryStatus === "opened",
+        entryAttempted,
+        executionBlockers
+      };
     });
-    this.recordEvent("position_opened", {
-      symbol: position.symbol,
-      probability: candidate.score.probability,
-      regime: candidate.regimeSummary.regime,
-      strategy: candidate.strategySummary?.activeStrategy || null,
-      executionStyle: candidate.decision.executionPlan?.entryStyle || "market",
-      rationale: entryRationale.summary,
-      protectiveOrderListId: position.protectiveOrderListId || null,
-      metaScore: candidate.metaSummary?.score || 0,
-      canaryActive: Boolean(candidate.metaSummary?.canaryActive)
-    });
-    return position;
+    this.runtime.lastEntryAttempt = {
+      status: entryAttempt.status || "idle",
+      selectedSymbol: entryAttempt.selectedSymbol || null,
+      openedSymbol,
+      attemptedSymbols: [...attemptedSymbols],
+      blockedReasons: [...primaryBlockedReasons],
+      entryErrors: arr(entryAttempt.entryErrors),
+      at: nowIso()
+    };
   }
 
   trimJournal() {
@@ -2524,7 +2689,10 @@ export class TradingBot {
     const markedPrices = await this.manageOpenPositions();
     const balance = await this.broker.getBalance(this.runtime);
     const candidates = await this.scanCandidates(balance);
-    const openedPosition = driftIssues.length ? null : await this.openBestCandidate(candidates);
+    const executionBlockers = this.config.botMode === "live" ? driftIssues : [];
+    const entryAttempt = await this.openBestCandidate(candidates, { executionBlockers });
+    const openedPosition = entryAttempt.openedPosition || null;
+    this.applyEntryAttemptToDecisions(entryAttempt);
     const portfolio = await this.updatePortfolioSnapshot(markedPrices);
     this.journal.equitySnapshots.push({
       at: cycleAt,
@@ -2542,7 +2710,10 @@ export class TradingBot {
       activeRegime: this.runtime.latestDecisions[0]?.regime || null,
       activeStrategy: this.runtime.latestDecisions[0]?.strategy?.activeStrategy || null,
       circuitOpen: this.runtime.health?.circuitOpen || false,
-      driftIssues
+      driftIssues,
+      entryStatus: entryAttempt.status || "idle",
+      selectedSymbol: entryAttempt.selectedSymbol || null,
+      openedSymbol: entryAttempt.openedPosition?.symbol || null
     });
     const safety = this.updateSafetyState({ now: new Date(cycleAt), candidateSummaries: arr(this.runtime.latestDecisions) });
     this.runtime.lastCycleAt = cycleAt;
@@ -2555,6 +2726,7 @@ export class TradingBot {
       mode: this.config.botMode,
       candidates,
       openedPosition,
+      entryAttempt,
       overview: {
         equity: portfolio.equity,
         quoteFree: portfolio.balance.quoteFree,
@@ -2585,6 +2757,7 @@ export class TradingBot {
       equity: portfolio.equity,
       openPositions: this.runtime.openPositions.length,
       driftIssues,
+      entryAttempt,
       health: this.health.getStatus(this.runtime),
       stream: this.stream.getStatus(),
       calibration: this.model.getCalibrationSummary(),
@@ -2774,6 +2947,10 @@ export class TradingBot {
       setupStyle: decision.setupStyle || null,
       regime: decision.regime || null,
       allow: Boolean(decision.allow),
+      entryStatus: decision.entryStatus || (decision.allow ? "eligible" : "blocked"),
+      entryOpened: Boolean(decision.entryOpened),
+      entryAttempted: Boolean(decision.entryAttempted),
+      executionBlockers: arr(decision.executionBlockers || []).slice(0, 4),
       probability: num(decision.probability || 0, 4),
       threshold: num(decision.threshold || 0, 4),
       edgeToThreshold: num(decision.edgeToThreshold ?? ((decision.probability || 0) - (decision.threshold || 0)), 4),
@@ -3179,6 +3356,14 @@ export class TradingBot {
     };
   }
 }
+
+
+
+
+
+
+
+
 
 
 
