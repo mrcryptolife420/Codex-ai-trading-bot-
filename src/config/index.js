@@ -15,6 +15,7 @@ const DEFAULTS = {
   maxDailyDrawdown: 0.04,
   minModelConfidence: 0.5,
   entryCooldownMinutes: 20,
+  symbolLossCooldownMinutes: 240,
   minTradeUsdt: 25,
   tradingIntervalSeconds: 120,
   paperFeeBps: 10,
@@ -223,6 +224,7 @@ const DEFAULTS = {
   canaryLiveSizeMultiplier: 0.35,
   dailyRiskBudgetFloor: 0.35,
   maxEntriesPerDay: 12,
+  maxEntriesPerSymbolPerDay: 2,
   scaleOutTriggerPct: 0.014,
   scaleOutFraction: 0.4,
   scaleOutMinNotionalUsd: 35,
@@ -345,6 +347,7 @@ export async function loadConfig(projectRoot = process.cwd()) {
     maxDailyDrawdown: parseNumber(env.MAX_DAILY_DRAWDOWN, DEFAULTS.maxDailyDrawdown),
     minModelConfidence: parseNumber(env.MIN_MODEL_CONFIDENCE, DEFAULTS.minModelConfidence),
     entryCooldownMinutes: parseNumber(env.ENTRY_COOLDOWN_MINUTES, DEFAULTS.entryCooldownMinutes),
+    symbolLossCooldownMinutes: parseNumber(env.SYMBOL_LOSS_COOLDOWN_MINUTES, DEFAULTS.symbolLossCooldownMinutes),
     minTradeUsdt: parseNumber(env.MIN_TRADE_USDT, DEFAULTS.minTradeUsdt),
     tradingIntervalSeconds: parseNumber(env.TRADING_INTERVAL_SECONDS, DEFAULTS.tradingIntervalSeconds),
     paperFeeBps: parseNumber(env.PAPER_FEE_BPS, DEFAULTS.paperFeeBps),
@@ -536,6 +539,7 @@ export async function loadConfig(projectRoot = process.cwd()) {
     canaryLiveSizeMultiplier: parseNumber(env.CANARY_LIVE_SIZE_MULTIPLIER, DEFAULTS.canaryLiveSizeMultiplier),
     dailyRiskBudgetFloor: parseNumber(env.DAILY_RISK_BUDGET_FLOOR, DEFAULTS.dailyRiskBudgetFloor),
     maxEntriesPerDay: parseNumber(env.MAX_ENTRIES_PER_DAY, DEFAULTS.maxEntriesPerDay),
+    maxEntriesPerSymbolPerDay: parseNumber(env.MAX_ENTRIES_PER_SYMBOL_PER_DAY, DEFAULTS.maxEntriesPerSymbolPerDay),
     scaleOutTriggerPct: parseNumber(env.SCALE_OUT_TRIGGER_PCT, DEFAULTS.scaleOutTriggerPct),
     scaleOutFraction: parseNumber(env.SCALE_OUT_FRACTION, DEFAULTS.scaleOutFraction),
     scaleOutMinNotionalUsd: parseNumber(env.SCALE_OUT_MIN_NOTIONAL_USD, DEFAULTS.scaleOutMinNotionalUsd),
@@ -570,6 +574,7 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
+
 
 
 

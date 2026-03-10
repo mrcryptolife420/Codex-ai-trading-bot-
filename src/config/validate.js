@@ -150,6 +150,8 @@ export function validateConfig(config) {
   assertRange("CANARY_LIVE_SIZE_MULTIPLIER", config.canaryLiveSizeMultiplier, 0.05, 1, errors);
   assertRange("DAILY_RISK_BUDGET_FLOOR", config.dailyRiskBudgetFloor, 0.05, 1, errors);
   assertRange("MAX_ENTRIES_PER_DAY", config.maxEntriesPerDay, 1, 100, errors);
+  assertRange("MAX_ENTRIES_PER_SYMBOL_PER_DAY", config.maxEntriesPerSymbolPerDay, 1, 24, errors);
+  assertRange("SYMBOL_LOSS_COOLDOWN_MINUTES", config.symbolLossCooldownMinutes, 0, 1440, errors);
   assertRange("SCALE_OUT_TRIGGER_PCT", config.scaleOutTriggerPct, 0.001, 0.2, errors);
   assertRange("SCALE_OUT_FRACTION", config.scaleOutFraction, 0.05, 0.95, errors);
   assertRange("SCALE_OUT_MIN_NOTIONAL_USD", config.scaleOutMinNotionalUsd, 5, 100000, errors);
@@ -278,6 +280,7 @@ export function assertValidConfig(config) {
   }
   return result;
 }
+
 
 
 

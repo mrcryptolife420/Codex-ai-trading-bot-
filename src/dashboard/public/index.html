@@ -9,73 +9,32 @@
   <body data-theme="dark">
     <div class="ambient ambient-a"></div>
     <div class="ambient ambient-b"></div>
-    <button id="sidebarScrim" class="sidebar-scrim" type="button" aria-label="Sluit navigatie"></button>
 
     <div class="app-shell">
-      <aside class="sidebar" id="sidebar" aria-label="Zijbalk navigatie">
-        <div class="panel sidebar-shell">
-          <div class="sidebar-inner">
-            <div class="sidebar-brand">
-              <div class="brand-mark">AI</div>
-              <div class="brand-copy">
-                <p class="eyebrow">Codex control</p>
-                <h1>Trading Deck</h1>
-                <p class="subtle">Een compact operator-dashboard voor paper, live, research en trade-analyse.</p>
-              </div>
-            </div>
-
-            <nav class="sidebar-nav" aria-label="Dashboard secties">
-              <details class="nav-group" data-nav-group="overview" open>
-                <summary class="nav-summary" data-short="OV">Overview</summary>
-                <div class="nav-links">
-                  <a href="#metricsSection">Pulse</a>
-                  <a href="#setupsSection">Equity</a>
-                  <a href="#primaryTradesSection">Setups</a>
-                </div>
-              </details>
-              <details class="nav-group" data-nav-group="advanced">
-                <summary class="nav-summary" data-short="AD">Advanced</summary>
-                <div class="nav-links">
-                  <a href="#advancedSection">Analyse</a>
-                  <a href="#advancedSection">Research</a>
-                  <a href="#advancedSection">Runtime</a>
-                </div>
-              </details>
-            </nav>
-
-            <div class="sidebar-foot panel-subtle">
-              <p class="kicker">Runtime note</p>
-              <p class="hint">De uitgebreide analyse zit bewust onder één inklapbare laag zodat het dashboard rustig blijft.</p>
-            </div>
-          </div>
-        </div>
-      </aside>
-
       <main class="workspace">
         <header class="topbar panel">
-          <div class="topbar-left">
-            <button id="sidebarToggle" class="icon-button secondary" type="button" aria-label="Zijbalk inklappen">
-              <span></span>
-              <span></span>
-              <span></span>
-            </button>
-            <div class="topbar-copy">
-              <p class="eyebrow">Binance Spot AI Control Center</p>
-              <div class="title-line">
-                <h2>Trading operations dashboard</h2>
-                <span class="subtle">Compact, duidelijk en sneller scanbaar</span>
-              </div>
+          <div class="topbar-main">
+            <div class="brand-block">
+              <p class="eyebrow">Codex AI crypto trading bot</p>
+              <h1>Trading dashboard</h1>
+              <p class="subtle">Een rustige operator-view voor status, setups, posities en research.</p>
             </div>
-          </div>
-
-          <div class="topbar-right">
             <div class="status-cluster" aria-label="Status badges">
               <span class="badge" id="modeBadge">MODE</span>
               <span class="badge muted" id="runStateBadge">STATUS</span>
               <span class="badge muted" id="healthBadge">HEALTH</span>
             </div>
+          </div>
 
-            <div class="utility-row">
+          <div class="topbar-actions">
+            <nav class="section-nav" aria-label="Snelle navigatie">
+              <a class="quick-link" href="#metricsSection">Overview</a>
+              <a class="quick-link" href="#primaryTradesSection">Trades</a>
+              <a class="quick-link" href="#advancedSection">Analyse</a>
+              <a class="quick-link" href="#recentTradesSection">History</a>
+            </nav>
+
+            <div class="topbar-controls">
               <div class="theme-switch" role="group" aria-label="Kies thema">
                 <button id="themeDarkBtn" class="theme-option secondary" type="button" aria-pressed="true">Dark</button>
                 <button id="themeLightBtn" class="theme-option secondary" type="button" aria-pressed="false">Light</button>
@@ -97,8 +56,8 @@
 
         <section class="operator-strip panel">
           <div>
-            <p class="eyebrow">Operator summary</p>
-            <h3>Alleen de belangrijkste informatie bovenaan</h3>
+            <p class="eyebrow">Live summary</p>
+            <h2>Alleen wat nu telt</h2>
           </div>
           <p id="controlHint" class="hint">Status wordt geladen...</p>
         </section>
@@ -118,7 +77,7 @@
             <div class="section-head">
               <div>
                 <h2>Equity curve</h2>
-                <p>Kapitaalontwikkeling van recente bot-cycli.</p>
+                <p>Kapitaalontwikkeling van recente cycli.</p>
               </div>
               <span class="subtle" id="equityMeta"></span>
             </div>
@@ -140,7 +99,7 @@
             <div class="section-head" data-collapsible="true">
               <div>
                 <h2>Open posities</h2>
-                <p>Alleen de kern van de actieve posities.</p>
+                <p>Alleen de kern van actieve posities.</p>
               </div>
             </div>
             <div id="positionsList" class="stack"></div>
@@ -168,7 +127,7 @@
           <div class="section-head" data-collapsible="true">
             <div>
               <h2>Advanced analysis</h2>
-              <p>Replay, runtime, research en marktcontext op één rustige tweede laag.</p>
+              <p>Alle extra context pas op de tweede laag.</p>
             </div>
           </div>
 
@@ -178,7 +137,7 @@
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Why not trades</h2>
-                    <p>Alleen de sterkste blocker-redenen.</p>
+                    <p>De belangrijkste blocker-redenen.</p>
                   </div>
                 </div>
                 <div id="blockedList" class="stack compact"></div>
@@ -217,12 +176,12 @@
               </article>
             </section>
 
-            <section class="grid three-up" id="researchSection">
+            <section class="grid two-up" id="researchSection">
               <article class="panel collapsible" id="universePanel" data-default-collapsed="true">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Universe focus</h2>
-                    <p>Welke pairs het meest kansrijk zijn om te volgen.</p>
+                    <p>Welke pairs nu het meest kansrijk zijn.</p>
                   </div>
                 </div>
                 <div id="universeSummary" class="insight-grid"></div>
@@ -238,6 +197,9 @@
                 <div id="attributionSummary" class="insight-grid"></div>
                 <div id="attributionList" class="stack compact"></div>
               </article>
+            </section>
+
+            <section class="grid two-up" id="governanceSection">
               <article class="panel collapsible" id="registryPanel" data-default-collapsed="true">
                 <div class="section-head" data-collapsible="true">
                   <div>
@@ -248,9 +210,6 @@
                 <div id="governanceSummary" class="insight-grid"></div>
                 <div id="registryList" class="stack compact"></div>
               </article>
-            </section>
-
-            <section class="grid two-up" id="recentTradesSection">
               <article class="panel table-panel collapsible" id="tradesPanel" data-default-collapsed="true">
                 <div class="section-head" data-collapsible="true">
                   <div>
@@ -276,81 +235,90 @@
                   </table>
                 </div>
               </article>
-              <article class="panel collapsible" id="intelPanel" data-default-collapsed="true">
-                <div class="section-head" data-collapsible="true">
-                  <div>
-                    <h2>Model &amp; market intelligence</h2>
-                    <p>Kernoverzicht voor model, marktcontext en veiligheid.</p>
-                  </div>
-                </div>
-                <div class="intel-cluster">
-                  <div class="intel-head">
-                    <div>
-                      <h3>AI kern</h3>
-                      <p>Champion, quality gate en promotie.</p>
-                    </div>
-                  </div>
-                  <div id="aiSummary" class="insight-grid"></div>
-                  <div id="optimizerSummary" class="insight-grid"></div>
-                </div>
-                <div class="intel-cluster">
-                  <div class="intel-head">
-                    <div>
-                      <h3>Execution</h3>
-                      <p>Streams, fills en portfolio-context.</p>
-                    </div>
-                  </div>
-                  <div id="streamSummary" class="insight-grid"></div>
-                  <div id="executionSummary" class="insight-grid"></div>
-                  <div id="portfolioSummary" class="insight-grid"></div>
-                </div>
-                <div class="intel-cluster">
-                  <div class="intel-head">
-                    <div>
-                      <h3>Marktcontext</h3>
-                      <p>Nieuws, futures, volatility en macro.</p>
-                    </div>
-                  </div>
-                  <div id="newsSummary" class="insight-grid"></div>
-                  <div id="marketStructureSummary" class="insight-grid"></div>
-                  <div id="volatilitySummary" class="insight-grid"></div>
-                  <div id="calendarSummary" class="insight-grid"></div>
-                </div>
-                <div class="intel-cluster">
-                  <div class="intel-head">
-                    <div>
-                      <h3>Veiligheid</h3>
-                      <p>Drift, self-heal en operationele status.</p>
-                    </div>
-                  </div>
-                  <div id="driftSummary" class="insight-grid"></div>
-                  <div id="safetySummary" class="insight-grid"></div>
-                </div>
-                <div class="dual-stack">
-                  <div>
-                    <h3>Komende events</h3>
-                    <div id="upcomingEventsList" class="stack compact"></div>
-                  </div>
-                  <div>
-                    <h3>Officiele Binance notices</h3>
-                    <div id="officialNoticeList" class="stack compact"></div>
-                  </div>
-                </div>
-                <div class="dual-stack">
-                  <div>
-                    <h3>Top model weights</h3>
-                    <div id="weightsList" class="stack compact"></div>
-                  </div>
-                  <div>
-                    <h3>Recente events</h3>
-                    <div id="eventsList" class="stack compact"></div>
-                  </div>
-                </div>
+            </section>
+
+            <section class="panel collapsible" id="intelPanel" data-default-collapsed="true">
+              <div class="section-head" data-collapsible="true">
                 <div>
-                  <h3>Research lab</h3>
-                  <div id="researchList" class="stack compact"></div>
+                  <h2>Model &amp; market intelligence</h2>
+                  <p>Samenvatting eerst, verdiepende info pas op aanvraag.</p>
                 </div>
-              </article>
+              </div>
+
+              <div class="intel-cluster">
+                <div class="intel-head">
+                  <div>
+                    <h3>AI en execution</h3>
+                    <p>Champion, quality gate, fills en portfolio-context.</p>
+                  </div>
+                </div>
+                <div id="aiSummary" class="insight-grid"></div>
+                <div id="optimizerSummary" class="insight-grid"></div>
+                <div id="streamSummary" class="insight-grid"></div>
+                <div id="executionSummary" class="insight-grid"></div>
+                <div id="portfolioSummary" class="insight-grid"></div>
+              </div>
+
+              <div class="intel-cluster">
+                <div class="intel-head">
+                  <div>
+                    <h3>Markt en safety</h3>
+                    <p>Nieuws, futures, volatility, drift en self-heal.</p>
+                  </div>
+                </div>
+                <div id="newsSummary" class="insight-grid"></div>
+                <div id="marketStructureSummary" class="insight-grid"></div>
+                <div id="volatilitySummary" class="insight-grid"></div>
+                <div id="calendarSummary" class="insight-grid"></div>
+                <div id="driftSummary" class="insight-grid"></div>
+                <div id="safetySummary" class="insight-grid"></div>
+              </div>
+
+              <details class="detail-section static-detail" data-detail-key="intel-context-feeds">
+                <summary class="detail-summary">
+                  <div class="detail-copy">
+                    <span class="detail-title">Context feeds</span>
+                    <span class="detail-meta">Events, notices en research in een tweede laag</span>
+                  </div>
+                </summary>
+                <div class="detail-body">
+                  <div class="dual-stack">
+                    <div>
+                      <h3>Komende events</h3>
+                      <div id="upcomingEventsList" class="stack compact"></div>
+                    </div>
+                    <div>
+                      <h3>Officiele Binance notices</h3>
+                      <div id="officialNoticeList" class="stack compact"></div>
+                    </div>
+                  </div>
+                  <div>
+                    <h3>Research lab</h3>
+                    <div id="researchList" class="stack compact"></div>
+                  </div>
+                </div>
+              </details>
+
+              <details class="detail-section static-detail" data-detail-key="intel-runtime-feed">
+                <summary class="detail-summary">
+                  <div class="detail-copy">
+                    <span class="detail-title">Runtime feed</span>
+                    <span class="detail-meta">Model weights en recente runtime-events</span>
+                  </div>
+                </summary>
+                <div class="detail-body">
+                  <div class="dual-stack">
+                    <div>
+                      <h3>Top model weights</h3>
+                      <div id="weightsList" class="stack compact"></div>
+                    </div>
+                    <div>
+                      <h3>Recente events</h3>
+                      <div id="eventsList" class="stack compact"></div>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </section>
           </div>
         </section>

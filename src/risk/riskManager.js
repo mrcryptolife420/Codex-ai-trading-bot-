@@ -1,4 +1,4 @@
-import { clamp } from "../utils/math.js";
+﻿import { clamp } from "../utils/math.js";
 import { minutesBetween, sameUtcDay } from "../utils/time.js";
 
 function safeValue(value) {
@@ -53,6 +53,16 @@ export class RiskManager {
 
   getRecentTradeForSymbol(journal, symbol) {
     return [...(journal?.trades || [])].reverse().find((trade) => trade.symbol === symbol && trade.exitAt);
+  }
+
+  getDailyEntryCountForSymbol(journal, runtime, symbol, nowIso) {
+    const closedEntries = (journal?.trades || []).filter(
+      (trade) => trade.symbol === symbol && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)
+    ).length;
+    const openEntries = (runtime?.openPositions || []).filter(
+      (position) => position.symbol === symbol && position.entryAt && sameUtcDay(position.entryAt, nowIso)
+    ).length;
+    return closedEntries + openEntries;
   }
 
   getLossStreak(journal, symbol = null, options = {}) {
@@ -297,6 +307,17 @@ export class RiskManager {
     }
 
     const recentTrade = this.getRecentTradeForSymbol(journal, symbol);
+    const dailyEntriesForSymbol = this.getDailyEntryCountForSymbol(journal, runtime, symbol, nowIso);
+    if (dailyEntriesForSymbol >= this.config.maxEntriesPerSymbolPerDay) {
+      reasons.push("symbol_entry_budget_reached");
+    }
+    if (
+      recentTrade?.exitAt &&
+      (recentTrade.pnlQuote || 0) < 0 &&
+      minutesBetween(recentTrade.exitAt, nowIso) < this.config.symbolLossCooldownMinutes
+    ) {
+      reasons.push("symbol_loss_cooldown_active");
+    }
     if (recentTrade?.exitAt && minutesBetween(recentTrade.exitAt, nowIso) < this.config.entryCooldownMinutes) {
       reasons.push("entry_cooldown_active");
     }
@@ -579,6 +600,7 @@ export class RiskManager {
     };
   }
 }
+
 
 
 

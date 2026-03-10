@@ -1,5 +1,14 @@
 ﻿const POLL_MS = 5000;
 const THEME_STORAGE_KEY = "dashboard-theme";
+const DETAIL_STATE_STORAGE_KEY = "dashboard-detail-state";
+const TOP_DECISION_RENDER_LIMIT = 6;
+const BLOCKED_RENDER_LIMIT = 4;
+const REPLAY_RENDER_LIMIT = 3;
+const RECENT_TRADE_RENDER_LIMIT = 6;
+const UNIVERSE_RENDER_LIMIT = 6;
+const ATTRIBUTION_RENDER_LIMIT = 4;
+const PNL_ATTRIBUTION_RENDER_LIMIT = 6;
+const REGISTRY_RENDER_LIMIT = 4;
 
 const elements = {
   modeBadge: document.querySelector("#modeBadge"),
@@ -62,6 +71,55 @@ let busy = false;
 let transientMessage = "";
 let decisionSearchQuery = "";
 let decisionAllowedOnly = false;
+
+function readDetailState() {
+  try {
+    return JSON.parse(window.localStorage.getItem(DETAIL_STATE_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function getDetailOpenState(key, defaultOpen = false) {
+  if (!key) {
+    return defaultOpen;
+  }
+  const state = readDetailState();
+  return Object.prototype.hasOwnProperty.call(state, key) ? Boolean(state[key]) : defaultOpen;
+}
+
+function setDetailOpenState(key, open) {
+  if (!key) {
+    return;
+  }
+  const state = readDetailState();
+  state[key] = Boolean(open);
+  window.localStorage.setItem(DETAIL_STATE_STORAGE_KEY, JSON.stringify(state));
+}
+
+function detailAttrs(key, defaultOpen = false) {
+  const attrs = [];
+  if (key) {
+    attrs.push(`data-detail-key="${escapeHtml(key)}"`);
+  }
+  if (getDetailOpenState(key, defaultOpen)) {
+    attrs.push("open");
+  }
+  return attrs.length ? ` ${attrs.join(" ")}` : "";
+}
+
+function bindPersistentDetails(root = document) {
+  root.querySelectorAll("details[data-detail-key]").forEach((detail) => {
+    if (detail.dataset.detailBound) {
+      return;
+    }
+    detail.addEventListener("toggle", () => {
+      setDetailOpenState(detail.dataset.detailKey || "", detail.open);
+    });
+    detail.dataset.detailBound = "true";
+  });
+}
+
 const mobileSidebarMedia = window.matchMedia("(max-width: 1180px)");
 let mobileSidebarOpen = false;
 
@@ -246,9 +304,9 @@ function renderReasonPills(items = [], emptyText = "Geen highlights", limit = 4)
   return `<div class="tag-list compact-tags">${renderTagList(collectHighlights(items, limit), emptyText)}</div>`;
 }
 
-function renderDetailSection(title, meta, content, open = false) {
+function renderDetailSection(title, meta, content, open = false, key = "") {
   return `
-    <details class="detail-section" ${open ? "open" : ""}>
+    <details class="detail-section"${detailAttrs(key, open)}>
       <summary class="detail-summary">
         <div class="detail-copy">
           <span class="detail-title">${escapeHtml(title)}</span>
@@ -699,7 +757,7 @@ function renderPositions(snapshot) {
       ], 4);
       const headlines = (rationale.headlines || []).slice(0, 2).map((headline) => headline.title || headline);
       return `
-        <details class="position-card fold-card compact-fold" ${index === 0 ? "open" : ""}>
+        <details class="position-card fold-card compact-fold"${detailAttrs(`position:${position.symbol}`, false)}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
@@ -762,7 +820,7 @@ function renderDecisions(snapshot) {
   }
 
   elements.decisionsList.innerHTML = filtered
-    .slice(0, Math.min(decisionLimit, 8))
+    .slice(0, Math.min(decisionLimit, TOP_DECISION_RENDER_LIMIT))
     .map((decision, index) => {
       const edge = Number(decision.edgeToThreshold ?? (decision.probability || 0) - (decision.threshold || 0));
       const strategyLabel = decision.strategy?.strategyLabel || decision.strategySummary?.strategyLabel || decision.setupStyle || "setup";
@@ -795,7 +853,7 @@ function renderDecisions(snapshot) {
         </div>
       `;
       return `
-        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}" ${index === 0 ? "open" : ""}>
+        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}"${detailAttrs(`decision:${decision.symbol}:${decision.allow ? "go" : "skip"}`, false)}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
@@ -813,7 +871,7 @@ function renderDecisions(snapshot) {
           </summary>
           <div class="fold-body compact-body">
             ${compactView}
-            ${renderDetailSection("Meer context", "Alleen de kernsignalen", contextView)}
+            ${renderDetailSection("Meer context", "Alleen de kernsignalen", contextView, false, `decision-context:${decision.symbol}:${decision.allow ? "go" : "skip"}`)}
           </div>
         </details>
       `;
@@ -828,7 +886,7 @@ function renderTrades(snapshot) {
   }
 
   elements.tradesBody.innerHTML = trades
-    .slice(0, 8)
+    .slice(0, RECENT_TRADE_RENDER_LIMIT)
     .map(
       (trade) => `
         <tr>
@@ -1019,13 +1077,13 @@ function renderBlockedSetups(snapshot) {
   const blocked = snapshot.dashboard.blockedSetups || [];
   elements.blockedList.innerHTML = blocked.length
     ? blocked
-        .slice(0, 6)
+        .slice(0, BLOCKED_RENDER_LIMIT)
         .map(
           (item, index) => {
             const mainReason = normalizeReasonLabel(item.blockerReasons?.[0] || item.reasons?.[0] || "geen duidelijke blocker");
             const qualityScore = item.meta?.qualityScore ?? item.meta?.score ?? 0;
             return `
-              <details class="blocked-card fold-card blocked compact-fold" ${index === 0 ? "open" : ""}>
+              <details class="blocked-card fold-card blocked compact-fold"${detailAttrs(`blocked:${item.symbol || "setup"}:${index}`, false)}>
                 <summary class="fold-summary">
                   <div class="fold-header">
                     <div>
@@ -1041,8 +1099,8 @@ function renderBlockedSetups(snapshot) {
                   </div>
                 </summary>
                 <div class="fold-body compact-body">
-                  <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList((item.blockerReasons || item.reasons || []).slice(0, 4).map(normalizeReasonLabel), "Geen blockers")}</div></div>
-                  <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])].slice(0, 4).map(normalizeReasonLabel), "Geen extra safety-flags")}</div></div>
+                  <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList((item.blockerReasons || item.reasons || []).slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen blockers")}</div></div>
+                  <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])].slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen extra safety-flags")}</div></div>
                 </div>
               </details>
             `;
@@ -1055,10 +1113,10 @@ function renderTradeReplays(snapshot) {
   const replays = snapshot.dashboard.tradeReplays || [];
   elements.replayList.innerHTML = replays.length
     ? replays
-        .slice(0, 4)
+        .slice(0, REPLAY_RENDER_LIMIT)
         .map(
           (trade, index) => `
-            <details class="replay-card fold-card compact-fold" ${index === 0 ? "open" : ""}>
+            <details class="replay-card fold-card compact-fold"${detailAttrs(`replay:${trade.symbol || "trade"}:${trade.entryAt || index}`, false)}>
               <summary class="fold-summary">
                 <div class="fold-header">
                   <div>
@@ -1083,7 +1141,7 @@ function renderTradeReplays(snapshot) {
                 <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList([trade.whyOpened].filter(Boolean), "Geen entry-uitleg")}</div></div>
                 <div class="note-line"><span class="kicker">Waarom dicht</span><div class="tag-list">${renderTagList([trade.whyClosed].filter(Boolean), "Geen exit-reden")}</div></div>
                 <div class="note-line"><span class="kicker">Nieuws</span><div class="tag-list">${renderTagList((trade.headlines || []).slice(0, 2), "Geen nieuws-overlay")}</div></div>
-                ${renderDetailSection("Timeline", "Open, schaal uit en sluit", renderTimelineRows(trade.timeline || [], "Nog geen replay-timeline."))}
+                ${renderDetailSection("Timeline", "Open, schaal uit en sluit", renderTimelineRows(trade.timeline || [], "Nog geen replay-timeline."), false, `replay-timeline:${trade.symbol || "trade"}:${trade.entryAt || index}`)}
               </div>
             </details>
           `
@@ -1099,7 +1157,7 @@ function renderResearch(snapshot) {
   }
 
   const leadReport = (research.reports || [])[0] || {};
-  const leadExperiments = (leadReport.experiments || []).slice(0, 4).map((item) => ({
+  const leadExperiments = (leadReport.experiments || []).slice(0, REPLAY_RENDER_LIMIT).map((item) => ({
     label: `${item.tradeCount || 0} trades`,
     at: item.testEndAt || research.generatedAt,
     detail: `${formatMoney(item.realizedPnl || 0)} | win ${formatPct(item.winRate || 0, 1)} | sharpe ${formatNumber(item.sharpe || 0, 2)}${item.strategyLeaders?.length ? ` | ${item.strategyLeaders.join(", ")}` : ""}`
@@ -1119,7 +1177,7 @@ function renderResearch(snapshot) {
         <div class="mini-stat"><span class="kicker">Trades</span><strong>${research.totalTrades || 0}</strong><div class="meta">PnL ${formatMoney(research.realizedPnl || 0)}</div></div>
         <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(research.averageWinRate || 0, 1)}</strong><div class="meta">Sharpe ${formatNumber(research.averageSharpe || 0, 2)}</div></div>
       </div>
-      <div class="note-line"><span class="kicker">Lead report</span><div class="tag-list">${renderTagList((leadReport.experiments || []).flatMap((item) => item.strategyLeaders || []).slice(0, 6), "Nog geen strategy leaders")}</div></div>
+      <div class="note-line"><span class="kicker">Lead report</span><div class="tag-list">${renderTagList((leadReport.experiments || []).flatMap((item) => item.strategyLeaders || []).slice(0, BLOCKED_RENDER_LIMIT), "Nog geen strategy leaders")}</div></div>
       ${renderTimelineRows(leadExperiments, "Nog geen experiment-vensters beschikbaar.")}
     </article>
   `;
@@ -1136,6 +1194,7 @@ function renderUniverse(snapshot) {
 
   elements.universeList.innerHTML = selected.length
     ? selected
+        .slice(0, UNIVERSE_RENDER_LIMIT)
         .map(
           (item) => `
             <article class="universe-card">
@@ -1177,6 +1236,7 @@ function renderAttribution(snapshot) {
   ];
   elements.attributionList.innerHTML = cards.length
     ? cards
+        .slice(0, ATTRIBUTION_RENDER_LIMIT)
         .map(
           (item) => `
             <article class="attribution-card">
@@ -1221,6 +1281,7 @@ function renderPnlAttribution(snapshot) {
   ];
   elements.pnlAttributionList.innerHTML = cards.length
     ? cards
+        .slice(0, PNL_ATTRIBUTION_RENDER_LIMIT)
         .map(
           (item) => `
             <article class="attribution-card">
@@ -1277,7 +1338,7 @@ function renderGovernance(snapshot) {
 
   elements.registryList.innerHTML = (registry.leaderboard || []).length
     ? (registry.leaderboard || [])
-        .slice(0, 5)
+        .slice(0, REGISTRY_RENDER_LIMIT)
         .map(
           (item) => `
             <article class="registry-card">
@@ -1343,6 +1404,7 @@ function render(snapshot) {
   renderWeights(snapshot);
   renderEvents(snapshot);
   renderResearch(snapshot);
+  bindPersistentDetails();
 }
 
 function pickSnapshot(payload) {
@@ -1412,17 +1474,15 @@ elements.decisionAllowedOnly.addEventListener("change", (event) => {
   }
 });
 
-setupSidebar();
-setupSidebarAccordion();
 setupThemeToggle();
 setupCollapsiblePanels();
+bindPersistentDetails();
 
 refreshSnapshot().catch((error) => {
   transientMessage = error.message;
   elements.controlHint.textContent = error.message;
 });
 window.setInterval(() => {
-  setupCollapsiblePanels();
   refreshSnapshot().catch((error) => {
     transientMessage = error.message;
     if (latestSnapshot) {
@@ -1430,6 +1490,14 @@ window.setInterval(() => {
     }
   });
 }, POLL_MS);
+
+
+
+
+
+
+
+
 
 
 
