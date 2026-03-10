@@ -1,5 +1,5 @@
 import path from "node:path";
-import { ensureDir, loadJson, saveJson } from "../utils/fs.js";
+import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
 const DEFAULT_MODEL = {
   bias: 0,
@@ -81,6 +81,10 @@ export class StateStore {
 
   async init() {
     await ensureDir(this.runtimeDir);
+    const staleTempFiles = (await listFiles(this.runtimeDir)).filter((filePath) => filePath.endsWith(".tmp"));
+    for (const filePath of staleTempFiles) {
+      await removeFile(filePath);
+    }
   }
 
   async loadModel() {
@@ -115,3 +119,5 @@ export class StateStore {
     await saveJson(this.modelBackupsPath, backups);
   }
 }
+
+

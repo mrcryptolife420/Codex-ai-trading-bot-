@@ -1020,6 +1020,10 @@ export class TradingBot {
     this.journal.cycles = arr(this.journal.cycles);
     this.journal.events = arr(this.journal.events);
 
+    await this.dataRecorder.init(this.runtime.dataRecorder || null);
+    await this.backupManager.init(this.runtime.stateBackups || null);
+    this.runtime.dataRecorder = this.dataRecorder.getSummary();
+    this.runtime.stateBackups = this.backupManager.getSummary();
     this.model = new AdaptiveTradingModel(await this.store.loadModel(), this.config);
     this.rlPolicy = new ReinforcementExecutionPolicy(this.runtime.executionPolicyState, this.config);
     this.news = new NewsService({ config: this.config, runtime: this.runtime, logger: this.logger });
@@ -3077,6 +3081,8 @@ export class TradingBot {
     };
   }
 }
+
+
 
 
 

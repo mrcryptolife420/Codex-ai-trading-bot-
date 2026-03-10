@@ -35,6 +35,8 @@ import { DriftMonitor } from "../src/runtime/driftMonitor.js";
 import { SelfHealManager } from "../src/runtime/selfHealManager.js";
 import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtime/researchLab.js";
 import { DataRecorder } from "../src/runtime/dataRecorder.js";
+import { StateBackupManager } from "../src/runtime/stateBackupManager.js";
+import { StateStore } from "../src/storage/stateStore.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -1526,6 +1528,64 @@ await runCheck("config loader parses recorder and backup settings", async () => 
   }
 });
 
+await runCheck("data recorder restores persisted summary across restarts", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-restore-"));
+  try {
+    await fs.mkdir(path.join(tempDir, "feature-store", "decisions"), { recursive: true });
+    await fs.writeFile(path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl"), "{}\n");
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init({
+      lastRecordAt: "2026-03-10T09:00:00.000Z",
+      filesWritten: 9,
+      cycleFrames: 3,
+      decisionFrames: 12,
+      tradeFrames: 2,
+      learningFrames: 2,
+      researchFrames: 1
+    });
+    const summary = recorder.getSummary();
+    assert.equal(summary.filesWritten, 9);
+    assert.equal(summary.learningFrames, 2);
+    assert.equal(summary.lastRecordAt, "2026-03-10T09:00:00.000Z");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("state backup manager restores existing backup count and timestamp", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-backup-restore-"));
+  try {
+    const manager = new StateBackupManager({
+      runtimeDir: tempDir,
+      config: { stateBackupEnabled: true, stateBackupRetention: 6, stateBackupIntervalMinutes: 30 },
+      logger: { info() {}, warn() {} }
+    });
+    await fs.mkdir(path.join(tempDir, "backups"), { recursive: true });
+    await fs.writeFile(path.join(tempDir, "backups", "backup-2026-03-10T08-11-49.918Z.json"), JSON.stringify({ at: "2026-03-10T08:11:49.918Z" }));
+    await manager.init({ backupCount: 0 });
+    const summary = manager.getSummary();
+    assert.equal(summary.backupCount, 1);
+    assert.equal(summary.lastBackupAt, "2026-03-10T08:11:49.918Z");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("state store removes stale temp files during init", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-state-store-"));
+  try {
+    await fs.writeFile(path.join(tempDir, "model.json.123.tmp"), "{}");
+    const store = new StateStore(tempDir);
+    await store.init();
+    await assert.rejects(fs.access(path.join(tempDir, "model.json.123.tmp")));
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
 await runCheck("data recorder stores rich learning events for paper retraining", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-"));
   try {
@@ -1967,6 +2027,9 @@ await runCheck("research registry surfaces promotion candidates from walk-forwar
 });
 
 console.log("All checks passed.");
+
+
+
 
 
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased - 2026-03-10
+
+### Added
+- TradingView-style ADX/DMI, Supertrend, Stoch RSI, MFI, CMF, and Keltner squeeze/release signals across the AI feature pipeline
+- Richer feature-store learning frames so closed paper/live trades persist model, signal, rationale, and indicator context for retraining
+
+### Fixed
+- Restored recorder and backup manager state on restart so dashboard counts reflect files already on disk
+- Cleaned stale runtime `.tmp` files during boot to avoid orphaned state artifacts after interrupted saves
+- Synced dashboard/runtime summaries with the new indicator payloads and persisted learning telemetry
+
+### Verified
+- `npm.cmd test`
+- `node src/cli.js once`
+- `node src/cli.js status`
+- Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
+
 ## v0.1.0 - 2026-03-09
 
 Initial public release of the Binance AI trading bot workspace.

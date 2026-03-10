@@ -1,8 +1,36 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
+}
+
+function safeStateNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function parseBackupTimestamp(filePath) {
+  const match = path.basename(filePath || "").match(/^backup-(.+)\.json$/);
+  if (!match) {
+    return null;
+  }
+  const [datePart, timePart] = match[1].split("T");
+  if (!datePart || !timePart) {
+    return null;
+  }
+  const normalizedTime = timePart.replace(/^(\d{2})-(\d{2})-(\d{2})(.*)$/, "$1:$2:$3$4");
+  const iso = `${datePart}T${normalizedTime}`;
+  return Number.isNaN(new Date(iso).getTime()) ? null : new Date(iso).toISOString();
+}
+
+async function fallbackBackupTimestamp(filePath) {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.mtime.toISOString();
+  } catch {
+    return null;
+  }
 }
 
 export class StateBackupManager {
@@ -21,16 +49,25 @@ export class StateBackupManager {
     };
   }
 
-  async init() {
+  async init(previousState = null) {
     if (!this.config.stateBackupEnabled) {
       return;
     }
     await ensureDir(this.backupDir);
     const files = await listFiles(this.backupDir);
     const latest = [...files].sort().reverse()[0] || null;
-    this.state.backupCount = files.length;
-    this.state.latestFile = latest;
-    this.state.lastBackupAt = latest ? path.basename(latest).replace(/^backup-/, "").replace(/\.json$/, "") : null;
+    const restored = previousState && typeof previousState === "object" ? previousState : {};
+    const latestBackupAt = parseBackupTimestamp(latest) || await fallbackBackupTimestamp(latest);
+
+    this.state = {
+      ...this.state,
+      enabled: true,
+      lastBackupAt: restored.lastBackupAt || latestBackupAt || null,
+      latestFile: latest || restored.latestFile || null,
+      backupCount: Math.max(safeStateNumber(restored.backupCount, 0), files.length),
+      lastReason: restored.lastReason || this.state.lastReason,
+      restoredFromBackupAt: restored.restoredFromBackupAt || this.state.restoredFromBackupAt
+    };
   }
 
   async maybeBackup(payload, { reason = "cycle", force = false, nowIso = new Date().toISOString() } = {}) {
@@ -99,3 +136,6 @@ export class StateBackupManager {
     };
   }
 }
+
+
+

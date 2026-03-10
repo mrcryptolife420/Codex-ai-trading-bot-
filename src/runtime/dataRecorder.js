@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
@@ -74,6 +75,23 @@ function pruneOldFiles(files = [], keepCount = 30) {
   return [...files].sort().reverse().slice(keepCount);
 }
 
+function safeStateNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+async function resolveLatestTimestamp(files = []) {
+  const timestamps = [];
+  for (const filePath of files) {
+    try {
+      const stats = await fs.stat(filePath);
+      timestamps.push(stats.mtime.toISOString());
+    } catch {
+      // Ignore files that disappeared between listing and stat calls.
+    }
+  }
+  return timestamps.sort().reverse()[0] || null;
+}
+
 export class DataRecorder {
   constructor({ runtimeDir, config, logger }) {
     this.runtimeDir = runtimeDir;
@@ -93,17 +111,36 @@ export class DataRecorder {
     };
   }
 
-  async init() {
+  async init(previousState = null) {
     if (!this.config.dataRecorderEnabled) {
       return;
     }
-    await Promise.all([
-      ensureDir(path.join(this.rootDir, "cycles")),
-      ensureDir(path.join(this.rootDir, "decisions")),
-      ensureDir(path.join(this.rootDir, "trades")),
-      ensureDir(path.join(this.rootDir, "learning")),
-      ensureDir(path.join(this.rootDir, "research"))
-    ]);
+    const buckets = ["cycles", "decisions", "trades", "learning", "research"];
+    await Promise.all(buckets.map((bucket) => ensureDir(path.join(this.rootDir, bucket))));
+
+    const restored = previousState && typeof previousState === "object" ? previousState : {};
+    const fileGroups = await Promise.all(
+      buckets.map((bucket) => listFiles(path.join(this.rootDir, bucket)))
+    );
+    const existingFiles = fileGroups.flat();
+
+    this.state = {
+      ...this.state,
+      enabled: true,
+      lastRecordAt: restored.lastRecordAt || this.state.lastRecordAt,
+      filesWritten: safeStateNumber(restored.filesWritten, this.state.filesWritten),
+      cycleFrames: safeStateNumber(restored.cycleFrames, this.state.cycleFrames),
+      decisionFrames: safeStateNumber(restored.decisionFrames, this.state.decisionFrames),
+      tradeFrames: safeStateNumber(restored.tradeFrames, this.state.tradeFrames),
+      learningFrames: safeStateNumber(restored.learningFrames, this.state.learningFrames),
+      researchFrames: safeStateNumber(restored.researchFrames, this.state.researchFrames),
+      lastPruneAt: restored.lastPruneAt || this.state.lastPruneAt
+    };
+
+    this.state.filesWritten = Math.max(this.state.filesWritten, existingFiles.length);
+    if (!this.state.lastRecordAt) {
+      this.state.lastRecordAt = await resolveLatestTimestamp(existingFiles);
+    }
   }
 
   async recordCycle({ at, mode, candidates = [], openedPosition = null, overview = {}, safety = {}, marketSentiment = {}, volatility = {} }) {
@@ -301,3 +338,6 @@ export class DataRecorder {
     this.touch(at);
   }
 }
+
+
+
