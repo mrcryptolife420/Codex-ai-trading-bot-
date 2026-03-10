@@ -508,7 +508,7 @@ export class RiskManager {
       return {
         shouldExit: false,
         shouldScaleOut: true,
-        scaleOutFraction: position.scaleOutFraction || this.config.scaleOutFraction,
+        scaleOutFraction: exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction,
         scaleOutReason: "partial_take_profit",
         updatedHigh,
         updatedLow
@@ -556,7 +556,7 @@ export class RiskManager {
       return {
         shouldExit: false,
         shouldScaleOut: true,
-        scaleOutFraction: position.scaleOutFraction || this.config.scaleOutFraction,
+        scaleOutFraction: exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction,
         scaleOutReason: exitIntelligenceSummary.reason || "exit_ai_trim",
         updatedHigh,
         updatedLow
@@ -579,6 +579,7 @@ export class RiskManager {
     };
   }
 }
+
 
 
 

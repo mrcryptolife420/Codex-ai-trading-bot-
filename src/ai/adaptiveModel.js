@@ -293,13 +293,17 @@ export class AdaptiveTradingModel {
     };
   }
 
-  maybePromote(atIso) {
+  maybePromote(atIso, promotionPolicy = null) {
     const metrics = this.state.deployment.shadowMetrics.slice(-this.config.challengerWindowTrades);
-    if (metrics.length < this.config.challengerMinTrades) {
+    const requiredShadowTrades = Math.max(this.config.challengerMinTrades, this.config.modelPromotionMinShadowTrades || 0);
+    if (metrics.length < requiredShadowTrades) {
       return null;
     }
     const championError = metrics.reduce((total, item) => total + item.championError, 0) / metrics.length;
     const challengerError = metrics.reduce((total, item) => total + item.challengerError, 0) / metrics.length;
+    if (promotionPolicy && !promotionPolicy.allowPromotion) {
+      return null;
+    }
     if (challengerError + this.config.challengerPromotionMargin >= championError) {
       return null;
     }
@@ -333,7 +337,6 @@ export class AdaptiveTradingModel {
       challengerError
     };
   }
-
   updateFromTrade(trade) {
     const label = buildTradeOutcomeLabel(trade);
     const atIso = trade.exitAt || new Date().toISOString();
@@ -370,7 +373,7 @@ export class AdaptiveTradingModel {
     if (this.state.deployment.shadowMetrics.length > this.config.challengerWindowTrades * 2) {
       this.state.deployment.shadowMetrics = this.state.deployment.shadowMetrics.slice(-this.config.challengerWindowTrades * 2);
     }
-    const promotion = this.maybePromote(atIso);
+    const promotion = this.maybePromote(atIso, trade.promotionPolicy || null);
 
     return {
       label,
@@ -423,5 +426,8 @@ export class AdaptiveTradingModel {
     };
   }
 }
+
+
+
 
 

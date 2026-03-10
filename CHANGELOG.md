@@ -4,23 +4,34 @@
 
 ### Added
 - TradingView-style ADX/DMI, Supertrend, Stoch RSI, MFI, CMF, and Keltner squeeze/release signals across the AI feature pipeline
+- Exit intelligence v2 with stronger hold, trim, trail, and close decisions wired into runtime and trade replay
+- Trade quality scoring, universe rotation, model promotion rules, and execution quality monitoring in the AI control loop
 - Richer feature-store learning frames so closed paper/live trades persist model, signal, rationale, and indicator context for retraining
 
 ### Fixed
 - Restored recorder and backup manager state on restart so dashboard counts reflect files already on disk
+- Repaired light and dark theme application so both `html` and `body` switch together and persist correctly
 - Cleaned stale runtime `.tmp` files during boot to avoid orphaned state artifacts after interrupted saves
 - Synced dashboard/runtime summaries with the new indicator payloads and persisted learning telemetry
 
 ### Improved
-- Reworked the dashboard into a compact dark control deck with grouped intelligence clusters and cleaner spacing
+- Reworked the dashboard into a simpler operator layout with a smaller top section, cleaner sidebar, and one collapsed advanced analysis layer
 - Simplified top setup and open position cards so the AI explains why a trade is allowed or blocked with fewer, clearer signals
+- Reduced visible density by showing fewer setups, fewer blocked trades, fewer replay cards, and a shorter recent-trades table at once
 - Added compact detail accordions and active sidebar link states so dense runtime data stays available without cluttering the first view
 
 ### Verified
+- `node --check src/dashboard/public/app.js`
+- `node --check src/runtime/tradingBot.js`
+- `node --check src/ai/exitIntelligence.js`
+- `node --check src/ai/metaDecisionGate.js`
+- `node --check src/runtime/modelRegistry.js`
+- `node --check src/runtime/universeSelector.js`
 - `npm.cmd test`
-- `node src/cli.js once`
 - `node src/cli.js status`
+- `node src/cli.js doctor`
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
+- Dashboard homepage smoke test on `http://127.0.0.1:3011/`
 
 ## v0.1.0 - 2026-03-09
 
@@ -48,4 +59,3 @@ Initial public release of the Binance AI trading bot workspace.
 - `node src/cli.js backtest BTCUSDT`
 - `node src/cli.js research BTCUSDT`
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
-

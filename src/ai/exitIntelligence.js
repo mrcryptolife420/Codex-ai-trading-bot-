@@ -78,15 +78,16 @@ export class ExitIntelligence {
       Math.max(0, safeNumber(calendarSummary.riskScore) - 0.32) * 0.12 +
       Math.max(0, safeNumber(announcementSummary.riskScore) - 0.22) * 0.1;
 
-    const tightenPressure =
-      Math.max(0, pnlPct) * 1.6 +
-      Math.max(0, -drawdownFromHighPct * 24) * 0.18 +
+    const trailPressure =
+      Math.max(0, pnlPct) * 1.7 +
+      Math.max(0, -drawdownFromHighPct * 24) * 0.22 +
       Math.max(0, riskScore - 0.3) * 0.16 +
-      Math.max(0, spreadPressure - 0.55) * 0.1;
+      Math.max(0, spreadPressure - 0.55) * 0.1 +
+      Math.max(0, safeNumber(book.queueImbalance) < 0 ? Math.abs(safeNumber(book.queueImbalance)) : 0) * 0.08;
 
     const holdScore = clamp(0.44 + holdTailwind - exitPressure * 0.24, 0, 1);
     const trimScore = clamp(0.18 + trimPressure + Math.max(0, pnlPct) * 1.9 - holdTailwind * 0.08, 0, 1);
-    const tightenScore = clamp(0.22 + tightenPressure - holdTailwind * 0.05, 0, 1);
+    const trailScore = clamp(0.22 + trailPressure - holdTailwind * 0.05, 0, 1);
     const exitScore = clamp(
       0.26 + exitPressure - holdTailwind * 0.16 + (pnlPct < 0 ? Math.min(Math.abs(pnlPct) * 5.2, 0.18) : 0),
       0,
@@ -128,24 +129,26 @@ export class ExitIntelligence {
       action = "exit";
     } else if (trimScore >= this.config.exitIntelligenceTrimScore && confidence >= this.config.exitIntelligenceMinConfidence) {
       action = "trim";
-    } else if (tightenScore >= Math.max(0.48, this.config.exitIntelligenceTrimScore - 0.08) && pnlPct > 0 && confidence >= this.config.exitIntelligenceMinConfidence - 0.04) {
-      action = "tighten_stop";
+    } else if (trailScore >= this.config.exitIntelligenceTrailScore && pnlPct > 0 && confidence >= this.config.exitIntelligenceMinConfidence - 0.04) {
+      action = "trail";
     }
 
-    const suggestedStopLossPrice = action === "tighten_stop"
+    const suggestedStopLossPrice = action === "trail"
       ? Math.max(
           safeNumber(position.stopLossPrice),
           safeNumber(position.entryPrice) * (1 + Math.max(0.0015, pnlPct * 0.35)),
           safeNumber(position.highestPrice) * (1 - Math.max(0.0025, this.config.scaleOutTrailOffsetPct * 1.2))
         )
       : safeNumber(position.stopLossPrice);
+    const trimFraction = clamp(0.22 + Math.max(0, trimScore - this.config.exitIntelligenceTrimScore) * 0.6 + Math.max(0, pnlPct) * 1.5, 0.2, 0.55);
+    const urgency = clamp(0.18 + exitScore * 0.42 + trimScore * 0.18 + trailScore * 0.12, 0, 1);
 
     const reason =
       action === "exit"
         ? riskReasons[0] || "exit_ai_signal"
         : action === "trim"
           ? riskReasons[0] || "trim_ai_signal"
-          : action === "tighten_stop"
+          : action === "trail"
             ? riskReasons[0] || "protect_winner"
             : positiveReasons[0] || null;
 
@@ -155,17 +158,20 @@ export class ExitIntelligence {
       confidence: num(confidence),
       holdScore: num(holdScore),
       trimScore: num(trimScore),
-      tightenScore: num(tightenScore),
+      trailScore: num(trailScore),
+      tightenScore: num(trailScore),
       exitScore: num(exitScore),
       pnlPct: num(pnlPct),
       drawdownFromHighPct: num(drawdownFromHighPct),
       heldMinutes: num(heldMinutes, 1),
       progressToScaleOut: num(progressToScaleOut),
+      trimFraction: num(trimFraction),
+      urgency: num(urgency),
       suggestedStopLossPrice: num(suggestedStopLossPrice, 6),
-      shouldTightenStop: action === "tighten_stop" && suggestedStopLossPrice > safeNumber(position.stopLossPrice),
+      shouldTightenStop: action === "trail" && suggestedStopLossPrice > safeNumber(position.stopLossPrice),
       positiveReasons,
       riskReasons,
-      nextReviewBias: action === "hold" ? "let_winner_breathe" : action === "trim" ? "de_risk_and_reassess" : action === "tighten_stop" ? "protect_winner_tighter" : "close_and_reset",
+      nextReviewBias: action === "hold" ? "let_winner_breathe" : action === "trim" ? "de_risk_and_reassess" : action === "trail" ? "trail_and_review" : "close_and_reset",
       runtimeMode: runtime.selfHeal?.mode || "normal",
       realizedTradeCount: Array.isArray(journal?.trades) ? journal.trades.length : 0
     };

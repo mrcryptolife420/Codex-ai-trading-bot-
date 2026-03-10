@@ -1,4 +1,4 @@
-# Binance AI Trading Bot
+﻿# Binance AI Trading Bot
 
 Een safety-first Binance Spot trading bot met een lokaal webdashboard voor paper trading, live trading, AI-uitleg per positie, multi-source crypto-news en portfolio-statistieken.
 
@@ -221,8 +221,8 @@ Zie [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example) voor 
 - Drift monitoring: `ENABLE_DRIFT_MONITORING`, `DRIFT_*`
 - Self-heal and rollback: `SELF_HEAL_*`, `STABLE_MODEL_*`
 - Meta gate, canary en scale-out: `ENABLE_META_DECISION_GATE`, `META_*`, `ENABLE_CANARY_LIVE_MODE`, `CANARY_*`, `DAILY_RISK_BUDGET_FLOOR`, `MAX_ENTRIES_PER_DAY`, `SCALE_OUT_*`
-- Universe selector, exit AI en attribution: `ENABLE_UNIVERSE_SELECTOR`, `UNIVERSE_*`, `ENABLE_EXIT_INTELLIGENCE`, `EXIT_INTELLIGENCE_*`, `STRATEGY_ATTRIBUTION_MIN_TRADES`
-- Research lab en governance: `RESEARCH_*`, `RESEARCH_PROMOTION_*`
+- Universe selector, exit AI en attribution: `ENABLE_UNIVERSE_SELECTOR`, `UNIVERSE_*`, `UNIVERSE_ROTATION_*`, `ENABLE_EXIT_INTELLIGENCE`, `EXIT_INTELLIGENCE_*`, `TRADE_QUALITY_*`, `STRATEGY_ATTRIBUTION_MIN_TRADES`
+- Research lab en governance: `RESEARCH_*`, `RESEARCH_PROMOTION_*`, `MODEL_PROMOTION_*`
 - Execution realism: `PAPER_LATENCY_MS`, `PAPER_MAKER_FILL_FLOOR`, `PAPER_PARTIAL_FILL_MIN_RATIO`, `BACKTEST_LATENCY_MS`, `BACKTEST_SYNTHETIC_DEPTH_USD`
 - Recorder / registry / backups: `DATA_RECORDER_*`, `MODEL_REGISTRY_*`, `STATE_BACKUP_*`
 - Windows watchdog: `SERVICE_RESTART_DELAY_SECONDS`, `SERVICE_MAX_RESTARTS_PER_HOUR`, `GIT_SHORT_CLONE_PATH`
@@ -255,6 +255,7 @@ Lokaal geverifieerd met:
 - [Decrypt RSS](https://decrypt.co/feed)
 - [Blockworks RSS](https://blockworks.com/feed)
 - [BLS release calendar](https://www.bls.gov/schedule/news_release/)
+
 
 
 

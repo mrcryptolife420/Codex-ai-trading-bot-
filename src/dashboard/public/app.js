@@ -1,4 +1,5 @@
 ﻿const POLL_MS = 5000;
+const THEME_STORAGE_KEY = "dashboard-theme";
 
 const elements = {
   modeBadge: document.querySelector("#modeBadge"),
@@ -7,6 +8,8 @@ const elements = {
   controlHint: document.querySelector("#controlHint"),
   sidebarToggle: document.querySelector("#sidebarToggle"),
   sidebarScrim: document.querySelector("#sidebarScrim"),
+  themeDarkBtn: document.querySelector("#themeDarkBtn"),
+  themeLightBtn: document.querySelector("#themeLightBtn"),
   metrics: document.querySelector("#metrics"),
   equityChart: document.querySelector("#equityChart"),
   equityMeta: document.querySelector("#equityMeta"),
@@ -397,6 +400,35 @@ function setupSidebarAccordion() {
   });
 }
 
+function applyTheme(theme) {
+  const resolved = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = resolved;
+  document.body.dataset.theme = resolved;
+  document.documentElement.style.colorScheme = resolved;
+  window.localStorage.setItem(THEME_STORAGE_KEY, resolved);
+  elements.themeDarkBtn?.classList.toggle("is-active", resolved === "dark");
+  elements.themeLightBtn?.classList.toggle("is-active", resolved === "light");
+  elements.themeDarkBtn?.setAttribute("aria-pressed", String(resolved === "dark"));
+  elements.themeLightBtn?.setAttribute("aria-pressed", String(resolved === "light"));
+}
+
+function setupThemeToggle() {
+  const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  const preferredTheme = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  applyTheme(savedTheme || document.documentElement.dataset.theme || document.body.dataset.theme || preferredTheme);
+
+  if (!elements.themeDarkBtn?.dataset.bound) {
+    elements.themeDarkBtn?.addEventListener("click", () => applyTheme("dark"));
+    elements.themeLightBtn?.addEventListener("click", () => applyTheme("light"));
+    if (elements.themeDarkBtn) {
+      elements.themeDarkBtn.dataset.bound = "true";
+    }
+    if (elements.themeLightBtn) {
+      elements.themeLightBtn.dataset.bound = "true";
+    }
+  }
+}
+
 function setupCollapsiblePanels() {
   document.querySelectorAll(".panel.collapsible").forEach((panel, index) => {
     const head = panel.querySelector(".section-head[data-collapsible='true']");
@@ -433,7 +465,8 @@ function setupCollapsiblePanels() {
         toggle();
       });
       panel.dataset.collapseInit = "true";
-      if (window.localStorage.getItem(storageKey) === "1") {
+      const storedState = window.localStorage.getItem(storageKey);
+      if (storedState === "1" || (storedState == null && panel.dataset.defaultCollapsed === "true")) {
         panel.classList.add("is-collapsed");
       }
       syncState();
@@ -484,24 +517,17 @@ function renderMetrics(snapshot) {
   const windows = report.windows || {};
   const today = windows.today || {};
   const days30 = windows.days30 || {};
-  const openCount = overview.openPositionCount || 0;
-  const watchlist = snapshot.dashboard.watchlist || {};
   const universe = snapshot.dashboard.universe || {};
-  const equitySeries = report.equitySeries || [];
-  const cycleSeries = report.cycleSeries || [];
+  const watchlist = snapshot.dashboard.watchlist || {};
 
   elements.metrics.innerHTML = [
-    metricCard("Mode", snapshot.manager.currentMode.toUpperCase(), `Loop: ${snapshot.manager.runState}`),
-    metricCard("Vrije cash", formatMoney(overview.quoteFree), `Laatste update ${formatDate(overview.lastPortfolioUpdateAt)}`),
-    metricCard("Equity", formatMoney(overview.equity), `Open exposure ${formatMoney(overview.openExposure)}`),
-    metricCard("Open P/L", formatMoney(overview.totalUnrealizedPnl), `${openCount} open posities`, toneClass(overview.totalUnrealizedPnl)),
-    metricCard("Vandaag", formatMoney(today.realizedPnl), `${today.tradeCount || 0} trades vandaag`, toneClass(today.realizedPnl)),
-    metricCard("30 dagen", formatMoney(days30.realizedPnl), `${formatPct(days30.winRate || 0, 1)} win rate`, toneClass(days30.realizedPnl)),
-    metricCard("Universe", `${watchlist.resolvedCount || universe.configuredSymbolCount || 0} pairs`, `${(watchlist.source || "configured_watchlist").replaceAll("_", " ")} | focus ${universe.selectedCount || 0}`),
-    metricCard("Data history", `${equitySeries.length}/${snapshot.configSummary?.dashboardEquityPointLimit || equitySeries.length}`, `${cycleSeries.length} analyses | ${(snapshot.dashboard.topDecisions || []).length} setups`)
+    metricCard("Mode", snapshot.manager.currentMode.toUpperCase(), `Loop ${snapshot.manager.runState} | ${overview.openPositionCount || 0} open`),
+    metricCard("Equity", formatMoney(overview.equity), `Open P/L ${formatMoney(overview.totalUnrealizedPnl)} | cash ${formatMoney(overview.quoteFree)}`, toneClass(overview.totalUnrealizedPnl)),
+    metricCard("Vandaag", formatMoney(today.realizedPnl), `${today.tradeCount || 0} trades | win ${formatPct(today.winRate || 0, 1)}`, toneClass(today.realizedPnl)),
+    metricCard("30 dagen", formatMoney(days30.realizedPnl), `${days30.tradeCount || 0} trades | win ${formatPct(days30.winRate || 0, 1)}`, toneClass(days30.realizedPnl)),
+    metricCard("Universe", `${watchlist.resolvedCount || universe.configuredSymbolCount || 0} pairs`, `focus ${universe.selectedCount || 0} | ${(universe.rotation?.focusClusters || []).slice(0, 1).join(" / ") || "neutraal"}`)
   ].join("");
 }
-
 function buildSparkline(series) {
   if (!series.length) {
     return `<div class="empty">Nog geen equity-data beschikbaar.</div>`;
@@ -540,6 +566,81 @@ function buildSparkline(series) {
   `;
 }
 
+function buildReplayChart(replay) {
+  const candles = replay.candleContext || [];
+  if (!candles.length) {
+    return `<div class="empty">Nog geen replay-chart beschikbaar.</div>`;
+  }
+
+  const width = 560;
+  const height = 190;
+  const pad = 20;
+  const candleGap = (width - pad * 2) / Math.max(candles.length, 1);
+  const bodyWidth = Math.max(3, candleGap * 0.56);
+  const lows = candles.map((item) => Number(item.low || item.close || 0));
+  const highs = candles.map((item) => Number(item.high || item.close || 0));
+  const extraPrices = [replay.entryPrice, replay.exitPrice].filter((value) => Number.isFinite(value));
+  const minPrice = Math.min(...lows, ...(extraPrices.length ? extraPrices : [Math.min(...lows)]));
+  const maxPrice = Math.max(...highs, ...(extraPrices.length ? extraPrices : [Math.max(...highs)]));
+  const scaleY = (value) => {
+    if (maxPrice === minPrice) {
+      return height / 2;
+    }
+    return height - pad - ((value - minPrice) / (maxPrice - minPrice)) * (height - pad * 2);
+  };
+  const scaleX = (index) => pad + index * candleGap + candleGap / 2;
+  const entryIndex = Math.max(0, candles.length - 1);
+  const newsLabel = (replay.headlines || [])[0] || null;
+  const blockerLabel = (replay.blockersAtEntry || [])[0] || null;
+  const candleMarkup = candles
+    .map((candle, index) => {
+      const x = scaleX(index);
+      const open = Number(candle.open || candle.close || 0);
+      const close = Number(candle.close || candle.open || 0);
+      const high = Number(candle.high || Math.max(open, close));
+      const low = Number(candle.low || Math.min(open, close));
+      const top = scaleY(Math.max(open, close));
+      const bottom = scaleY(Math.min(open, close));
+      const wickTop = scaleY(high);
+      const wickBottom = scaleY(low);
+      const up = close >= open;
+      return `
+        <g class="candle ${up ? "up" : "down"}">
+          <line x1="${x}" x2="${x}" y1="${wickTop}" y2="${wickBottom}" class="candle-wick"></line>
+          <rect x="${x - bodyWidth / 2}" y="${Math.min(top, bottom)}" width="${bodyWidth}" height="${Math.max(2, Math.abs(bottom - top))}" rx="2" class="candle-body"></rect>
+        </g>
+      `;
+    })
+    .join("");
+
+  const entryY = scaleY(replay.entryPrice || candles.at(-1)?.close || minPrice);
+  const exitY = scaleY(replay.exitPrice || replay.entryPrice || candles.at(-1)?.close || minPrice);
+
+  return `
+    <div class="replay-chart">
+      <svg class="replay-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Trade replay chart">
+        <defs>
+          <linearGradient id="replay-grid" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="rgba(127, 147, 255, 0.12)" />
+            <stop offset="100%" stop-color="rgba(89, 195, 178, 0.02)" />
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width="${width}" height="${height}" fill="url(#replay-grid)"></rect>
+        ${candleMarkup}
+        <line x1="${scaleX(entryIndex)}" x2="${width - pad * 0.6}" y1="${entryY}" y2="${entryY}" class="marker-line entry"></line>
+        <line x1="${scaleX(entryIndex)}" x2="${width - pad * 0.6}" y1="${exitY}" y2="${exitY}" class="marker-line exit"></line>
+        <circle cx="${scaleX(entryIndex)}" cy="${entryY}" r="4.5" class="marker-dot entry"></circle>
+        <circle cx="${width - pad}" cy="${exitY}" r="4.5" class="marker-dot exit"></circle>
+        <text x="${pad}" y="16" class="marker-label">Entry ${formatNumber(replay.entryPrice || 0, 4)}</text>
+        <text x="${width - 128}" y="16" class="marker-label">Exit ${formatNumber(replay.exitPrice || 0, 4)}</text>
+      </svg>
+      <div class="replay-overlay">
+        <span class="summary-chip">${escapeHtml(newsLabel ? `nieuws: ${truncateText(newsLabel, 42)}` : "geen headline-overlay")}</span>
+        <span class="summary-chip">${escapeHtml(blockerLabel ? `entry check: ${normalizeReasonLabel(blockerLabel)}` : "geen entry-blockers")}</span>
+      </div>
+    </div>
+  `;
+}
 function renderChart(snapshot) {
   const series = snapshot.dashboard.report.equitySeries || [];
   const limit = snapshot.configSummary?.dashboardEquityPointLimit || series.length;
@@ -583,101 +684,53 @@ function renderPositions(snapshot) {
   elements.positionsList.innerHTML = positions
     .map((position, index) => {
       const rationale = position.entryRationale || {};
-      const latestStructure = position.latestMarketStructureSummary || rationale.marketStructure || {};
-      const execution = position.entryExecutionAttribution || rationale.executionAttribution || {};
-      const session = rationale.session || {};
-      const selfHeal = rationale.selfHeal || {};
-      const marketSentiment = rationale.marketSentiment || {};
+      const exitAi = position.latestExitIntelligence || {};
       const strategyLabel = rationale.strategy?.strategyLabel || position.strategyAtEntry || rationale.setupStyle || "-";
-      const summary = truncateText(rationale.summary || "Geen rationale beschikbaar.", 190);
-      const open = index < 2 ? "open" : "";
-      const pnlClass = toneClass(position.unrealizedPnl);
-      const highlightPills = collectHighlights([
-        strategyLabel,
-        position.regimeAtEntry,
-        rationale.patterns?.dominantPattern && rationale.patterns?.dominantPattern !== "none" ? rationale.patterns.dominantPattern : "",
-        ...(rationale.regimeReasons || []).slice(0, 2)
+      const keyReasons = collectHighlights([
+        exitAi.reason ? normalizeReasonLabel(exitAi.reason) : "positie nog geldig",
+        ...(rationale.strategy?.reasons || []).slice(0, 1).map(normalizeReasonLabel),
+        ...(rationale.executionReasons || []).slice(0, 1).map(normalizeReasonLabel),
+        rationale.session?.sessionLabel || rationale.session?.session || ""
       ], 4);
-      const riskPills = collectHighlights([
-        ...(rationale.blockerReasons || []).slice(0, 2),
-        ...(rationale.selfHealIssues || []).slice(0, 1),
-        ...(rationale.sessionBlockers || []).slice(0, 1)
+      const riskReasons = collectHighlights([
+        ...(exitAi.riskReasons || []).slice(0, 2).map(normalizeReasonLabel),
+        ...(rationale.selfHealIssues || []).slice(0, 1).map(normalizeReasonLabel),
+        ...(rationale.sessionBlockers || []).slice(0, 1).map(normalizeReasonLabel)
       ], 4);
-      const topSignals = (rationale.topSignals || [])
-        .slice(0, 3)
-        .map((signal) => `<div class="mini-stat"><span class="kicker">${escapeHtml(signal.name)}</span><strong class="${toneClass(signal.contribution)}">${formatNumber(signal.contribution, 3)}</strong></div>`)
-        .join("");
-      const topHeadlines = (rationale.headlines || [])
-        .slice(0, 2)
-        .map((headline) => `<div class="mini-stat"><span class="kicker">${escapeHtml(headline.source || "Nieuws")}</span><strong>${escapeHtml(headline.title)}</strong><div class="meta">${formatDate(headline.publishedAt)}</div></div>`)
-        .join("");
-      const tradeView = `
-        <div class="mini-grid compact-grid compact-data-grid">
-          <div class="mini-stat"><span class="kicker">Entry</span><strong>${formatNumber(position.entryPrice, 6)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Nu</span><strong>${formatNumber(position.currentPrice, 6)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Stop / target</span><strong>${formatNumber(position.stopLossPrice, 6)} / ${formatNumber(position.takeProfitPrice, 6)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(position.executionPlan?.entryStyle || "-")}</strong><div class="meta">${escapeHtml(formatExecutionMeta(execution))}</div></div>
-        </div>
-        <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList(highlightPills, "Geen highlights")}</div></div>
-        <div class="note-line"><span class="kicker">Risico nu</span><div class="tag-list">${renderTagList(riskPills, "Geen directe waarschuwingen")}</div></div>
-      `;
-      const aiView = `
-        <div class="mini-grid compact-grid compact-data-grid">
-          <div class="mini-stat"><span class="kicker">Strategy fit</span><strong>${formatPct(rationale.strategy?.fitScore || 0, 1)}</strong><div class="meta">conf ${formatPct(rationale.strategy?.confidence || 0, 1)}</div></div>
-          <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(rationale.transformer?.probability || 0, 1)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(rationale.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(rationale.committee?.agreement || 0, 1)}</div></div>
-          <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((selfHeal.mode || "normal").replaceAll("_", " "))}</strong></div>
-        </div>
-        <div class="note-line"><span class="kicker">AI redenen</span><div class="tag-list">${renderTagList([...(rationale.strategy?.reasons || []).slice(0, 2), ...(rationale.executionReasons || []).slice(0, 2)], "Geen extra AI-notities")}</div></div>
-      `;
-      const contextView = `
-        <div class="mini-grid compact-grid compact-data-grid">
-          <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(latestStructure.fundingRate || 0, 6)}</strong></div>
-          <div class="mini-stat"><span class="kicker">OI 5m</span><strong>${formatPct(latestStructure.openInterestChangePct || 0, 2)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(rationale.orderBook?.bookPressure || 0, 2)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Macro</span><strong>${marketSentiment.fearGreedValue == null ? "-" : `${formatNumber(marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(marketSentiment.fearGreedClassification || "fear/greed")}</div></div>
-          <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(session.sessionLabel || session.session || "-")}</strong><div class="meta">${session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 1)}u`} tot funding</div></div>
-        </div>
-        <div class="detail-split">
-          <div>
-            <p class="kicker">Top signalen</p>
-            <div class="headline-list single-column">${topSignals || `<div class="empty">Geen top-signalen.</div>`}</div>
-          </div>
-          <div>
-            <p class="kicker">Headlines</p>
-            <div class="headline-list single-column">${topHeadlines || `<div class="empty">Geen headlines.</div>`}</div>
-          </div>
-        </div>
-      `;
-
+      const headlines = (rationale.headlines || []).slice(0, 2).map((headline) => headline.title || headline);
       return `
-        <details class="position-card fold-card position-fold compact-fold" ${open}>
+        <details class="position-card fold-card compact-fold" ${index === 0 ? "open" : ""}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
-                <div class="reason-pill">Open positie</div>
+                <div class="reason-pill">Open</div>
                 <h3>${escapeHtml(position.symbol)}</h3>
-                <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(position.regimeAtEntry || "-")} | ${formatNumber(position.ageMinutes, 1)} min open</p>
-                <p class="decision-blurb">${escapeHtml(summary)}</p>
+                <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(position.regimeAtEntry || "-")} | ${formatNumber(position.ageMinutes, 1)} min</p>
+                <p class="decision-blurb">${escapeHtml(truncateText(rationale.summary || "Positie actief.", 132))}</p>
               </div>
               <div class="fold-stats">
-                <span class="pill ${pnlClass}">${formatMoney(position.unrealizedPnl)} | ${formatPct(position.unrealizedPnlPct, 2)}</span>
-                <span class="pill">${escapeHtml(position.executionPlan?.entryStyle || "-")}</span>
+                <span class="pill ${toneClass(position.unrealizedPnl)}">${formatMoney(position.unrealizedPnl)} | ${formatPct(position.unrealizedPnlPct, 2)}</span>
+                <span class="pill">${escapeHtml((exitAi.action || "hold").replaceAll("_", " "))}</span>
               </div>
             </div>
-            <div class="summary-strip">${renderReasonPills(highlightPills, "Geen highlights")}</div>
+            <div class="summary-strip">${renderReasonPills(keyReasons, "Geen highlights")}</div>
           </summary>
-          <div class="fold-body">
-            ${renderDetailSection("Trade view", "Belangrijkste cijfers", tradeView, true)}
-            ${renderDetailSection("AI uitleg", "Waarom deze positie nog open is", aiView)}
-            ${renderDetailSection("Context", "Markt, signalen en headlines", contextView)}
+          <div class="fold-body compact-body">
+            <div class="mini-grid compact-data-grid">
+              <div class="mini-stat"><span class="kicker">Entry</span><strong>${formatNumber(position.entryPrice, 6)}</strong></div>
+              <div class="mini-stat"><span class="kicker">Nu</span><strong>${formatNumber(position.currentPrice, 6)}</strong></div>
+              <div class="mini-stat"><span class="kicker">Stop</span><strong>${formatNumber(position.stopLossPrice, 6)}</strong></div>
+              <div class="mini-stat"><span class="kicker">Exit AI</span><strong>${escapeHtml((exitAi.action || "hold").replaceAll("_", " "))}</strong><div class="meta">conf ${formatPct(exitAi.confidence || 0, 1)}</div></div>
+            </div>
+            <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList(keyReasons, "Geen kernreden")}</div></div>
+            <div class="note-line"><span class="kicker">Nu opletten</span><div class="tag-list">${renderTagList(riskReasons, "Geen directe waarschuwingen")}</div></div>
+            <div class="note-line"><span class="kicker">Nieuws</span><div class="tag-list">${renderTagList(headlines, "Geen recente headlines")}</div></div>
           </div>
         </details>
       `;
     })
     .join("");
 }
-
 function renderDecisions(snapshot) {
   const decisions = snapshot.dashboard.topDecisions || [];
   const watchlist = snapshot.dashboard.watchlist || {};
@@ -690,17 +743,8 @@ function renderDecisions(snapshot) {
       decision.summary,
       decision.strategy?.strategyLabel,
       decision.strategy?.familyLabel,
-      decision.strategy?.family,
-      decision.strategySummary?.strategyLabel,
       ...(decision.reasons || []),
-      ...(decision.blockerReasons || []),
-      ...(decision.regimeReasons || []),
-      ...(decision.executionReasons || []),
-      ...((decision.bullishSignals || []).map((item) => item.name)),
-      ...((decision.bearishSignals || []).map((item) => item.name)),
-      ...((decision.bullishDrivers || []).map((item) => item.title)),
-      ...((decision.bearishDrivers || []).map((item) => item.title)),
-      ...((decision.officialNotices || []).map((item) => item.title))
+      ...(decision.blockerReasons || [])
     ].filter(Boolean).join(" ").toLowerCase();
     const matchesQuery = !decisionSearchQuery || searchIndex.includes(decisionSearchQuery);
     const matchesMode = !decisionAllowedOnly || decision.allow;
@@ -718,80 +762,64 @@ function renderDecisions(snapshot) {
   }
 
   elements.decisionsList.innerHTML = filtered
-    .slice(0, decisionLimit)
+    .slice(0, Math.min(decisionLimit, 8))
     .map((decision, index) => {
       const edge = Number(decision.edgeToThreshold ?? (decision.probability || 0) - (decision.threshold || 0));
-      const verdictTone = decision.allow ? "positive" : edge < 0 ? "negative" : "neutral";
       const strategyLabel = decision.strategy?.strategyLabel || decision.strategySummary?.strategyLabel || decision.setupStyle || "setup";
       const familyLabel = decision.strategy?.familyLabel || decision.strategy?.family || "family";
-      const leadBull = decision.bullishSignals?.[0]?.name || decision.bullishDrivers?.[0]?.title || "geen sterke bull-driver";
-      const leadBear = decision.blockerReasons?.[0] || decision.bearishSignals?.[0]?.name || decision.bearishDrivers?.[0]?.title || "geen grote blocker";
+      const leadBull = normalizeReasonLabel(decision.bullishSignals?.[0]?.name || decision.bullishDrivers?.[0]?.title || decision.reasons?.[0] || "sterkste driver");
+      const leadBear = normalizeReasonLabel(decision.blockerReasons?.[0] || decision.bearishSignals?.[0]?.name || decision.bearishDrivers?.[0]?.title || "geen blocker");
+      const qualityScore = decision.meta?.qualityScore ?? decision.meta?.score ?? 0;
+      const qualityBand = decision.meta?.qualityBand || (qualityScore >= 0.62 ? "sterk" : qualityScore >= 0.5 ? "ok" : "zwak");
       const summary = decision.allow
-        ? `${strategyLabel} past hier het best. Grootste steun: ${normalizeReasonLabel(leadBull)}.`
-        : `Geblokkeerd door ${normalizeReasonLabel(leadBear)}.`;
-      const open = index < 2 || decision.allow;
+        ? `${strategyLabel} is toegestaan. Hoofdreden: ${leadBull}.`
+        : `${strategyLabel} is overgeslagen. Hoofdreden: ${leadBear}.`;
       const keyPills = decision.allow
-        ? collectHighlights([normalizeReasonLabel(leadBull), strategyLabel, decision.regime, decision.executionStyle || decision.executionAttribution?.entryStyle], 4)
-        : collectHighlights([normalizeReasonLabel(leadBear), ...(decision.blockerReasons || []).slice(0, 2), decision.regime], 4);
-      const decisionView = `
-        <p class="decision-blurb">${escapeHtml(truncateText(decision.summary || summary, 180))}</p>
-        <div class="mini-grid compact-grid compact-data-grid">
+        ? collectHighlights([leadBull, strategyLabel, familyLabel, decision.executionStyle || decision.executionAttribution?.entryStyle], 4)
+        : collectHighlights([leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], 4);
+      const compactView = `
+        <div class="mini-grid compact-data-grid">
           <div class="mini-stat"><span class="kicker">Model / gate</span><strong>${formatPct(decision.probability || 0, 1)} / ${formatPct(decision.threshold || 0, 1)}</strong><div class="meta">edge ${formatSignedPct(edge, 1)}</div></div>
           <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">${escapeHtml(familyLabel)}</div></div>
-          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</strong></div>
-          <div class="mini-stat"><span class="kicker">Universe</span><strong>${escapeHtml(decision.universe?.health || "watch")}</strong><div class="meta">score ${formatPct(decision.universe?.score || 0, 1)}</div></div>
-          <div class="mini-stat"><span class="kicker">Freshness</span><strong>${decision.freshnessHours == null ? "-" : `${formatNumber(decision.freshnessHours, 1)}u`}</strong><div class="meta">${decision.providerDiversity || 0} providers</div></div>
+          <div class="mini-stat"><span class="kicker">Quality</span><strong>${formatPct(qualityScore || 0, 1)}</strong><div class="meta">${escapeHtml(qualityBand)}</div></div>
+          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</strong><div class="meta">${decision.freshnessHours == null ? "-" : `${formatNumber(decision.freshnessHours, 1)}u oud`}</div></div>
         </div>
-        <div class="note-line"><span class="kicker">Waarom wel / niet</span><div class="tag-list">${renderTagList(decision.allow ? [normalizeReasonLabel(leadBull)] : [normalizeReasonLabel(leadBear), ...(decision.blockerReasons || []).slice(0, 2)], "Geen kernreden")}</div></div>
-      `;
-      const aiView = `
-        <div class="mini-grid compact-grid compact-data-grid">
-          <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(decision.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(decision.committee?.agreement || 0, 1)}</div></div>
-          <div class="mini-stat"><span class="kicker">Calibration</span><strong>${formatPct(decision.calibrationConfidence || 0, 1)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Meta gate</span><strong>${formatPct(decision.meta?.score || 0, 1)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((decision.selfHeal?.mode || "normal").replaceAll("_", " "))}</strong></div>
-        </div>
-        <div class="note-line"><span class="kicker">AI notities</span><div class="tag-list">${renderTagList([...(decision.strategy?.reasons || decision.strategySummary?.reasons || []).slice(0, 2), ...(decision.executionReasons || []).slice(0, 2)], "Geen extra AI-notities")}</div></div>
+        <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
       `;
       const contextView = `
-        <div class="mini-grid compact-grid compact-data-grid">
-          <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(decision.orderBook?.bookPressure || 0, 2)}</strong></div>
+        <div class="mini-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Book</span><strong>${formatNumber(decision.orderBook?.bookPressure || 0, 2)}</strong></div>
           <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(decision.marketStructure?.fundingRate || 0, 6)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Pattern</span><strong>${escapeHtml(decision.patterns?.dominantPattern || "none")}</strong></div>
-          <div class="mini-stat"><span class="kicker">Macro</span><strong>${decision.marketSentiment?.fearGreedValue == null ? "-" : `${formatNumber(decision.marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(decision.marketSentiment?.fearGreedClassification || "fear/greed")}</div></div>
           <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(decision.session?.sessionLabel || decision.session?.session || "-")}</strong></div>
+          <div class="mini-stat"><span class="kicker">Nieuws</span><strong>${decision.providerDiversity || 0} bronnen</strong><div class="meta">rel ${formatPct(decision.reliabilityScore || 0, 1)}</div></div>
         </div>
-        <div class="note-line"><span class="kicker">Drivers</span><div class="tag-list">${renderTagList([leadBull, leadBear, ...((decision.marketStructure?.reasons || []).slice(0, 2))], "Geen extra context")}</div></div>
       `;
-
       return `
-        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}" ${open ? "open" : ""}>
+        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}" ${index === 0 ? "open" : ""}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
-                <div class="reason-pill ${decision.allow ? "" : "blocked"}">${decision.allow ? "Trade kandidaat" : "Geblokkeerd"}</div>
+                <div class="reason-pill ${decision.allow ? "" : "blocked"}">${decision.allow ? "Trade" : "Skip"}</div>
                 <h3>${escapeHtml(decision.symbol)}</h3>
-                <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(familyLabel)} | ${escapeHtml(decision.regime || "unknown")}</p>
+                <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(decision.regime || "unknown")}</p>
                 <p class="decision-blurb">${escapeHtml(summary)}</p>
               </div>
               <div class="fold-stats">
-                <span class="pill ${verdictTone}">model ${formatPct(decision.probability || 0, 1)}</span>
-                <span class="pill">edge ${formatSignedPct(edge, 1)}</span>
+                <span class="pill ${decision.allow ? "positive" : "negative"}">${decision.allow ? "Go" : "No"}</span>
+                <span class="pill">${formatPct(decision.probability || 0, 1)}</span>
               </div>
             </div>
             <div class="summary-strip">${renderReasonPills(keyPills, "Geen highlights")}</div>
           </summary>
-          <div class="fold-body">
-            ${renderDetailSection("Waarom", "Kort en duidelijk waarom wel of niet", decisionView, true)}
-            ${renderDetailSection("AI check", "Model, committee en veiligheid", aiView)}
-            ${renderDetailSection("Marktcontext", "Alleen de kernsignalen", contextView)}
+          <div class="fold-body compact-body">
+            ${compactView}
+            ${renderDetailSection("Meer context", "Alleen de kernsignalen", contextView)}
           </div>
         </details>
       `;
     })
     .join("");
 }
-
 function renderTrades(snapshot) {
   const trades = snapshot.dashboard.report.recentTrades || [];
   if (!trades.length) {
@@ -800,6 +828,7 @@ function renderTrades(snapshot) {
   }
 
   elements.tradesBody.innerHTML = trades
+    .slice(0, 8)
     .map(
       (trade) => `
         <tr>
@@ -824,123 +853,97 @@ function renderIntelligence(snapshot) {
   const calibration = snapshot.dashboard.ai?.calibration || {};
   const deployment = snapshot.dashboard.ai?.deployment || {};
   const stream = snapshot.dashboard.stream || {};
-  const portfolio = snapshot.dashboard.portfolio || {};
+  const universe = snapshot.dashboard.universe || {};
   const exchange = snapshot.dashboard.exchange || {};
   const marketStructure = snapshot.dashboard.marketStructure || {};
   const volatility = snapshot.dashboard.volatility || {};
-  const calendar = snapshot.dashboard.calendar || {};
+  const marketSentiment = snapshot.dashboard.marketSentiment || {};
   const safety = snapshot.dashboard.safety || {};
-  const session = safety.session || {};
   const drift = safety.drift || {};
   const selfHeal = safety.selfHeal || {};
-  const stableSnapshots = safety.stableModelSnapshots || [];
   const backups = safety.backups || {};
   const recovery = safety.recovery || {};
-  const topCluster = (portfolio.clusters || [])[0];
-  const topSector = (portfolio.sectors || [])[0];
   const topDecision = (snapshot.dashboard.topDecisions || [])[0] || {};
-  const recorder = snapshot.dashboard.dataRecorder || {};
-
-  const transformer = snapshot.dashboard.ai?.transformer || {};
-  const rlPolicy = snapshot.dashboard.ai?.rlPolicy || {};
-  const committee = snapshot.dashboard.ai?.committee || {};
-  const strategy = snapshot.dashboard.ai?.strategy || {};
-  const optimizer = snapshot.dashboard.ai?.optimizer || {};
   const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
   const executionReport = snapshot.dashboard.report?.executionSummary || {};
-  const latestStableSnapshot = stableSnapshots[0] || {};
-  const topPolicy = (rlPolicy.topPolicies || [])[0] || {};
-  const adaptiveGate = topDecision.optimizerApplied || {};
-  const adaptiveThreshold = adaptiveGate.effectiveThreshold ?? topDecision.threshold ?? 0;
-  const adaptiveBaseThreshold = adaptiveGate.baseThreshold ?? topDecision.baseThreshold ?? adaptiveThreshold;
-  const adaptiveStrategyFloor = adaptiveGate.strategyConfidenceFloor ?? topDecision.strategyConfidenceFloor ?? strategy.confidence ?? 0;
+  const rotation = universe.rotation || {};
+  const leadStyle = executionReport.styles?.[0] || {};
+  const leadStrategy = executionReport.strategies?.[0] || {};
+  const promotionPolicy = modelRegistry.promotionPolicy || {};
 
   elements.aiSummary.innerHTML = [
-    insightCard("Actief model", (deployment.active || "champion").toUpperCase(), `${deployment.shadowTradeCount || 0} shadow trades`),
+    insightCard("Model", (deployment.active || "champion").toUpperCase(), `${deployment.shadowTradeCount || 0} shadow trades`),
     insightCard("Calibration", `${formatNumber((calibration.expectedCalibrationError || 0) * 100, 1)}% ECE`, `${calibration.observations || 0} observaties`, (calibration.expectedCalibrationError || 0) < 0.1 ? "positive" : "neutral"),
-    insightCard("Transformer", transformer.averageError == null ? "Nog leeg" : `${formatNumber((transformer.averageError || 0) * 100, 1)}% fout`, `${transformer.observations || 0} learns`, transformer.averageError != null && transformer.averageError < 0.2 ? "positive" : "neutral"),
-    insightCard("Committee", `${formatPct(committee.agreement || 0, 1)} agree`, `net ${formatNumber(committee.netScore || 0, 3)}`, (committee.agreement || 0) > 0.5 ? "positive" : "neutral"),
-    insightCard("RL policy", topPolicy.action || "-", topPolicy.bucket ? `${topPolicy.bucket} | ${formatNumber(topPolicy.value || 0, 3)}` : "Nog geen policy-data", (rlPolicy.averageReward || 0) > 0 ? "positive" : (rlPolicy.averageReward || 0) < 0 ? "negative" : "neutral"),
-    insightCard("Strategy", strategy.strategyLabel || topDecision.strategy?.strategyLabel || "-", `fit ${formatPct(strategy.fitScore || topDecision.strategy?.fitScore || 0, 1)} | conf ${formatPct(strategy.confidence || topDecision.strategy?.confidence || 0, 1)}`, (strategy.fitScore || topDecision.strategy?.fitScore || 0) > 0.55 ? "positive" : "neutral"),
-    insightCard("Promoties", `${(deployment.promotions || []).length}`, deployment.lastPromotionAt ? `Laatste ${formatDate(deployment.lastPromotionAt)}` : "Nog geen promoties"),
-    insightCard("Model registry", `${formatPct(modelRegistry.currentQualityScore || 0, 1)}`, modelRegistry.rollbackCandidate?.at ? `rollback ${formatDate(modelRegistry.rollbackCandidate.at)} | q ${formatNumber(modelRegistry.rollbackCandidate.qualityScore || 0, 2)}` : "Nog geen rollback-kandidaat", (modelRegistry.currentQualityScore || 0) >= 0.6 ? "positive" : "neutral")
+    insightCard("Trade quality", `${formatPct(topDecision.meta?.qualityScore || topDecision.meta?.score || 0, 1)}`, topDecision.meta?.qualityBand || "nog geen quality band", (topDecision.meta?.qualityScore || topDecision.meta?.score || 0) >= 0.58 ? "positive" : "neutral"),
+    insightCard("Promotie", promotionPolicy.readyLevel || "observe", promotionPolicy.allowPromotion ? "challenger mag promoveren" : (promotionPolicy.blockerReasons || [])[0] || "nog niet klaar", promotionPolicy.allowPromotion ? "positive" : "neutral")
   ].join("");
 
   elements.optimizerSummary.innerHTML = [
-    insightCard("Optimizer sample", `${optimizer.sampleSize || 0} trades`, `confidence ${formatPct(optimizer.sampleConfidence || 0, 1)}`),
-    insightCard("Adaptive gate", `${formatPct(adaptiveThreshold || 0, 1)}`, `base ${formatPct(adaptiveBaseThreshold || 0, 1)} | delta ${formatPct(adaptiveGate.thresholdAdjustment || 0, 1)}`, (adaptiveGate.thresholdAdjustment || 0) >= 0 ? "positive" : (adaptiveGate.thresholdAdjustment || 0) < 0 ? "negative" : "neutral"),
-    insightCard("Strategy floor", `${formatPct(adaptiveStrategyFloor || 0, 1)}`, `family ${formatPct(adaptiveGate.familyConfidenceTilt || 0, 1)} | strategy ${formatPct(adaptiveGate.strategyConfidenceTilt || 0, 1)}`, (adaptiveGate.strategyConfidenceAdjustment || 0) >= 0 ? "positive" : (adaptiveGate.strategyConfidenceAdjustment || 0) < 0 ? "negative" : "neutral"),
-    insightCard("Top strategy", optimizer.topStrategies?.[0]?.label || "-", optimizer.topStrategies?.[0] ? `${formatPct(optimizer.topStrategies[0].winRate || 0, 1)} win | ${optimizer.topStrategies[0].tradeCount} trades` : "Nog geen optimizer-history"),
-    insightCard("Top family", optimizer.topFamilies?.[0]?.label || "-", optimizer.topFamilies?.[0] ? `${formatPct(optimizer.topFamilies[0].winRate || 0, 1)} win | ${optimizer.topFamilies[0].tradeCount} trades` : "Nog geen family-prior"),
-    insightCard("Global tilts", `thr ${formatPct(optimizer.thresholdTilt || 0, 1)}`, `conf ${formatPct(optimizer.confidenceTilt || 0, 1)}`, (optimizer.thresholdTilt || 0) >= 0 ? "positive" : (optimizer.thresholdTilt || 0) < 0 ? "negative" : "neutral")
+    insightCard("Strategie", topDecision.strategy?.strategyLabel || snapshot.dashboard.ai?.strategy?.strategyLabel || "-", `fit ${formatPct(topDecision.strategy?.fitScore || snapshot.dashboard.ai?.strategy?.fitScore || 0, 1)}`),
+    insightCard("Universe rotatie", (rotation.focusClusters || []).slice(0, 2).join(" / ") || "standaard", rotation.note || "geen cluster-tilt actief"),
+    insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.rollbackCandidate?.at ? `rollback ${formatDate(modelRegistry.rollbackCandidate.at)}` : "geen rollback-kandidaat")
   ].join("");
 
   elements.streamSummary.innerHTML = [
-    insightCard("Market stream", stream.publicStreamConnected ? "Verbonden" : "Niet verbonden", stream.lastPublicMessageAt ? `Laatste tick ${formatDate(stream.lastPublicMessageAt)}` : "Nog geen tick", stream.publicStreamConnected ? "positive" : "negative"),
-    insightCard("Liquidation stream", stream.futuresStreamConnected ? "Verbonden" : "Niet verbonden", stream.lastFuturesMessageAt ? `Laatste liquidation ${formatDate(stream.lastFuturesMessageAt)}` : "Nog geen liquidation-tick", stream.futuresStreamConnected ? "positive" : "neutral"),
-    insightCard("User stream", stream.userStreamConnected ? "Verbonden" : "Inactief", stream.lastUserMessageAt ? `Laatste event ${formatDate(stream.lastUserMessageAt)}` : "Geen account-events", stream.userStreamConnected ? "positive" : "neutral")
+    insightCard("Streams", stream.publicStreamConnected ? "verbonden" : "offline", stream.lastPublicMessageAt ? `laatste ${formatDate(stream.lastPublicMessageAt)}` : "nog geen tick", stream.publicStreamConnected ? "positive" : "negative"),
+    insightCard("Local book", `${stream.localBook?.healthySymbols || 0}/${stream.localBook?.activeSymbols || 0}`, `conf ${formatNumber(stream.localBook?.averageDepthConfidence || 0, 2)}`),
+    insightCard("User stream", stream.userStreamConnected ? "verbonden" : "inactief", stream.lastUserMessageAt ? `laatste ${formatDate(stream.lastUserMessageAt)}` : "geen account-events", stream.userStreamConnected ? "positive" : "neutral")
   ].join("");
 
   elements.executionSummary.innerHTML = [
-    insightCard("Local book", `${stream.localBook?.healthySymbols || 0}/${stream.localBook?.activeSymbols || stream.localBook?.trackedSymbols || 0}`, `actief ${stream.localBook?.activeSymbols || 0} | conf ${formatNumber(stream.localBook?.averageDepthConfidence || 0, 2)} | resync ${stream.localBook?.totalResyncs || 0}`, (stream.localBook?.healthySymbols || 0) > 0 ? "positive" : "neutral"),
-    insightCard("Entry slippage", `${formatNumber(executionReport.avgEntryTouchSlippageBps || 0, 2)} bps`, `exit ${formatNumber(executionReport.avgExitTouchSlippageBps || 0, 2)} bps`, (executionReport.avgEntryTouchSlippageBps || 0) <= 1.5 ? "positive" : "neutral"),
-    insightCard("Maker ratio", `${formatPct(executionReport.avgMakerFillRatio || 0, 1)}`, `${executionReport.peggedCount || 0} pegged fills`, (executionReport.avgMakerFillRatio || 0) >= 0.35 ? "positive" : "neutral"),
-    insightCard("STP / SOR", `${executionReport.preventedMatchCount || 0} matches`, `qty ${formatNumber(executionReport.totalPreventedQuantity || 0, 6)} | sor ${executionReport.sorCount || 0}`, (executionReport.preventedMatchCount || 0) === 0 ? "positive" : "neutral"),
-    insightCard("Top style", executionReport.styles?.[0]?.style || "-", executionReport.styles?.[0] ? `${executionReport.styles[0].tradeCount} trades | ${formatMoney(executionReport.styles[0].realizedPnl || 0)}` : "Nog geen execution-history"),
-    insightCard("Style slip", executionReport.styles?.[0] ? `${formatNumber(executionReport.styles[0].avgEntryTouchSlippageBps || 0, 2)} bps` : "-", executionReport.styles?.[0] ? `maker ${formatPct(executionReport.styles[0].avgMakerFillRatio || 0, 1)}` : "Nog geen style-stats")
+    insightCard("Slip delta", `${formatNumber(executionReport.avgSlippageDeltaBps || 0, 2)} bps`, `verwacht ${formatNumber(executionReport.avgExpectedEntrySlippageBps || 0, 2)} | echt ${formatNumber(executionReport.avgEntryTouchSlippageBps || 0, 2)}`, (executionReport.avgSlippageDeltaBps || 0) <= 0.8 ? "positive" : "neutral"),
+    insightCard("Maker efficiency", `${formatPct(executionReport.avgMakerFillRatio || 0, 1)}`, `${leadStyle.style || "-"} | ${leadStyle.tradeCount || 0} trades`, (executionReport.avgMakerFillRatio || 0) >= 0.35 ? "positive" : "neutral"),
+    insightCard("Beste exec strategy", leadStrategy.id || "-", leadStrategy.id ? `${formatMoney(leadStrategy.realizedPnl || 0)} | q ${formatPct(leadStrategy.averageExecutionQuality || 0, 1)}` : "nog geen execution history")
   ].join("");
 
   elements.portfolioSummary.innerHTML = [
-    insightCard("Top cluster", topCluster ? topCluster.name : "-", topCluster ? formatMoney(topCluster.exposure) : "Geen exposure"),
-    insightCard("Top sector", topSector ? topSector.name : "-", topSector ? formatMoney(topSector.exposure) : "Geen exposure"),
-    insightCard("Open clusters", `${(portfolio.clusters || []).length}`, `${(portfolio.sectors || []).length} sectoren actief`)
+    insightCard("Focus cluster", (rotation.focusClusters || [])[0] || "-", rotation.focusReason || "geen cluster-focus actief"),
+    insightCard("Cooling clusters", `${(rotation.coolingClusters || []).length}`, (rotation.coolingClusters || []).slice(0, 2).join(" / ") || "geen afkoeling"),
+    insightCard("Universe", `${universe.selectedCount || 0}/${universe.configuredSymbolCount || 0}`, universe.suggestions?.[0] || "geen universe-opmerking")
   ].join("");
 
   elements.newsSummary.innerHTML = [
-    insightCard("Nieuws mesh", `${topDecision.providerDiversity || 0} providers`, topDecision.providerBreakdown ? formatBreakdown(topDecision.providerBreakdown) : "Nog geen bronverdeling"),
-    insightCard("Dominant event", topDecision.dominantEventType || "-", topDecision.sourceBreakdown ? formatBreakdown(topDecision.sourceBreakdown) : "Nog geen bronverdeling"),
-    insightCard("Freshness", topDecision.freshnessHours == null ? "-" : `${formatNumber(topDecision.freshnessHours, 1)} uur`, topDecision.sourceQualityScore == null ? "Nog geen nieuwsdata" : `kwaliteit ${formatNumber(topDecision.sourceQualityScore || 0, 2)} | rel ${formatNumber(topDecision.reliabilityScore || 0, 2)}`)
+    insightCard("Nieuws", `${topDecision.providerDiversity || 0} bronnen`, topDecision.dominantEventType || "geen dominant event"),
+    insightCard("Futures", `${formatNumber(marketStructure.fundingRate || 0, 6)}`, (marketStructure.reasons || []).slice(0, 2).join(" | ") || "rustige perp-structuur"),
+    insightCard("Macro", marketSentiment.fearGreedValue == null ? "-" : `${formatNumber(marketSentiment.fearGreedValue, 1)}`, marketSentiment.fearGreedClassification || "fear/greed")
   ].join("");
 
   elements.marketStructureSummary.innerHTML = [
-    insightCard("Funding", `${formatNumber(marketStructure.fundingRate || 0, 6)}`, marketStructure.nextFundingTime ? `Next funding ${formatDate(marketStructure.nextFundingTime)}` : "Nog geen funding-data", toneClass(-(marketStructure.fundingRate || 0))),
-    insightCard("Basis", `${formatNumber(marketStructure.basisBps || 0, 2)} bps`, marketStructure.reasons ? renderTextList(marketStructure.reasons) : "Nog geen basis-signalen"),
-    insightCard("Liquidaties", `${marketStructure.liquidationCount || 0}`, `${formatMoney(marketStructure.liquidationNotional || 0)} | risk ${formatNumber(marketStructure.riskScore || 0, 2)}`)
+    insightCard("Liquidaties", `${marketStructure.liquidationCount || 0}`, `${formatMoney(marketStructure.liquidationNotional || 0)} | risk ${formatNumber(marketStructure.riskScore || 0, 2)}`),
+    insightCard("Open interest", `${formatPct(marketStructure.openInterestChangePct || 0, 2)}`, `long/short ${formatNumber(marketStructure.longShortRatio || 0, 2)}`),
+    insightCard("Crowding", `${formatNumber(marketStructure.crowdingBias || 0, 2)}`, (marketStructure.reasons || []).slice(0, 2).join(" | ") || "geen crowding signaal")
   ].join("");
 
   elements.volatilitySummary.innerHTML = [
-    insightCard("Option IV", volatility.marketOptionIv == null ? "-" : `${formatNumber(volatility.marketOptionIv, 1)}`, volatility.marketHistoricalVol == null ? "Geen Deribit context" : `hist ${formatNumber(volatility.marketHistoricalVol || 0, 1)} | prem ${formatNumber(volatility.ivPremium || 0, 1)}`, (volatility.riskScore || 0) >= 0.75 ? "negative" : (volatility.regime || "calm") === "calm" ? "positive" : "neutral"),
-    insightCard("Vol regime", volatility.regime || "unknown", volatility.coverage ? `${volatility.coverage} bronnen` : "Nog geen vol-feed", (volatility.regime || "unknown") === "stress" ? "negative" : (volatility.regime || "unknown") === "calm" ? "positive" : "neutral"),
-    insightCard("Vol risk", `${formatPct(volatility.riskScore || 0, 1)}`, renderTextList(volatility.reasons || []), (volatility.riskScore || 0) >= 0.75 ? "negative" : "neutral")
+    insightCard("Vol regime", volatility.regime || "unknown", volatility.marketOptionIv == null ? "geen Deribit context" : `IV ${formatNumber(volatility.marketOptionIv, 1)} | premium ${formatNumber(volatility.ivPremium || 0, 1)}`),
+    insightCard("Vol risk", `${formatPct(volatility.riskScore || 0, 1)}`, (volatility.reasons || []).slice(0, 2).join(" | ") || "geen extra vol-signalen"),
+    insightCard("Exchange notices", `${exchange.coverage || 0}`, exchange.categoryCounts ? formatBreakdown(exchange.categoryCounts) : "geen officiele notices")
   ].join("");
 
   elements.calendarSummary.innerHTML = [
-    insightCard("Volgend event", calendar.nextEventType || "-", calendar.nextEventTitle || "Geen event in venster"),
-    insightCard("Proximity", calendar.proximityHours == null ? "-" : `${formatNumber(calendar.proximityHours, 1)}u`, `risk ${formatNumber(calendar.riskScore || 0, 2)} | urgency ${formatNumber(calendar.urgencyScore || 0, 2)}`),
-    insightCard("Exchange notices", `${exchange.coverage || 0}`, exchange.categoryCounts ? formatBreakdown(exchange.categoryCounts) : "Nog geen officiele notices")
+    insightCard("Volgend event", snapshot.dashboard.calendar?.nextEventTitle || "-", snapshot.dashboard.calendar?.nextEventType || "geen event"),
+    insightCard("Proximity", snapshot.dashboard.calendar?.proximityHours == null ? "-" : `${formatNumber(snapshot.dashboard.calendar.proximityHours, 1)}u`, `risk ${formatNumber(snapshot.dashboard.calendar?.riskScore || 0, 2)}`),
+    insightCard("Upcoming", `${(snapshot.dashboard.upcomingEvents || []).length}`, `${(snapshot.dashboard.officialNotices || []).length} notices`)
   ].join("");
 
   elements.driftSummary.innerHTML = [
-    insightCard("Drift status", (drift.status || "normal").toUpperCase(), `sev ${formatPct(drift.severity || 0, 1)} | avg conf ${formatPct(drift.averageCandidateConfidence || 0, 1)}`, (drift.severity || 0) >= 0.82 ? "negative" : (drift.severity || 0) >= 0.45 ? "neutral" : "positive"),
-    insightCard("Feature drift", `${formatPct(drift.featureDriftScore || 0, 1)}`, `source ${formatPct(drift.sourceDriftScore || 0, 1)} | data ${formatPct(drift.dataScore || 0, 1)}`, (drift.featureDriftScore || 0) >= 0.55 ? "negative" : "positive"),
-    insightCard("Cal / exec drift", `ECE ${formatPct(drift.calibrationScore || 0, 1)}`, `slip ${formatPct(drift.executionScore || 0, 1)} | perf ${formatPct(drift.performanceScore || 0, 1)}`, (drift.calibrationScore || 0) >= 0.4 || (drift.executionScore || 0) >= 0.45 ? "negative" : "neutral")
+    insightCard("Drift", (drift.status || "normal").toUpperCase(), `sev ${formatPct(drift.severity || 0, 1)}`, (drift.severity || 0) >= 0.45 ? "negative" : "positive"),
+    insightCard("Feature drift", `${formatPct(drift.featureDriftScore || 0, 1)}`, `source ${formatPct(drift.sourceDriftScore || 0, 1)}`),
+    insightCard("Execution drift", `${formatPct(drift.executionScore || 0, 1)}`, `perf ${formatPct(drift.performanceScore || 0, 1)}`)
   ].join("");
 
   elements.safetySummary.innerHTML = [
-    insightCard("Session", session.sessionLabel || session.session || "-", `${session.dayLabel || "-"} | ${session.utcHour == null ? "-" : `${formatNumber(session.utcHour, 2)} UTC`}`, session.lowLiquidity || session.inHardFundingBlock ? "negative" : session.isWeekend || session.inFundingCaution ? "neutral" : "positive"),
-    insightCard("Funding window", session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 2)}u`, `liq ${formatPct(session.lowLiquidityScore || 0, 1)} | risk ${formatPct(session.riskScore || 0, 1)}`, session.inHardFundingBlock ? "negative" : session.inFundingCaution ? "neutral" : "positive"),
-    insightCard("Self-heal", (selfHeal.mode || "normal").replaceAll("_", " "), selfHeal.cooldownUntil ? `cooldown tot ${formatDate(selfHeal.cooldownUntil)}` : selfHeal.reason || "Geen actieve cooldown", selfHeal.active ? (selfHeal.mode === "paper_fallback" || selfHeal.mode === "paused" ? "negative" : "neutral") : "positive"),
-    insightCard("Stable model", latestStableSnapshot.at ? `${latestStableSnapshot.tradeCount || 0} trades` : "Nog geen snapshot", latestStableSnapshot.at ? `${formatDate(latestStableSnapshot.at)} | win ${formatPct(latestStableSnapshot.winRate || 0, 1)}` : "Rollback backup nog leeg", latestStableSnapshot.at ? "positive" : "neutral"),
-    insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)} | ${backups.lastReason || "backup"}` : "Nog geen backup", (backups.backupCount || 0) > 0 ? "positive" : "neutral"),
-    insightCard("Feature store", `${recorder.filesWritten || 0} frames`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)}` : "Nog geen recorder-data", (recorder.filesWritten || 0) > 0 ? "positive" : "neutral"),
-    insightCard("Recovery", recovery.uncleanShutdownDetected ? "Waarschuwing" : "Schoon", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")
+    insightCard("Self-heal", (selfHeal.mode || "normal").replaceAll("_", " "), selfHeal.reason || "geen actieve guard", selfHeal.active ? "neutral" : "positive"),
+    insightCard("Recorder", `${(snapshot.dashboard.dataRecorder || {}).filesWritten || 0} writes`, (snapshot.dashboard.dataRecorder || {}).lastRecordAt ? `laatst ${formatDate((snapshot.dashboard.dataRecorder || {}).lastRecordAt)}` : "nog geen data"),
+    insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "nog geen backup"),
+    insightCard("Recovery", recovery.uncleanShutdownDetected ? "waarschuwing" : "schoon", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : "geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")
   ].join("");
 
   const upcomingEvents = snapshot.dashboard.upcomingEvents || [];
   elements.upcomingEventsList.innerHTML = upcomingEvents.length
     ? upcomingEvents
         .map((event) => `
-          <div class="event-row">
+          <div class="event-row compact-row">
             <div class="kicker">${escapeHtml(event.type || "event")}</div>
             <div>${escapeHtml(event.title || event.nextEventTitle || "Kalender-event")}</div>
             <div class="meta">${event.at ? formatDate(event.at) : "-"}</div>
@@ -953,7 +956,7 @@ function renderIntelligence(snapshot) {
   elements.officialNoticeList.innerHTML = officialNotices.length
     ? officialNotices
         .map((item) => `
-          <div class="event-row">
+          <div class="event-row compact-row">
             <div class="kicker">${escapeHtml(item.dominantEventType || item.provider || "notice")}</div>
             <div>${escapeHtml(item.title || "Official notice")}</div>
             <div class="meta">${formatDate(item.publishedAt)}</div>
@@ -962,7 +965,6 @@ function renderIntelligence(snapshot) {
         .join("")
     : `<div class="empty">Geen officiele Binance notices.</div>`;
 }
-
 function renderWeights(snapshot) {
   const weights = snapshot.dashboard.modelWeights || [];
   elements.weightsList.innerHTML = weights.length
@@ -1017,79 +1019,71 @@ function renderBlockedSetups(snapshot) {
   const blocked = snapshot.dashboard.blockedSetups || [];
   elements.blockedList.innerHTML = blocked.length
     ? blocked
+        .slice(0, 6)
         .map(
-          (item, index) => `
-            <details class="blocked-card fold-card blocked" ${index < 2 ? "open" : ""}>
-              <summary class="fold-summary">
-                <div class="fold-header">
-                  <div>
-                    <div class="reason-pill blocked">No trade</div>
-                    <h3>${escapeHtml(item.symbol || "setup")}</h3>
-                    <p class="meta">${escapeHtml(item.strategy?.strategyLabel || item.setupStyle || "Geblokkeerde setup")} | ${escapeHtml(item.regime || "unknown")}</p>
+          (item, index) => {
+            const mainReason = normalizeReasonLabel(item.blockerReasons?.[0] || item.reasons?.[0] || "geen duidelijke blocker");
+            const qualityScore = item.meta?.qualityScore ?? item.meta?.score ?? 0;
+            return `
+              <details class="blocked-card fold-card blocked compact-fold" ${index === 0 ? "open" : ""}>
+                <summary class="fold-summary">
+                  <div class="fold-header">
+                    <div>
+                      <div class="reason-pill blocked">No trade</div>
+                      <h3>${escapeHtml(item.symbol || "setup")}</h3>
+                      <p class="meta">${escapeHtml(item.strategy?.strategyLabel || item.setupStyle || "Geblokkeerde setup")} | ${escapeHtml(item.regime || "unknown")}</p>
+                      <p class="decision-blurb">${escapeHtml(`Hoofdreden: ${mainReason}.`)}</p>
+                    </div>
+                    <div class="fold-stats">
+                      <span class="pill negative">${formatPct(item.probability || 0, 1)}</span>
+                      <span class="pill">q ${formatPct(qualityScore || 0, 1)}</span>
+                    </div>
                   </div>
-                  <div class="pill negative">model ${formatPct(item.probability || 0, 1)}</div>
+                </summary>
+                <div class="fold-body compact-body">
+                  <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList((item.blockerReasons || item.reasons || []).slice(0, 4).map(normalizeReasonLabel), "Geen blockers")}</div></div>
+                  <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])].slice(0, 4).map(normalizeReasonLabel), "Geen extra safety-flags")}</div></div>
                 </div>
-                <div class="fold-stats">
-                  <span class="summary-chip">gate ${formatPct(item.threshold || 0, 1)}</span>
-                  <span class="summary-chip negative">edge ${formatSignedPct(item.edgeToThreshold || 0, 1)}</span>
-                  <span class="summary-chip">meta ${formatPct(item.meta?.score || 0, 1)}</span>
-                  <span class="summary-chip">self-heal ${escapeHtml((item.selfHeal?.mode || "normal").replaceAll("_", " "))}</span>
-                </div>
-              </summary>
-              <div class="fold-body">
-                <p class="decision-blurb">${escapeHtml(item.summary || "Geen samenvatting beschikbaar.")}</p>
-                <div class="mini-grid">
-                  <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(item.strategy?.familyLabel || item.strategy?.family || "-")}</strong><div class="meta">${escapeHtml(item.strategy?.strategyLabel || item.setupStyle || "-")} | fit ${formatPct(item.strategy?.fitScore || 0, 1)}</div></div>
-                  <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(item.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(item.committee?.agreement || 0, 1)}</div></div>
-                  <div class="mini-stat"><span class="kicker">Meta gate</span><strong>${formatPct(item.meta?.score || 0, 1)}</strong><div class="meta">budget ${formatPct(item.meta?.dailyBudgetFactor || 0, 1)} | canary ${item.meta?.canaryActive ? "aan" : "uit"}</div></div>
-                  <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(item.session?.sessionLabel || item.session?.session || "-")}</strong><div class="meta">${escapeHtml(item.session?.dayLabel || "-")}</div></div>
-                </div>
-                <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList(item.blockerReasons || item.reasons || [], "Geen blockers")}</div></div>
-                <div class="note-line"><span class="kicker">Regime</span><div class="tag-list">${renderTagList(item.regimeReasons || [], "Geen regime-redenen")}</div></div>
-                <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])], "Geen extra safety-flags")}</div></div>
-              </div>
-            </details>
-          `
+              </details>
+            `;
+          }
         )
         .join("")
     : `<div class="empty">Geen recente geblokkeerde setups.</div>`;
 }
-
 function renderTradeReplays(snapshot) {
   const replays = snapshot.dashboard.tradeReplays || [];
   elements.replayList.innerHTML = replays.length
     ? replays
+        .slice(0, 4)
         .map(
           (trade, index) => `
-            <details class="replay-card fold-card" ${index < 2 ? "open" : ""}>
+            <details class="replay-card fold-card compact-fold" ${index === 0 ? "open" : ""}>
               <summary class="fold-summary">
                 <div class="fold-header">
                   <div>
                     <div class="kicker">${escapeHtml(trade.symbol || "trade")}</div>
                     <h3>${escapeHtml(trade.strategy || trade.regime || "Trade replay")}</h3>
-                    <p class="meta">${escapeHtml(trade.regime || "-")} | open ${formatDate(trade.entryAt)} | dicht ${formatDate(trade.exitAt)}</p>
+                    <p class="meta">${escapeHtml(trade.regime || "-")} | ${formatDate(trade.entryAt)} -> ${formatDate(trade.exitAt)}</p>
                   </div>
-                  <div class="pill ${toneClass(trade.pnlQuote || 0)}">${formatMoney(trade.pnlQuote || 0)}</div>
-                </div>
-                <div class="fold-stats">
-                  <span class="summary-chip ${toneClass(trade.netPnlPct || 0)}">rendement ${formatPct(trade.netPnlPct || 0, 2)}</span>
-                  <span class="summary-chip">entry ${escapeHtml(trade.entryExecution?.entryStyle || "-")}</span>
-                  <span class="summary-chip">exit ${escapeHtml(trade.exitExecution?.entryStyle || "-")}</span>
-                  <span class="summary-chip">duur ${formatNumber(trade.durationMinutes || 0, 1)} min</span>
+                  <div class="fold-stats">
+                    <span class="pill ${toneClass(trade.pnlQuote || 0)}">${formatMoney(trade.pnlQuote || 0)}</span>
+                    <span class="pill">${formatPct(trade.netPnlPct || 0, 2)}</span>
+                  </div>
                 </div>
               </summary>
-              <div class="fold-body">
-                <div class="mini-grid">
-                  <div class="mini-stat"><span class="kicker">Entry exec</span><strong>${escapeHtml(formatExecutionMeta(trade.entryExecution || {}))}</strong></div>
-                  <div class="mini-stat"><span class="kicker">Exit exec</span><strong>${escapeHtml(formatExecutionMeta(trade.exitExecution || {}))}</strong></div>
-                  <div class="mini-stat"><span class="kicker">Scale-outs</span><strong>${trade.scaleOutCount || 0}</strong></div>
-                  <div class="mini-stat"><span class="kicker">Exit AI</span><strong>${escapeHtml((trade.exitIntelligence?.action || "hold").replaceAll("_", " "))}</strong><div class="meta">score ${formatPct(trade.exitIntelligence?.score || 0, 1)}</div></div>
+              <div class="fold-body compact-body">
+                ${buildReplayChart(trade)}
+                <div class="mini-grid compact-data-grid">
+                  <div class="mini-stat"><span class="kicker">Entry</span><strong>${escapeHtml(trade.entryExecution?.entryStyle || "-")}</strong></div>
+                  <div class="mini-stat"><span class="kicker">Exit</span><strong>${escapeHtml(trade.reason || trade.whyClosed || "-")}</strong></div>
+                  <div class="mini-stat"><span class="kicker">Exit AI</span><strong>${escapeHtml((trade.exitIntelligence?.action || "hold").replaceAll("_", " "))}</strong></div>
+                  <div class="mini-stat"><span class="kicker">Duur</span><strong>${formatNumber(trade.durationMinutes || 0, 1)} min</strong></div>
                 </div>
                 <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList([trade.whyOpened].filter(Boolean), "Geen entry-uitleg")}</div></div>
                 <div class="note-line"><span class="kicker">Waarom dicht</span><div class="tag-list">${renderTagList([trade.whyClosed].filter(Boolean), "Geen exit-reden")}</div></div>
-                <div class="note-line"><span class="kicker">Exit AI</span><div class="tag-list">${renderTagList([`${(trade.exitIntelligence?.action || "hold").replaceAll("_", " ")}`, ...(trade.exitIntelligence?.riskReasons || []), ...(trade.exitIntelligence?.positiveReasons || [])], "Geen exit-AI notities")}</div></div>
-                <div class="note-line"><span class="kicker">Blockers bij entry</span><div class="tag-list">${renderTagList(trade.blockersAtEntry || [], "Geen blockers op entry")}</div></div>
-                ${renderTimelineRows(trade.timeline || [], "Nog geen replay-timeline.")}
+                <div class="note-line"><span class="kicker">Nieuws</span><div class="tag-list">${renderTagList((trade.headlines || []).slice(0, 2), "Geen nieuws-overlay")}</div></div>
+                ${renderDetailSection("Timeline", "Open, schaal uit en sluit", renderTimelineRows(trade.timeline || [], "Nog geen replay-timeline."))}
               </div>
             </details>
           `
@@ -1097,7 +1091,6 @@ function renderTradeReplays(snapshot) {
         .join("")
     : `<div class="empty">Nog geen trade replays beschikbaar.</div>`;
 }
-
 function renderResearch(snapshot) {
   const research = snapshot.dashboard.research;
   if (!research?.generatedAt) {
@@ -1421,6 +1414,7 @@ elements.decisionAllowedOnly.addEventListener("change", (event) => {
 
 setupSidebar();
 setupSidebarAccordion();
+setupThemeToggle();
 setupCollapsiblePanels();
 
 refreshSnapshot().catch((error) => {
@@ -1436,5 +1430,19 @@ window.setInterval(() => {
     }
   });
 }, POLL_MS);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

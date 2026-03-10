@@ -1,4 +1,4 @@
-function isFiniteNumber(value) {
+﻿function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
@@ -58,6 +58,13 @@ export function validateConfig(config) {
   assertRange("ABSTAIN_BAND", config.abstainBand, 0, 0.2, errors);
   assertRange("MAX_MODEL_DISAGREEMENT", config.maxModelDisagreement, 0, 1, errors);
   assertRange("CHALLENGER_PROMOTION_MARGIN", config.challengerPromotionMargin, 0, 0.2, errors);
+  assertRange("MODEL_PROMOTION_MIN_SHADOW_TRADES", config.modelPromotionMinShadowTrades, 1, 500, errors);
+  assertRange("MODEL_PROMOTION_MIN_PAPER_TRADES", config.modelPromotionMinPaperTrades, 1, 500, errors);
+  assertRange("MODEL_PROMOTION_MIN_PAPER_WIN_RATE", config.modelPromotionMinPaperWinRate, 0, 1, errors);
+  assertRange("MODEL_PROMOTION_MAX_PAPER_DRAWDOWN_PCT", config.modelPromotionMaxPaperDrawdownPct, 0.001, 0.5, errors);
+  assertRange("MODEL_PROMOTION_MIN_PAPER_QUALITY", config.modelPromotionMinPaperQuality, 0, 1, errors);
+  assertRange("MODEL_PROMOTION_MIN_LIVE_TRADES", config.modelPromotionMinLiveTrades, 0, 500, errors);
+  assertRange("MODEL_PROMOTION_MIN_LIVE_QUALITY", config.modelPromotionMinLiveQuality, 0, 1, errors);
   assertRange("STRATEGY_MIN_CONFIDENCE", config.strategyMinConfidence, 0, 1, errors);
   assertRange("TRANSFORMER_LOOKBACK_CANDLES", config.transformerLookbackCandles, 8, 120, errors);
   assertRange("TRANSFORMER_LEARNING_RATE", config.transformerLearningRate, 0.0001, 0.5, errors);
@@ -109,6 +116,20 @@ export function validateConfig(config) {
   assertRange("MAX_PAIR_CORRELATION", config.maxPairCorrelation, 0, 1, errors);
   assertRange("MAX_CLUSTER_POSITIONS", config.maxClusterPositions, 1, 10, errors);
   assertRange("MAX_SECTOR_POSITIONS", config.maxSectorPositions, 1, 10, errors);
+  assertRange("UNIVERSE_MAX_SYMBOLS", config.universeMaxSymbols, 4, 120, errors);
+  assertRange("UNIVERSE_MIN_SCORE", config.universeMinScore, 0, 1, errors);
+  assertRange("UNIVERSE_MIN_DEPTH_CONFIDENCE", config.universeMinDepthConfidence, 0, 1, errors);
+  assertRange("UNIVERSE_MIN_DEPTH_USD", config.universeMinDepthUsd, 1000, 500000000, errors);
+  assertRange("UNIVERSE_TARGET_VOL_PCT", config.universeTargetVolPct, 0.001, 0.5, errors);
+  assertRange("UNIVERSE_ROTATION_LOOKBACK_DAYS", config.universeRotationLookbackDays, 3, 180, errors);
+  assertRange("UNIVERSE_ROTATION_BOOST", config.universeRotationBoost, 0, 0.5, errors);
+  assertRange("UNIVERSE_ROTATION_MAX_COOLING_CLUSTERS", config.universeRotationMaxCoolingClusters, 0, 12, errors);
+  assertRange("EXIT_INTELLIGENCE_MIN_CONFIDENCE", config.exitIntelligenceMinConfidence, 0, 1, errors);
+  assertRange("EXIT_INTELLIGENCE_TRIM_SCORE", config.exitIntelligenceTrimScore, 0, 1, errors);
+  assertRange("EXIT_INTELLIGENCE_TRAIL_SCORE", config.exitIntelligenceTrailScore, 0, 1, errors);
+  assertRange("EXIT_INTELLIGENCE_EXIT_SCORE", config.exitIntelligenceExitScore, 0, 1, errors);
+  assertRange("TRADE_QUALITY_MIN_SCORE", config.tradeQualityMinScore, 0, 1, errors);
+  assertRange("TRADE_QUALITY_CAUTION_SCORE", config.tradeQualityCautionScore, 0, 1, errors);
   assertRange("MIN_BOOK_PRESSURE_FOR_ENTRY", config.minBookPressureForEntry, -1, 1, errors);
   assertRange("PAPER_EXPLORATION_THRESHOLD_BUFFER", config.paperExplorationThresholdBuffer, 0, 0.2, errors);
   assertRange("PAPER_EXPLORATION_SIZE_MULTIPLIER", config.paperExplorationSizeMultiplier, 0.1, 1, errors);
@@ -209,8 +230,14 @@ export function validateConfig(config) {
   if (config.dynamicWatchlistMinSymbols > config.watchlistTopN) {
     errors.push("DYNAMIC_WATCHLIST_MIN_SYMBOLS cannot exceed WATCHLIST_TOP_N.");
   }
+  if (config.exitIntelligenceTrimScore <= config.exitIntelligenceTrailScore) {
+    errors.push("EXIT_INTELLIGENCE_TRIM_SCORE must be larger than EXIT_INTELLIGENCE_TRAIL_SCORE.");
+  }
   if (config.exitIntelligenceExitScore <= config.exitIntelligenceTrimScore) {
     errors.push("EXIT_INTELLIGENCE_EXIT_SCORE must be larger than EXIT_INTELLIGENCE_TRIM_SCORE.");
+  }
+  if (config.tradeQualityCautionScore <= config.tradeQualityMinScore) {
+    errors.push("TRADE_QUALITY_CAUTION_SCORE must be larger than TRADE_QUALITY_MIN_SCORE.");
   }
   if (config.researchPromotionMaxDrawdownPct <= 0) {
     errors.push("RESEARCH_PROMOTION_MAX_DRAWDOWN_PCT must be positive.");
@@ -251,6 +278,10 @@ export function assertValidConfig(config) {
   }
   return result;
 }
+
+
+
+
 
 
 

@@ -98,6 +98,24 @@ export class MetaDecisionGate {
       0.96
     );
 
+    const expectedSlip = safeNumber(marketSnapshot?.book?.entryEstimate?.touchSlippageBps || 0);
+    const spreadBps = safeNumber(marketSnapshot?.book?.spreadBps || 0);
+    const depthConfidence = safeNumber(marketSnapshot?.book?.depthConfidence || marketSnapshot?.book?.localBook?.depthConfidence || 0);
+    const executionReadiness = clamp(0.42 + depthConfidence * 0.3 - expectedSlip / 12 - spreadBps / 120, 0, 1);
+    const qualityScore = clamp(
+      0.4 +
+        (score.calibrationConfidence || 0) * 0.16 +
+        (score.confidence || 0) * 0.12 +
+        Math.max(0, safeNumber(strategySummary.fitScore, 0) - 0.45) * 0.34 +
+        Math.max(0, safeNumber(committeeSummary.agreement, 0) - 0.3) * 0.18 +
+        executionReadiness * 0.16 +
+        historyConfidence * 0.08 -
+        negativeScore * 0.22,
+      0,
+      1
+    );
+    const qualityBand = qualityScore >= 0.68 ? "prime" : qualityScore >= this.config.tradeQualityCautionScore ? "good" : qualityScore >= this.config.tradeQualityMinScore ? "watch" : "weak";
+
     const budgetPressure = clamp(todayTradeCount / Math.max(this.config.maxEntriesPerDay || 1, 1), 0, 1.4);
     const dailyBudgetFactor = clamp(
       1 - dailyLossFraction / Math.max(this.config.maxDailyDrawdown || 0.01, 0.01) * 0.65 - budgetPressure * 0.18,
@@ -108,6 +126,7 @@ export class MetaDecisionGate {
     const sizeMultiplier = clamp(
       (0.56 + metaScore * 0.58) *
         (0.82 + historyConfidence * 0.16) *
+        (0.82 + qualityScore * 0.12) *
         dailyBudgetFactor *
         canarySizeMultiplier *
         (selfHealState.lowRiskOnly ? 0.9 : 1),
@@ -121,6 +140,11 @@ export class MetaDecisionGate {
     } else if (metaScore < this.config.metaCautionScore) {
       reasons.push("meta_gate_caution");
     }
+    if (qualityScore < this.config.tradeQualityMinScore) {
+      reasons.push("trade_quality_reject");
+    } else if (qualityScore < this.config.tradeQualityCautionScore) {
+      reasons.push("trade_quality_caution");
+    }
     if (dailyBudgetFactor < 0.999) {
       reasons.push("daily_risk_budget_scaled");
     }
@@ -132,23 +156,31 @@ export class MetaDecisionGate {
     }
 
     const action =
-      reasons.includes("meta_gate_reject") || todayTradeCount >= this.config.maxEntriesPerDay
+      reasons.includes("meta_gate_reject") || reasons.includes("trade_quality_reject") || todayTradeCount >= this.config.maxEntriesPerDay
         ? "block"
-        : reasons.includes("meta_gate_caution")
+        : reasons.includes("meta_gate_caution") || reasons.includes("trade_quality_caution")
           ? "caution"
           : "pass";
 
     const thresholdPenalty =
       action === "block"
-        ? 0.055
+        ? 0.055 + Math.max(0, this.config.tradeQualityMinScore - qualityScore) * 0.03
         : action === "caution"
-          ? 0.018 + Math.max(0, 0.52 - metaScore) * 0.05
+          ? 0.018 + Math.max(0, this.config.tradeQualityCautionScore - qualityScore) * 0.03
           : 0;
 
     return {
       action,
       score: Number(metaScore.toFixed(4)),
       confidence: Number(metaConfidence.toFixed(4)),
+      qualityScore: Number(qualityScore.toFixed(4)),
+      qualityBand,
+      qualityReasons: [
+        `execution:${executionReadiness.toFixed(3)}`,
+        `history:${historyConfidence.toFixed(3)}`,
+        `spread:${spreadBps.toFixed(2)}`,
+        `expected_slip:${expectedSlip.toFixed(2)}`
+      ],
       thresholdPenalty: Number(thresholdPenalty.toFixed(4)),
       sizeMultiplier: Number(sizeMultiplier.toFixed(4)),
       dailyBudgetFactor: Number(dailyBudgetFactor.toFixed(4)),
@@ -163,6 +195,7 @@ export class MetaDecisionGate {
       notes: [
         `meta_score:${metaScore.toFixed(3)}`,
         `meta_conf:${metaConfidence.toFixed(3)}`,
+        `quality:${qualityScore.toFixed(3)}`,
         `daily_budget:${dailyBudgetFactor.toFixed(3)}`,
         `canary:${canaryActive}`,
         `symbol_hist:${symbolTrades.length}`,

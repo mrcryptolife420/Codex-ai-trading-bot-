@@ -97,6 +97,7 @@ function buildRecentEvents(events = [], runtime = {}, now = new Date()) {
 
 function buildExecutionSummary(trades) {
   const entryStyles = {};
+  const strategyBuckets = {};
   let totalPreventedQuantity = 0;
   let preventedMatchCount = 0;
   let peggedCount = 0;
@@ -104,11 +105,15 @@ function buildExecutionSummary(trades) {
   const entrySlippages = [];
   const exitSlippages = [];
   const makerRatios = [];
+  const expectedEntrySlippages = [];
+  const slippageDeltas = [];
+  const executionQualityScores = [];
 
   for (const trade of trades) {
     const entry = trade.entryExecutionAttribution || {};
     const exit = trade.exitExecutionAttribution || {};
     const style = entry.entryStyle || "unknown";
+    const strategyId = trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown";
     if (!entryStyles[style]) {
       entryStyles[style] = {
         style,
@@ -118,6 +123,18 @@ function buildExecutionSummary(trades) {
         avgMakerFillRatio: 0,
         peggedCount: 0,
         preventedQuantity: 0
+      };
+    }
+    if (!strategyBuckets[strategyId]) {
+      strategyBuckets[strategyId] = {
+        id: strategyId,
+        tradeCount: 0,
+        realizedPnl: 0,
+        avgExpectedEntrySlippageBps: 0,
+        avgEntryTouchSlippageBps: 0,
+        avgSlippageDeltaBps: 0,
+        avgMakerFillRatio: 0,
+        averageExecutionQuality: 0
       };
     }
     entryStyles[style].tradeCount += 1;
@@ -132,16 +149,37 @@ function buildExecutionSummary(trades) {
     if (entry.usedSor || exit.usedSor) {
       sorCount += 1;
     }
+
+    const strategy = strategyBuckets[strategyId];
+    strategy.tradeCount += 1;
+    strategy.realizedPnl += trade.pnlQuote || 0;
+    strategy.avgExpectedEntrySlippageBps += entry.expectedSlippageBps || entry.expectedImpactBps || 0;
+    strategy.avgEntryTouchSlippageBps += entry.realizedTouchSlippageBps || 0;
+    strategy.avgSlippageDeltaBps += entry.slippageDeltaBps || ((entry.realizedTouchSlippageBps || 0) - (entry.expectedSlippageBps || entry.expectedImpactBps || 0));
+    strategy.avgMakerFillRatio += entry.makerFillRatio || 0;
+    strategy.averageExecutionQuality += trade.executionQualityScore || 0;
+
     totalPreventedQuantity += (entry.preventedQuantity || 0) + (exit.preventedQuantity || 0);
     preventedMatchCount += (entry.preventedMatchCount || 0) + (exit.preventedMatchCount || 0);
+    if (entry.expectedSlippageBps != null || entry.expectedImpactBps != null) {
+      expectedEntrySlippages.push(entry.expectedSlippageBps || entry.expectedImpactBps || 0);
+    }
     if (entry.realizedTouchSlippageBps != null) {
       entrySlippages.push(entry.realizedTouchSlippageBps || 0);
     }
     if (exit.realizedTouchSlippageBps != null) {
       exitSlippages.push(exit.realizedTouchSlippageBps || 0);
     }
+    if (entry.slippageDeltaBps != null) {
+      slippageDeltas.push(entry.slippageDeltaBps || 0);
+    } else if (entry.realizedTouchSlippageBps != null) {
+      slippageDeltas.push((entry.realizedTouchSlippageBps || 0) - (entry.expectedSlippageBps || entry.expectedImpactBps || 0));
+    }
     if (entry.makerFillRatio != null) {
       makerRatios.push(entry.makerFillRatio || 0);
+    }
+    if (trade.executionQualityScore != null) {
+      executionQualityScores.push(trade.executionQualityScore || 0);
     }
   }
 
@@ -153,15 +191,40 @@ function buildExecutionSummary(trades) {
     }))
     .sort((left, right) => right.tradeCount - left.tradeCount);
 
+  const strategies = Object.values(strategyBuckets)
+    .map((item) => ({
+      ...item,
+      avgExpectedEntrySlippageBps: item.tradeCount ? item.avgExpectedEntrySlippageBps / item.tradeCount : 0,
+      avgEntryTouchSlippageBps: item.tradeCount ? item.avgEntryTouchSlippageBps / item.tradeCount : 0,
+      avgSlippageDeltaBps: item.tradeCount ? item.avgSlippageDeltaBps / item.tradeCount : 0,
+      avgMakerFillRatio: item.tradeCount ? item.avgMakerFillRatio / item.tradeCount : 0,
+      averageExecutionQuality: item.tradeCount ? item.averageExecutionQuality / item.tradeCount : 0
+    }))
+    .sort((left, right) => right.realizedPnl - left.realizedPnl)
+    .slice(0, 8);
+
   return {
+    avgExpectedEntrySlippageBps: average(expectedEntrySlippages),
     avgEntryTouchSlippageBps: average(entrySlippages),
     avgExitTouchSlippageBps: average(exitSlippages),
+    avgSlippageDeltaBps: average(slippageDeltas),
     avgMakerFillRatio: average(makerRatios),
+    avgExecutionQualityScore: average(executionQualityScores),
     totalPreventedQuantity,
     preventedMatchCount,
     peggedCount,
     sorCount,
-    styles
+    styles,
+    strategies
+  };
+}
+
+function buildModeStats(trades = [], brokerMode = "paper") {
+  const filtered = trades.filter((trade) => (trade.brokerMode || "paper") === brokerMode);
+  const stats = buildTradeStats(filtered);
+  return {
+    ...stats,
+    averageExecutionQuality: average(filtered.map((trade) => trade.executionQualityScore || 0))
   };
 }
 
@@ -238,6 +301,10 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
       days30: buildWindowStats(trades, nowMs - 30 * 86_400_000),
       allTime: buildTradeStats(trades)
     },
+    modes: {
+      paper: buildModeStats(trades, "paper"),
+      live: buildModeStats(trades, "live")
+    },
     equitySeries: equitySnapshots.slice(-(config.dashboardEquityPointLimit || 240)),
     cycleSeries: [...(journal.cycles || [])].slice(-(config.dashboardCyclePointLimit || 120)),
     recentEvents: buildRecentEvents(journal.events || [], runtime, now),
@@ -246,4 +313,3 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     recentResearchRuns: researchRuns.slice(-8).reverse()
   };
 }
-

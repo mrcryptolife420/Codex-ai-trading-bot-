@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { coinAliases } from "../data/coinAliases.js";
 import { getCoinProfile } from "../data/coinProfiles.js";
@@ -182,10 +182,23 @@ const DEFAULTS = {
   universeMinDepthConfidence: 0.16,
   universeMinDepthUsd: 30000,
   universeTargetVolPct: 0.018,
+  universeRotationLookbackDays: 21,
+  universeRotationBoost: 0.08,
+  universeRotationMaxCoolingClusters: 2,
   enableExitIntelligence: true,
   exitIntelligenceMinConfidence: 0.52,
   exitIntelligenceTrimScore: 0.6,
+  exitIntelligenceTrailScore: 0.56,
   exitIntelligenceExitScore: 0.72,
+  tradeQualityMinScore: 0.47,
+  tradeQualityCautionScore: 0.58,
+  modelPromotionMinShadowTrades: 18,
+  modelPromotionMinPaperTrades: 10,
+  modelPromotionMinPaperWinRate: 0.5,
+  modelPromotionMaxPaperDrawdownPct: 0.12,
+  modelPromotionMinPaperQuality: 0.56,
+  modelPromotionMinLiveTrades: 5,
+  modelPromotionMinLiveQuality: 0.54,
   strategyAttributionMinTrades: 6,
   researchPromotionMinSharpe: 0.35,
   researchPromotionMinTrades: 6,
@@ -390,6 +403,13 @@ export async function loadConfig(projectRoot = process.cwd()) {
     challengerWindowTrades: parseNumber(env.CHALLENGER_WINDOW_TRADES, DEFAULTS.challengerWindowTrades),
     challengerMinTrades: parseNumber(env.CHALLENGER_MIN_TRADES, DEFAULTS.challengerMinTrades),
     challengerPromotionMargin: parseNumber(env.CHALLENGER_PROMOTION_MARGIN, DEFAULTS.challengerPromotionMargin),
+    modelPromotionMinShadowTrades: parseNumber(env.MODEL_PROMOTION_MIN_SHADOW_TRADES, DEFAULTS.modelPromotionMinShadowTrades),
+    modelPromotionMinPaperTrades: parseNumber(env.MODEL_PROMOTION_MIN_PAPER_TRADES, DEFAULTS.modelPromotionMinPaperTrades),
+    modelPromotionMinPaperWinRate: parseNumber(env.MODEL_PROMOTION_MIN_PAPER_WIN_RATE, DEFAULTS.modelPromotionMinPaperWinRate),
+    modelPromotionMaxPaperDrawdownPct: parseNumber(env.MODEL_PROMOTION_MAX_PAPER_DRAWDOWN_PCT, DEFAULTS.modelPromotionMaxPaperDrawdownPct),
+    modelPromotionMinPaperQuality: parseNumber(env.MODEL_PROMOTION_MIN_PAPER_QUALITY, DEFAULTS.modelPromotionMinPaperQuality),
+    modelPromotionMinLiveTrades: parseNumber(env.MODEL_PROMOTION_MIN_LIVE_TRADES, DEFAULTS.modelPromotionMinLiveTrades),
+    modelPromotionMinLiveQuality: parseNumber(env.MODEL_PROMOTION_MIN_LIVE_QUALITY, DEFAULTS.modelPromotionMinLiveQuality),
     enableStrategyRouter: parseBoolean(env.ENABLE_STRATEGY_ROUTER, DEFAULTS.enableStrategyRouter),
     strategyMinConfidence: parseNumber(env.STRATEGY_MIN_CONFIDENCE, DEFAULTS.strategyMinConfidence),
     enableTransformerChallenger: parseBoolean(env.ENABLE_TRANSFORMER_CHALLENGER, DEFAULTS.enableTransformerChallenger),
@@ -480,10 +500,16 @@ export async function loadConfig(projectRoot = process.cwd()) {
     universeMinDepthConfidence: parseNumber(env.UNIVERSE_MIN_DEPTH_CONFIDENCE, DEFAULTS.universeMinDepthConfidence),
     universeMinDepthUsd: parseNumber(env.UNIVERSE_MIN_DEPTH_USD, DEFAULTS.universeMinDepthUsd),
     universeTargetVolPct: parseNumber(env.UNIVERSE_TARGET_VOL_PCT, DEFAULTS.universeTargetVolPct),
+    universeRotationLookbackDays: parseNumber(env.UNIVERSE_ROTATION_LOOKBACK_DAYS, DEFAULTS.universeRotationLookbackDays),
+    universeRotationBoost: parseNumber(env.UNIVERSE_ROTATION_BOOST, DEFAULTS.universeRotationBoost),
+    universeRotationMaxCoolingClusters: parseNumber(env.UNIVERSE_ROTATION_MAX_COOLING_CLUSTERS, DEFAULTS.universeRotationMaxCoolingClusters),
     enableExitIntelligence: parseBoolean(env.ENABLE_EXIT_INTELLIGENCE, DEFAULTS.enableExitIntelligence),
     exitIntelligenceMinConfidence: parseNumber(env.EXIT_INTELLIGENCE_MIN_CONFIDENCE, DEFAULTS.exitIntelligenceMinConfidence),
     exitIntelligenceTrimScore: parseNumber(env.EXIT_INTELLIGENCE_TRIM_SCORE, DEFAULTS.exitIntelligenceTrimScore),
+    exitIntelligenceTrailScore: parseNumber(env.EXIT_INTELLIGENCE_TRAIL_SCORE, DEFAULTS.exitIntelligenceTrailScore),
     exitIntelligenceExitScore: parseNumber(env.EXIT_INTELLIGENCE_EXIT_SCORE, DEFAULTS.exitIntelligenceExitScore),
+    tradeQualityMinScore: parseNumber(env.TRADE_QUALITY_MIN_SCORE, DEFAULTS.tradeQualityMinScore),
+    tradeQualityCautionScore: parseNumber(env.TRADE_QUALITY_CAUTION_SCORE, DEFAULTS.tradeQualityCautionScore),
     strategyAttributionMinTrades: parseNumber(env.STRATEGY_ATTRIBUTION_MIN_TRADES, DEFAULTS.strategyAttributionMinTrades),
     researchPromotionMinSharpe: parseNumber(env.RESEARCH_PROMOTION_MIN_SHARPE, DEFAULTS.researchPromotionMinSharpe),
     researchPromotionMinTrades: parseNumber(env.RESEARCH_PROMOTION_MIN_TRADES, DEFAULTS.researchPromotionMinTrades),
@@ -544,6 +570,9 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
+
+
+
 
 
 

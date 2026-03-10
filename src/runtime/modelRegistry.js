@@ -66,6 +66,85 @@ export class ModelRegistry {
     return ranked[0] || null;
   }
 
+  buildPromotionPolicy({ report = null, researchRegistry = null, calibration = null, deployment = null } = {}) {
+    const paperStats = report?.modes?.paper || report?.windows?.allTime || {};
+    const liveStats = report?.modes?.live || {};
+    const paperQualityScore = scoreSnapshot(
+      {
+        realizedPnl: paperStats.realizedPnl || 0,
+        winRate: paperStats.winRate || 0,
+        maxDrawdownPct: report?.maxDrawdownPct || 0,
+        calibrationEce: calibration?.expectedCalibrationError || 0,
+        averageSharpe: researchRegistry?.leaderboard?.[0]?.averageSharpe || 0
+      },
+      this.config
+    );
+    const liveQualityScore = (liveStats.tradeCount || 0)
+      ? scoreSnapshot(
+          {
+            realizedPnl: liveStats.realizedPnl || 0,
+            winRate: liveStats.winRate || 0,
+            maxDrawdownPct: report?.maxDrawdownPct || 0,
+            calibrationEce: calibration?.expectedCalibrationError || 0,
+            averageSharpe: researchRegistry?.leaderboard?.[0]?.averageSharpe || 0
+          },
+          this.config
+        )
+      : null;
+    const challengerEdge = deployment?.championError != null && deployment?.challengerError != null
+      ? deployment.championError - deployment.challengerError
+      : 0;
+    const blockerReasons = [];
+
+    if ((deployment?.shadowTradeCount || 0) < this.config.modelPromotionMinShadowTrades) {
+      blockerReasons.push("shadow_sample_too_small");
+    }
+    if ((paperStats.tradeCount || 0) < this.config.modelPromotionMinPaperTrades) {
+      blockerReasons.push("paper_scorecard_too_small");
+    }
+    if ((paperStats.winRate || 0) < this.config.modelPromotionMinPaperWinRate) {
+      blockerReasons.push("paper_winrate_below_floor");
+    }
+    if ((report?.maxDrawdownPct || 0) > this.config.modelPromotionMaxPaperDrawdownPct) {
+      blockerReasons.push("paper_drawdown_too_high");
+    }
+    if (paperQualityScore < this.config.modelPromotionMinPaperQuality) {
+      blockerReasons.push("paper_quality_too_low");
+    }
+    if ((liveStats.tradeCount || 0) >= this.config.modelPromotionMinLiveTrades && (liveQualityScore || 0) < this.config.modelPromotionMinLiveQuality) {
+      blockerReasons.push("live_quality_too_low");
+    }
+    if (challengerEdge <= Math.max(this.config.challengerPromotionMargin || 0, 0.0025)) {
+      blockerReasons.push("challenger_edge_too_small");
+    }
+    if ((calibration?.expectedCalibrationError || 1) > Math.max(this.config.stableModelMaxCalibrationEce || 0.14, 0.08) + 0.04) {
+      blockerReasons.push("calibration_not_stable_enough");
+    }
+    if (!(researchRegistry?.governance?.promotionCandidates || []).length) {
+      blockerReasons.push("research_registry_not_ready");
+    }
+
+    const allowPromotion = blockerReasons.length === 0;
+    return {
+      allowPromotion,
+      readyLevel: allowPromotion
+        ? "ready"
+        : (deployment?.shadowTradeCount || 0) < this.config.modelPromotionMinShadowTrades
+          ? "warmup"
+          : blockerReasons.length >= 4
+            ? "blocked"
+            : "observe",
+      shadowTradeCount: deployment?.shadowTradeCount || 0,
+      challengerEdge: num(challengerEdge, 4),
+      paperTradeCount: paperStats.tradeCount || 0,
+      paperWinRate: num(paperStats.winRate || 0, 4),
+      paperQualityScore: num(paperQualityScore, 4),
+      liveTradeCount: liveStats.tradeCount || 0,
+      liveQualityScore: liveQualityScore == null ? null : num(liveQualityScore, 4),
+      blockerReasons
+    };
+  }
+
   buildRegistry({ snapshots = [], report = null, researchRegistry = null, calibration = null, deployment = null, nowIso = new Date().toISOString() } = {}) {
     const entries = snapshots
       .map((snapshot) => mapSnapshot(snapshot, this.config))
@@ -74,13 +153,17 @@ export class ModelRegistry {
     const bestRollback = this.chooseRollback(snapshots);
     const latest = entries[0] || null;
     const promotionHint = researchRegistry?.governance?.promotionCandidates?.[0] || null;
-    const currentQuality = latest ? latest.qualityScore : scoreSnapshot({
-      realizedPnl: report?.windows?.allTime?.realizedPnl || report?.realizedPnl || 0,
-      winRate: report?.windows?.allTime?.winRate || report?.winRate || 0,
-      maxDrawdownPct: report?.maxDrawdownPct || 0,
-      calibrationEce: calibration?.expectedCalibrationError || 0,
-      averageSharpe: researchRegistry?.leaderboard?.[0]?.averageSharpe || 0
-    }, this.config);
+    const promotionPolicy = this.buildPromotionPolicy({ report, researchRegistry, calibration, deployment });
+    const currentQuality = latest ? latest.qualityScore : scoreSnapshot(
+      {
+        realizedPnl: report?.windows?.allTime?.realizedPnl || report?.realizedPnl || 0,
+        winRate: report?.windows?.allTime?.winRate || report?.winRate || 0,
+        maxDrawdownPct: report?.maxDrawdownPct || 0,
+        calibrationEce: calibration?.expectedCalibrationError || 0,
+        averageSharpe: researchRegistry?.leaderboard?.[0]?.averageSharpe || 0
+      },
+      this.config
+    );
 
     return {
       generatedAt: nowIso,
@@ -90,6 +173,7 @@ export class ModelRegistry {
       latestDeployment: latest?.deploymentActive || deployment?.active || null,
       rollbackCandidate: bestRollback,
       registrySize: entries.length,
+      promotionPolicy,
       promotionHint: promotionHint
         ? {
             symbol: promotionHint.symbol,
@@ -102,6 +186,9 @@ export class ModelRegistry {
         bestRollback
           ? `Rollback kan terugvallen op snapshot ${bestRollback.at} met quality ${bestRollback.qualityScore}.`
           : "Nog geen rollback-klare modelsnapshot beschikbaar.",
+        promotionPolicy.allowPromotion
+          ? "Promotiebeleid staat op groen voor een challenger-promotie."
+          : `Promotie wacht op: ${promotionPolicy.blockerReasons[0] || "meer data"}.`,
         promotionHint
           ? `${promotionHint.symbol} scoort als research-promotiekandidaat.`
           : "Nog geen research-promotiekandidaat in de registry."

@@ -25,12 +25,86 @@ function buildHealth(score) {
   return "cold";
 }
 
+function defaultProfile(symbol) {
+  return {
+    symbol,
+    cluster: "other",
+    sector: "other",
+    betaGroup: "other"
+  };
+}
+
+function buildRotationState({ journal = {}, openPositions = [], profiles = {}, nowIso = new Date().toISOString(), lookbackDays = 21, maxCoolingClusters = 2 } = {}) {
+  const nowMs = new Date(nowIso).getTime();
+  const minMs = nowMs - Math.max(1, lookbackDays) * 86400000;
+  const byCluster = new Map();
+  const openCounts = new Map();
+
+  for (const position of openPositions || []) {
+    const profile = profiles[position.symbol] || defaultProfile(position.symbol);
+    openCounts.set(profile.cluster, (openCounts.get(profile.cluster) || 0) + 1);
+  }
+
+  for (const trade of journal.trades || []) {
+    const atMs = new Date(trade.exitAt || trade.entryAt || 0).getTime();
+    if (!Number.isFinite(atMs) || atMs < minMs) {
+      continue;
+    }
+    const profile = profiles[trade.symbol] || defaultProfile(trade.symbol);
+    if (!byCluster.has(profile.cluster)) {
+      byCluster.set(profile.cluster, {
+        cluster: profile.cluster,
+        trades: 0,
+        winCount: 0,
+        pnlQuote: 0,
+        pnlPct: 0
+      });
+    }
+    const bucket = byCluster.get(profile.cluster);
+    bucket.trades += 1;
+    bucket.winCount += (trade.pnlQuote || 0) > 0 ? 1 : 0;
+    bucket.pnlQuote += trade.pnlQuote || 0;
+    bucket.pnlPct += trade.netPnlPct || 0;
+  }
+
+  const clusters = [...byCluster.values()].map((bucket) => {
+    const openCount = openCounts.get(bucket.cluster) || 0;
+    const winRate = bucket.trades ? bucket.winCount / bucket.trades : 0;
+    const avgPnlPct = bucket.trades ? bucket.pnlPct / bucket.trades : 0;
+    const score = clamp(0.48 + avgPnlPct * 6 + (winRate - 0.5) * 0.28 - openCount * 0.08, 0, 1);
+    return {
+      cluster: bucket.cluster,
+      trades: bucket.trades,
+      openCount,
+      winRate: num(winRate),
+      avgPnlPct: num(avgPnlPct),
+      pnlQuote: num(bucket.pnlQuote, 2),
+      score: num(score)
+    };
+  });
+
+  const focusClusters = clusters.filter((item) => item.score >= 0.56).sort((a, b) => b.score - a.score).slice(0, 3).map((item) => item.cluster);
+  const coolingClusters = clusters.filter((item) => item.score <= 0.42).sort((a, b) => a.score - b.score).slice(0, maxCoolingClusters).map((item) => item.cluster);
+
+  return {
+    byCluster: Object.fromEntries(clusters.map((item) => [item.cluster, item])),
+    focusClusters,
+    coolingClusters,
+    note: focusClusters.length
+      ? `${focusClusters[0]} krijgt momenteel voorrang in de focus-universe.`
+      : "Geen sterke cluster-rotatie actief.",
+    focusReason: focusClusters.length
+      ? `${focusClusters.join(", ")} scoren beter op recente tradekwaliteit.`
+      : "Universe draait neutraal zonder sterke cluster-tilt."
+  };
+}
+
 export class UniverseSelector {
   constructor(config) {
     this.config = config;
   }
 
-  scoreSymbol({ symbol, snapshot, hasOpenPosition = false, previousDecision = null }) {
+  scoreSymbol({ symbol, snapshot, hasOpenPosition = false, previousDecision = null, rotationState = null }) {
     if (!snapshot) {
       return {
         symbol,
@@ -47,6 +121,11 @@ export class UniverseSelector {
         blockers: ["missing_market_snapshot"]
       };
     }
+
+    const profile = this.config.symbolProfiles?.[symbol] || defaultProfile(symbol);
+    const rotationBucket = rotationState?.byCluster?.[profile.cluster] || null;
+    const focusClusters = rotationState?.focusClusters || [];
+    const coolingClusters = rotationState?.coolingClusters || [];
 
     const book = snapshot.book || {};
     const market = snapshot.market || {};
@@ -105,7 +184,7 @@ export class UniverseSelector {
     const freshnessScore = localBookSynced
       ? clamp(1 - depthAgeMs / Math.max(this.config.maxDepthEventAgeMs * 2, 1), 0, 1)
       : isLightweight
-        ? clamp(0.42 + clamp(recentTradeCount / 30, 0, 1) * 0.18 + (spreadScore * 0.12), 0.35, 0.82)
+        ? clamp(0.42 + clamp(recentTradeCount / 30, 0, 1) * 0.18 + spreadScore * 0.12, 0.35, 0.82)
         : 0.42;
     const spreadStabilityScore = clamp(0.45 + spreadScore * 0.4 + depthConfidence * 0.18 - Math.abs(book.microPriceEdgeBps || 0) / 8, 0, 1);
     const executionScore = clamp(0.42 + resilienceScore * 0.26 + queueRefreshScore * 0.18 + depthConfidence * 0.14, 0, 1);
@@ -116,6 +195,14 @@ export class UniverseSelector {
         clamp(previousFit * 0.08, 0, 0.06),
       0,
       0.3
+    );
+    const rotationScore = clamp(
+      0.44 +
+        safeNumber(rotationBucket?.score, 0.5) * 0.32 +
+        (focusClusters.includes(profile.cluster) ? 0.12 : 0) -
+        (coolingClusters.includes(profile.cluster) ? 0.14 : 0),
+      0,
+      1
     );
 
     const blockers = [];
@@ -169,6 +256,9 @@ export class UniverseSelector {
     if (executionScore >= 0.56) {
       reasons.push("execution_ready_book");
     }
+    if (focusClusters.includes(profile.cluster)) {
+      reasons.push(`cluster_rotation_${profile.cluster}`);
+    }
     if (hasOpenPosition) {
       reasons.push("existing_position_carried");
     } else if (previousDecision?.allow) {
@@ -188,6 +278,7 @@ export class UniverseSelector {
         freshnessScore * 0.05 +
         spreadStabilityScore * 0.06 +
         executionScore * 0.05 +
+        rotationScore * (this.config.universeRotationBoost || 0.08) +
         carryScore,
       0,
       1.25
@@ -200,6 +291,8 @@ export class UniverseSelector {
       selected: false,
       score: num(score),
       health: buildHealth(score),
+      cluster: profile.cluster,
+      sector: profile.sector,
       spreadBps: num(spreadBps, 2),
       depthConfidence: num(depthConfidence, 3),
       totalDepthNotional: num(totalDepthNotional, 2),
@@ -212,6 +305,7 @@ export class UniverseSelector {
       trendScore: num(trendScore),
       spreadStabilityScore: num(spreadStabilityScore),
       executionScore: num(executionScore),
+      rotationScore: num(rotationScore),
       carryScore: num(carryScore),
       reasons,
       blockers
@@ -223,8 +317,17 @@ export class UniverseSelector {
     snapshotMap = {},
     openPositions = [],
     latestDecisions = [],
+    journal = {},
     nowIso = new Date().toISOString()
   } = {}) {
+    const rotationState = buildRotationState({
+      journal,
+      openPositions,
+      profiles: this.config.symbolProfiles || {},
+      nowIso,
+      lookbackDays: this.config.universeRotationLookbackDays,
+      maxCoolingClusters: this.config.universeRotationMaxCoolingClusters
+    });
     const openSet = new Set((openPositions || []).map((position) => position.symbol));
     const previousMap = Object.fromEntries((latestDecisions || []).map((decision) => [decision.symbol, decision]));
     const entries = symbols.map((symbol) =>
@@ -232,7 +335,8 @@ export class UniverseSelector {
         symbol,
         snapshot: snapshotMap[symbol],
         hasOpenPosition: openSet.has(symbol),
-        previousDecision: previousMap[symbol] || null
+        previousDecision: previousMap[symbol] || null,
+        rotationState
       })
     );
     entries.sort((left, right) => right.score - left.score);
@@ -299,10 +403,18 @@ export class UniverseSelector {
       selectionRate: num(symbols.length ? selected.length / symbols.length : 0),
       averageScore: num(averageScore),
       selectedSymbols,
+      rotation: {
+        focusClusters: rotationState.focusClusters,
+        coolingClusters: rotationState.coolingClusters,
+        note: rotationState.note,
+        focusReason: rotationState.focusReason
+      },
       selected: selected.map((entry) => ({
         symbol: entry.symbol,
         score: entry.score,
         health: entry.health,
+        cluster: entry.cluster,
+        sector: entry.sector,
         spreadBps: entry.spreadBps,
         depthConfidence: entry.depthConfidence,
         totalDepthNotional: entry.totalDepthNotional,
@@ -317,6 +429,7 @@ export class UniverseSelector {
         trendScore: entry.trendScore,
         spreadStabilityScore: entry.spreadStabilityScore,
         executionScore: entry.executionScore,
+        rotationScore: entry.rotationScore,
         carryScore: entry.carryScore
       })),
       skipped: annotatedEntries
@@ -326,6 +439,8 @@ export class UniverseSelector {
           symbol: entry.symbol,
           score: entry.score,
           health: entry.health,
+          cluster: entry.cluster,
+          sector: entry.sector,
           spreadBps: entry.spreadBps,
           depthConfidence: entry.depthConfidence,
           totalDepthNotional: entry.totalDepthNotional,
@@ -338,4 +453,3 @@ export class UniverseSelector {
     };
   }
 }
-
