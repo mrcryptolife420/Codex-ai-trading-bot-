@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 ## Unreleased - 2026-03-10
 
@@ -10,6 +10,11 @@
 - Restored recorder and backup manager state on restart so dashboard counts reflect files already on disk
 - Cleaned stale runtime `.tmp` files during boot to avoid orphaned state artifacts after interrupted saves
 - Synced dashboard/runtime summaries with the new indicator payloads and persisted learning telemetry
+
+### Improved
+- Reworked the dashboard into a compact dark control deck with grouped intelligence clusters and cleaner spacing
+- Simplified top setup and open position cards so the AI explains why a trade is allowed or blocked with fewer, clearer signals
+- Added compact detail accordions and active sidebar link states so dense runtime data stays available without cluttering the first view
 
 ### Verified
 - `npm.cmd test`
@@ -43,3 +48,4 @@ Initial public release of the Binance AI trading bot workspace.
 - `node src/cli.js backtest BTCUSDT`
 - `node src/cli.js research BTCUSDT`
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
+

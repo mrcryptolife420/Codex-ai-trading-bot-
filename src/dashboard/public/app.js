@@ -1,10 +1,12 @@
-const POLL_MS = 5000;
+﻿const POLL_MS = 5000;
 
 const elements = {
   modeBadge: document.querySelector("#modeBadge"),
   runStateBadge: document.querySelector("#runStateBadge"),
   healthBadge: document.querySelector("#healthBadge"),
   controlHint: document.querySelector("#controlHint"),
+  sidebarToggle: document.querySelector("#sidebarToggle"),
+  sidebarScrim: document.querySelector("#sidebarScrim"),
   metrics: document.querySelector("#metrics"),
   equityChart: document.querySelector("#equityChart"),
   equityMeta: document.querySelector("#equityMeta"),
@@ -57,6 +59,8 @@ let busy = false;
 let transientMessage = "";
 let decisionSearchQuery = "";
 let decisionAllowedOnly = false;
+const mobileSidebarMedia = window.matchMedia("(max-width: 1180px)");
+let mobileSidebarOpen = false;
 
 function escapeHtml(value) {
   return `${value ?? ""}`
@@ -221,6 +225,38 @@ function renderTagList(items = [], emptyText = "Geen extra redenen") {
   return items.map((item) => `<span class="note-pill">${escapeHtml(normalizeReasonLabel(item))}</span>`).join("");
 }
 
+function truncateText(value, maxLength = 220) {
+  const input = `${value || ""}`.trim();
+  if (input.length <= maxLength) {
+    return input;
+  }
+  return `${input.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function collectHighlights(items = [], limit = 4) {
+  return items
+    .filter((item) => item != null && `${item}`.trim())
+    .slice(0, limit);
+}
+
+function renderReasonPills(items = [], emptyText = "Geen highlights", limit = 4) {
+  return `<div class="tag-list compact-tags">${renderTagList(collectHighlights(items, limit), emptyText)}</div>`;
+}
+
+function renderDetailSection(title, meta, content, open = false) {
+  return `
+    <details class="detail-section" ${open ? "open" : ""}>
+      <summary class="detail-summary">
+        <div class="detail-copy">
+          <span class="detail-title">${escapeHtml(title)}</span>
+          ${meta ? `<span class="detail-meta">${escapeHtml(meta)}</span>` : ""}
+        </div>
+      </summary>
+      <div class="detail-body">${content}</div>
+    </details>
+  `;
+}
+
 function formatExecutionMeta(execution = {}) {
   if (!execution || (!execution.entryStyle && execution.expectedImpactBps == null && execution.realizedTouchSlippageBps == null)) {
     return "Geen execution-attributie";
@@ -254,6 +290,111 @@ function summarizeHealth(health) {
     return "Waarschuwingen";
   }
   return "Gezond";
+}
+
+function setSidebarToggleLabel() {
+  if (!elements.sidebarToggle) {
+    return;
+  }
+  const collapsed = document.body.classList.contains("sidebar-collapsed");
+  const open = document.body.classList.contains("sidebar-open");
+  const label = mobileSidebarMedia.matches
+    ? open ? "Sluit navigatie" : "Open navigatie"
+    : collapsed ? "Zijbalk uitklappen" : "Zijbalk inklappen";
+  elements.sidebarToggle.setAttribute("aria-label", label);
+}
+
+function applySidebarLayout() {
+  if (mobileSidebarMedia.matches) {
+    document.body.classList.remove("sidebar-collapsed");
+    document.body.classList.toggle("sidebar-open", mobileSidebarOpen);
+  } else {
+    const collapsed = window.localStorage.getItem("dashboard-sidebar-collapsed") === "1";
+    mobileSidebarOpen = false;
+    document.body.classList.remove("sidebar-open");
+    document.body.classList.toggle("sidebar-collapsed", collapsed);
+  }
+  setSidebarToggleLabel();
+}
+
+function setupSidebar() {
+  if (!elements.sidebarToggle || !elements.sidebarScrim) {
+    return;
+  }
+
+  if (!elements.sidebarToggle.dataset.bound) {
+    elements.sidebarToggle.addEventListener("click", () => {
+      if (mobileSidebarMedia.matches) {
+        mobileSidebarOpen = !mobileSidebarOpen;
+      } else {
+        const nextCollapsed = !document.body.classList.contains("sidebar-collapsed");
+        window.localStorage.setItem("dashboard-sidebar-collapsed", nextCollapsed ? "1" : "0");
+      }
+      applySidebarLayout();
+    });
+
+    elements.sidebarScrim.addEventListener("click", () => {
+      mobileSidebarOpen = false;
+      applySidebarLayout();
+    });
+
+    mobileSidebarMedia.addEventListener("change", () => {
+      mobileSidebarOpen = false;
+      applySidebarLayout();
+    });
+
+    const navLinks = [...document.querySelectorAll(".nav-links a")];
+    navLinks.forEach((link) => {
+      link.addEventListener("click", () => {
+        navLinks.forEach((candidate) => candidate.classList.remove("active"));
+        link.classList.add("active");
+        if (mobileSidebarMedia.matches) {
+          mobileSidebarOpen = false;
+          applySidebarLayout();
+        }
+      });
+    });
+
+    const initialLink = navLinks.find((link) => link.getAttribute("href") === (window.location.hash || "#metricsSection")) || navLinks[0];
+    initialLink?.classList.add("active");
+
+    elements.sidebarToggle.dataset.bound = "true";
+  }
+
+  applySidebarLayout();
+}
+
+function setupSidebarAccordion() {
+  const groups = [...document.querySelectorAll(".nav-group")];
+  if (!groups.length) {
+    return;
+  }
+
+  const savedGroup = window.localStorage.getItem("dashboard-nav-group");
+  groups.forEach((group, index) => {
+    if (savedGroup) {
+      group.open = group.dataset.navGroup === savedGroup;
+    } else if (index === 0) {
+      group.open = true;
+    }
+
+    if (group.dataset.accordionInit) {
+      return;
+    }
+
+    group.addEventListener("toggle", () => {
+      if (!group.open) {
+        return;
+      }
+      groups.forEach((candidate) => {
+        if (candidate !== group) {
+          candidate.open = false;
+        }
+      });
+      window.localStorage.setItem("dashboard-nav-group", group.dataset.navGroup || "overview");
+    });
+    group.dataset.accordionInit = "true";
+  });
 }
 
 function setupCollapsiblePanels() {
@@ -440,156 +581,98 @@ function renderPositions(snapshot) {
   }
 
   elements.positionsList.innerHTML = positions
-    .map((position) => {
+    .map((position, index) => {
       const rationale = position.entryRationale || {};
       const latestStructure = position.latestMarketStructureSummary || rationale.marketStructure || {};
-      const latestCalendar = position.latestCalendarSummary || rationale.calendar || {};
-      const latestExchange = position.latestExchangeSummary || rationale.exchange || {};
       const execution = position.entryExecutionAttribution || rationale.executionAttribution || {};
       const session = rationale.session || {};
-      const drift = rationale.drift || {};
       const selfHeal = rationale.selfHeal || {};
       const marketSentiment = rationale.marketSentiment || {};
-      const volatility = rationale.volatility || {};
-      const signals = (rationale.topSignals || [])
-        .slice(0, 4)
+      const strategyLabel = rationale.strategy?.strategyLabel || position.strategyAtEntry || rationale.setupStyle || "-";
+      const summary = truncateText(rationale.summary || "Geen rationale beschikbaar.", 190);
+      const open = index < 2 ? "open" : "";
+      const pnlClass = toneClass(position.unrealizedPnl);
+      const highlightPills = collectHighlights([
+        strategyLabel,
+        position.regimeAtEntry,
+        rationale.patterns?.dominantPattern && rationale.patterns?.dominantPattern !== "none" ? rationale.patterns.dominantPattern : "",
+        ...(rationale.regimeReasons || []).slice(0, 2)
+      ], 4);
+      const riskPills = collectHighlights([
+        ...(rationale.blockerReasons || []).slice(0, 2),
+        ...(rationale.selfHealIssues || []).slice(0, 1),
+        ...(rationale.sessionBlockers || []).slice(0, 1)
+      ], 4);
+      const topSignals = (rationale.topSignals || [])
+        .slice(0, 3)
         .map((signal) => `<div class="mini-stat"><span class="kicker">${escapeHtml(signal.name)}</span><strong class="${toneClass(signal.contribution)}">${formatNumber(signal.contribution, 3)}</strong></div>`)
         .join("");
-      const checks = (rationale.checks || [])
-        .slice(0, 6)
-        .map((check) => `<div class="mini-stat"><span class="kicker">${escapeHtml(check.label)}</span><strong class="${check.passed ? "positive" : "negative"}">${check.passed ? "Pass" : "Fail"}</strong><div class="meta">${escapeHtml(check.detail)}</div></div>`)
+      const topHeadlines = (rationale.headlines || [])
+        .slice(0, 2)
+        .map((headline) => `<div class="mini-stat"><span class="kicker">${escapeHtml(headline.source || "Nieuws")}</span><strong>${escapeHtml(headline.title)}</strong><div class="meta">${formatDate(headline.publishedAt)}</div></div>`)
         .join("");
-      const headlines = (rationale.headlines || [])
-        .slice(0, 4)
-        .map((headline) => `<div class="mini-stat"><span class="kicker">${escapeHtml(headline.source || "Nieuws")}</span><strong>${escapeHtml(headline.title)}</strong><div class="meta">${escapeHtml(headline.provider || "source")} | ${formatDate(headline.publishedAt)}</div></div>`)
-        .join("");
-      const bullishDrivers = renderDriverCards(rationale.bullishDrivers || [], "Geen bullish drivers gevonden.");
-      const bearishDrivers = renderDriverCards(rationale.bearishDrivers || [], "Geen bearish drivers gevonden.");
-      const officialNotices = renderDriverCards(rationale.officialNotices || [], "Geen officiele Binance notices.");
-      const calendarEvents = renderCalendarCards(rationale.calendarEvents || latestCalendar.items || [], "Geen komende events.");
-      const providerMeta = formatBreakdown(rationale.providerBreakdown || []);
-      const sourceMeta = formatBreakdown(rationale.sourceBreakdown || []);
-      const noticeMeta = formatBreakdown(rationale.announcementBreakdown || []);
-
-      return `
-        <article class="position-card">
-          <div class="card-top">
-            <div>
-              <div class="pill">${escapeHtml(position.symbol)} | ${escapeHtml(position.brokerMode.toUpperCase())}</div>
-              <h3>${escapeHtml(position.symbol)} positie</h3>
-              <p class="meta">Open sinds ${formatDate(position.entryAt)} | ${formatNumber(position.ageMinutes, 1)} min actief</p>
-            </div>
-            <div class="pill ${toneClass(position.unrealizedPnl)}">${formatMoney(position.unrealizedPnl)} | ${formatPct(position.unrealizedPnlPct, 2)}</div>
-          </div>
-          <div class="mini-grid">
-            <div class="mini-stat"><span class="kicker">Entry</span><strong>${formatNumber(position.entryPrice, 6)}</strong></div>
-            <div class="mini-stat"><span class="kicker">Nu</span><strong>${formatNumber(position.currentPrice, 6)}</strong></div>
-            <div class="mini-stat"><span class="kicker">Stop loss</span><strong>${formatNumber(position.stopLossPrice, 6)}</strong></div>
-            <div class="mini-stat"><span class="kicker">Take profit</span><strong>${formatNumber(position.takeProfitPrice, 6)}</strong></div>
-            <div class="mini-stat"><span class="kicker">Regime</span><strong>${escapeHtml(position.regimeAtEntry || "-")}</strong></div>
-            <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(position.executionPlan?.entryStyle || "-")}</strong></div>
-            <div class="mini-stat"><span class="kicker">Setup</span><strong>${escapeHtml(rationale.setupStyle || "-")}</strong></div>
-            <div class="mini-stat"><span class="kicker">Freshness</span><strong>${rationale.freshnessHours == null ? "-" : `${formatNumber(rationale.freshnessHours, 1)}u`}</strong></div>
-          </div>
-          <div class="mini-grid">
-            <div class="mini-stat"><span class="kicker">Providers</span><strong>${rationale.providerDiversity || 0}</strong><div class="meta">${escapeHtml(providerMeta)}</div></div>
-            <div class="mini-stat"><span class="kicker">Bronnen</span><strong>${rationale.sourceDiversity || 0}</strong><div class="meta">${escapeHtml(sourceMeta)}</div></div>
-            <div class="mini-stat"><span class="kicker">Nieuws kwaliteit</span><strong>${formatNumber(rationale.sourceQualityScore || 0, 2)}</strong><div class="meta">rel ${formatNumber(rationale.reliabilityScore || 0, 2)}</div></div>
-            <div class="mini-stat"><span class="kicker">Social</span><strong>${rationale.socialCoverage || 0}</strong><div class="meta">sent ${formatPct(rationale.socialSentiment || 0, 1)}</div></div>
-            <div class="mini-stat"><span class="kicker">Sentiment / risk</span><strong>${formatPct(rationale.newsSentiment || 0, 1)} / ${formatPct(rationale.newsRisk || 0, 1)}</strong></div>
-          </div>
-          <div class="mini-grid">
-            <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(latestStructure.fundingRate || 0, 6)}</strong></div>
-            <div class="mini-stat"><span class="kicker">Basis</span><strong>${formatNumber(latestStructure.basisBps || 0, 2)} bps</strong></div>
-            <div class="mini-stat"><span class="kicker">OI 5m</span><strong>${formatPct(latestStructure.openInterestChangePct || 0, 2)}</strong></div>
-            <div class="mini-stat"><span class="kicker">Liquidaties</span><strong>${latestStructure.liquidationCount || 0}</strong><div class="meta">${formatMoney(latestStructure.liquidationNotional || 0)}</div></div>
-            <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(rationale.orderBook?.bookPressure || 0, 2)}</strong><div class="meta">micro ${formatNumber(rationale.orderBook?.microPriceEdgeBps || 0, 2)} bps</div></div>
-            <div class="mini-stat"><span class="kicker">Pattern</span><strong>${escapeHtml(rationale.patterns?.dominantPattern || "none")}</strong><div class="meta">bull ${formatNumber(rationale.patterns?.bullishPatternScore || 0, 2)} / bear ${formatNumber(rationale.patterns?.bearishPatternScore || 0, 2)}</div></div>
-            <div class="mini-stat"><span class="kicker">Strategy</span><strong>${escapeHtml(rationale.strategy?.strategyLabel || position.strategyAtEntry || "-")}</strong><div class="meta">fit ${formatPct(rationale.strategy?.fitScore || 0, 1)} | conf ${formatPct(rationale.strategy?.confidence || 0, 1)}</div></div>
-          </div>
-          <div class="mini-grid">
-            <div class="mini-stat"><span class="kicker">Strategy gap</span><strong>${formatPct(rationale.strategy?.agreementGap || 0, 1)}</strong><div class="meta">${escapeHtml(rationale.strategy?.setupStyle || "-")}</div></div>
-            <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(rationale.transformer?.probability || 0, 1)}</strong><div class="meta">conf ${formatPct(rationale.transformer?.confidence || 0, 1)} | ${escapeHtml(rationale.transformer?.dominantHead || "trend")}</div></div>
-            <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(rationale.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(rationale.committee?.agreement || 0, 1)}</div></div>
-            <div class="mini-stat"><span class="kicker">Vetoes</span><strong>${(rationale.committee?.vetoes || []).length}</strong><div class="meta">net ${formatNumber(rationale.committee?.netScore || 0, 3)}</div></div>
-            <div class="mini-stat"><span class="kicker">RL action</span><strong>${escapeHtml(rationale.rlPolicy?.action || "balanced")}</strong><div class="meta">reward ${formatNumber(rationale.rlPolicy?.expectedReward || 0, 3)}</div></div>
-            <div class="mini-stat"><span class="kicker">RL size</span><strong>${formatNumber(rationale.rlPolicy?.sizeMultiplier || 1, 2)}x</strong><div class="meta">pat ${formatNumber(rationale.rlPolicy?.patienceMultiplier || 1, 2)}x</div></div>
-            <div class="mini-stat"><span class="kicker">RL bucket</span><strong>${escapeHtml(rationale.rlPolicy?.bucket || "-")}</strong><div class="meta">boost ${formatNumber(rationale.rlPolicy?.preferMakerBoost || 0, 2)}</div></div>
-            <div class="mini-stat"><span class="kicker">Exec impact</span><strong>${formatNumber(execution.expectedImpactBps || 0, 2)} bps</strong><div class="meta">slip ${formatNumber(execution.realizedTouchSlippageBps || 0, 2)} bps</div></div>
-            <div class="mini-stat"><span class="kicker">Maker / queue</span><strong>${formatPct(execution.makerFillRatio || 0, 1)}</strong><div class="meta">queue ${formatNumber(execution.queueImbalance || 0, 2)} | depth ${formatNumber(execution.depthConfidence || 0, 2)}</div></div>
-            <div class="mini-stat"><span class="kicker">Pegged / STP</span><strong>${execution.peggedOrder ? "Ja" : "Nee"}</strong><div class="meta">stp ${(execution.preventedMatchCount || 0)} | qty ${formatNumber(execution.preventedQuantity || 0, 6)}</div></div>
-            <div class="mini-stat"><span class="kicker">Amend / replace</span><strong>${(execution.amendmentCount || 0)}</strong><div class="meta">keep ${(execution.keepPriorityCount || 0)} | repl ${(execution.cancelReplaceCount || 0)}</div></div>
-          </div>
-          <div class="mini-grid">
-            <div class="mini-stat"><span class="kicker">Macro sentiment</span><strong>${marketSentiment.fearGreedValue == null ? "-" : `${formatNumber(marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(marketSentiment.fearGreedClassification || "fear/greed")} | dom ${marketSentiment.btcDominancePct == null ? "-" : `${formatNumber(marketSentiment.btcDominancePct, 1)}%`}</div></div>
-            <div class="mini-stat"><span class="kicker">Options vol</span><strong>${volatility.marketOptionIv == null ? "-" : `${formatNumber(volatility.marketOptionIv, 1)}`}</strong><div class="meta">${escapeHtml(volatility.regime || "unknown")} | prem ${formatNumber(volatility.ivPremium || 0, 1)}</div></div>
-            <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(session.sessionLabel || session.session || "-")}</strong><div class="meta">${session.utcHour == null ? "-" : `${formatNumber(session.utcHour, 2)} UTC`} | ${escapeHtml(session.dayLabel || "-")}</div></div>
-            <div class="mini-stat"><span class="kicker">Funding window</span><strong>${session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 2)}u`}</strong><div class="meta">liq ${formatPct(session.lowLiquidityScore || 0, 1)} | risk ${formatPct(session.riskScore || 0, 1)}</div></div>
-            <div class="mini-stat"><span class="kicker">Drift</span><strong>${escapeHtml((drift.status || "normal").toUpperCase())}</strong><div class="meta">sev ${formatPct(drift.severity || 0, 1)} | conf ${formatPct(drift.averageCandidateConfidence || 0, 1)}</div></div>
-            <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((selfHeal.mode || "normal").replaceAll("_", " "))}</strong><div class="meta">thr ${formatPct(selfHeal.thresholdPenalty || 0, 1)} | size ${formatNumber(selfHeal.sizeMultiplier || 1, 2)}x</div></div>
+      const tradeView = `
+        <div class="mini-grid compact-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Entry</span><strong>${formatNumber(position.entryPrice, 6)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Nu</span><strong>${formatNumber(position.currentPrice, 6)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Stop / target</span><strong>${formatNumber(position.stopLossPrice, 6)} / ${formatNumber(position.takeProfitPrice, 6)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(position.executionPlan?.entryStyle || "-")}</strong><div class="meta">${escapeHtml(formatExecutionMeta(execution))}</div></div>
+        </div>
+        <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList(highlightPills, "Geen highlights")}</div></div>
+        <div class="note-line"><span class="kicker">Risico nu</span><div class="tag-list">${renderTagList(riskPills, "Geen directe waarschuwingen")}</div></div>
+      `;
+      const aiView = `
+        <div class="mini-grid compact-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Strategy fit</span><strong>${formatPct(rationale.strategy?.fitScore || 0, 1)}</strong><div class="meta">conf ${formatPct(rationale.strategy?.confidence || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(rationale.transformer?.probability || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(rationale.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(rationale.committee?.agreement || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((selfHeal.mode || "normal").replaceAll("_", " "))}</strong></div>
+        </div>
+        <div class="note-line"><span class="kicker">AI redenen</span><div class="tag-list">${renderTagList([...(rationale.strategy?.reasons || []).slice(0, 2), ...(rationale.executionReasons || []).slice(0, 2)], "Geen extra AI-notities")}</div></div>
+      `;
+      const contextView = `
+        <div class="mini-grid compact-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(latestStructure.fundingRate || 0, 6)}</strong></div>
+          <div class="mini-stat"><span class="kicker">OI 5m</span><strong>${formatPct(latestStructure.openInterestChangePct || 0, 2)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(rationale.orderBook?.bookPressure || 0, 2)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Macro</span><strong>${marketSentiment.fearGreedValue == null ? "-" : `${formatNumber(marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(marketSentiment.fearGreedClassification || "fear/greed")}</div></div>
+          <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(session.sessionLabel || session.session || "-")}</strong><div class="meta">${session.hoursToFunding == null ? "-" : `${formatNumber(session.hoursToFunding, 1)}u`} tot funding</div></div>
+        </div>
+        <div class="detail-split">
+          <div>
+            <p class="kicker">Top signalen</p>
+            <div class="headline-list single-column">${topSignals || `<div class="empty">Geen top-signalen.</div>`}</div>
           </div>
           <div>
-            <p class="kicker">Waarom geopend</p>
-            <p>${escapeHtml(rationale.summary || "Geen rationale beschikbaar.")}</p>
+            <p class="kicker">Headlines</p>
+            <div class="headline-list single-column">${topHeadlines || `<div class="empty">Geen headlines.</div>`}</div>
           </div>
-          <div class="note-line"><span class="kicker">Regime-redenen</span><div class="tag-list">${renderTagList(rationale.regimeReasons || [], "Geen regime-redenen")}</div></div>
-          <div class="note-line"><span class="kicker">Execution-notes</span><div class="tag-list">${renderTagList(rationale.executionReasons || [], "Geen execution-notes")}</div></div>
-          <div class="note-line"><span class="kicker">Execution-attributie</span><div class="tag-list">${renderTagList(execution.notes || [], formatExecutionMeta(execution))}</div></div>
-          <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList(rationale.blockerReasons || [], "Geen blokkerende redenen")}</div></div>
-          <div class="note-line"><span class="kicker">Strategy redenen</span><div class="tag-list">${renderTagList(rationale.strategy?.reasons || [], "Geen strategy-redenen")}</div></div>
-          <div class="note-line"><span class="kicker">Strategy blockers</span><div class="tag-list">${renderTagList(rationale.strategy?.blockers || [], "Geen strategy-blockers")}</div></div>
-          <div class="note-line"><span class="kicker">Committee vetoes</span><div class="tag-list">${renderTagList((rationale.committee?.vetoes || []).map((item) => item.label || item.id), "Geen vetoes")}</div></div>
-          <div class="note-line"><span class="kicker">RL redenen</span><div class="tag-list">${renderTagList(rationale.rlPolicy?.reasons || [], "Geen RL-notities")}</div></div>
-          <div class="note-line"><span class="kicker">Kalender</span><div class="tag-list">${renderTagList((latestCalendar.blockerReasons || []).concat(rationale.calendarBlockers || []), "Geen kalender-blockers")}</div></div>
-          <div class="note-line"><span class="kicker">Macro</span><div class="tag-list">${renderTagList((rationale.marketSentiment?.reasons || []).concat(rationale.volatility?.reasons || []), "Geen macro/vol-context")}</div></div>
-          <div class="note-line"><span class="kicker">Session</span><div class="tag-list">${renderTagList((rationale.sessionReasons || []).concat(rationale.sessionBlockers || []), "Geen session-notities")}</div></div>
-          <div class="note-line"><span class="kicker">Drift</span><div class="tag-list">${renderTagList((rationale.driftReasons || []).concat(rationale.driftBlockers || []), "Geen drift-waarschuwingen")}</div></div>
-          <div class="note-line"><span class="kicker">Self-heal</span><div class="tag-list">${renderTagList(rationale.selfHealIssues || [], "Self-heal normaal")}</div></div>
-          <div class="note-line"><span class="kicker">Official notices</span><div class="tag-list">${renderTagList((rationale.announcementBreakdown || []).map((item) => `${item.name}:${item.count}`), noticeMeta || "Geen officiele notices")}</div></div>
-          <div class="signal-list">${signals || `<div class="empty">Geen top-signalen beschikbaar.</div>`}</div>
-          <div class="driver-grid">
-            <div>
-              <p class="kicker">Bullish drivers</p>
-              <div class="headline-list">${bullishDrivers}</div>
+        </div>
+      `;
+
+      return `
+        <details class="position-card fold-card position-fold compact-fold" ${open}>
+          <summary class="fold-summary">
+            <div class="fold-header">
+              <div>
+                <div class="reason-pill">Open positie</div>
+                <h3>${escapeHtml(position.symbol)}</h3>
+                <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(position.regimeAtEntry || "-")} | ${formatNumber(position.ageMinutes, 1)} min open</p>
+                <p class="decision-blurb">${escapeHtml(summary)}</p>
+              </div>
+              <div class="fold-stats">
+                <span class="pill ${pnlClass}">${formatMoney(position.unrealizedPnl)} | ${formatPct(position.unrealizedPnlPct, 2)}</span>
+                <span class="pill">${escapeHtml(position.executionPlan?.entryStyle || "-")}</span>
+              </div>
             </div>
-            <div>
-              <p class="kicker">Bearish drivers</p>
-              <div class="headline-list">${bearishDrivers}</div>
-            </div>
+            <div class="summary-strip">${renderReasonPills(highlightPills, "Geen highlights")}</div>
+          </summary>
+          <div class="fold-body">
+            ${renderDetailSection("Trade view", "Belangrijkste cijfers", tradeView, true)}
+            ${renderDetailSection("AI uitleg", "Waarom deze positie nog open is", aiView)}
+            ${renderDetailSection("Context", "Markt, signalen en headlines", contextView)}
           </div>
-          <div class="driver-grid">
-            <div>
-              <p class="kicker">Officiele notices</p>
-              <div class="headline-list">${officialNotices}</div>
-            </div>
-            <div>
-              <p class="kicker">Kalender-events</p>
-              <div class="headline-list">${calendarEvents}</div>
-            </div>
-          </div>
-          <div class="driver-grid">
-            <div>
-              <p class="kicker">Strategy ranking</p>
-              <div class="headline-list">${renderStrategyCards(rationale.strategy?.strategies || [], "Geen strategy-ranking.")}</div>
-            </div>
-            <div>
-              <p class="kicker">Bullish agents</p>
-              <div class="headline-list">${renderAgentCards(rationale.committee?.bullishAgents || [], "Geen bullish agent-confirmaties.")}</div>
-            </div>
-          </div>
-          <div class="driver-grid">
-            <div>
-              <p class="kicker">Transformer attention</p>
-              <div class="headline-list">${renderAttentionCards(rationale.transformer?.attention || [], "Geen transformer attention.")}</div>
-            </div>
-            <div>
-              <p class="kicker">Strategy backup</p>
-              <div class="headline-list">${renderStrategyCards((rationale.strategy?.strategies || []).slice(1), "Geen alternatieve strategieen.")}</div>
-            </div>
-          </div>
-          <div class="check-list">${checks || `<div class="empty">Geen checks beschikbaar.</div>`}</div>
-          <div class="headline-list">${headlines || `<div class="empty">Geen headlines beschikbaar.</div>`}</div>
-        </article>
+        </details>
       `;
     })
     .join("");
@@ -638,100 +721,70 @@ function renderDecisions(snapshot) {
     .slice(0, decisionLimit)
     .map((decision, index) => {
       const edge = Number(decision.edgeToThreshold ?? (decision.probability || 0) - (decision.threshold || 0));
-      const thresholdGap = Math.max(0, (decision.threshold || 0) - (decision.probability || 0));
       const verdictTone = decision.allow ? "positive" : edge < 0 ? "negative" : "neutral";
       const strategyLabel = decision.strategy?.strategyLabel || decision.strategySummary?.strategyLabel || decision.setupStyle || "setup";
       const familyLabel = decision.strategy?.familyLabel || decision.strategy?.family || "family";
       const leadBull = decision.bullishSignals?.[0]?.name || decision.bullishDrivers?.[0]?.title || "geen sterke bull-driver";
       const leadBear = decision.blockerReasons?.[0] || decision.bearishSignals?.[0]?.name || decision.bearishDrivers?.[0]?.title || "geen grote blocker";
-      const whyText = decision.allow
-        ? `Doorgelaten: model ${formatPct(decision.probability || 0, 1)} boven gate ${formatPct(decision.threshold || 0, 1)}, committee ${formatPct(decision.committee?.probability || 0, 1)} en calibratie ${formatPct(decision.calibrationConfidence || 0, 1)}.`
-        : `Geblokkeerd: model ${formatPct(decision.probability || 0, 1)} bleef ${formatPct(thresholdGap || 0, 1)} onder gate ${formatPct(decision.threshold || 0, 1)} of kreeg een veto (${normalizeReasonLabel(leadBear)}).`;
-      const open = index < 3 || decision.allow;
+      const summary = decision.allow
+        ? `${strategyLabel} past hier het best. Grootste steun: ${normalizeReasonLabel(leadBull)}.`
+        : `Geblokkeerd door ${normalizeReasonLabel(leadBear)}.`;
+      const open = index < 2 || decision.allow;
+      const keyPills = decision.allow
+        ? collectHighlights([normalizeReasonLabel(leadBull), strategyLabel, decision.regime, decision.executionStyle || decision.executionAttribution?.entryStyle], 4)
+        : collectHighlights([normalizeReasonLabel(leadBear), ...(decision.blockerReasons || []).slice(0, 2), decision.regime], 4);
+      const decisionView = `
+        <p class="decision-blurb">${escapeHtml(truncateText(decision.summary || summary, 180))}</p>
+        <div class="mini-grid compact-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Model / gate</span><strong>${formatPct(decision.probability || 0, 1)} / ${formatPct(decision.threshold || 0, 1)}</strong><div class="meta">edge ${formatSignedPct(edge, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">${escapeHtml(familyLabel)}</div></div>
+          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</strong></div>
+          <div class="mini-stat"><span class="kicker">Universe</span><strong>${escapeHtml(decision.universe?.health || "watch")}</strong><div class="meta">score ${formatPct(decision.universe?.score || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Freshness</span><strong>${decision.freshnessHours == null ? "-" : `${formatNumber(decision.freshnessHours, 1)}u`}</strong><div class="meta">${decision.providerDiversity || 0} providers</div></div>
+        </div>
+        <div class="note-line"><span class="kicker">Waarom wel / niet</span><div class="tag-list">${renderTagList(decision.allow ? [normalizeReasonLabel(leadBull)] : [normalizeReasonLabel(leadBear), ...(decision.blockerReasons || []).slice(0, 2)], "Geen kernreden")}</div></div>
+      `;
+      const aiView = `
+        <div class="mini-grid compact-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(decision.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(decision.committee?.agreement || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Calibration</span><strong>${formatPct(decision.calibrationConfidence || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Meta gate</span><strong>${formatPct(decision.meta?.score || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((decision.selfHeal?.mode || "normal").replaceAll("_", " "))}</strong></div>
+        </div>
+        <div class="note-line"><span class="kicker">AI notities</span><div class="tag-list">${renderTagList([...(decision.strategy?.reasons || decision.strategySummary?.reasons || []).slice(0, 2), ...(decision.executionReasons || []).slice(0, 2)], "Geen extra AI-notities")}</div></div>
+      `;
+      const contextView = `
+        <div class="mini-grid compact-grid compact-data-grid">
+          <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(decision.orderBook?.bookPressure || 0, 2)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(decision.marketStructure?.fundingRate || 0, 6)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Pattern</span><strong>${escapeHtml(decision.patterns?.dominantPattern || "none")}</strong></div>
+          <div class="mini-stat"><span class="kicker">Macro</span><strong>${decision.marketSentiment?.fearGreedValue == null ? "-" : `${formatNumber(decision.marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(decision.marketSentiment?.fearGreedClassification || "fear/greed")}</div></div>
+          <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(decision.session?.sessionLabel || decision.session?.session || "-")}</strong></div>
+        </div>
+        <div class="note-line"><span class="kicker">Drivers</span><div class="tag-list">${renderTagList([leadBull, leadBear, ...((decision.marketStructure?.reasons || []).slice(0, 2))], "Geen extra context")}</div></div>
+      `;
+
       return `
-        <details class="decision-card fold-card ${decision.allow ? "allowed" : "blocked"}" ${open ? "open" : ""}>
+        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}" ${open ? "open" : ""}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
                 <div class="reason-pill ${decision.allow ? "" : "blocked"}">${decision.allow ? "Trade kandidaat" : "Geblokkeerd"}</div>
                 <h3>${escapeHtml(decision.symbol)}</h3>
                 <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(familyLabel)} | ${escapeHtml(decision.regime || "unknown")}</p>
+                <p class="decision-blurb">${escapeHtml(summary)}</p>
               </div>
-              <div class="pill ${verdictTone}">model ${formatPct(decision.probability, 1)}</div>
+              <div class="fold-stats">
+                <span class="pill ${verdictTone}">model ${formatPct(decision.probability || 0, 1)}</span>
+                <span class="pill">edge ${formatSignedPct(edge, 1)}</span>
+              </div>
             </div>
-            <div class="fold-stats">
-              <span class="summary-chip">gate ${formatPct(decision.threshold, 1)}</span>
-              <span class="summary-chip ${verdictTone}">edge ${formatSignedPct(edge, 1)}</span>
-              <span class="summary-chip">conf ${formatPct(decision.confidence || 0, 1)}</span>
-              <span class="summary-chip">committee ${formatPct(decision.committee?.probability || 0, 1)}</span>
-              <span class="summary-chip">strategy ${formatPct((decision.strategy?.fitScore || decision.strategySummary?.fitScore || 0), 1)}</span>
-              <span class="summary-chip">book ${formatNumber(decision.orderBook?.bookPressure || 0, 2)}</span>
-            </div>
+            <div class="summary-strip">${renderReasonPills(keyPills, "Geen highlights")}</div>
           </summary>
           <div class="fold-body">
-            <p class="decision-blurb">${escapeHtml(whyText)}</p>
-            <div class="mini-grid compact-grid">
-              <div class="mini-stat"><span class="kicker">Calibration</span><strong>${formatPct(decision.calibrationConfidence, 1)}</strong></div>
-              <div class="mini-stat"><span class="kicker">Disagreement</span><strong>${formatPct(decision.disagreement || 0, 1)}</strong></div>
-              <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(decision.executionStyle || "market")}</strong></div>
-              <div class="mini-stat"><span class="kicker">Freshness</span><strong>${decision.freshnessHours == null ? "-" : `${formatNumber(decision.freshnessHours, 1)}u`}</strong></div>
-              <div class="mini-stat"><span class="kicker">Providers</span><strong>${decision.providerDiversity || 0}</strong><div class="meta">${escapeHtml(formatBreakdown(decision.providerBreakdown || []))}</div></div>
-              <div class="mini-stat"><span class="kicker">Social</span><strong>${decision.socialCoverage || 0}</strong><div class="meta">sent ${formatPct(decision.socialSentiment || 0, 1)}</div></div>
-              <div class="mini-stat"><span class="kicker">Nieuws risk</span><strong>${formatPct(decision.newsRisk, 1)}</strong><div class="meta">ann ${formatPct(decision.announcementRisk || 0, 1)}</div></div>
-              <div class="mini-stat"><span class="kicker">Universe</span><strong>${escapeHtml(decision.universe?.health || "watch")}</strong><div class="meta">score ${formatPct(decision.universe?.score || 0, 1)}</div></div>
-            </div>
-            <div class="mini-grid compact-grid">
-              <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(decision.marketStructure?.fundingRate || 0, 6)}</strong></div>
-              <div class="mini-stat"><span class="kicker">Basis</span><strong>${formatNumber(decision.marketStructure?.basisBps || 0, 2)} bps</strong></div>
-              <div class="mini-stat"><span class="kicker">OI 5m</span><strong>${formatPct(decision.marketStructure?.openInterestChangePct || 0, 2)}</strong></div>
-              <div class="mini-stat"><span class="kicker">Long/short</span><strong>${formatNumber(decision.marketStructure?.globalLongShortRatio || 1, 2)}</strong><div class="meta">top ${formatNumber(decision.marketStructure?.topTraderLongShortRatio || 1, 2)}</div></div>
-              <div class="mini-stat"><span class="kicker">Liquidaties</span><strong>${decision.marketStructure?.liquidationCount || 0}</strong><div class="meta">${formatMoney(decision.marketStructure?.liquidationNotional || 0)}</div></div>
-              <div class="mini-stat"><span class="kicker">Book pressure</span><strong>${formatNumber(decision.orderBook?.bookPressure || 0, 2)}</strong><div class="meta">micro ${formatNumber(decision.orderBook?.microPriceEdgeBps || 0, 2)} bps</div></div>
-              <div class="mini-stat"><span class="kicker">Pattern</span><strong>${escapeHtml(decision.patterns?.dominantPattern || "none")}</strong><div class="meta">bull ${formatNumber(decision.patterns?.bullishPatternScore || 0, 2)} / bear ${formatNumber(decision.patterns?.bearishPatternScore || 0, 2)}</div></div>
-              <div class="mini-stat"><span class="kicker">Macro</span><strong>${decision.marketSentiment?.fearGreedValue == null ? "-" : `${formatNumber(decision.marketSentiment.fearGreedValue, 1)}`}</strong><div class="meta">${escapeHtml(decision.marketSentiment?.fearGreedClassification || "fear/greed")}</div></div>
-              <div class="mini-stat"><span class="kicker">Options vol</span><strong>${decision.volatility?.marketOptionIv == null ? "-" : `${formatNumber(decision.volatility.marketOptionIv, 1)}`}</strong><div class="meta">${escapeHtml(decision.volatility?.regime || "unknown")} | prem ${formatNumber(decision.volatility?.ivPremium || 0, 1)}</div></div>
-              <div class="mini-stat"><span class="kicker">Strategy</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">fit ${formatPct((decision.strategy?.fitScore || decision.strategySummary?.fitScore || 0), 1)} | conf ${formatPct((decision.strategy?.confidence || decision.strategySummary?.confidence || 0), 1)}</div></div>
-            </div>
-            <div class="mini-grid compact-grid">
-              <div class="mini-stat"><span class="kicker">ADX / DMI</span><strong>${formatNumber(decision.indicators?.adx14 || 0, 1)}</strong><div class="meta">dmi ${formatNumber(decision.indicators?.dmiSpread || 0, 2)} | tq ${formatNumber(decision.indicators?.trendQualityScore || 0, 2)}</div></div>
-              <div class="mini-stat"><span class="kicker">Supertrend</span><strong>${decision.indicators?.supertrendDirection > 0 ? "up" : decision.indicators?.supertrendDirection < 0 ? "down" : "flat"}</strong><div class="meta">dist ${formatPct(decision.indicators?.supertrendDistancePct || 0, 2)} | flip ${formatNumber(decision.indicators?.supertrendFlipScore || 0, 2)}</div></div>
-              <div class="mini-stat"><span class="kicker">Stoch RSI</span><strong>${formatNumber(decision.indicators?.stochRsiK || 0, 1)}</strong><div class="meta">signal ${formatNumber(decision.indicators?.stochRsiD || 0, 1)}</div></div>
-              <div class="mini-stat"><span class="kicker">MFI</span><strong>${formatNumber(decision.indicators?.mfi14 || 0, 1)}</strong><div class="meta">cmf ${formatNumber(decision.indicators?.cmf20 || 0, 2)}</div></div>
-              <div class="mini-stat"><span class="kicker">Keltner squeeze</span><strong>${formatPct(decision.indicators?.keltnerSqueezeScore || 0, 1)}</strong><div class="meta">release ${formatPct(decision.indicators?.squeezeReleaseScore || 0, 1)}</div></div>
-            </div>
-            <div class="mini-grid">
-              <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(decision.transformer?.probability || 0, 1)}</strong><div class="meta">conf ${formatPct(decision.transformer?.confidence || 0, 1)} | ${escapeHtml(decision.transformer?.dominantHead || "trend")}</div></div>
-              <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(decision.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(decision.committee?.agreement || 0, 1)} | net ${formatNumber(decision.committee?.netScore || 0, 3)}</div></div>
-              <div class="mini-stat"><span class="kicker">Meta gate</span><strong>${formatPct(decision.meta?.score || 0, 1)}</strong><div class="meta">budget ${formatPct(decision.meta?.dailyBudgetFactor || 0, 1)}</div></div>
-              <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(decision.session?.sessionLabel || decision.session?.session || "-")}</strong><div class="meta">${decision.session?.utcHour == null ? "-" : `${formatNumber(decision.session.utcHour, 2)} UTC`} | ${escapeHtml(decision.session?.dayLabel || "-")}</div></div>
-              <div class="mini-stat"><span class="kicker">Self-heal</span><strong>${escapeHtml((decision.selfHeal?.mode || "normal").replaceAll("_", " "))}</strong><div class="meta">thr ${formatPct(decision.selfHeal?.thresholdPenalty || 0, 1)} | size ${formatNumber(decision.selfHeal?.sizeMultiplier || 1, 2)}x</div></div>
-              <div class="mini-stat"><span class="kicker">Exec impact</span><strong>${formatNumber(decision.executionAttribution?.expectedImpactBps || 0, 2)} bps</strong><div class="meta">maker ${formatPct(decision.executionAttribution?.makerFillRatio || 0, 1)}</div></div>
-            </div>
-            <div class="note-line"><span class="kicker">Score pad</span><div class="tag-list">${renderTagList([`model ${formatPct(decision.probability || 0, 1)}`, `gate ${formatPct(decision.threshold || 0, 1)}`, `edge ${formatSignedPct(edge || 0, 1)}`, `committee ${formatPct(decision.committee?.probability || 0, 1)}`, `calibratie ${formatPct(decision.calibrationConfidence || 0, 1)}`], "Geen scorepad")}</div></div>
-            <div class="note-line"><span class="kicker">Waarom hoog</span><div class="tag-list">${renderTagList([normalizeReasonLabel(leadBull), ...(decision.bullishSignals || []).slice(0, 2).map((item) => `${item.name}:${formatNumber(item.contribution || 0, 2)}`)], "Geen bullish signaal")}</div></div>
-            <div class="note-line"><span class="kicker">Waarom niet</span><div class="tag-list">${renderTagList([normalizeReasonLabel(leadBear), ...(decision.blockerReasons || []).slice(0, 4)], "Geen blockers")}</div></div>
-            <div class="note-line"><span class="kicker">Strategy + execution</span><div class="tag-list">${renderTagList([...(decision.strategy?.reasons || decision.strategySummary?.reasons || []), ...(decision.executionReasons || [])], "Geen strategy/execution-notes")}</div></div>
-            <div class="note-line"><span class="kicker">Macro + risk</span><div class="tag-list">${renderTagList([...(decision.marketStructure?.reasons || []), ...(decision.calendar?.blockerReasons || []), ...(decision.selfHealIssues || []), ...(decision.sessionBlockers || []), ...(decision.driftBlockers || [])], "Geen extra risk-flags")}</div></div>
-            <div class="driver-grid">
-              <div>
-                <p class="kicker">Bullish drivers</p>
-                <div class="headline-list">${renderDriverCards(decision.bullishDrivers || [], "Geen bullish drivers.")}</div>
-              </div>
-              <div>
-                <p class="kicker">Bearish drivers</p>
-                <div class="headline-list">${renderDriverCards(decision.bearishDrivers || [], "Geen bearish drivers.")}</div>
-              </div>
-            </div>
-            <div class="driver-grid">
-              <div>
-                <p class="kicker">Officiele notices</p>
-                <div class="headline-list">${renderDriverCards(decision.officialNotices || [], "Geen officiele notices.")}</div>
-              </div>
-              <div>
-                <p class="kicker">Strategy ranking</p>
-                <div class="headline-list">${renderStrategyCards(decision.strategy?.strategies || decision.strategySummary?.strategies || [], "Geen strategy-ranking.")}</div>
-              </div>
-            </div>
+            ${renderDetailSection("Waarom", "Kort en duidelijk waarom wel of niet", decisionView, true)}
+            ${renderDetailSection("AI check", "Model, committee en veiligheid", aiView)}
+            ${renderDetailSection("Marktcontext", "Alleen de kernsignalen", contextView)}
           </div>
         </details>
       `;
@@ -1366,6 +1419,8 @@ elements.decisionAllowedOnly.addEventListener("change", (event) => {
   }
 });
 
+setupSidebar();
+setupSidebarAccordion();
 setupCollapsiblePanels();
 
 refreshSnapshot().catch((error) => {
@@ -1374,58 +1429,12 @@ refreshSnapshot().catch((error) => {
 });
 window.setInterval(() => {
   setupCollapsiblePanels();
-
-refreshSnapshot().catch((error) => {
+  refreshSnapshot().catch((error) => {
     transientMessage = error.message;
     if (latestSnapshot) {
       renderStatus(latestSnapshot);
     }
   });
 }, POLL_MS);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
