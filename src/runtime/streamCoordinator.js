@@ -83,6 +83,10 @@ function unique(items = []) {
   return [...new Set(items.filter(Boolean))];
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function summarizeExecutionEvents(events = []) {
   const tradeEvents = events.filter((event) => event.executionType === "TRADE");
   const makerQty = tradeEvents.reduce((total, event) => total + (event.maker ? event.lastExecutedQty : 0), 0);
@@ -281,6 +285,14 @@ export class StreamCoordinator {
     };
   }
 
+  async waitForPublicStreamOpen(timeoutMs = 1500) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (!this.state.publicStreamConnected && Date.now() < deadline) {
+      await sleep(50);
+    }
+    return this.state.publicStreamConnected;
+  }
+
   async init() {
     if (!this.config.enableEventDrivenData || typeof WebSocket === "undefined") {
       return this.getStatus();
@@ -288,10 +300,12 @@ export class StreamCoordinator {
 
     await this.startPublicStream();
     if (this.config.enableLocalOrderBook) {
-      void this.primeLocalBooks(this.orderBook.activeSymbols ? [...this.orderBook.activeSymbols] : [])
-        .catch(() => {
-          // ignore background priming errors here; individual warnings are logged inside the engine
-        });
+      void (async () => {
+        await this.waitForPublicStreamOpen(Math.max(250, Number(this.config.localBookBootstrapWaitMs || 0) + 500));
+        return this.primeLocalBooks(this.orderBook.activeSymbols ? [...this.orderBook.activeSymbols] : []);
+      })().catch(() => {
+        // ignore background priming errors here; individual warnings are logged inside the engine
+      });
     }
     await this.startFuturesStream();
     if (this.config.botMode === "live" && this.config.binanceApiKey) {

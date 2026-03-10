@@ -1,4 +1,4 @@
-﻿import { intervalToMs, nowIso } from "../utils/time.js";
+import { intervalToMs, nowIso } from "../utils/time.js";
 
 function appendWarning(runtime, warning) {
   runtime.health = runtime.health || {
@@ -10,6 +10,16 @@ function appendWarning(runtime, warning) {
     warnings: []
   };
   runtime.health.warnings = [warning, ...(runtime.health.warnings || [])].slice(0, 20);
+}
+
+function clearWarnings(runtime, issueSet = new Set()) {
+  if (!runtime?.health?.warnings?.length || !issueSet.size) {
+    return;
+  }
+  runtime.health.warnings = runtime.health.warnings.filter((warning) => {
+    const issues = Array.isArray(warning?.issues) ? warning.issues : [];
+    return !issues.some((issue) => issueSet.has(issue));
+  });
 }
 
 export class HealthMonitor {
@@ -52,15 +62,32 @@ export class HealthMonitor {
   }
 
   enforceClockDrift(client, runtime) {
-    const driftMs = Math.abs(client.getClockOffsetMs());
-    if (driftMs <= this.config.maxServerTimeDriftMs) {
+    const syncState = typeof client?.getClockSyncState === "function" ? client.getClockSyncState() : null;
+    const effectiveDriftMs = Number.isFinite(syncState?.estimatedDriftMs)
+      ? Number(syncState.estimatedDriftMs)
+      : Math.abs(client.getClockOffsetMs());
+    const issues = [];
+
+    if (syncState?.stale) {
+      issues.push("clock_sync_stale");
+    }
+    if (effectiveDriftMs > this.config.maxServerTimeDriftMs) {
+      issues.push("clock_drift_too_large");
+    }
+    if (!issues.length) {
+      clearWarnings(runtime, new Set(["clock_drift_too_large", "clock_sync_stale"]));
       return [];
     }
-    const issues = ["clock_drift_too_large"];
+
     appendWarning(runtime, {
       at: nowIso(),
       issues,
-      driftMs
+      driftMs: effectiveDriftMs,
+      offsetMs: syncState?.offsetMs ?? client.getClockOffsetMs(),
+      estimatedDriftMs: effectiveDriftMs,
+      bestRttMs: syncState?.bestRttMs ?? null,
+      sampleCount: syncState?.sampleCount ?? null,
+      syncAgeMs: syncState?.syncAgeMs ?? null
     });
     return issues;
   }

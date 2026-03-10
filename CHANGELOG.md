@@ -8,6 +8,8 @@
 - Trade quality scoring, universe rotation, model promotion rules, and execution quality monitoring in the AI control loop.
 - Richer feature-store learning frames so closed paper/live trades persist model, signal, rationale, and indicator context for retraining.
 - Symbol-level risk guards for per-pair daily entry caps and cooldowns after recent losing exits.
+- Clock sync quality telemetry with midpoint-sampled Binance time checks and fresher doctor output.
+- Local order book bootstrap wait and warm-up tracking so startup depth confidence ramps in more cleanly.
 
 ### Fixed
 - Restored recorder and backup manager state on restart so dashboard counts reflect files already on disk.
@@ -19,6 +21,8 @@
 - Stopped paper mode from being unnecessarily blocked by live-only clock drift, funding settlement, self-heal low-risk, and symbol repeat guards so the bot can keep learning during paper runs.
 - Reworked market snapshot prefetching to honor cache freshness, scan budgets, and concurrency limits, reducing timeout-driven fallback snapshots.
 - Excluded stablecoin lookalikes such as `USD1` and `PYUSD` from the dynamic top-100 Binance watchlist so the bot focuses on real trading candidates.
+- Stopped false `clock_drift_too_large` alerts caused by compensated Windows clock offset; health checks now judge effective sync uncertainty instead of raw offset.
+- Smoothed local order book startup behavior by waiting for early depth packets, downgrading warm-up gaps, and clamping negative depth ages from exchange-ahead timestamps.
 
 ### Improved
 - Reworked the dashboard into a simpler operator layout with a smaller top section, cleaner navigation, and one collapsed advanced analysis layer.
@@ -26,6 +30,7 @@
 - Reduced visible density by showing fewer setups, blocked trades, replay cards, and recent trades at once.
 - Added persistent detail memory for dynamic setup, position, and replay cards so manual open-close choices stick across refreshes.
 - Tightened universe, attribution, replay, and blocked-trade lists into a more compact operator view.
+- Lowered the default live drift threshold to a meaningful sync-quality guard now that clock health uses RTT-aware sampling rather than raw offset magnitude.
 
 ### Verified
 - `node --check src/dashboard/public/app.js`

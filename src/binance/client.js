@@ -1,4 +1,4 @@
-﻿import crypto from "node:crypto";
+import crypto from "node:crypto";
 
 function createQueryString(params = {}) {
   const pairs = Object.entries(params)
@@ -23,6 +23,25 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function average(values = []) {
+  if (!values.length) {
+    return 0;
+  }
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function median(values = []) {
+  if (!values.length) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    return sorted[middle];
+  }
+  return (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
 function buildUserDataHeaders(apiKey) {
   return {
     "Content-Type": "application/json",
@@ -31,7 +50,19 @@ function buildUserDataHeaders(apiKey) {
 }
 
 export class BinanceClient {
-  constructor({ apiKey, apiSecret, baseUrl, futuresBaseUrl = "https://fapi.binance.com", recvWindow = 5000, logger, fetchImpl, nowFn }) {
+  constructor({
+    apiKey,
+    apiSecret,
+    baseUrl,
+    futuresBaseUrl = "https://fapi.binance.com",
+    recvWindow = 5000,
+    logger,
+    fetchImpl,
+    nowFn,
+    clockSyncSampleCount = 5,
+    clockSyncMaxAgeMs = 5 * 60_000,
+    clockSyncMaxRttMs = 1500
+  }) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -41,6 +72,22 @@ export class BinanceClient {
     this.fetchImpl = fetchImpl || fetch;
     this.nowFn = nowFn || (() => Date.now());
     this.clockOffsetMs = 0;
+    this.clockSyncSampleCount = Math.max(1, Number(clockSyncSampleCount || 1));
+    this.clockSyncMaxAgeMs = Math.max(1_000, Number(clockSyncMaxAgeMs || 5 * 60_000));
+    this.clockSyncMaxRttMs = Math.max(100, Number(clockSyncMaxRttMs || 1500));
+    this.clockState = {
+      offsetMs: 0,
+      estimatedDriftMs: Number.POSITIVE_INFINITY,
+      bestRttMs: null,
+      medianRttMs: null,
+      averageRttMs: null,
+      offsetSpreadMs: null,
+      sampleCount: 0,
+      totalSampleCount: 0,
+      lastSyncAt: null,
+      stale: true,
+      syncAgeMs: null
+    };
     this.maxRetries = 3;
   }
 
@@ -64,6 +111,17 @@ export class BinanceClient {
 
   getClockOffsetMs() {
     return this.clockOffsetMs;
+  }
+
+  getClockSyncState() {
+    const lastSyncAtMs = this.clockState.lastSyncAt ? new Date(this.clockState.lastSyncAt).getTime() : NaN;
+    const syncAgeMs = Number.isFinite(lastSyncAtMs) ? Math.max(0, this.nowFn() - lastSyncAtMs) : null;
+    const stale = !this.clockState.lastSyncAt || (syncAgeMs != null && syncAgeMs > this.clockSyncMaxAgeMs);
+    return {
+      ...this.clockState,
+      stale,
+      syncAgeMs
+    };
   }
 
   async request(method, pathname, params = {}, signed = false, extraHeaders = {}) {
@@ -193,11 +251,67 @@ export class BinanceClient {
   }
 
   async syncServerTime(force = false) {
-    if (!force && this.clockOffsetMs !== 0) {
+    const currentState = this.getClockSyncState();
+    if (!force && currentState.sampleCount > 0 && !currentState.stale) {
       return this.clockOffsetMs;
     }
-    const response = await this.getServerTime();
-    this.clockOffsetMs = Number(response.serverTime || 0) - this.nowFn();
+
+    const samples = [];
+    for (let index = 0; index < this.clockSyncSampleCount; index += 1) {
+      const startedAt = this.nowFn();
+      const response = await this.getServerTime();
+      const receivedAt = this.nowFn();
+      const roundTripMs = Math.max(0, receivedAt - startedAt);
+      const midpointMs = startedAt + roundTripMs / 2;
+      const serverTime = Number(response.serverTime || 0);
+      if (!Number.isFinite(serverTime)) {
+        continue;
+      }
+      samples.push({
+        serverTime,
+        roundTripMs,
+        offsetMs: serverTime - midpointMs,
+        startedAt,
+        receivedAt
+      });
+      if (index < this.clockSyncSampleCount - 1) {
+        await sleep(40);
+      }
+    }
+
+    if (!samples.length) {
+      throw new Error("Unable to synchronize Binance server time.");
+    }
+
+    const accepted = samples.filter((sample) => sample.roundTripMs <= this.clockSyncMaxRttMs);
+    const chosenSamples = accepted.length
+      ? accepted
+      : [...samples]
+          .sort((left, right) => left.roundTripMs - right.roundTripMs)
+          .slice(0, Math.max(1, Math.ceil(samples.length / 2)));
+
+    const offsets = chosenSamples.map((sample) => sample.offsetMs);
+    const roundTrips = chosenSamples.map((sample) => sample.roundTripMs);
+    const bestRttMs = roundTrips.length ? Math.min(...roundTrips) : null;
+    const offsetSpreadMs = offsets.length > 1 ? Math.max(...offsets) - Math.min(...offsets) : 0;
+    const offsetMs = median(offsets);
+    const estimatedDriftMs = Math.max((bestRttMs || 0) / 2, offsetSpreadMs / 2, 0);
+    const lastSyncAtMs = Math.max(...chosenSamples.map((sample) => sample.receivedAt));
+
+    this.clockOffsetMs = Math.round(offsetMs);
+    this.clockState = {
+      offsetMs: this.clockOffsetMs,
+      estimatedDriftMs,
+      bestRttMs,
+      medianRttMs: median(roundTrips),
+      averageRttMs: average(roundTrips),
+      offsetSpreadMs,
+      sampleCount: chosenSamples.length,
+      totalSampleCount: samples.length,
+      lastSyncAt: new Date(lastSyncAtMs).toISOString(),
+      stale: false,
+      syncAgeMs: 0
+    };
     return this.clockOffsetMs;
   }
 

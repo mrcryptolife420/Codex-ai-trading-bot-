@@ -45,6 +45,10 @@ function bestQty(levels) {
   return levels[0]?.[1] || 0;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function walkLevels(levels, side, { quoteAmount = 0, quantity = 0 } = {}) {
   const targetQty = quantity > 0 ? quantity : 0;
   const targetQuote = quoteAmount > 0 ? quoteAmount : 0;
@@ -113,6 +117,10 @@ export class LocalOrderBookEngine {
     return this.activeSymbols.size === 0 || this.activeSymbols.has(`${symbol}`.trim().toUpperCase());
   }
 
+  isWarmupActive(bucket, nowMs = Date.now()) {
+    return Boolean(bucket?.warmupUntil && bucket.warmupUntil > nowMs);
+  }
+
   getBucket(symbol) {
     if (!this.buckets.has(symbol)) {
       this.buckets.set(symbol, {
@@ -129,7 +137,10 @@ export class LocalOrderBookEngine {
         asks: new Map(),
         buffer: [],
         deltaHistory: createBucket(240),
-        lastDepthSummary: null
+        lastDepthSummary: null,
+        bootstrapStartedAt: null,
+        warmupUntil: null,
+        lastResetReason: null
       });
     }
     return this.buckets.get(symbol);
@@ -141,9 +152,26 @@ export class LocalOrderBookEngine {
     bucket.bids = new Map();
     bucket.asks = new Map();
     bucket.buffer = [];
+    bucket.bootstrapStartedAt = null;
+    bucket.warmupUntil = null;
+    bucket.lastResetReason = reason;
     bucket.resyncCount += 1;
     bucket.lastDepthSummary = null;
-    this.logger?.warn?.("Local order book reset", { symbol: bucket.symbol, reason });
+    const logMethod = reason === "warmup_gap" ? "info" : "warn";
+    this.logger?.[logMethod]?.("Local order book reset", { symbol: bucket.symbol, reason });
+  }
+
+  async waitForInitialBuffer(bucket) {
+    const waitMs = Math.max(0, Number(this.config.localBookBootstrapWaitMs || 0));
+    if (!waitMs || bucket.buffer.length > 0 || bucket.lastUpdateId > 0) {
+      return;
+    }
+    const startedAt = Date.now();
+    bucket.bootstrapStartedAt = bucket.bootstrapStartedAt || startedAt;
+    const deadline = startedAt + waitMs;
+    while (bucket.buffer.length === 0 && Date.now() < deadline) {
+      await sleep(25);
+    }
   }
 
   async ensurePrimed(symbol) {
@@ -159,6 +187,7 @@ export class LocalOrderBookEngine {
     }
 
     bucket.primingPromise = (async () => {
+      await this.waitForInitialBuffer(bucket);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const snapshot = await this.client.getOrderBook(symbol, this.config.streamDepthSnapshotLimit);
         bucket.bids = new Map((snapshot.bids || []).map(([price, quantity]) => [`${price}`, Number(quantity)]));
@@ -174,11 +203,15 @@ export class LocalOrderBookEngine {
         if (buffered.length && Number(buffered[0].U || 0) > bucket.lastUpdateId + 1) {
           bucket.missedEvents += 1;
           bucket.gapCount += 1;
+          await sleep(40 * (attempt + 1));
           continue;
         }
 
         bucket.synced = true;
         bucket.buffer = [];
+        bucket.bootstrapStartedAt = null;
+        bucket.warmupUntil = Date.now() + Math.max(0, Number(this.config.localBookWarmupMs || 0));
+        bucket.lastResetReason = null;
         for (const event of buffered) {
           if (!this.applyEvent(bucket, event)) {
             bucket.synced = false;
@@ -274,7 +307,8 @@ export class LocalOrderBookEngine {
 
     const applied = this.applyEvent(bucket, event);
     if (!applied) {
-      this.resetBucket(bucket, "sequence_gap");
+      const reason = this.isWarmupActive(bucket) ? "warmup_gap" : "sequence_gap";
+      this.resetBucket(bucket, reason);
       void this.ensurePrimed(symbol).catch((error) => {
         bucket.missedEvents += 1;
         this.logger?.warn?.("Local order book resync failed", { symbol, error: error.message });
@@ -300,13 +334,16 @@ export class LocalOrderBookEngine {
     const replenishValues = deltaHistory.map((item) => item.bidDeltaNotional - item.askDeltaNotional);
     const queueRefreshScore = clamp(ratio(sumPositive(replenishValues) - sumNegativeAbs(replenishValues), sumPositive(replenishValues) + sumNegativeAbs(replenishValues), 0), -1, 1);
     const resilienceScore = clamp(ratio(sumSigned(signedValues), Math.abs(sumSigned(signedValues)) + totalDepth * 0.05, 0), -1, 1);
-    const depthAgeMs = bucket.lastEventAt ? Date.now() - new Date(bucket.lastEventAt).getTime() : Number.MAX_SAFE_INTEGER;
+    const rawDepthAgeMs = bucket.lastEventAt ? Date.now() - new Date(bucket.lastEventAt).getTime() : Number.MAX_SAFE_INTEGER;
+    const depthAgeMs = Number.isFinite(rawDepthAgeMs) ? Math.max(0, rawDepthAgeMs) : Number.MAX_SAFE_INTEGER;
     const freshnessScore = clamp(1 - depthAgeMs / Math.max(this.config.maxDepthEventAgeMs, 1), 0, 1);
+    const warmupRemainingMs = bucket.warmupUntil ? Math.max(0, bucket.warmupUntil - Date.now()) : 0;
+    const warmupActive = warmupRemainingMs > 0;
     const depthConfidence = clamp(
-      (bucket.synced ? 0.38 : 0) +
+      ((bucket.synced ? 0.38 : 0) +
       freshnessScore * 0.3 +
       clamp((bids.length + asks.length) / Math.max(limit * 2, 1), 0, 1) * 0.18 +
-      clamp(1 - bucket.gapCount / 4, 0, 1) * 0.14,
+      clamp(1 - bucket.gapCount / 4, 0, 1) * 0.14) * (warmupActive ? 0.9 : 1),
       0,
       1
     );
@@ -331,7 +368,10 @@ export class LocalOrderBookEngine {
       depthConfidence,
       resyncCount: bucket.resyncCount,
       gapCount: bucket.gapCount,
-      missedEvents: bucket.missedEvents
+      missedEvents: bucket.missedEvents,
+      warmupActive,
+      warmupRemainingMs,
+      lastResetReason: bucket.lastResetReason || null
     };
   }
 
@@ -370,11 +410,13 @@ export class LocalOrderBookEngine {
     const symbols = activeSymbols.length ? activeSymbols : trackedSymbols;
     const snapshots = symbols.map((symbol) => this.getSnapshot(symbol));
     const healthy = snapshots.filter((item) => item.synced && item.depthAgeMs <= this.config.maxDepthEventAgeMs).length;
+    const warming = snapshots.filter((item) => item.warmupActive).length;
     return {
       enabled: this.config.enableLocalOrderBook,
       trackedSymbols: trackedSymbols.length,
       activeSymbols: activeSymbols.length,
       healthySymbols: healthy,
+      warmingSymbols: warming,
       totalResyncs: snapshots.reduce((total, item) => total + (item.resyncCount || 0), 0),
       totalGaps: snapshots.reduce((total, item) => total + (item.gapCount || 0), 0),
       averageDepthConfidence: snapshots.length
@@ -383,6 +425,3 @@ export class LocalOrderBookEngine {
     };
   }
 }
-
-
-

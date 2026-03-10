@@ -1056,6 +1056,9 @@ export class TradingBot {
       baseUrl: config.binanceApiBaseUrl,
       futuresBaseUrl: config.binanceFuturesApiBaseUrl,
       recvWindow: config.binanceRecvWindow,
+      clockSyncSampleCount: config.clockSyncSampleCount,
+      clockSyncMaxAgeMs: config.clockSyncMaxAgeMs,
+      clockSyncMaxRttMs: config.clockSyncMaxRttMs,
       logger
     });
     this.risk = new RiskManager(config);
@@ -2685,6 +2688,12 @@ export class TradingBot {
     const cycleAt = nowIso();
     this.logger.info("Starting cycle", { mode: this.config.botMode, watchlist: this.config.watchlist.length });
     this.updateSafetyState({ now: new Date(cycleAt), candidateSummaries: arr(this.runtime.latestDecisions) });
+    try {
+      await this.client.syncServerTime();
+    } catch (error) {
+      this.logger.warn("Clock sync refresh failed", { error: error.message });
+      this.recordEvent("clock_sync_refresh_failed", { error: error.message });
+    }
     const driftIssues = this.health.enforceClockDrift(this.client, this.runtime);
     const markedPrices = await this.manageOpenPositions();
     const balance = await this.broker.getBalance(this.runtime);
@@ -3181,6 +3190,7 @@ export class TradingBot {
       validation: this.config.validation,
       broker: await this.broker.doctor(this.runtime),
       clockOffsetMs: this.client.getClockOffsetMs(),
+      clockSync: this.client.getClockSyncState ? this.client.getClockSyncState() : null,
       health: this.health.getStatus(this.runtime),
       stream: this.stream.getStatus(),
       calibration: this.model.getCalibrationSummary(),

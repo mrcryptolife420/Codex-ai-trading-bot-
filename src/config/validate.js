@@ -1,4 +1,4 @@
-﻿function isFiniteNumber(value) {
+function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
@@ -39,7 +39,10 @@ export function validateConfig(config) {
   assertRange("PAPER_PARTIAL_FILL_MIN_RATIO", config.paperPartialFillMinRatio, 0, 1, errors);
   assertRange("BACKTEST_LATENCY_MS", config.backtestLatencyMs, 0, 5000, errors);
   assertRange("BACKTEST_SYNTHETIC_DEPTH_USD", config.backtestSyntheticDepthUsd, 1000, 500000000, errors);
-  assertRange("MAX_SERVER_TIME_DRIFT_MS", config.maxServerTimeDriftMs, 100, 60_000, errors);
+  assertRange("MAX_SERVER_TIME_DRIFT_MS", config.maxServerTimeDriftMs, 50, 60_000, errors);
+  assertRange("CLOCK_SYNC_SAMPLE_COUNT", config.clockSyncSampleCount, 1, 12, errors);
+  assertRange("CLOCK_SYNC_MAX_AGE_MS", config.clockSyncMaxAgeMs, 1_000, 3_600_000, errors);
+  assertRange("CLOCK_SYNC_MAX_RTT_MS", config.clockSyncMaxRttMs, 50, 10_000, errors);
   assertRange("MAX_KLINE_STALENESS_MULTIPLIER", config.maxKlineStalenessMultiplier, 1, 20, errors);
   assertRange("HEALTH_MAX_CONSECUTIVE_FAILURES", config.healthMaxConsecutiveFailures, 1, 20, errors);
   assertRange("DASHBOARD_PORT", config.dashboardPort, 1, 65535, errors);
@@ -76,6 +79,8 @@ export function validateConfig(config) {
   assertRange("STREAM_DEPTH_LEVELS", config.streamDepthLevels, 5, 100, errors);
   assertRange("STREAM_DEPTH_SNAPSHOT_LIMIT", config.streamDepthSnapshotLimit, 20, 5000, errors);
   assertRange("MAX_DEPTH_EVENT_AGE_MS", config.maxDepthEventAgeMs, 100, 60_000, errors);
+  assertRange("LOCAL_BOOK_BOOTSTRAP_WAIT_MS", config.localBookBootstrapWaitMs, 0, 5_000, errors);
+  assertRange("LOCAL_BOOK_WARMUP_MS", config.localBookWarmupMs, 0, 30_000, errors);
   assertRange("MAKER_MIN_SPREAD_BPS", config.makerMinSpreadBps, 0, 100, errors);
   assertRange("DEFAULT_PEG_OFFSET_LEVELS", config.defaultPegOffsetLevels, 0, 10, errors);
   assertRange("MAX_PEGGED_IMPACT_BPS", config.maxPeggedImpactBps, 0.1, 50, errors);
@@ -192,6 +197,9 @@ export function validateConfig(config) {
   if (config.enableLocalOrderBook && !config.enableEventDrivenData) {
     warnings.push("ENABLE_LOCAL_ORDER_BOOK works best with ENABLE_EVENT_DRIVEN_DATA=true.");
   }
+  if (config.clockSyncMaxRttMs > config.maxServerTimeDriftMs * 4) {
+    warnings.push("CLOCK_SYNC_MAX_RTT_MS is much larger than MAX_SERVER_TIME_DRIFT_MS; stale high-latency sync samples may hide transport issues.");
+  }
   if (config.marketSnapshotBudgetSymbols < config.universeMaxSymbols) {
     warnings.push("MARKET_SNAPSHOT_BUDGET_SYMBOLS is smaller than UNIVERSE_MAX_SYMBOLS; some universe-selected pairs may only use cached/lightweight data.");
   }
@@ -280,16 +288,3 @@ export function assertValidConfig(config) {
   }
   return result;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

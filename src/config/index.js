@@ -1,4 +1,4 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { coinAliases } from "../data/coinAliases.js";
 import { getCoinProfile } from "../data/coinProfiles.js";
@@ -117,6 +117,8 @@ const DEFAULTS = {
   streamDepthLevels: 20,
   streamDepthSnapshotLimit: 200,
   maxDepthEventAgeMs: 15000,
+  localBookBootstrapWaitMs: 450,
+  localBookWarmupMs: 2500,
   enableSmartExecution: true,
   enablePeggedOrders: true,
   defaultPegOffsetLevels: 1,
@@ -207,11 +209,14 @@ const DEFAULTS = {
   binanceApiBaseUrl: "https://api.binance.com",
   binanceFuturesApiBaseUrl: "https://fapi.binance.com",
   binanceRecvWindow: 5000,
+  clockSyncSampleCount: 5,
+  clockSyncMaxAgeMs: 300000,
+  clockSyncMaxRttMs: 1200,
   enableExchangeProtection: true,
   allowRecoverUnsyncedPositions: false,
   stpMode: "NONE",
   liveStopLimitBufferPct: 0.002,
-  maxServerTimeDriftMs: 1500,
+  maxServerTimeDriftMs: 450,
   maxKlineStalenessMultiplier: 3,
   healthMaxConsecutiveFailures: 3,
   reportLookbackTrades: 50,
@@ -437,6 +442,8 @@ export async function loadConfig(projectRoot = process.cwd()) {
     streamDepthLevels: parseNumber(env.STREAM_DEPTH_LEVELS, DEFAULTS.streamDepthLevels),
     streamDepthSnapshotLimit: parseNumber(env.STREAM_DEPTH_SNAPSHOT_LIMIT, DEFAULTS.streamDepthSnapshotLimit),
     maxDepthEventAgeMs: parseNumber(env.MAX_DEPTH_EVENT_AGE_MS, DEFAULTS.maxDepthEventAgeMs),
+    localBookBootstrapWaitMs: parseNumber(env.LOCAL_BOOK_BOOTSTRAP_WAIT_MS, DEFAULTS.localBookBootstrapWaitMs),
+    localBookWarmupMs: parseNumber(env.LOCAL_BOOK_WARMUP_MS, DEFAULTS.localBookWarmupMs),
     enableSmartExecution: parseBoolean(env.ENABLE_SMART_EXECUTION, DEFAULTS.enableSmartExecution),
     enablePeggedOrders: parseBoolean(env.ENABLE_PEGGED_ORDERS, DEFAULTS.enablePeggedOrders),
     defaultPegOffsetLevels: parseNumber(env.DEFAULT_PEG_OFFSET_LEVELS, DEFAULTS.defaultPegOffsetLevels),
@@ -521,6 +528,9 @@ export async function loadConfig(projectRoot = process.cwd()) {
     binanceApiSecret: env.BINANCE_API_SECRET || "",
     binanceFuturesApiBaseUrl: env.BINANCE_FUTURES_API_BASE_URL || DEFAULTS.binanceFuturesApiBaseUrl,
     binanceRecvWindow: parseNumber(env.BINANCE_RECV_WINDOW, DEFAULTS.binanceRecvWindow),
+    clockSyncSampleCount: parseNumber(env.CLOCK_SYNC_SAMPLE_COUNT, DEFAULTS.clockSyncSampleCount),
+    clockSyncMaxAgeMs: parseNumber(env.CLOCK_SYNC_MAX_AGE_MS, DEFAULTS.clockSyncMaxAgeMs),
+    clockSyncMaxRttMs: parseNumber(env.CLOCK_SYNC_MAX_RTT_MS, DEFAULTS.clockSyncMaxRttMs),
     binanceApiBaseUrl: env.BINANCE_API_BASE_URL || DEFAULTS.binanceApiBaseUrl,
     enableExchangeProtection: parseBoolean(env.ENABLE_EXCHANGE_PROTECTION, DEFAULTS.enableExchangeProtection),
     allowRecoverUnsyncedPositions: parseBoolean(env.ALLOW_RECOVER_UNSYNCED_POSITIONS, DEFAULTS.allowRecoverUnsyncedPositions),

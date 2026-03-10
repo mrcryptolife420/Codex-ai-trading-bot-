@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AdaptiveTradingModel } from "../src/ai/adaptiveModel.js";
 import { ExecutionEngine } from "../src/execution/executionEngine.js";
+import { BinanceClient } from "../src/binance/client.js";
 import { buildSymbolRules, resolveMarketBuyQuantity } from "../src/binance/symbolFilters.js";
 import { scoreHeadline, summarizeNews } from "../src/news/sentiment.js";
 import { parseProviderItems } from "../src/news/rssFeed.js";
@@ -74,7 +75,10 @@ function makeConfig(overrides = {}) {
     maxRealizedVolPct: 0.07,
     maxHoldMinutes: 360,
     klineInterval: "15m",
-    maxServerTimeDriftMs: 1500,
+    maxServerTimeDriftMs: 450,
+    clockSyncSampleCount: 5,
+    clockSyncMaxAgeMs: 300000,
+    clockSyncMaxRttMs: 1200,
     maxKlineStalenessMultiplier: 2,
     healthMaxConsecutiveFailures: 2,
     dashboardPort: 3011,
@@ -190,6 +194,8 @@ function makeConfig(overrides = {}) {
     streamDepthLevels: 20,
     streamDepthSnapshotLimit: 200,
     maxDepthEventAgeMs: 15000,
+    localBookBootstrapWaitMs: 50,
+    localBookWarmupMs: 1500,
     enableSmartExecution: true,
     enablePeggedOrders: true,
     defaultPegOffsetLevels: 1,
@@ -736,6 +742,99 @@ await runCheck("health monitor flags stale snapshots and opens circuit", async (
   monitor.recordFailure(runtime, new Error("boom"));
   monitor.recordFailure(runtime, new Error("boom2"));
   assert.equal(runtime.health.circuitOpen, true);
+});
+
+await runCheck("binance client estimates effective drift from midpoint clock sync samples", async () => {
+  const serverTimes = [2920, 3022, 3121];
+  const nowValues = [1000, 1040, 1100, 1144, 1200, 1242, 1242];
+  let fetchIndex = 0;
+  let nowIndex = 0;
+  const client = new BinanceClient({
+    apiKey: "",
+    apiSecret: "",
+    baseUrl: "https://api.binance.com",
+    clockSyncSampleCount: 3,
+    clockSyncMaxAgeMs: 60_000,
+    clockSyncMaxRttMs: 500,
+    nowFn: () => nowValues[Math.min(nowIndex++, nowValues.length - 1)],
+    fetchImpl: async () => ({
+      ok: true,
+      async text() {
+        const value = serverTimes[Math.min(fetchIndex++, serverTimes.length - 1)];
+        return JSON.stringify({ serverTime: value });
+      }
+    })
+  });
+  await client.syncServerTime(true);
+  const state = client.getClockSyncState();
+  assert.equal(client.getClockOffsetMs(), 1900);
+  assert.ok(state.estimatedDriftMs <= 25);
+  assert.equal(state.sampleCount, 3);
+});
+
+await runCheck("health monitor uses sync quality instead of raw clock offset", async () => {
+  const runtime = { health: { warnings: [] } };
+  const monitor = new HealthMonitor(makeConfig({ maxServerTimeDriftMs: 100 }), { warn() {} });
+  const noIssues = monitor.enforceClockDrift({
+    getClockOffsetMs() {
+      return 1900;
+    },
+    getClockSyncState() {
+      return {
+        offsetMs: 1900,
+        estimatedDriftMs: 24,
+        bestRttMs: 48,
+        sampleCount: 3,
+        stale: false,
+        syncAgeMs: 1200
+      };
+    }
+  }, runtime);
+  assert.deepEqual(noIssues, []);
+
+  const staleIssues = monitor.enforceClockDrift({
+    getClockOffsetMs() {
+      return 1900;
+    },
+    getClockSyncState() {
+      return {
+        offsetMs: 1900,
+        estimatedDriftMs: 160,
+        bestRttMs: 320,
+        sampleCount: 2,
+        stale: true,
+        syncAgeMs: 120000
+      };
+    }
+  }, runtime);
+  assert.ok(staleIssues.includes("clock_sync_stale"));
+  assert.ok(staleIssues.includes("clock_drift_too_large"));
+});
+
+await runCheck("local order book engine waits for startup depth before priming", async () => {
+  let engine;
+  let sawBufferedEventBeforeSnapshot = false;
+  const client = {
+    async getOrderBook() {
+      sawBufferedEventBeforeSnapshot = engine.getBucket("BTCUSDT").buffer.length > 0;
+      return {
+        lastUpdateId: 100,
+        bids: [["50000", "1.2"], ["49990", "1.4"]],
+        asks: [["50010", "1.1"], ["50020", "1.5"]]
+      };
+    }
+  };
+  engine = new LocalOrderBookEngine({ client, config: makeConfig({ localBookBootstrapWaitMs: 60, localBookWarmupMs: 1200 }), logger: { warn() {}, info() {} } });
+  const priming = engine.ensurePrimed("BTCUSDT");
+  setTimeout(() => {
+    engine.handleDepthEvent("BTCUSDT", { U: 101, u: 102, E: Date.now() + 1500, b: [["50000", "1.6"]], a: [["50010", "0.9"]] });
+  }, 10);
+  await priming;
+  const snapshot = engine.getSnapshot("BTCUSDT");
+  assert.equal(sawBufferedEventBeforeSnapshot, true);
+  assert.equal(snapshot.synced, true);
+  assert.equal(snapshot.warmupActive, true);
+  assert.ok(snapshot.depthAgeMs >= 0);
 });
 
 await runCheck("local order book engine synchronizes depth and estimates fill impact", async () => {
