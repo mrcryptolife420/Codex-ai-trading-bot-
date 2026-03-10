@@ -1,4 +1,4 @@
-﻿import { clamp } from "../utils/math.js";
+import { clamp } from "../utils/math.js";
 
 export function classifyRegime({
   marketFeatures,
@@ -15,13 +15,14 @@ export function classifyRegime({
   let regime = "range";
   let confidence = 0.55;
 
+  const freshHighPriorityNotice = (announcementSummary.highPriorityCount || 0) > 0 && (announcementSummary.noticeFreshnessHours || 999) <= 12;
   const eventRisk = Math.max(
     newsSummary.eventRiskScore || 0,
-    announcementSummary.eventRiskScore || 0,
+    (announcementSummary.eventRiskScore || 0) * 0.85,
     calendarSummary.riskScore || 0,
-    announcementSummary.riskScore || 0,
-    (marketSentimentSummary.riskScore || 0) * 0.85,
-    (volatilitySummary.riskScore || 0) * 0.85
+    freshHighPriorityNotice ? (announcementSummary.riskScore || 0) : (announcementSummary.riskScore || 0) * 0.55,
+    Math.max(0, (marketSentimentSummary.riskScore || 0) - 0.48) * 1.15,
+    Math.max(0, (volatilitySummary.riskScore || 0) - 0.52) * 1.05
   );
   const breakoutPressure = Math.max(
     Math.abs(marketFeatures.breakoutPct || 0) * 30,
@@ -30,7 +31,7 @@ export function classifyRegime({
     Math.abs(bookFeatures.bookPressure || 0)
   );
 
-  if (eventRisk > 0.68 || (announcementSummary.maxSeverity || 0) > 0.8 || (calendarSummary.urgencyScore || 0) > 0.8) {
+  if (eventRisk > 0.72 || freshHighPriorityNotice || (announcementSummary.maxSeverity || 0) > 0.86 || (calendarSummary.urgencyScore || 0) > 0.84) {
     regime = "event_risk";
     confidence = 0.9;
     reasons.push("calendar_or_notice_risk");
@@ -115,3 +116,4 @@ export function classifyRegime({
     reasons
   };
 }
+

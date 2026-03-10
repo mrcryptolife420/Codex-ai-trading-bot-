@@ -34,10 +34,25 @@ export function validateConfig(config) {
   assertRange("TRAILING_STOP_PCT", config.trailingStopPct, 0.001, 0.2, errors);
   assertRange("MAX_SPREAD_BPS", config.maxSpreadBps, 1, 500, errors);
   assertRange("MAX_REALIZED_VOL_PCT", config.maxRealizedVolPct, 0.001, 0.5, errors);
+  assertRange("PAPER_LATENCY_MS", config.paperLatencyMs, 0, 5000, errors);
+  assertRange("PAPER_MAKER_FILL_FLOOR", config.paperMakerFillFloor, 0, 1, errors);
+  assertRange("PAPER_PARTIAL_FILL_MIN_RATIO", config.paperPartialFillMinRatio, 0, 1, errors);
+  assertRange("BACKTEST_LATENCY_MS", config.backtestLatencyMs, 0, 5000, errors);
+  assertRange("BACKTEST_SYNTHETIC_DEPTH_USD", config.backtestSyntheticDepthUsd, 1000, 500000000, errors);
   assertRange("MAX_SERVER_TIME_DRIFT_MS", config.maxServerTimeDriftMs, 100, 60_000, errors);
   assertRange("MAX_KLINE_STALENESS_MULTIPLIER", config.maxKlineStalenessMultiplier, 1, 20, errors);
   assertRange("HEALTH_MAX_CONSECUTIVE_FAILURES", config.healthMaxConsecutiveFailures, 1, 20, errors);
   assertRange("DASHBOARD_PORT", config.dashboardPort, 1, 65535, errors);
+  assertRange("WATCHLIST_TOP_N", config.watchlistTopN, 5, 150, errors);
+  assertRange("WATCHLIST_FETCH_PER_PAGE", config.watchlistFetchPerPage, 50, 250, errors);
+  assertRange("DYNAMIC_WATCHLIST_MIN_SYMBOLS", config.dynamicWatchlistMinSymbols, 5, 150, errors);
+  assertRange("DASHBOARD_EQUITY_POINT_LIMIT", config.dashboardEquityPointLimit, 120, 10000, errors);
+  assertRange("DASHBOARD_CYCLE_POINT_LIMIT", config.dashboardCyclePointLimit, 60, 5000, errors);
+  assertRange("DASHBOARD_DECISION_LIMIT", config.dashboardDecisionLimit, 5, 200, errors);
+  assertRange("MARKET_SNAPSHOT_CACHE_MINUTES", config.marketSnapshotCacheMinutes, 1, 60, errors);
+  assertRange("MARKET_SNAPSHOT_CONCURRENCY", config.marketSnapshotConcurrency, 1, 20, errors);
+  assertRange("MARKET_SNAPSHOT_BUDGET_SYMBOLS", config.marketSnapshotBudgetSymbols, 4, 120, errors);
+  assertRange("LOCAL_BOOK_MAX_SYMBOLS", config.localBookMaxSymbols, 4, 120, errors);
   assertRange("MIN_CALIBRATION_CONFIDENCE", config.minCalibrationConfidence, 0, 1, errors);
   assertRange("MIN_REGIME_CONFIDENCE", config.minRegimeConfidence, 0, 1, errors);
   assertRange("ABSTAIN_BAND", config.abstainBand, 0, 0.2, errors);
@@ -94,6 +109,11 @@ export function validateConfig(config) {
   assertRange("MAX_PAIR_CORRELATION", config.maxPairCorrelation, 0, 1, errors);
   assertRange("MAX_CLUSTER_POSITIONS", config.maxClusterPositions, 1, 10, errors);
   assertRange("MAX_SECTOR_POSITIONS", config.maxSectorPositions, 1, 10, errors);
+  assertRange("MIN_BOOK_PRESSURE_FOR_ENTRY", config.minBookPressureForEntry, -1, 1, errors);
+  assertRange("PAPER_EXPLORATION_THRESHOLD_BUFFER", config.paperExplorationThresholdBuffer, 0, 0.2, errors);
+  assertRange("PAPER_EXPLORATION_SIZE_MULTIPLIER", config.paperExplorationSizeMultiplier, 0.1, 1, errors);
+  assertRange("PAPER_EXPLORATION_COOLDOWN_MINUTES", config.paperExplorationCooldownMinutes, 0, 1440, errors);
+  assertRange("PAPER_EXPLORATION_MIN_BOOK_PRESSURE", config.paperExplorationMinBookPressure, -1, 1, errors);
   assertRange("ANNOUNCEMENT_LOOKBACK_HOURS", config.announcementLookbackHours, 1, 168, errors);
   assertRange("ANNOUNCEMENT_CACHE_MINUTES", config.announcementCacheMinutes, 1, 240, errors);
   assertRange("MARKET_STRUCTURE_CACHE_MINUTES", config.marketStructureCacheMinutes, 1, 120, errors);
@@ -123,6 +143,9 @@ export function validateConfig(config) {
   if (config.maxPositionFraction > config.maxTotalExposureFraction) {
     errors.push("MAX_POSITION_FRACTION cannot exceed MAX_TOTAL_EXPOSURE_FRACTION.");
   }
+  if (config.paperMakerFillFloor > config.paperPartialFillMinRatio) {
+    warnings.push("PAPER_MAKER_FILL_FLOOR is above PAPER_PARTIAL_FILL_MIN_RATIO; maker fills may dominate the paper execution model.");
+  }
   if (config.stopLossPct >= config.takeProfitPct) {
     warnings.push("TAKE_PROFIT_PCT is not larger than STOP_LOSS_PCT; reward/risk may be unattractive.");
   }
@@ -137,6 +160,9 @@ export function validateConfig(config) {
   }
   if (config.enableLocalOrderBook && !config.enableEventDrivenData) {
     warnings.push("ENABLE_LOCAL_ORDER_BOOK works best with ENABLE_EVENT_DRIVEN_DATA=true.");
+  }
+  if (config.marketSnapshotBudgetSymbols < config.universeMaxSymbols) {
+    warnings.push("MARKET_SNAPSHOT_BUDGET_SYMBOLS is smaller than UNIVERSE_MAX_SYMBOLS; some universe-selected pairs may only use cached/lightweight data.");
   }
   if (config.enableMarketSentimentContext === false) {
     warnings.push("ENABLE_MARKET_SENTIMENT_CONTEXT=false removes fear/greed and market-breadth context.");
@@ -168,14 +194,21 @@ export function validateConfig(config) {
   if (config.researchTrainCandles <= config.researchTestCandles) {
     warnings.push("RESEARCH_TRAIN_CANDLES is not larger than RESEARCH_TEST_CANDLES; walk-forward studies may be noisy.");
   }
-  if (config.universeMaxSymbols > config.watchlist.length) {
-    warnings.push("UNIVERSE_MAX_SYMBOLS is larger than WATCHLIST size; the universe selector will effectively scan everything.");
+  const effectiveUniverseLimit = config.enableDynamicWatchlist ? config.watchlistTopN : config.watchlist.length;
+  if (config.universeMaxSymbols > effectiveUniverseLimit) {
+    warnings.push("UNIVERSE_MAX_SYMBOLS is larger than the effective watchlist size; the universe selector will effectively scan everything.");
+  }
+  if (config.dynamicWatchlistMinSymbols > config.watchlistTopN) {
+    errors.push("DYNAMIC_WATCHLIST_MIN_SYMBOLS cannot exceed WATCHLIST_TOP_N.");
   }
   if (config.exitIntelligenceExitScore <= config.exitIntelligenceTrimScore) {
     errors.push("EXIT_INTELLIGENCE_EXIT_SCORE must be larger than EXIT_INTELLIGENCE_TRIM_SCORE.");
   }
   if (config.researchPromotionMaxDrawdownPct <= 0) {
     errors.push("RESEARCH_PROMOTION_MAX_DRAWDOWN_PCT must be positive.");
+  }
+  if (config.paperExplorationMinBookPressure < config.minBookPressureForEntry) {
+    warnings.push("PAPER_EXPLORATION_MIN_BOOK_PRESSURE is looser than MIN_BOOK_PRESSURE_FOR_ENTRY; paper warm-up entries may tolerate mild sell pressure.");
   }
 
   if (config.botMode === "live") {
@@ -204,6 +237,9 @@ export function assertValidConfig(config) {
   }
   return result;
 }
+
+
+
 
 
 

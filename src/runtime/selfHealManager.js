@@ -104,6 +104,7 @@ export class SelfHealManager {
     }
 
     const cooldownActive = previous.cooldownUntil && new Date(previous.cooldownUntil).getTime() > now.getTime();
+    const recoveredPaperCooldown = botMode === "paper" && cooldownActive && !health.circuitOpen && !criticalIssues.length && !warningIssues.length;
     if (criticalIssues.length) {
       state.mode = botMode === "live" && this.config.selfHealSwitchToPaper ? "paper_fallback" : "paused";
       state.active = true;
@@ -127,10 +128,15 @@ export class SelfHealManager {
       return state;
     }
 
+    if (recoveredPaperCooldown) {
+      state.lastRecoveryAt = nowIso();
+      return state;
+    }
+
     if (warningIssues.length || cooldownActive) {
       state.mode = "low_risk_only";
       state.active = true;
-      state.reason = warningIssues[0] || previous.reason || "cooldown_active";
+      state.reason = warningIssues[0] || "cooldown_active";
       state.issues = warningIssues.length ? warningIssues : ["cooldown_active"];
       state.actions = [];
       state.sizeMultiplier = cooldownActive ? 0.42 : 0.58;

@@ -238,11 +238,12 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
       days30: buildWindowStats(trades, nowMs - 30 * 86_400_000),
       allTime: buildTradeStats(trades)
     },
-    equitySeries: equitySnapshots.slice(-240),
-    cycleSeries: [...(journal.cycles || [])].slice(-120),
+    equitySeries: equitySnapshots.slice(-(config.dashboardEquityPointLimit || 240)),
+    cycleSeries: [...(journal.cycles || [])].slice(-(config.dashboardCyclePointLimit || 120)),
     recentEvents: buildRecentEvents(journal.events || [], runtime, now),
     recentScaleOuts: scaleOuts.slice(-20).reverse(),
     recentBlockedSetups: blockedSetups.slice(-20).reverse(),
     recentResearchRuns: researchRuns.slice(-8).reverse()
   };
 }
+

@@ -17,6 +17,24 @@ function isWithinLookback(at, nowIso, lookbackMinutes) {
   return nowMs - atMs <= lookbackMinutes * 60_000;
 }
 
+function getMostRecentTradeTimestamp(journal) {
+  return [...(journal?.trades || [])]
+    .reverse()
+    .map((trade) => trade.exitAt || trade.entryAt || null)
+    .find(Boolean) || null;
+}
+
+function isSoftPaperReason(reason) {
+  return [
+    "model_confidence_too_low",
+    "model_uncertainty_abstain",
+    "committee_confidence_too_low",
+    "committee_low_agreement",
+    "strategy_fit_too_low",
+    "orderbook_sell_pressure",
+    "meta_gate_caution"
+  ].includes(reason);
+}
 
 export class RiskManager {
   constructor(config) {
@@ -125,9 +143,14 @@ export class RiskManager {
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const selfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
     const metaThresholdPenalty = safeValue(metaSummary.thresholdPenalty || 0);
+    const calibrationWarmup = clamp(safeValue(score.calibrator?.warmupProgress ?? score.calibrator?.globalConfidence ?? 0), 0, 1);
+    const paperWarmupDiscount = this.config.botMode === "paper" ? (1 - calibrationWarmup) * 0.06 : 0;
+    const thresholdFloor = this.config.botMode === "paper"
+      ? Math.max(0.5, this.config.minModelConfidence - paperWarmupDiscount)
+      : this.config.minModelConfidence;
     const threshold = clamp(
-      baseThreshold - optimizerAdjustments.thresholdAdjustment + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty,
-      this.config.minModelConfidence,
+      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty,
+      thresholdFloor,
       0.99
     );
     const strategyConfidenceFloor = clamp(this.config.strategyMinConfidence - optimizerAdjustments.strategyConfidenceAdjustment + selfHealThresholdPenalty * 0.35, 0.1, 0.95);
@@ -227,7 +250,13 @@ export class RiskManager {
     if ((committeeSummary.vetoes || []).length) {
       reasons.push("committee_veto");
     }
-    if ((committeeSummary.confidence || 0) >= this.config.committeeMinConfidence && (committeeSummary.probability || 0) < threshold - 0.02) {
+    const committeeGuardBuffer = this.config.botMode === "paper" ? 0.08 : 0.02;
+    const committeeNetGuard = this.config.botMode === "paper" ? -0.14 : -0.05;
+    if (
+      (committeeSummary.confidence || 0) >= this.config.committeeMinConfidence &&
+      (committeeSummary.probability || 0) < threshold - committeeGuardBuffer &&
+      (committeeSummary.netScore || 0) <= committeeNetGuard
+    ) {
       reasons.push("committee_confidence_too_low");
     }
     if ((committeeSummary.agreement || 0) < this.config.committeeMinAgreement && score.probability < threshold + 0.04) {
@@ -271,6 +300,8 @@ export class RiskManager {
     if (recentTrade?.exitAt && minutesBetween(recentTrade.exitAt, nowIso) < this.config.entryCooldownMinutes) {
       reasons.push("entry_cooldown_active");
     }
+    const recentPortfolioTradeAt = getMostRecentTradeTimestamp(journal);
+    const minutesSincePortfolioTrade = recentPortfolioTradeAt ? minutesBetween(recentPortfolioTradeAt, nowIso) : Number.POSITIVE_INFINITY;
 
     const stopLossPct = clamp(Math.max(this.config.stopLossPct, marketSnapshot.market.atrPct * 1.2), 0.008, 0.04);
     const regimeTakeProfitMultiplier = {
@@ -335,9 +366,61 @@ export class RiskManager {
       reasons.push("trade_size_below_minimum");
     }
 
+    let allow = reasons.length === 0;
+    let entryMode = "standard";
+    let suppressedReasons = [];
+    let finalQuoteAmount = quoteAmount;
+    let paperExploration = null;
+
+    if (
+      !allow &&
+      this.config.botMode === "paper" &&
+      this.config.paperExplorationEnabled &&
+      openPositions.length === 0 &&
+      minutesSincePortfolioTrade >= this.config.paperExplorationCooldownMinutes &&
+      reasons.length > 0 &&
+      reasons.every(isSoftPaperReason) &&
+      score.probability >= threshold - this.config.paperExplorationThresholdBuffer &&
+      (marketSnapshot.book.bookPressure || 0) >= this.config.paperExplorationMinBookPressure &&
+      (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.4, 8) &&
+      (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
+      (newsSummary.riskScore || 0) <= 0.32 &&
+      (announcementSummary.riskScore || 0) <= 0.2 &&
+      (calendarSummary.riskScore || 0) <= 0.28 &&
+      (marketStructureSummary.riskScore || 0) <= 0.32 &&
+      (volatilitySummary.riskScore || 0) <= 0.72 &&
+      !(sessionSummary.blockerReasons || []).length &&
+      !(driftSummary.blockerReasons || []).length &&
+      !["paused", "paper_fallback"].includes(selfHealState.mode)
+    ) {
+      const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
+      const explorationQuoteAmount = Math.min(
+        explorationBudget,
+        Math.max(this.config.minTradeUsdt, quoteAmount * this.config.paperExplorationSizeMultiplier)
+      );
+      if (explorationQuoteAmount >= this.config.minTradeUsdt) {
+        allow = true;
+        entryMode = "paper_exploration";
+        suppressedReasons = [...reasons];
+        finalQuoteAmount = explorationQuoteAmount;
+        paperExploration = {
+          mode: "paper_exploration",
+          thresholdBuffer: this.config.paperExplorationThresholdBuffer,
+          sizeMultiplier: this.config.paperExplorationSizeMultiplier,
+          minBookPressure: this.config.paperExplorationMinBookPressure,
+          minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
+          warmupProgress: calibrationWarmup,
+          suppressedReasons
+        };
+      }
+    }
+
     return {
-      allow: reasons.length === 0,
-      reasons,
+      allow,
+      reasons: allow ? [] : reasons,
+      suppressedReasons,
+      entryMode,
+      paperExploration,
       baseThreshold,
       threshold,
       thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
@@ -358,7 +441,7 @@ export class RiskManager {
         familyConfidenceTilt: optimizerAdjustments.familyConfidenceTilt,
         strategyConfidenceTilt: optimizerAdjustments.strategyConfidenceTilt
       },
-      quoteAmount,
+      quoteAmount: finalQuoteAmount,
       stopLossPct,
       takeProfitPct,
       scaleOutPlan: {
@@ -496,4 +579,6 @@ export class RiskManager {
     };
   }
 }
+
+
 

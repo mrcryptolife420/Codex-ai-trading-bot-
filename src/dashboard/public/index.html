@@ -15,7 +15,7 @@
           <h1>Trading dashboard voor live en paper mode</h1>
           <p class="lede">
             Schakel veilig tussen modi, bekijk waarom de AI een positie opende en volg
-            winst, verlies en risico in een overzicht.
+            winst, verlies, risk gates en de top-100 Binance universe in een overzicht.
           </p>
           <div class="status-row">
             <span class="badge" id="modeBadge">MODE</span>
@@ -39,9 +39,18 @@
         </div>
       </section>
 
+      <nav class="section-nav panel" aria-label="Dashboard secties">
+        <a href="#metrics">Overzicht</a>
+        <a href="#setupsSection">Setups</a>
+        <a href="#tradeIntelSection">Trade intelligence</a>
+        <a href="#recentTradesSection">Trades</a>
+        <a href="#researchSection">Research</a>
+        <a href="#opsSection">Operations</a>
+      </nav>
+
       <section class="metrics" id="metrics"></section>
 
-      <section class="grid two-up">
+      <section class="grid two-up" id="setupsSection">
         <article class="panel chart-panel">
           <div class="section-head">
             <div>
@@ -64,8 +73,8 @@
       </section>
 
       <section class="grid two-up">
-        <article class="panel">
-          <div class="section-head">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Open posities</h2>
               <p>Inclusief reden van entry, targets en actuele P/L.</p>
@@ -73,14 +82,14 @@
           </div>
           <div id="positionsList" class="stack"></div>
         </article>
-        <article class="panel">
-          <div class="section-head setup-head">
+        <article class="panel collapsible">
+          <div class="section-head setup-head" data-collapsible="true">
             <div>
               <h2>Top AI setups</h2>
-              <p>De beste kandidaten uit de laatste analyse-run.</p>
+              <p>De beste kandidaten uit de laatste analyse-run, compact met uitklapbare AI-uitleg.</p>
             </div>
             <div class="setup-toolbar">
-              <input id="decisionSearch" type="search" placeholder="Zoek pair: BTC of ETHUSDT" />
+              <input id="decisionSearch" type="search" placeholder="Zoek pair, token of strategie: BTC, ETHUSDT, breakout" />
               <label class="toggle-chip">
                 <input id="decisionAllowedOnly" type="checkbox" />
                 Alleen tradebaar
@@ -92,9 +101,9 @@
         </article>
       </section>
 
-      <section class="grid two-up">
-        <article class="panel">
-          <div class="section-head">
+      <section class="grid two-up" id="tradeIntelSection">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Why not trades</h2>
               <p>Geblokkeerde setups met heldere no-go redenen.</p>
@@ -102,8 +111,8 @@
           </div>
           <div id="blockedList" class="stack compact"></div>
         </article>
-        <article class="panel">
-          <div class="section-head">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Trade replay</h2>
               <p>Entry, scale-out en exit in een compacte timeline.</p>
@@ -113,9 +122,9 @@
         </article>
       </section>
 
-      <section class="grid two-up">
-        <article class="panel">
-          <div class="section-head">
+      <section class="grid two-up" id="opsSection">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>PnL attribution</h2>
               <p>Winst en verlies uitgesplitst per strategie, regime, execution-style en nieuwsbron.</p>
@@ -124,8 +133,8 @@
           <div id="pnlAttributionSummary" class="insight-grid"></div>
           <div id="pnlAttributionList" class="stack compact"></div>
         </article>
-        <article class="panel">
-          <div class="section-head">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Operations en recovery</h2>
               <p>Feature store, model snapshots, backups en herstelstatus van de bot-runtime.</p>
@@ -136,9 +145,9 @@
         </article>
       </section>
 
-      <section class="grid three-up">
-        <article class="panel">
-          <div class="section-head">
+      <section class="grid three-up" id="researchSection">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Universe focus</h2>
               <p>Welke pairs de AI nu echt de moeite waard vindt om diep te scannen.</p>
@@ -147,8 +156,8 @@
           <div id="universeSummary" class="insight-grid"></div>
           <div id="universeList" class="stack compact"></div>
         </article>
-        <article class="panel">
-          <div class="section-head">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Strategy attribution</h2>
               <p>Welke strategieen, families en regimes momenteel echt leveren.</p>
@@ -157,8 +166,8 @@
           <div id="attributionSummary" class="insight-grid"></div>
           <div id="attributionList" class="stack compact"></div>
         </article>
-        <article class="panel">
-          <div class="section-head">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Research registry</h2>
               <p>Walk-forward scorebord en governance voor promotie of observatie.</p>
@@ -169,9 +178,9 @@
         </article>
       </section>
 
-      <section class="grid two-up">
-        <article class="panel table-panel">
-          <div class="section-head">
+      <section class="grid two-up" id="recentTradesSection">
+        <article class="panel table-panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Recente trades</h2>
               <p>Gesloten trades met duidelijke winst/verlies-registratie.</p>
@@ -195,8 +204,8 @@
             </table>
           </div>
         </article>
-        <article class="panel">
-          <div class="section-head">
+        <article class="panel collapsible">
+          <div class="section-head" data-collapsible="true">
             <div>
               <h2>Model en events</h2>
               <p>AI-status, stream-health, portfolio-clusters en runtime-signalen.</p>
@@ -244,6 +253,9 @@
     <script type="module" src="/app.js"></script>
   </body>
 </html>
+
+
+
 
 
 

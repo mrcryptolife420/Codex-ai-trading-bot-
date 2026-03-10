@@ -36,14 +36,19 @@ export class ProbabilityCalibrator {
     const calibratedProbability =
       (bin.targetTotal + priorCenter * this.priorStrength) / (count + this.priorStrength || 1);
     const confidence = clamp(count / this.minObservations, 0, 1);
-    const uncertainty = 1 - confidence;
+    const globalConfidence = clamp(this.state.observations / this.minObservations, 0, 1);
+    const warmupProgress = clamp(Math.max(confidence, globalConfidence), 0, 1);
+    const uncertainty = 1 - warmupProgress;
 
     return {
       binIndex: index,
       calibratedProbability: clamp(calibratedProbability, 0, 1),
       confidence,
+      globalConfidence,
+      warmupProgress,
       uncertainty,
-      observations: count
+      observations: count,
+      totalObservations: this.state.observations
     };
   }
 
@@ -73,3 +78,4 @@ export class ProbabilityCalibrator {
     };
   }
 }
+

@@ -195,6 +195,8 @@ export class ExecutionEngine {
   }) {
     const book = marketSnapshot.book || {};
     const market = marketSnapshot.market || {};
+    const resolvedMakerFillFloor = Number.isFinite(makerFillFloor) ? makerFillFloor : 0.22;
+    const resolvedMinPartialFillRatio = Number.isFinite(minPartialFillRatio) ? minPartialFillRatio : 0.35;
     const referencePrice = side === "BUY" ? safeNumber(book.ask, book.mid) : safeNumber(book.bid, book.mid);
     const spreadBps = safeNumber(book.spreadBps);
     const depthConfidence = safeNumber(plan.depthConfidence || book.depthConfidence || book.localBook?.depthConfidence);
@@ -218,15 +220,20 @@ export class ExecutionEngine {
             volatility * 2.4 -
             spreadBps / 180 +
             (isPegged ? 0.08 : 0),
-          makerFillFloor,
+          resolvedMakerFillFloor,
           0.98
         )
       : 0;
     const completionRatio = isMaker
-      ? clamp(makerCompletion + (fallbackMode === "cancel_replace_market" ? (1 - makerCompletion) * 0.96 : 0), minPartialFillRatio, 1)
+      ? clamp(makerCompletion + (fallbackMode === "cancel_replace_market" ? (1 - makerCompletion) * 0.96 : 0), resolvedMinPartialFillRatio, 1)
       : 1;
-    const makerFillRatio = isMaker ? clamp(Math.min(makerCompletion, completionRatio), 0, 1) : 0;
-    const takerFillRatio = clamp(completionRatio - makerFillRatio, 0, 1);
+    const safeCompletionRatio = Number.isFinite(completionRatio)
+      ? completionRatio
+      : isMaker
+        ? resolvedMinPartialFillRatio
+        : 1;
+    const makerFillRatio = isMaker ? clamp(Math.min(makerCompletion, safeCompletionRatio), 0, 1) : 0;
+    const takerFillRatio = clamp(safeCompletionRatio - makerFillRatio, 0, 1);
     const styleImpact = !isMaker ? 1 : isPegged ? 0.22 : 0.38;
     const queuePenaltyBps = isMaker ? clamp((1 - depthConfidence) * 1.4 + Math.max(0, -queueImbalance) * 1.2, 0, 4.5) : 0;
     const executionBps = Math.max(0.01, expectedImpactBps * styleImpact + expectedMidSlippageBps * 0.25 + latencyBps * (isMaker ? 0.55 : 1) + queuePenaltyBps);
@@ -235,13 +242,13 @@ export class ExecutionEngine {
         ? referencePrice * (1 + executionBps / 10_000)
         : referencePrice * (1 - executionBps / 10_000)
       : 0;
-    const executedQuote = requestedQuoteAmount > 0 ? requestedQuoteAmount * completionRatio : requestedQuantity * fillPrice * completionRatio;
-    const executedQuantity = requestedQuantity > 0 ? requestedQuantity * completionRatio : fillPrice > 0 ? executedQuote / fillPrice : 0;
+    const executedQuote = requestedQuoteAmount > 0 ? requestedQuoteAmount * safeCompletionRatio : requestedQuantity * fillPrice * safeCompletionRatio;
+    const executedQuantity = requestedQuantity > 0 ? requestedQuantity * safeCompletionRatio : fillPrice > 0 ? executedQuote / fillPrice : 0;
 
     return {
       referencePrice,
       fillPrice,
-      completionRatio,
+      completionRatio: safeCompletionRatio,
       makerFillRatio,
       takerFillRatio,
       expectedImpactBps: executionBps,
@@ -251,7 +258,7 @@ export class ExecutionEngine {
       executedQuote,
       executedQuantity,
       notes: [
-        `completion:${completionRatio.toFixed(2)}`,
+        `completion:${safeCompletionRatio.toFixed(2)}`,
         `maker:${makerFillRatio.toFixed(2)}`,
         `latency_bps:${latencyBps.toFixed(2)}`,
         `working_ms:${workingTimeMs}`

@@ -27,6 +27,7 @@ import { StateBackupManager } from "./stateBackupManager.js";
 import { runResearchLab } from "./researchLab.js";
 import { ResearchRegistry } from "./researchRegistry.js";
 import { UniverseSelector } from "./universeSelector.js";
+import { resolveDynamicWatchlist } from "./watchlistResolver.js";
 import { HealthMonitor } from "./healthMonitor.js";
 import { DriftMonitor } from "./driftMonitor.js";
 import { SelfHealManager } from "./selfHealManager.js";
@@ -36,6 +37,7 @@ import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
 import { minutesBetween, nowIso } from "../utils/time.js";
+import { mapWithConcurrency } from "../utils/async.js";
 
 const EMPTY_NEWS = {
   coverage: 0,
@@ -983,6 +985,7 @@ export class TradingBot {
     this.runtime.strategyAttribution = this.runtime.strategyAttribution || summarizeAttributionSnapshot({});
     this.runtime.researchRegistry = this.runtime.researchRegistry || summarizeResearchRegistry({});
     this.runtime.researchLab = this.runtime.researchLab || { lastRunAt: null, latestSummary: null };
+    this.runtime.watchlistSummary = this.runtime.watchlistSummary || null;
     this.runtime.stream = this.runtime.stream || this.stream.getStatus();
     this.runtime.lastKnownBalance = Number.isFinite(this.runtime.lastKnownBalance) ? this.runtime.lastKnownBalance : null;
     this.runtime.lastKnownEquity = Number.isFinite(this.runtime.lastKnownEquity) ? this.runtime.lastKnownEquity : null;
@@ -1019,6 +1022,61 @@ export class TradingBot {
 
     await this.client.ping();
     await this.client.syncServerTime(true);
+
+    if (this.config.enableDynamicWatchlist) {
+      try {
+        const resolvedWatchlist = await resolveDynamicWatchlist({
+          client: this.client,
+          config: this.config,
+          logger: this.logger
+        });
+        if (resolvedWatchlist?.watchlist?.length) {
+          this.config.watchlist = resolvedWatchlist.watchlist;
+          this.config.symbolMetadata = { ...(this.config.symbolMetadata || {}), ...(resolvedWatchlist.symbolMetadata || {}) };
+          this.config.symbolProfiles = { ...(this.config.symbolProfiles || {}), ...(resolvedWatchlist.symbolProfiles || {}) };
+          this.config.marketCapRanks = { ...(this.config.marketCapRanks || {}), ...(resolvedWatchlist.marketCapRanks || {}) };
+          this.runtime.watchlistSummary = resolvedWatchlist.summary;
+          this.stream.setWatchlist(this.config.watchlist);
+          this.logger.info("Dynamic watchlist resolved", {
+            source: resolvedWatchlist.summary?.source || "unknown",
+            symbols: resolvedWatchlist.watchlist.length
+          });
+        }
+      } catch (error) {
+        this.runtime.watchlistSummary = {
+          enabled: false,
+          source: "configured_watchlist",
+          targetCount: this.config.watchlistTopN,
+          resolvedCount: this.config.watchlist.length,
+          generatedAt: nowIso(),
+          notes: [`Dynamic watchlist fallback: ${error.message}`],
+          topSymbols: this.config.watchlist.slice(0, 12).map((symbol, index) => ({
+            symbol,
+            name: symbol.replace(/USDT$/, ""),
+            marketCapRank: index + 1,
+            source: "configured_watchlist"
+          }))
+        };
+        this.logger.warn("Dynamic watchlist resolution failed", { error: error.message });
+      }
+    }
+
+    if (!this.runtime.watchlistSummary) {
+      this.runtime.watchlistSummary = {
+        enabled: false,
+        source: "configured_watchlist",
+        targetCount: this.config.watchlist.length,
+        resolvedCount: this.config.watchlist.length,
+        generatedAt: nowIso(),
+        notes: ["Handmatige watchlist actief."],
+        topSymbols: this.config.watchlist.slice(0, 12).map((symbol, index) => ({
+          symbol,
+          name: symbol.replace(/USDT$/, ""),
+          marketCapRank: index + 1,
+          source: "configured_watchlist"
+        }))
+      };
+    }
 
     const exchangeInfo = await this.client.getExchangeInfo(this.config.watchlist);
     this.symbolRules = buildSymbolRules(exchangeInfo, this.config.baseQuoteAsset);
@@ -1402,11 +1460,14 @@ export class TradingBot {
   }
 
   buildCandidateChecks(candidate) {
+    const explorationMode = candidate.decision.entryMode === "paper_exploration";
     return [
       {
         label: "Model confidence",
-        passed: candidate.score.probability >= candidate.decision.threshold,
-        detail: `${num(candidate.score.probability * 100, 1)}% vs ${num(candidate.decision.threshold * 100, 1)}% threshold | base ${num((candidate.decision.baseThreshold || candidate.decision.threshold) * 100, 1)}%`
+        passed: candidate.score.probability >= candidate.decision.threshold || explorationMode,
+        detail: explorationMode
+          ? `${num(candidate.score.probability * 100, 1)}% via paper warm-up override | base ${num((candidate.decision.baseThreshold || candidate.decision.threshold) * 100, 1)}%`
+          : `${num(candidate.score.probability * 100, 1)}% vs ${num(candidate.decision.threshold * 100, 1)}% threshold | base ${num((candidate.decision.baseThreshold || candidate.decision.threshold) * 100, 1)}%`
       },
       {
         label: "Transformer challenger",
@@ -1460,8 +1521,10 @@ export class TradingBot {
       },
       {
         label: "Orderbook",
-        passed: (candidate.marketSnapshot.book.bookPressure || 0) >= this.config.minBookPressureForEntry,
-        detail: `pressure ${num(candidate.marketSnapshot.book.bookPressure || 0, 2)} | micro ${num(candidate.marketSnapshot.book.microPriceEdgeBps || 0, 2)} bps`
+        passed: (candidate.marketSnapshot.book.bookPressure || 0) >= this.config.minBookPressureForEntry || explorationMode,
+        detail: explorationMode
+          ? `pressure ${num(candidate.marketSnapshot.book.bookPressure || 0, 2)} | paper floor ${num(candidate.decision.paperExploration?.minBookPressure || this.config.paperExplorationMinBookPressure || 0, 2)}`
+          : `pressure ${num(candidate.marketSnapshot.book.bookPressure || 0, 2)} | micro ${num(candidate.marketSnapshot.book.microPriceEdgeBps || 0, 2)} bps`
       },
       {
         label: "Local book",
@@ -1570,6 +1633,9 @@ export class TradingBot {
     const topSignal = candidate.score.contributions[0];
     const signalText = topSignal ? `${topSignal.name} (${num(topSignal.contribution, 3)})` : "gebalanceerde signalen";
     const executionText = candidate.decision.executionPlan?.entryStyle === "pegged_limit_maker" ? "pegged-maker-entry" : candidate.decision.executionPlan?.entryStyle === "limit_maker" ? "maker-entry" : "market-entry";
+    const explorationText = candidate.decision.entryMode === "paper_exploration"
+      ? `paper warm-up mode met kleinere testpositie (${num((candidate.decision.paperExploration?.sizeMultiplier || 0) * 100, 1)}%)`
+      : executionText;
     const setupStyle = buildSetupStyle(candidate);
     const strategyText = candidate.strategySummary?.strategyLabel ? `${candidate.strategySummary.strategyLabel} (${num((candidate.strategySummary.fitScore || 0) * 100, 1)}%)` : setupStyle;
     const adaptiveThresholdText = (candidate.decision?.thresholdAdjustment || 0) !== 0
@@ -1597,7 +1663,7 @@ export class TradingBot {
       ? `strategy-attribution ${candidate.attributionSummary.reasons?.join(", ") || "neutraal"} met boost ${num((candidate.attributionSummary.rankBoost || 0) * 100, 1)}%`
       : "neutrale strategy-history";
     if (candidate.decision.allow) {
-      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText} en ${executionText} als execution-plan.`;
+      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText} en ${explorationText} als execution-plan.`;
     }
     return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText} en ${optimizerText}.`;
   }
@@ -1617,6 +1683,9 @@ export class TradingBot {
       strategyConfidenceFloor: num(candidate.decision.strategyConfidenceFloor || this.config.strategyMinConfidence, 4),
       rankScore: num(candidate.decision.rankScore, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
+      entryMode: candidate.decision.entryMode || "standard",
+      suppressedReasons: candidate.decision.suppressedReasons || [],
+      paperExploration: candidate.decision.paperExploration || null,
       spreadBps: num(candidate.marketSnapshot.book.spreadBps, 2),
       realizedVolPct: num(candidate.marketSnapshot.market.realizedVolPct, 4),
       atrPct: num(candidate.marketSnapshot.market.atrPct, 4),
@@ -2129,7 +2198,7 @@ export class TradingBot {
     }
 
     candidates.sort((left, right) => right.decision.rankScore - left.decision.rankScore);
-    this.runtime.latestDecisions = candidates.slice(0, 10).map((candidate) => ({
+    this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
       symbol: candidate.symbol,
       summary: this.buildCandidateSummary(candidate),
       setupStyle: buildSetupStyle(candidate),
@@ -2233,7 +2302,7 @@ export class TradingBot {
       selfHealIssues: [...(candidate.selfHealState?.issues || [])],
       headlines: arr(candidate.newsSummary.headlines).slice(0, 3).map(summarizeHeadline)
     }));
-    const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, 12).map((decision) => ({
+    const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
       blockedAt: now.toISOString()
     }));
@@ -2459,6 +2528,7 @@ export class TradingBot {
     try {
       const result = await this.runCycleCore();
       this.health.recordSuccess(this.runtime);
+      this.updateSafetyState({ now: new Date(), candidateSummaries: arr(this.runtime.latestDecisions) });
       this.trimJournal();
       await this.persist();
       return result;
@@ -2834,6 +2904,7 @@ export class TradingBot {
       calendar: calendarOverview,
       upcomingEvents: arr(topDecision.calendarEvents || leadPosition?.entryRationale?.calendarEvents || []).slice(0, 4),
       officialNotices: arr(topDecision.officialNotices || leadPosition?.entryRationale?.officialNotices || []).slice(0, 4),
+      watchlist: this.runtime.watchlistSummary || null,
       positions,
       topDecisions: arr(this.runtime.latestDecisions),
       blockedSetups: arr(this.runtime.latestBlockedSetups),
@@ -2893,6 +2964,11 @@ export class TradingBot {
         takeProfitPct: this.config.takeProfitPct,
         trailingStopPct: this.config.trailingStopPct,
         dashboardPort: this.config.dashboardPort,
+        dashboardEquityPointLimit: this.config.dashboardEquityPointLimit,
+        dashboardCyclePointLimit: this.config.dashboardCyclePointLimit,
+        dashboardDecisionLimit: this.config.dashboardDecisionLimit,
+        enableDynamicWatchlist: this.config.enableDynamicWatchlist,
+        watchlistTopN: this.config.watchlistTopN,
         enableEventDrivenData: this.config.enableEventDrivenData,
         enableLocalOrderBook: this.config.enableLocalOrderBook,
         streamDepthLevels: this.config.streamDepthLevels,
@@ -2936,6 +3012,12 @@ export class TradingBot {
         researchMaxWindows: this.config.researchMaxWindows,
         researchMaxSymbols: this.config.researchMaxSymbols,
         strategyMinConfidence: this.config.strategyMinConfidence,
+        minBookPressureForEntry: this.config.minBookPressureForEntry,
+        paperExplorationEnabled: this.config.paperExplorationEnabled,
+        paperExplorationThresholdBuffer: this.config.paperExplorationThresholdBuffer,
+        paperExplorationSizeMultiplier: this.config.paperExplorationSizeMultiplier,
+        paperExplorationCooldownMinutes: this.config.paperExplorationCooldownMinutes,
+        paperExplorationMinBookPressure: this.config.paperExplorationMinBookPressure,
         maxPairCorrelation: this.config.maxPairCorrelation,
         targetAnnualizedVolatility: this.config.targetAnnualizedVolatility,
         sessionCautionMinutesToFunding: this.config.sessionCautionMinutesToFunding,
@@ -2972,6 +3054,14 @@ export class TradingBot {
     };
   }
 }
+
+
+
+
+
+
+
+
 
 
 

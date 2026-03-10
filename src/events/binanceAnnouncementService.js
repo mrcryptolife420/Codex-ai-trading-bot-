@@ -62,8 +62,33 @@ function buildAliasMatchers(aliases = []) {
     });
 }
 
+function isGenericNotice(article) {
+  return /referral|advertising policy|convert entry point|campaign|promotion|gift card|binance pay|wallet maintenance|launchpool|earn|loan/i.test(article.title || "");
+}
+
+function isTradingRelevantGlobalNotice(article) {
+  if (isGenericNotice(article)) {
+    return false;
+  }
+  return /maintenance|system upgrade|websocket|api|spot trading|trading pairs?|deposits|withdrawals|delist|suspend|halt|order matching/i.test(article.title || "");
+}
+
+function isHighPriorityNotice(article, freshnessHours = Number.POSITIVE_INFINITY) {
+  const title = article.title || "";
+  if (isGenericNotice(article)) {
+    return false;
+  }
+  if (/delist|suspend|halt|incident|outage|emergency/i.test(title)) {
+    return true;
+  }
+  if (/maintenance|system upgrade|api|websocket/i.test(title)) {
+    return freshnessHours <= 12;
+  }
+  return false;
+}
+
 function isGlobalExchangeNotice(article) {
-  return /binance|maintenance|system upgrade|websocket|api|spot trading|deposits|withdrawals/i.test(article.title || "");
+  return isTradingRelevantGlobalNotice(article);
 }
 
 function matchesSymbol(article, aliases = []) {
@@ -131,7 +156,7 @@ export function normalizeCmsArticles(payload, catalog) {
     provider: "binance_support",
     category: catalog.category,
     catalogLabel: catalog.label,
-    globalNotice: catalog.category !== "delisting" || isGlobalExchangeNotice(article)
+    globalNotice: catalog.category !== "delisting" && isGlobalExchangeNotice(article)
   }));
 }
 
@@ -170,7 +195,9 @@ export class BinanceAnnouncementService {
           error: response.reason?.message || String(response.reason)
         });
       }
-      const filtered = items.filter((item) => matchesSymbol(item, aliases));
+      const filtered = items
+        .filter((item) => matchesSymbol(item, aliases))
+        .sort((left, right) => new Date(right.publishedAt || 0).getTime() - new Date(left.publishedAt || 0).getTime());
       const summary = summarizeNews(filtered, this.config.announcementLookbackHours, nowIso(), {
         minSourceQuality: 0.8,
         minReliabilityScore: 0.82,
@@ -182,7 +209,7 @@ export class BinanceAnnouncementService {
       }, {});
       const latestNoticeAt = filtered[0]?.publishedAt || null;
       const noticeFreshnessHours = latestNoticeAt ? Number(((Date.now() - new Date(latestNoticeAt).getTime()) / 3_600_000).toFixed(1)) : null;
-      const highPriorityItems = filtered.filter((item) => /delist|suspend|maintenance|upgrade/i.test(item.title || ""));
+      const highPriorityItems = filtered.filter((item) => isHighPriorityNotice(item, item.publishedAt ? (Date.now() - new Date(item.publishedAt).getTime()) / 3_600_000 : Number.POSITIVE_INFINITY));
       const blockingNotice = highPriorityItems[0] || null;
       const enriched = {
         ...EMPTY_SUMMARY,
@@ -210,3 +237,7 @@ export class BinanceAnnouncementService {
     }
   }
 }
+
+
+
+

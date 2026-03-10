@@ -51,6 +51,7 @@ export class UniverseSelector {
     const book = snapshot.book || {};
     const market = snapshot.market || {};
     const stream = snapshot.stream || {};
+    const isLightweight = Boolean(snapshot.lightweight);
     const spreadBps = safeNumber(book.spreadBps);
     const depthConfidence = safeNumber(book.depthConfidence || book.localBook?.depthConfidence);
     const totalDepthNotional = safeNumber(book.totalDepthNotional || book.localBook?.totalDepthNotional);
@@ -103,7 +104,9 @@ export class UniverseSelector {
     );
     const freshnessScore = localBookSynced
       ? clamp(1 - depthAgeMs / Math.max(this.config.maxDepthEventAgeMs * 2, 1), 0, 1)
-      : 0.42;
+      : isLightweight
+        ? clamp(0.42 + clamp(recentTradeCount / 30, 0, 1) * 0.18 + (spreadScore * 0.12), 0.35, 0.82)
+        : 0.42;
     const spreadStabilityScore = clamp(0.45 + spreadScore * 0.4 + depthConfidence * 0.18 - Math.abs(book.microPriceEdgeBps || 0) / 8, 0, 1);
     const executionScore = clamp(0.42 + resilienceScore * 0.26 + queueRefreshScore * 0.18 + depthConfidence * 0.14, 0, 1);
     const carryScore = clamp(
@@ -120,10 +123,16 @@ export class UniverseSelector {
       blockers.push("universe_spread_guard");
     }
     if (!hasOpenPosition && depthConfidence < this.config.universeMinDepthConfidence) {
-      blockers.push("universe_thin_local_book");
+      const lightweightDepthFailure = isLightweight && spreadBps <= this.config.maxSpreadBps * 0.9 && recentTradeCount >= 2;
+      if (!lightweightDepthFailure) {
+        blockers.push("universe_thin_local_book");
+      }
     }
     if (!hasOpenPosition && totalDepthNotional < universeMinDepthUsd * 0.35) {
-      blockers.push("universe_shallow_depth");
+      const lightweightDepthFailure = isLightweight && spreadBps <= this.config.maxSpreadBps && recentTradeCount >= 3;
+      if (!lightweightDepthFailure) {
+        blockers.push("universe_shallow_depth");
+      }
     }
     if (this.config.enableLocalOrderBook && localBookSynced && depthAgeMs > this.config.maxDepthEventAgeMs * 2) {
       blockers.push("universe_stale_depth");
@@ -164,6 +173,9 @@ export class UniverseSelector {
       reasons.push("existing_position_carried");
     } else if (previousDecision?.allow) {
       reasons.push("carried_from_previous_top_setup");
+    }
+    if (isLightweight) {
+      reasons.push("lightweight_prefilter_scan");
     }
 
     const score = clamp(
@@ -326,3 +338,4 @@ export class UniverseSelector {
     };
   }
 }
+

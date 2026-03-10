@@ -1,4 +1,5 @@
 import { LocalOrderBookEngine } from "../market/localOrderBook.js";
+import { mapWithConcurrency } from "../utils/async.js";
 
 function toCombinedStreamPath(streams) {
   return `stream?streams=${streams.join("/")}`;
@@ -132,22 +133,55 @@ export class StreamCoordinator {
       lastError: null,
       listenKey: null,
       localBook: this.orderBook.getSummary(),
-      symbols: Object.fromEntries(
-        config.watchlist.map((symbol) => [
-          symbol,
-          {
-            bookTicker: null,
-            trades: createRollingStats(config.streamTradeBufferSize),
-            liquidations: createRollingStats(80),
-            userEvents: createRollingStats(120)
-          }
-        ])
-      )
+      symbols: {}
     };
     this.publicSocket = null;
     this.futuresSocket = null;
     this.userSocket = null;
     this.keepAliveTimer = null;
+    this.setWatchlist(config.watchlist);
+    this.setLocalBookUniverse(config.watchlist.slice(0, config.localBookMaxSymbols || config.universeMaxSymbols || config.watchlist.length));
+  }
+
+  createSymbolState() {
+    return {
+      bookTicker: null,
+      trades: createRollingStats(this.config.streamTradeBufferSize),
+      liquidations: createRollingStats(80),
+      userEvents: createRollingStats(120)
+    };
+  }
+
+  setWatchlist(symbols = []) {
+    const normalized = unique(symbols.map((symbol) => `${symbol}`.trim().toUpperCase()));
+    this.config.watchlist = normalized;
+    const previous = this.state.symbols || {};
+    this.state.symbols = Object.fromEntries(normalized.map((symbol) => [symbol, previous[symbol] || this.createSymbolState()]));
+  }
+
+  setLocalBookUniverse(symbols = []) {
+    this.orderBook.setActiveSymbols(symbols);
+    this.state.localBook = this.orderBook.getSummary();
+  }
+
+  async primeLocalBooks(symbols = []) {
+    const activeSymbols = unique((symbols || []).filter((symbol) => this.state.symbols[symbol]));
+    if (!activeSymbols.length || !this.config.enableLocalOrderBook) {
+      return [];
+    }
+
+    const results = await mapWithConcurrency(activeSymbols, this.config.marketSnapshotConcurrency || 4, async (symbol) => {
+      try {
+        await this.orderBook.ensurePrimed(symbol);
+        return { symbol, ok: true };
+      } catch (error) {
+        this.logger?.warn?.("Local order book prime failed", { symbol, error: error.message });
+        return { symbol, ok: false, error: error.message };
+      }
+    });
+
+    this.state.localBook = this.orderBook.getSummary();
+    return results;
   }
 
   getStatus() {
@@ -192,7 +226,14 @@ export class StreamCoordinator {
       return {
         tradeFlowImbalance: 0,
         microTrend: 0,
-        latestBookTicker: localBook.bestBid && localBook.bestAsk ? { bid: localBook.bestBid, ask: localBook.bestAsk, mid: localBook.mid, eventTime: localBook.lastEventAt } : null,
+        latestBookTicker: localBook.bestBid && localBook.bestAsk ? {
+          bid: localBook.bestBid,
+          ask: localBook.bestAsk,
+          bidQty: localBook.bids?.[0]?.[1] || 0,
+          askQty: localBook.asks?.[0]?.[1] || 0,
+          mid: localBook.mid,
+          eventTime: localBook.lastEventAt
+        } : null,
         recentTradeCount: 0,
         liquidationCount: 0,
         liquidationNotional: 0,
@@ -219,6 +260,8 @@ export class StreamCoordinator {
       ? {
           bid: localBook.bestBid,
           ask: localBook.bestAsk,
+          bidQty: localBook.bids?.[0]?.[1] || 0,
+          askQty: localBook.asks?.[0]?.[1] || 0,
           mid: localBook.mid,
           eventTime: localBook.lastEventAt
         }
@@ -245,10 +288,7 @@ export class StreamCoordinator {
 
     await this.startPublicStream();
     if (this.config.enableLocalOrderBook) {
-      Promise.allSettled(this.config.watchlist.map((symbol) => this.orderBook.ensurePrimed(symbol)))
-        .then(() => {
-          this.state.localBook = this.orderBook.getSummary();
-        })
+      void this.primeLocalBooks(this.orderBook.activeSymbols ? [...this.orderBook.activeSymbols] : [])
         .catch(() => {
           // ignore background priming errors here; individual warnings are logged inside the engine
         });
@@ -281,6 +321,8 @@ export class StreamCoordinator {
       this.state.symbols[symbol].bookTicker = {
         bid,
         ask,
+        bidQty: Number(data.B || data.bidQty || 0),
+        askQty: Number(data.A || data.askQty || 0),
         mid: bid && ask ? (bid + ask) / 2 : bid || ask || 0,
         eventTime: data.E || Date.now()
       };
@@ -440,3 +482,10 @@ export class StreamCoordinator {
     }
   }
 }
+
+
+
+
+
+
+

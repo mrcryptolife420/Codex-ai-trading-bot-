@@ -101,6 +101,16 @@ export class LocalOrderBookEngine {
     this.config = config;
     this.logger = logger;
     this.buckets = new Map();
+    this.activeSymbols = new Set();
+    this.setActiveSymbols(config.watchlist.slice(0, config.localBookMaxSymbols || config.universeMaxSymbols || config.watchlist.length));
+  }
+
+  setActiveSymbols(symbols = []) {
+    this.activeSymbols = new Set((symbols || []).map((symbol) => `${symbol}`.trim().toUpperCase()).filter(Boolean));
+  }
+
+  isSymbolActive(symbol) {
+    return this.activeSymbols.size === 0 || this.activeSymbols.has(`${symbol}`.trim().toUpperCase());
   }
 
   getBucket(symbol) {
@@ -138,6 +148,9 @@ export class LocalOrderBookEngine {
 
   async ensurePrimed(symbol) {
     const bucket = this.getBucket(symbol);
+    if (!this.isSymbolActive(symbol)) {
+      return bucket;
+    }
     if (bucket.synced) {
       return bucket;
     }
@@ -242,6 +255,10 @@ export class LocalOrderBookEngine {
 
   handleDepthEvent(symbol, event) {
     const bucket = this.getBucket(symbol);
+    if (!this.isSymbolActive(symbol)) {
+      bucket.buffer = [];
+      return;
+    }
     bucket.buffer.push(event);
     if (bucket.buffer.length > 400) {
       bucket.buffer.shift();
@@ -345,12 +362,18 @@ export class LocalOrderBookEngine {
   }
 
   getSummary() {
-    const symbols = [...this.buckets.keys()];
+    const activeSymbols = [...this.activeSymbols];
+    for (const symbol of activeSymbols) {
+      this.getBucket(symbol);
+    }
+    const trackedSymbols = [...this.buckets.keys()];
+    const symbols = activeSymbols.length ? activeSymbols : trackedSymbols;
     const snapshots = symbols.map((symbol) => this.getSnapshot(symbol));
     const healthy = snapshots.filter((item) => item.synced && item.depthAgeMs <= this.config.maxDepthEventAgeMs).length;
     return {
       enabled: this.config.enableLocalOrderBook,
-      trackedSymbols: symbols.length,
+      trackedSymbols: trackedSymbols.length,
+      activeSymbols: activeSymbols.length,
       healthySymbols: healthy,
       totalResyncs: snapshots.reduce((total, item) => total + (item.resyncCount || 0), 0),
       totalGaps: snapshots.reduce((total, item) => total + (item.gapCount || 0), 0),
@@ -360,3 +383,6 @@ export class LocalOrderBookEngine {
     };
   }
 }
+
+
+

@@ -220,26 +220,58 @@ export class AdaptiveTradingModel {
       Math.abs(challengerScore.probability - transformerScore.probability)
     );
     const rawProbability = championScore.probability;
-    const transformerBlend = clamp(transformerScore.confidence * 0.08, 0, 0.08);
+    const calibrationWarmup = clamp(
+      calibration.warmupProgress ?? calibration.globalConfidence ?? calibration.confidence ?? 0,
+      0,
+      1
+    );
+    const hasCalibrationGate = calibrationWarmup >= 1;
+    const calibrationWeight = 0.08 + calibrationWarmup * 0.22;
+    const challengerWeight = 0.14;
+    const transformerBlend = clamp(transformerScore.confidence * (0.04 + calibrationWarmup * 0.06), 0, 0.1);
+    const championWeight = clamp(1 - calibrationWeight - challengerWeight - transformerBlend, 0.54, 0.78);
+    const totalWeight = championWeight + calibrationWeight + challengerWeight + transformerBlend;
     const blendedProbability = clamp(
-      championScore.probability * (0.53 - transformerBlend * 0.3) +
-      calibration.calibratedProbability * 0.32 +
-      challengerScore.probability * 0.1 +
-      transformerScore.probability * transformerBlend,
+      (
+        championScore.probability * championWeight +
+        calibration.calibratedProbability * calibrationWeight +
+        challengerScore.probability * challengerWeight +
+        transformerScore.probability * transformerBlend
+      ) / Math.max(totalWeight, 1e-9),
       0,
       1
     );
-    const calibrationConfidence = clamp(calibration.confidence * regimeSummary.confidence, 0, 1);
+    const coldStartConfidence = clamp(
+      0.24 + championScore.confidence * 0.52 + regimeSummary.confidence * 0.24 + challengerScore.confidence * 0.08,
+      0.22,
+      0.78
+    );
+    const calibrationConfidence = clamp(
+      hasCalibrationGate
+        ? calibration.confidence * 0.55 + (calibration.globalConfidence || 0) * 0.25 + regimeSummary.confidence * 0.2
+        : coldStartConfidence,
+      0,
+      1
+    );
+    const confidenceBase = hasCalibrationGate
+      ? calibrationConfidence * 0.58 + transformerScore.confidence * 0.14 + 0.22
+      : calibrationConfidence * 0.5 + transformerScore.confidence * 0.12 + 0.28;
     const confidence = clamp(
-      Math.abs(blendedProbability - 0.5) * 2 * (calibrationConfidence * 0.72 + transformerScore.confidence * 0.12 + 0.16),
+      Math.abs(blendedProbability - 0.5) * 2 * confidenceBase,
       0,
       1
     );
+    const disagreementLimit = hasCalibrationGate
+      ? this.config.maxModelDisagreement
+      : this.config.maxModelDisagreement + 0.08;
+    const abstainBand = hasCalibrationGate
+      ? this.config.abstainBand
+      : Math.max(0.01, this.config.abstainBand * 0.55);
     const shouldAbstain =
-      calibrationConfidence < this.config.minCalibrationConfidence ||
+      (hasCalibrationGate && calibrationConfidence < this.config.minCalibrationConfidence) ||
       regimeSummary.confidence < this.config.minRegimeConfidence ||
-      disagreement > this.config.maxModelDisagreement ||
-      Math.abs(blendedProbability - 0.5) < this.config.abstainBand;
+      disagreement > disagreementLimit ||
+      Math.abs(blendedProbability - 0.5) < abstainBand;
 
     return {
       probability: blendedProbability,
@@ -391,4 +423,5 @@ export class AdaptiveTradingModel {
     };
   }
 }
+
 

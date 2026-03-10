@@ -25,6 +25,7 @@ import { MetaDecisionGate } from "../src/ai/metaDecisionGate.js";
 import { ResearchRegistry } from "../src/runtime/researchRegistry.js";
 import { ModelRegistry } from "../src/runtime/modelRegistry.js";
 import { UniverseSelector } from "../src/runtime/universeSelector.js";
+import { buildDeepScanPlan, buildLightweightSnapshot } from "../src/runtime/scanPlanner.js";
 import { buildSessionSummary } from "../src/runtime/sessionManager.js";
 import { DriftMonitor } from "../src/runtime/driftMonitor.js";
 import { SelfHealManager } from "../src/runtime/selfHealManager.js";
@@ -39,6 +40,14 @@ function makeConfig(overrides = {}) {
   return {
     botMode: "paper",
     watchlist: ["BTCUSDT"],
+    enableDynamicWatchlist: true,
+    watchlistTopN: 100,
+    watchlistFetchPerPage: 250,
+    dynamicWatchlistMinSymbols: 40,
+    watchlistExcludeStablecoins: true,
+    watchlistExcludeLeveragedTokens: true,
+    watchlistInclude: [],
+    watchlistExclude: [],
     baseQuoteAsset: "USDT",
     startingCash: 10000,
     maxOpenPositions: 2,
@@ -46,8 +55,8 @@ function makeConfig(overrides = {}) {
     maxTotalExposureFraction: 0.5,
     riskPerTrade: 0.01,
     maxDailyDrawdown: 0.04,
-    modelThreshold: 0.62,
-    minModelConfidence: 0.58,
+    modelThreshold: 0.55,
+    minModelConfidence: 0.53,
     paperFeeBps: 10,
     paperSlippageBps: 6,
     stopLossPct: 0.02,
@@ -61,6 +70,9 @@ function makeConfig(overrides = {}) {
     maxKlineStalenessMultiplier: 2,
     healthMaxConsecutiveFailures: 2,
     dashboardPort: 3011,
+    dashboardEquityPointLimit: 1440,
+    dashboardCyclePointLimit: 720,
+    dashboardDecisionLimit: 24,
     announcementLookbackHours: 48,
     announcementCacheMinutes: 15,
     marketStructureCacheMinutes: 3,
@@ -72,10 +84,10 @@ function makeConfig(overrides = {}) {
     newsStrictWhitelist: true,
     enableRedditSentiment: true,
     redditSentimentSubreddits: ["CryptoCurrency", "CryptoMarkets", "Binance"],
-    minCalibrationConfidence: 0.3,
-    minRegimeConfidence: 0.45,
-    abstainBand: 0.035,
-    maxModelDisagreement: 0.22,
+    minCalibrationConfidence: 0.16,
+    minRegimeConfidence: 0.4,
+    abstainBand: 0.02,
+    maxModelDisagreement: 0.28,
     calibrationBins: 10,
     calibrationMinObservations: 12,
     calibrationPriorStrength: 4,
@@ -87,18 +99,18 @@ function makeConfig(overrides = {}) {
     challengerMinTrades: 12,
     challengerPromotionMargin: 0.01,
     enableStrategyRouter: true,
-    strategyMinConfidence: 0.46,
+    strategyMinConfidence: 0.4,
     enableTransformerChallenger: true,
     transformerLookbackCandles: 24,
     transformerLearningRate: 0.03,
-    transformerMinConfidence: 0.18,
+    transformerMinConfidence: 0.12,
     enableMultiAgentCommittee: true,
-    committeeMinConfidence: 0.48,
-    committeeMinAgreement: 0.38,
+    committeeMinConfidence: 0.44,
+    committeeMinAgreement: 0.32,
     enableRlExecution: true,
     enableSessionLogic: true,
     sessionLowLiquiditySpreadBps: 6,
-    sessionLowLiquidityDepthUsd: 250000,
+    sessionLowLiquidityDepthUsd: 150000,
     sessionCautionMinutesToFunding: 45,
     sessionHardBlockMinutesToFunding: 8,
     sessionWeekendRiskMultiplier: 0.82,
@@ -139,6 +151,11 @@ function makeConfig(overrides = {}) {
     maxLossStreak: 3,
     maxSymbolLossStreak: 2,
     minBookPressureForEntry: -0.28,
+    paperExplorationEnabled: true,
+    paperExplorationThresholdBuffer: 0.06,
+    paperExplorationSizeMultiplier: 0.45,
+    paperExplorationCooldownMinutes: 90,
+    paperExplorationMinBookPressure: -0.42,
     exitOnSpreadShockBps: 20,
     minVolTargetFraction: 0.4,
     maxVolTargetFraction: 1.05,
@@ -146,10 +163,10 @@ function makeConfig(overrides = {}) {
     maxClusterPositions: 1,
     maxSectorPositions: 2,
     enableUniverseSelector: true,
-    universeMaxSymbols: 8,
-    universeMinScore: 0.34,
-    universeMinDepthConfidence: 0.22,
-    universeMinDepthUsd: 60000,
+    universeMaxSymbols: 24,
+    universeMinScore: 0.28,
+    universeMinDepthConfidence: 0.16,
+    universeMinDepthUsd: 30000,
     universeTargetVolPct: 0.018,
     enableExitIntelligence: true,
     exitIntelligenceMinConfidence: 0.52,
@@ -164,7 +181,7 @@ function makeConfig(overrides = {}) {
     enableLocalOrderBook: true,
     streamDepthLevels: 20,
     streamDepthSnapshotLimit: 200,
-    maxDepthEventAgeMs: 2500,
+    maxDepthEventAgeMs: 15000,
     enableSmartExecution: true,
     enablePeggedOrders: true,
     defaultPegOffsetLevels: 1,
@@ -188,7 +205,7 @@ function makeConfig(overrides = {}) {
     canaryLiveTradeCount: 5,
     canaryLiveSizeMultiplier: 0.35,
     dailyRiskBudgetFloor: 0.35,
-    maxEntriesPerDay: 8,
+    maxEntriesPerDay: 12,
     scaleOutTriggerPct: 0.014,
     scaleOutFraction: 0.4,
     scaleOutMinNotionalUsd: 35,
@@ -410,19 +427,20 @@ await runCheck("indicator layer computes orderbook pressure and candle patterns"
 });
 
 await runCheck("rss parser tags providers and filters aliases", async () => {
+  const recentRssDate = new Date(Date.now() - 60 * 60 * 1000).toUTCString();
   const xml = `
     <rss>
       <channel>
         <item>
           <title>Bitcoin ETF inflows rise</title>
           <link>https://example.com/btc</link>
-          <pubDate>Sun, 08 Mar 2026 11:00:00 GMT</pubDate>
+          <pubDate>${recentRssDate}</pubDate>
           <description>Bitcoin momentum improves.</description>
         </item>
         <item>
           <title>Oil prices drift lower</title>
           <link>https://example.com/oil</link>
-          <pubDate>Sun, 08 Mar 2026 11:00:00 GMT</pubDate>
+          <pubDate>${recentRssDate}</pubDate>
           <description>Macro update only.</description>
         </item>
       </channel>
@@ -439,11 +457,12 @@ await runCheck("rss parser tags providers and filters aliases", async () => {
 });
 
 await runCheck("atom parser supports blockworks style feeds", async () => {
+  const recentAtomDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const xml = `
     <feed xmlns="http://www.w3.org/2005/Atom">
       <entry>
         <title><![CDATA[Bitcoin funding turns negative]]></title>
-        <updated>2026-03-08T11:00:00Z</updated>
+        <updated>${recentAtomDate}</updated>
         <link rel="alternate" href="https://example.com/funding" />
         <summary>BTC derivatives update</summary>
       </entry>
@@ -482,6 +501,30 @@ await runCheck("binance cms articles normalize into official notice items", asyn
   assert.equal(articles.length, 1);
   assert.equal(articles[0].provider, "binance_support");
   assert.ok(articles[0].link.includes("abc123"));
+});
+
+await runCheck("binance cms generic notices are not treated as global trading alerts", async () => {
+  const articles = normalizeCmsArticles(
+    {
+      data: {
+        catalogs: [
+          {
+            articles: [
+              {
+                id: 2,
+                code: "promo-1",
+                title: "Binance Referral Campaign Starts Today",
+                releaseDate: 1772791211666
+              }
+            ]
+          }
+        ]
+      }
+    },
+    { catalogId: 49, label: "latest_binance_news", category: "announcement" }
+  );
+  assert.equal(articles.length, 1);
+  assert.equal(articles[0].globalNotice, false);
 });
 
 await runCheck("market structure summary combines funding oi and liquidations", async () => {
@@ -986,6 +1029,31 @@ await runCheck("self heal ignores calibration drift until enough observations ex
   assert.deepEqual(state.issues, []);
 });
 
+await runCheck("self heal clears recovered circuit pauses in paper mode", async () => {
+  const manager = new SelfHealManager(makeConfig({ selfHealCooldownMinutes: 180 }), { warn() {} });
+  const state = manager.evaluate({
+    previousState: {
+      ...manager.buildDefaultState(),
+      mode: "paused",
+      active: true,
+      reason: "health_circuit_open",
+      issues: ["health_circuit_open"],
+      cooldownUntil: "2026-03-08T06:00:00.000Z",
+      lastTriggeredAt: "2026-03-08T03:00:00.000Z"
+    },
+    report: { recentTrades: [], windows: { today: { realizedPnl: 0 } } },
+    driftSummary: { severity: 0.1 },
+    health: { circuitOpen: false },
+    calibration: { observations: 12, expectedCalibrationError: 0.02 },
+    botMode: "paper",
+    hasStableModel: false,
+    now: new Date("2026-03-08T04:00:00.000Z")
+  });
+  assert.equal(state.mode, "normal");
+  assert.equal(state.active, false);
+  assert.ok(state.lastRecoveryAt);
+});
+
 await runCheck("strategy optimizer builds recency-weighted priors", async () => {
   const optimizer = new StrategyOptimizer(makeConfig());
   const snapshot = optimizer.buildSnapshot({
@@ -1059,6 +1127,107 @@ await runCheck("risk manager adapts thresholds from optimizer priors", async () 
   assert.ok(decision.optimizerApplied.strategyThresholdTilt > 0);
 });
 
+await runCheck("risk manager can allow small paper warm-up entries near threshold", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.468,
+      calibrationConfidence: 0.22,
+      disagreement: 0.06,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 0.15, globalConfidence: 0.15 },
+      transformer: { probability: 0.49, confidence: 0.04 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: -0.34, microPriceEdgeBps: 0.2 },
+      market: { realizedVolPct: 0.018, atrPct: 0.01, bearishPatternScore: 0.08, bullishPatternScore: 0.22, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.14, signalScore: 0.06, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.32, contrarianScore: 0.18 },
+    volatilitySummary: { riskScore: 0.52, ivPremium: 5 },
+    calendarSummary: { riskScore: 0.1, bullishScore: 0, urgencyScore: 0.08 },
+    committeeSummary: { agreement: 0.31, probability: 0.46, netScore: -0.06, sizeMultiplier: 0.92, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.47,
+      confidence: 0.42,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.61, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.quoteAmount >= makeConfig().minTradeUsdt);
+  assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
+});
+
+await runCheck("risk manager can keep paper exploration available after warm-up when only soft blockers remain", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.492,
+      calibrationConfidence: 0.46,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 1, globalConfidence: 0.92 },
+      transformer: { probability: 0.5, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 3, bookPressure: -0.18, microPriceEdgeBps: 0.15 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.06, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.06, sentimentScore: 0.05, eventBullishScore: 0.03, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.04, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.26, contrarianScore: 0.14 },
+    volatilitySummary: { riskScore: 0.44, ivPremium: 4 },
+    calendarSummary: { riskScore: 0.08, bullishScore: 0, urgencyScore: 0.05 },
+    committeeSummary: { agreement: 0.33, probability: 0.49, netScore: -0.04, sizeMultiplier: 0.95, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "vwap_trend",
+      family: "trend_following",
+      fitScore: 0.52,
+      confidence: 0.44,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.68 },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
+});
+
 await runCheck("execution engine applies committee, rl and strategy modifiers", async () => {
   const engine = new ExecutionEngine(makeConfig({ botMode: "live" }));
   const plan = engine.buildEntryPlan({
@@ -1113,6 +1282,47 @@ await runCheck("performance report summarizes journal metrics", async () => {
   assert.equal(report.openExposure, 300);
   assert.ok(report.executionSummary.styles.length >= 1);
   assert.ok(report.executionSummary.avgEntryTouchSlippageBps >= 0);
+});
+
+await runCheck("performance report respects dashboard series limits", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [],
+      equitySnapshots: Array.from({ length: 500 }, (_, index) => ({ equity: 10000 + index })),
+      cycles: Array.from({ length: 320 }, (_, index) => ({ at: `2026-03-08T10:${String(index % 60).padStart(2, "0")}:00.000Z`, cycle: index }))
+    },
+    runtime: {
+      openPositions: []
+    },
+    config: {
+      reportLookbackTrades: 50,
+      dashboardEquityPointLimit: 144,
+      dashboardCyclePointLimit: 72
+    }
+  });
+  assert.equal(report.equitySeries.length, 144);
+  assert.equal(report.cycleSeries.length, 72);
+});
+
+await runCheck("adaptive model keeps cold-start setups eligible when calibration is still warming up", async () => {
+  const model = new AdaptiveTradingModel(undefined, makeConfig());
+  const score = model.score(
+    { momentum_20: 1.1, ema_gap: 0.45, breakout_pct: 0.18, book_pressure: 0.22 },
+    {
+      regimeSummary: { regime: "trend", confidence: 0.7, bias: 0.2, reasons: ["persistent_trend"] },
+      marketFeatures: { momentum20: 0.02, emaGap: 0.01 },
+      marketSnapshot: {
+        candles: Array.from({ length: 24 }, (_, index) => ({ open: 100 + index, high: 101 + index, low: 99 + index, close: 100.5 + index, volume: 10 + index })),
+        market: { momentum20: 0.02, emaGap: 0.01 },
+        book: { bookPressure: 0.24 },
+        stream: { tradeFlowImbalance: 0.08 }
+      },
+      newsSummary: { sentimentScore: 0.08, riskScore: 0.04 },
+      streamFeatures: { tradeFlowImbalance: 0.08, microTrend: 0.001 }
+    }
+  );
+  assert.ok(score.calibrationConfidence >= 0.22);
+  assert.equal(score.shouldAbstain, false);
 });
 
 
@@ -1291,6 +1501,46 @@ await runCheck("meta decision gate applies canary and daily budget awareness", a
   assert.ok(meta.dailyBudgetFactor <= 1);
 });
 
+await runCheck("paper broker rounds tiny partial fills to a valid exchange lot", async () => {
+  const broker = new (await import("../src/execution/paperBroker.js")).PaperBroker(makeConfig(), { warn() {}, info() {} });
+  broker.execution.simulatePaperFill = () => ({
+    fillPrice: 200,
+    executedQuote: 160,
+    executedQuantity: 0.8,
+    completionRatio: 0.4,
+    makerFillRatio: 0.4,
+    takerFillRatio: 0,
+    workingTimeMs: 1500,
+    notes: ["partial_fill"]
+  });
+  const coarseRules = {
+    ...rules,
+    minQty: 1,
+    maxQty: 100000,
+    stepSize: 1,
+    marketMinQty: 1,
+    marketMaxQty: 100000,
+    marketStepSize: 1,
+    minNotional: 5,
+    maxNotional: Number.MAX_SAFE_INTEGER
+  };
+  const runtime = { openPositions: [], paperPortfolio: { quoteFree: 10000, feesPaid: 0, realizedPnl: 0 } };
+  const position = await broker.enterPosition({
+    symbol: "TESTUSDT",
+    quoteAmount: 400,
+    rules: coarseRules,
+    marketSnapshot: { book: { bid: 199.8, ask: 200, mid: 199.9, spreadBps: 10 } },
+    decision: { stopLossPct: 0.02, takeProfitPct: 0.03, executionPlan: { entryStyle: "limit_maker", fallbackStyle: "none" }, regime: "range" },
+    score: { probability: 0.64, regime: "range" },
+    rawFeatures: { momentum_5: 0.1 },
+    strategySummary: { activeStrategy: "vwap_reversion" },
+    newsSummary: { sentimentScore: 0 },
+    runtime
+  });
+  assert.equal(position.quantity, 1);
+  assert.ok(position.totalCost > 0);
+});
+
 await runCheck("paper broker can scale out and keep the remainder open", async () => {
   const broker = new (await import("../src/execution/paperBroker.js")).PaperBroker(makeConfig(), { warn() {}, info() {} });
   const runtime = { openPositions: [], paperPortfolio: { quoteFree: 10000, feesPaid: 0, realizedPnl: 0 } };
@@ -1362,6 +1612,72 @@ await runCheck("universe selector focuses liquid symbols and carries open positi
   });
   assert.deepEqual(snapshot.selectedSymbols, ["DOGEUSDT", "BTCUSDT"]);
   assert.ok(snapshot.skipped.some((item) => item.symbol === "ETHUSDT"));
+});
+
+await runCheck("lightweight snapshots stay usable for top-100 prefiltering", async () => {
+  const snapshot = buildLightweightSnapshot({
+    symbol: "SOLUSDT",
+    config: makeConfig(),
+    streamFeatures: {
+      latestBookTicker: { bid: 120, ask: 120.12, bidQty: 85, askQty: 82, mid: 120.06, eventTime: Date.now() },
+      recentTradeCount: 16,
+      tradeFlowImbalance: 0.22,
+      microTrend: 0.0032
+    },
+    cachedSnapshot: {
+      market: { realizedVolPct: 0.018, volumeZ: 1.1, emaTrendScore: 0.06, breakoutPct: 0.008 },
+      book: { totalDepthNotional: 185000 },
+      cachedAt: "2026-03-09T10:00:00.000Z"
+    }
+  });
+  assert.equal(snapshot.lightweight, true);
+  assert.ok(snapshot.book.depthConfidence > 0.2);
+  assert.ok(snapshot.book.totalDepthNotional > 50000);
+  assert.ok(snapshot.market.realizedVolPct > 0);
+});
+
+await runCheck("scan planner keeps open positions and caps deep scans", async () => {
+  const watchlist = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "LINKUSDT",
+    "AVAXUSDT",
+    "SUIUSDT",
+    "APTUSDT"
+  ];
+  const plan = buildDeepScanPlan({
+    config: makeConfig({ watchlist, universeMaxSymbols: 6, marketSnapshotBudgetSymbols: 7, localBookMaxSymbols: 4 }),
+    watchlist,
+    openPositions: [{ symbol: "DOGEUSDT" }],
+    latestDecisions: [{ symbol: "LINKUSDT", allow: true, rankScore: 0.18 }],
+    shallowSnapshotMap: {},
+    universeSelector: {
+      buildSnapshot() {
+        return {
+          generatedAt: "2026-03-09T12:00:00.000Z",
+          configuredSymbolCount: watchlist.length,
+          selectedCount: 6,
+          eligibleCount: 7,
+          selectionRate: 0.6,
+          averageScore: 0.58,
+          selectedSymbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"],
+          selected: [],
+          skipped: [],
+          suggestions: []
+        };
+      }
+    },
+    nowIso: "2026-03-09T12:00:00.000Z"
+  });
+
+  assert.equal(plan.deepScanSymbols.length, 7);
+  assert.equal(plan.deepScanSymbols[0], "DOGEUSDT");
+  assert.ok(plan.deepScanSymbols.includes("BTCUSDT"));
+  assert.ok(plan.localBookSymbols.length <= 4);
 });
 
 await runCheck("exit intelligence escalates when profit starts reversing into risk", async () => {
@@ -1532,6 +1848,9 @@ await runCheck("research registry surfaces promotion candidates from walk-forwar
 });
 
 console.log("All checks passed.");
+
+
+
 
 
 

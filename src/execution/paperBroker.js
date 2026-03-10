@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { resolveMarketBuyQuantity } from "../binance/symbolFilters.js";
+import { normalizeQuantity, resolveMarketBuyQuantity } from "../binance/symbolFilters.js";
 import { ExecutionEngine } from "./executionEngine.js";
 import { nowIso } from "../utils/time.js";
 
@@ -20,6 +20,54 @@ function buildExitPlan(position) {
     fallbackStyle: "none",
     preferMaker: false,
     usePeggedOrder: false
+  };
+}
+
+function resolvePaperBuySize({ quoteAmount, executionPrice, fillEstimate, rules }) {
+  const requestedSize = resolveMarketBuyQuantity(quoteAmount, executionPrice, rules);
+  if (!requestedSize.valid) {
+    return {
+      ...requestedSize,
+      requestedQuantity: 0,
+      requestedNotional: 0
+    };
+  }
+
+  const rawExecutedQuantity = Number.isFinite(fillEstimate?.executedQuantity)
+    ? fillEstimate.executedQuantity
+    : executionPrice > 0
+      ? (fillEstimate?.executedQuote || 0) / executionPrice
+      : 0;
+  let quantity = normalizeQuantity(rawExecutedQuantity, rules, "floor", true);
+  if (!quantity && rawExecutedQuantity > 0) {
+    quantity = Math.min(
+      requestedSize.quantity,
+      normalizeQuantity(rawExecutedQuantity, rules, "ceil", true)
+    );
+  }
+  if (!quantity && (fillEstimate?.completionRatio || 0) > 0) {
+    quantity = Math.min(
+      requestedSize.quantity,
+      normalizeQuantity(rules.marketMinQty || rules.minQty || requestedSize.quantity, rules, "ceil", true)
+    );
+  }
+  if (!quantity) {
+    return {
+      quantity: 0,
+      notional: 0,
+      valid: false,
+      reason: "quantity_below_minimum",
+      requestedQuantity: requestedSize.quantity,
+      requestedNotional: requestedSize.notional
+    };
+  }
+
+  return {
+    quantity,
+    notional: quantity * executionPrice,
+    valid: true,
+    requestedQuantity: requestedSize.quantity,
+    requestedNotional: requestedSize.notional
   };
 }
 
@@ -95,10 +143,15 @@ export class PaperBroker {
       plan: executionPlan,
       latencyMs: this.config.paperLatencyMs
     });
-    const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.ask;
-    const size = resolveMarketBuyQuantity(fillEstimate.executedQuote, executionPrice, rules);
+    const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.ask || marketSnapshot.book.mid;
+    const size = resolvePaperBuySize({
+      quoteAmount,
+      executionPrice,
+      fillEstimate,
+      rules
+    });
     if (!size.valid) {
-      throw new Error(`Paper buy rejected: ${size.reason}`);
+      throw new Error(`Paper buy rejected: ${size.reason} (symbol=${symbol}, quote=${quoteAmount}, executionPrice=${executionPrice}, requestedQty=${size.requestedQuantity || 0}, requestedNotional=${size.requestedNotional || 0}, rawExecutedQty=${fillEstimate.executedQuantity || 0}, completion=${fillEstimate.completionRatio || 0})`);
     }
 
     const fee = size.notional * this.feeRate;
