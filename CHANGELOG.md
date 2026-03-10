@@ -10,6 +10,11 @@
 - Symbol-level risk guards for per-pair daily entry caps and cooldowns after recent losing exits.
 - Clock sync quality telemetry with midpoint-sampled Binance time checks and fresher doctor output.
 - Local order book bootstrap wait and warm-up tracking so startup depth confidence ramps in more cleanly.
+- Cross-timeframe consensus between lower and higher timeframe market snapshots, wired into scoring, risk, and meta gating.
+- Pair-health monitoring and quarantine scoring so symbols with repeated infra/data quality issues cool off automatically.
+- Source reliability engine that degrades or cools down flaky news providers after rate limits, timeouts, or repeated failures.
+- Live-vs-paper divergence monitoring, offline trainer readiness, and probation-aware model promotion governance.
+- On-chain-lite stablecoin liquidity context plus counterfactual replay for blocked trade follow-up analysis.
 
 ### Fixed
 - Restored recorder and backup manager state on restart so dashboard counts reflect files already on disk.
@@ -31,17 +36,23 @@
 - Added persistent detail memory for dynamic setup, position, and replay cards so manual open-close choices stick across refreshes.
 - Tightened universe, attribution, replay, and blocked-trade lists into a more compact operator view.
 - Lowered the default live drift threshold to a meaningful sync-quality guard now that clock health uses RTT-aware sampling rather than raw offset magnitude.
+- Expanded doctor/status/dashboard output with pair health, source reliability, divergence, offline trainer, and on-chain-lite summaries.
+- Extended the feature pipeline and learning labels so paper/live outcomes can teach model quality, execution regret, and blocked-trade counterfactuals.
 
 ### Verified
 - `node --check src/dashboard/public/app.js`
 - `node --check src/runtime/tradingBot.js`
+- `node --check src/config/index.js`
 - `node --check src/runtime/sessionManager.js`
 - `node --check src/risk/riskManager.js`
 - `node --check src/runtime/watchlistResolver.js`
+- `node --check src/news/newsService.js`
+- `node --check src/config/validate.js`
 - `node --check test/run.js`
 - `npm.cmd test`
 - `node src/cli.js once`
 - `node src/cli.js status`
+- `node src/cli.js doctor`
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
 - Dashboard homepage smoke test on `http://127.0.0.1:3011/`
 

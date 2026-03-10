@@ -27,6 +27,9 @@ export class ExitIntelligence {
     announcementSummary = {},
     marketStructureSummary = {},
     calendarSummary = {},
+    timeframeSummary = {},
+    onChainLiteSummary = {},
+    regimeSummary = {},
     runtime = {},
     journal = {},
     nowIso = new Date().toISOString()
@@ -50,13 +53,22 @@ export class ExitIntelligence {
     const bookPressure = safeNumber(book.bookPressure);
     const signalScore = safeNumber(marketStructureSummary.signalScore);
     const riskScore = safeNumber(marketStructureSummary.riskScore);
+    const higherBias = safeNumber(timeframeSummary.higherBias);
+    const alignmentScore = safeNumber(timeframeSummary.alignmentScore, 0.5);
+    const onChainLiquidity = safeNumber(onChainLiteSummary.liquidityScore);
+    const onChainStress = safeNumber(onChainLiteSummary.stressScore);
+    const entrySlipDelta = safeNumber(position.entryExecutionAttribution?.slippageDeltaBps);
+    const executionRegretScore = clamp(Math.max(0, entrySlipDelta) / 8 + Math.max(0, -bookPressure) * 0.18, 0, 1);
 
     const holdTailwind =
       Math.max(0, pnlPct) * 3.2 +
       Math.max(0, bookPressure) * 0.42 +
       Math.max(0, safeNumber(market.bullishPatternScore)) * 0.16 +
       Math.max(0, signalScore) * 0.26 +
-      Math.max(0, safeNumber(newsSummary.sentimentScore)) * 0.12;
+      Math.max(0, safeNumber(newsSummary.sentimentScore)) * 0.12 +
+      Math.max(0, higherBias) * 0.16 +
+      onChainLiquidity * 0.12 +
+      alignmentScore * 0.08;
 
     const exitPressure =
       Math.max(0, -bookPressure) * 0.58 +
@@ -68,7 +80,10 @@ export class ExitIntelligence {
       Math.max(0, -signalScore) * 0.16 +
       Math.max(0, -drawdownFromHighPct * 22) * 0.24 +
       Math.max(0, spreadPressure - 0.7) * 0.18 +
-      Math.max(0, timePressure - 0.75) * 0.12;
+      Math.max(0, timePressure - 0.75) * 0.12 +
+      Math.max(0, onChainStress - 0.35) * 0.18 +
+      Math.max(0, 0.45 - alignmentScore) * 0.14 +
+      executionRegretScore * 0.14;
 
     const trimPressure =
       Math.max(0, progressToScaleOut - 0.8) * 0.28 +
@@ -76,14 +91,16 @@ export class ExitIntelligence {
       Math.max(0, riskScore - 0.35) * 0.18 +
       Math.max(0, safeNumber(newsSummary.riskScore) - 0.34) * 0.12 +
       Math.max(0, safeNumber(calendarSummary.riskScore) - 0.32) * 0.12 +
-      Math.max(0, safeNumber(announcementSummary.riskScore) - 0.22) * 0.1;
+      Math.max(0, safeNumber(announcementSummary.riskScore) - 0.22) * 0.1 +
+      Math.max(0, onChainStress - 0.28) * 0.12;
 
     const trailPressure =
       Math.max(0, pnlPct) * 1.7 +
       Math.max(0, -drawdownFromHighPct * 24) * 0.22 +
       Math.max(0, riskScore - 0.3) * 0.16 +
       Math.max(0, spreadPressure - 0.55) * 0.1 +
-      Math.max(0, safeNumber(book.queueImbalance) < 0 ? Math.abs(safeNumber(book.queueImbalance)) : 0) * 0.08;
+      Math.max(0, safeNumber(book.queueImbalance) < 0 ? Math.abs(safeNumber(book.queueImbalance)) : 0) * 0.08 +
+      Math.max(0, executionRegretScore - 0.16) * 0.08;
 
     const holdScore = clamp(0.44 + holdTailwind - exitPressure * 0.24, 0, 1);
     const trimScore = clamp(0.18 + trimPressure + Math.max(0, pnlPct) * 1.9 - holdTailwind * 0.08, 0, 1);
@@ -100,7 +117,8 @@ export class ExitIntelligence {
         (safeNumber(calendarSummary.coverage) ? 0.06 : 0) +
         (safeNumber(marketStructureSummary.confidence) || safeNumber(marketStructureSummary.liquidationCount) ? 0.14 : 0) +
         Math.min(0.16, Math.abs(pnlPct) * 3) +
-        Math.min(0.12, heldMinutes / 480),
+        Math.min(0.12, heldMinutes / 480) +
+        Math.min(0.1, Math.abs(higherBias) * 0.2),
       0.24,
       0.96
     );
@@ -111,6 +129,8 @@ export class ExitIntelligence {
     pushReason(positiveReasons, signalScore > 0.12, "derivatives_still_supportive");
     pushReason(positiveReasons, safeNumber(newsSummary.sentimentScore) > 0.1, "news_tailwind_alive");
     pushReason(positiveReasons, safeNumber(market.bullishPatternScore) > 0.2, "bullish_pattern_context");
+    pushReason(positiveReasons, higherBias > 0.16, "higher_timeframe_support");
+    pushReason(positiveReasons, onChainLiquidity > 0.58, "stablecoin_liquidity_support");
 
     const riskReasons = [];
     pushReason(riskReasons, spreadPressure > 1, "spread_shock_risk");
@@ -123,6 +143,9 @@ export class ExitIntelligence {
     pushReason(riskReasons, safeNumber(marketStructureSummary.liquidationImbalance) < -0.45, "liquidation_sell_wave");
     pushReason(riskReasons, drawdownFromHighPct < -0.012 && pnlPct > 0, "winner_giving_back");
     pushReason(riskReasons, heldMinutes >= this.config.maxHoldMinutes * 0.85, "time_decay_pressure");
+    pushReason(riskReasons, alignmentScore < this.config.crossTimeframeMinAlignmentScore, "timeframe_misalignment");
+    pushReason(riskReasons, onChainStress > 0.58, "stablecoin_stress_risk");
+    pushReason(riskReasons, executionRegretScore > 0.36, "execution_regret_risk");
 
     let action = "hold";
     if (exitScore >= this.config.exitIntelligenceExitScore && confidence >= this.config.exitIntelligenceMinConfidence) {
@@ -173,7 +196,11 @@ export class ExitIntelligence {
       riskReasons,
       nextReviewBias: action === "hold" ? "let_winner_breathe" : action === "trim" ? "de_risk_and_reassess" : action === "trail" ? "trail_and_review" : "close_and_reset",
       runtimeMode: runtime.selfHeal?.mode || "normal",
-      realizedTradeCount: Array.isArray(journal?.trades) ? journal.trades.length : 0
+      realizedTradeCount: Array.isArray(journal?.trades) ? journal.trades.length : 0,
+      executionRegretScore: num(executionRegretScore),
+      regime: regimeSummary.regime || position.regimeAtEntry || "range",
+      timeframeAlignment: num(alignmentScore),
+      onChainStress: num(onChainStress)
     };
   }
 }

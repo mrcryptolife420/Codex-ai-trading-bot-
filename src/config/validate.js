@@ -81,6 +81,10 @@ export function validateConfig(config) {
   assertRange("MAX_DEPTH_EVENT_AGE_MS", config.maxDepthEventAgeMs, 100, 60_000, errors);
   assertRange("LOCAL_BOOK_BOOTSTRAP_WAIT_MS", config.localBookBootstrapWaitMs, 0, 5_000, errors);
   assertRange("LOCAL_BOOK_WARMUP_MS", config.localBookWarmupMs, 0, 30_000, errors);
+  assertRange("LOWER_TIMEFRAME_LIMIT", config.lowerTimeframeLimit, 20, 500, errors);
+  assertRange("HIGHER_TIMEFRAME_LIMIT", config.higherTimeframeLimit, 20, 500, errors);
+  assertRange("CROSS_TIMEFRAME_MIN_ALIGNMENT_SCORE", config.crossTimeframeMinAlignmentScore, 0, 1, errors);
+  assertRange("CROSS_TIMEFRAME_MAX_VOL_GAP_PCT", config.crossTimeframeMaxVolGapPct, 0.001, 0.25, errors);
   assertRange("MAKER_MIN_SPREAD_BPS", config.makerMinSpreadBps, 0, 100, errors);
   assertRange("DEFAULT_PEG_OFFSET_LEVELS", config.defaultPegOffsetLevels, 0, 10, errors);
   assertRange("MAX_PEGGED_IMPACT_BPS", config.maxPeggedImpactBps, 0.1, 50, errors);
@@ -121,6 +125,12 @@ export function validateConfig(config) {
   assertRange("MAX_PAIR_CORRELATION", config.maxPairCorrelation, 0, 1, errors);
   assertRange("MAX_CLUSTER_POSITIONS", config.maxClusterPositions, 1, 10, errors);
   assertRange("MAX_SECTOR_POSITIONS", config.maxSectorPositions, 1, 10, errors);
+  assertRange("MAX_FAMILY_POSITIONS", config.maxFamilyPositions, 1, 10, errors);
+  assertRange("MAX_REGIME_POSITIONS", config.maxRegimePositions, 1, 10, errors);
+  assertRange("PAIR_HEALTH_LOOKBACK_HOURS", config.pairHealthLookbackHours, 6, 720, errors);
+  assertRange("PAIR_HEALTH_MIN_SCORE", config.pairHealthMinScore, 0, 1, errors);
+  assertRange("PAIR_HEALTH_QUARANTINE_MINUTES", config.pairHealthQuarantineMinutes, 10, 1440, errors);
+  assertRange("PAIR_HEALTH_MAX_INFRA_ISSUES", config.pairHealthMaxInfraIssues, 1, 20, errors);
   assertRange("UNIVERSE_MAX_SYMBOLS", config.universeMaxSymbols, 4, 120, errors);
   assertRange("UNIVERSE_MIN_SCORE", config.universeMinScore, 0, 1, errors);
   assertRange("UNIVERSE_MIN_DEPTH_CONFIDENCE", config.universeMinDepthConfidence, 0, 1, errors);
@@ -135,6 +145,15 @@ export function validateConfig(config) {
   assertRange("EXIT_INTELLIGENCE_EXIT_SCORE", config.exitIntelligenceExitScore, 0, 1, errors);
   assertRange("TRADE_QUALITY_MIN_SCORE", config.tradeQualityMinScore, 0, 1, errors);
   assertRange("TRADE_QUALITY_CAUTION_SCORE", config.tradeQualityCautionScore, 0, 1, errors);
+  assertRange("DIVERGENCE_MIN_PAPER_TRADES", config.divergenceMinPaperTrades, 1, 500, errors);
+  assertRange("DIVERGENCE_MIN_LIVE_TRADES", config.divergenceMinLiveTrades, 1, 500, errors);
+  assertRange("DIVERGENCE_ALERT_SCORE", config.divergenceAlertScore, 0, 1, errors);
+  assertRange("DIVERGENCE_BLOCK_SCORE", config.divergenceBlockScore, 0, 1, errors);
+  assertRange("DIVERGENCE_ALERT_SLIP_GAP_BPS", config.divergenceAlertSlipGapBps, 0.1, 250, errors);
+  assertRange("OFFLINE_TRAINER_MIN_READINESS", config.offlineTrainerMinReadiness, 0, 1, errors);
+  assertRange("MODEL_PROMOTION_PROBATION_LIVE_TRADES", config.modelPromotionProbationLiveTrades, 1, 100, errors);
+  assertRange("COUNTERFACTUAL_LOOKAHEAD_MINUTES", config.counterfactualLookaheadMinutes, 5, 1440, errors);
+  assertRange("COUNTERFACTUAL_QUEUE_LIMIT", config.counterfactualQueueLimit, 5, 500, errors);
   assertRange("MIN_BOOK_PRESSURE_FOR_ENTRY", config.minBookPressureForEntry, -1, 1, errors);
   assertRange("PAPER_EXPLORATION_THRESHOLD_BUFFER", config.paperExplorationThresholdBuffer, 0, 0.2, errors);
   assertRange("PAPER_EXPLORATION_SIZE_MULTIPLIER", config.paperExplorationSizeMultiplier, 0.1, 1, errors);
@@ -148,6 +167,11 @@ export function validateConfig(config) {
   assertRange("CALENDAR_CACHE_MINUTES", config.calendarCacheMinutes, 1, 720, errors);
   assertRange("NEWS_MIN_SOURCE_QUALITY", config.newsMinSourceQuality, 0, 1, errors);
   assertRange("NEWS_MIN_RELIABILITY_SCORE", config.newsMinReliabilityScore, 0, 1, errors);
+  assertRange("SOURCE_RELIABILITY_MIN_OPERATIONAL_SCORE", config.sourceReliabilityMinOperationalScore, 0, 1, errors);
+  assertRange("SOURCE_RELIABILITY_MAX_RECENT_FAILURES", config.sourceReliabilityMaxRecentFailures, 1, 20, errors);
+  assertRange("SOURCE_RELIABILITY_RATE_LIMIT_COOLDOWN_MINUTES", config.sourceReliabilityRateLimitCooldownMinutes, 1, 1440, errors);
+  assertRange("SOURCE_RELIABILITY_TIMEOUT_COOLDOWN_MINUTES", config.sourceReliabilityTimeoutCooldownMinutes, 1, 1440, errors);
+  assertRange("SOURCE_RELIABILITY_FAILURE_COOLDOWN_MINUTES", config.sourceReliabilityFailureCooldownMinutes, 1, 1440, errors);
   assertRange("META_MIN_CONFIDENCE", config.metaMinConfidence, 0, 1, errors);
   assertRange("META_BLOCK_SCORE", config.metaBlockScore, 0, 1, errors);
   assertRange("META_CAUTION_SCORE", config.metaCautionScore, 0, 1, errors);
@@ -209,6 +233,12 @@ export function validateConfig(config) {
   if (config.enableVolatilityContext === false) {
     warnings.push("ENABLE_VOLATILITY_CONTEXT=false removes Deribit options-vol context.");
   }
+  if (config.enableOnChainLiteContext === false) {
+    warnings.push("ENABLE_ONCHAIN_LITE_CONTEXT=false removes stablecoin liquidity context.");
+  }
+  if (config.enableCrossTimeframeConsensus && config.lowerTimeframeInterval === config.higherTimeframeInterval) {
+    warnings.push("Cross-timeframe consensus uses identical intervals; alignment signal will be less informative.");
+  }
   if (config.sessionHardBlockMinutesToFunding >= config.sessionCautionMinutesToFunding) {
     errors.push("SESSION_HARD_BLOCK_MINUTES_TO_FUNDING must be smaller than SESSION_CAUTION_MINUTES_TO_FUNDING.");
   }
@@ -248,6 +278,9 @@ export function validateConfig(config) {
   }
   if (config.tradeQualityCautionScore <= config.tradeQualityMinScore) {
     errors.push("TRADE_QUALITY_CAUTION_SCORE must be larger than TRADE_QUALITY_MIN_SCORE.");
+  }
+  if (config.divergenceBlockScore <= config.divergenceAlertScore) {
+    errors.push("DIVERGENCE_BLOCK_SCORE must be larger than DIVERGENCE_ALERT_SCORE.");
   }
   if (config.researchPromotionMaxDrawdownPct <= 0) {
     errors.push("RESEARCH_PROMOTION_MAX_DRAWDOWN_PCT must be positive.");

@@ -66,6 +66,7 @@ const PRIOR_WEIGHTS = {
   social_sentiment: 0.1,
   social_risk: -0.12,
   social_coverage: 0.06,
+  source_operational_reliability: 0.08,
   announcement_sentiment: 0.18,
   announcement_risk: -0.26,
   announcement_freshness: 0.06,
@@ -95,6 +96,20 @@ const PRIOR_WEIGHTS = {
   micro_trend: 0.12,
   portfolio_heat: -0.16,
   correlation_pressure: -0.18,
+  portfolio_family_budget: 0.08,
+  portfolio_regime_budget: 0.06,
+  pair_health_score: 0.1,
+  pair_health_infra: -0.12,
+  pair_quarantined: -0.18,
+  tf_lower_bias: 0.08,
+  tf_higher_bias: 0.12,
+  tf_alignment: 0.12,
+  tf_vol_gap: -0.06,
+  tf_conflict: -0.14,
+  stablecoin_liquidity: 0.08,
+  stablecoin_risk_off: -0.06,
+  stablecoin_stress: -0.1,
+  stablecoin_dominance: -0.04,
   regime_trend: 0.08,
   regime_range: -0.03,
   regime_breakout: 0.06,
@@ -285,7 +300,9 @@ export class OnlineTradingModel {
     const prediction = this.score(rawFeatures);
     const target = clamp(trade.labelScore ?? overrides.target ?? (netPnlPct > 0 ? 1 : 0), 0, 1);
     const executionQuality = clamp(trade.executionQualityScore ?? 0.5, 0.1, 1);
-    const sampleWeight = clamp((Math.abs(netPnlPct || 0) * 22 + Math.abs(target - 0.5) * 2.2) * executionQuality, 0.3, 2.75);
+    const brokerModeWeight = clamp(trade.brokerModeWeight ?? ((trade.brokerMode || "paper") === "live" ? 1.08 : 0.94), 0.75, 1.2);
+    const executionRegretPenalty = clamp(1 - (trade.executionRegretScore ?? 0) * 0.22, 0.72, 1);
+    const sampleWeight = clamp((Math.abs(netPnlPct || 0) * 22 + Math.abs(target - 0.5) * 2.2) * executionQuality * brokerModeWeight * executionRegretPenalty, 0.3, 2.75);
     const learningRate = overrides.learningRate || this.config.modelLearningRate;
     const l2 = overrides.l2 || this.config.modelL2;
     const error = (target - prediction.probability) * sampleWeight;
@@ -320,3 +337,5 @@ export class OnlineTradingModel {
     };
   }
 }
+
+

@@ -16,6 +16,11 @@ Een safety-first Binance Spot trading bot met een lokaal webdashboard voor paper
 - Warm-start AI-model met champion/challenger logica, calibration en online updates na gesloten trades
 - Meerdere strategieen tegelijk: breakout, mean reversion en trend following, met een strategy-router die per marktregime de beste aanpak kiest
 - Transformer-style multi-horizon challenger, specialist multi-agent committee en RL execution policy voor slimmere entry/execution-beslissingen
+- Cross-timeframe consensus tussen 5m, 15m en 1h context zodat entries minder vaak tegen de hogere timeframe ingaan
+- Pair-health en quarantine scoring die symbols tijdelijk afremt bij infra-issues, zwakke market quality of bronproblemen
+- Live-vs-paper divergence monitoring per strategie zodat governance ziet wanneer paper en live gedrag te ver uit elkaar lopen
+- Offline trainer met counterfactual replay, strategy scorecards en governance-readiness op basis van gesloten trades
+- On-chain lite context via stablecoin-dominance en liquidity proxies als extra risk-on/risk-off laag
 - Harde risk gates voor spread, volatiliteit, cooldowns, exposure caps, loss streaks, orderbook pressure, calendar risk en official notice risk
 - Live broker met exchange-native OCO protectie, pegged maker-orders, keep-priority amends, STP-telemetry en runtime reconciliation
 - Dashboard met start/stop, live-paper switch, losse cyclus, rolling stats, session/drift/self-heal monitoring, stable-model backup zichtbaarheid, pair-search in Top AI setups, compactere why-trade uitleg, why-not-trade blockers, trade replay, strategy-keuze, transformer/committee/RL/meta-gate uitleg, scale-out context, universe focus, strategy attribution, research-registry governance, PnL attribution, operations/recovery panels en research-lab triggers
@@ -141,9 +146,12 @@ Start-BotService.cmd
 - Probability calibration en een abstain-zone voorkomen dat zwakke of onzekere setups automatisch live worden uitgevoerd.
 - Een extra meta decision gate bewaakt dagelijkse risicobudgetten, canary live sizing, history-confidence en trade frequency voordat een setup echt door mag.
 - Een universe selector kiest eerst de sterkste watchlist-kandidaten op spread, depth, activity en volatility-fit voordat de volledige AI-scan draait.
+- Cross-timeframe consensus beoordeelt of de trigger op de lagere timeframe in lijn ligt met de hogere timeframe voordat de trade door mag.
+- Pair-health, source-reliability en on-chain-lite context temperen setups bij zwakke feeds, symbol-instabiliteit of risk-off stablecoin flows.
 - Exit intelligence beslist apart over hold, trim en exit, zodat winstneming en risicoreductie slimmer verlopen dan alleen vaste stops.
-- Strategy attribution en een research registry houden bij welke strategieen, families, regimes en symbols daadwerkelijk werken en welke modellen promotie of observatie verdienen.
+- Strategy attribution, divergence monitoring en een research registry houden bij welke strategieen, families, regimes en symbols daadwerkelijk werken en welke modellen promotie of observatie verdienen.
 - Champion/challenger deployment zorgt dat online learning niet meteen blind live wordt gepromoveerd.
+- Counterfactual replay bewaart ook geblokkeerde setups, zodat de bot later kan evalueren of een veto terecht was of een goede trade heeft gemist.
 - Per trade bewaart de bot de sterkste bullish/bearish signalen, nieuwsdrivers, social context, notice-checks, orderbook/pattern reasons, market-structure reasons, kalender-events, scale-out plannen en execution-attributie.
 - In het dashboard zie je precies waarom een positie is geopend, waarom een kandidaattrade is geblokkeerd en hoe een replay/backtest of research-window uitpakte.
 
@@ -177,12 +185,12 @@ Je kunt handmatig eigen events toevoegen in [event-calendar.json](/C:/Users/high
 - `src/binance`: REST-client, signing, clock sync, symbol filters en futures public data
 - `src/news`: news ingestie, Reddit/news parsing, eventclassificatie en sentiment/reliability scoring
 - `src/events`: Binance notices en kalenderservices
-- `src/market`: market-structure samenvatting voor funding, OI, basis en liquidaties
+- `src/market`: market-structure samenvatting voor funding, OI, basis, liquidaties en on-chain-lite context
 - `src/strategy`: indicatoren en feature engineering
 - `src/ai`: online model, regime model, calibration en adaptive deployment
 - `src/risk`: risk rules, sizing, exposure caps en portfolio intelligence
 - `src/execution`: paper broker en live broker met OCO protectie
-- `src/runtime`: bot-loop, streams, doctor, rapportage, research, feature-store recorder, model registry, backups en manager
+- `src/runtime`: bot-loop, streams, doctor, rapportage, research, feature-store recorder, pair health, divergence, offline trainer, model registry, backups en manager
 - `src/dashboard`: lokale dashboardserver en frontend
 - `src/storage`: model, runtime en journal persistence
 
@@ -193,6 +201,8 @@ Nieuwe productie-hardened lagen:
 - `data/runtime/feature-store`: JSONL-opslag van cycles, decisions, trades en research-runs voor replay en retraining
 - `data/runtime/backups`: automatische runtime-backups voor crash recovery en rollback
 - model registry: quality scoring per modelsnapshot met rollback-kandidaat in dashboard en doctor-output
+- counterfactual replay: bewaart geblokkeerde setups en vergelijkt ze later met de echte marktbeweging
+- divergence monitor: vergelijkt paper en live gedrag per strategie en kan promotie blokkeren als het gat te groot wordt
 - Windows watchdog: [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) herstart de bot-loop automatisch als die crasht, met restart-limiet per uur
 
 Start de watchdog lokaal met:
@@ -207,16 +217,19 @@ npm.cmd run service:windows
 Zie [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example) voor alle opties. De belangrijkste groepen zijn:
 
 - Adaptive AI: `CHALLENGER_*`, `MIN_CALIBRATION_CONFIDENCE`, `MIN_REGIME_CONFIDENCE`, `ABSTAIN_BAND`, `MAX_MODEL_DISAGREEMENT`
+- Cross-timeframe: `ENABLE_CROSS_TIMEFRAME_CONSENSUS`, `LOWER_TIMEFRAME_INTERVAL`, `HIGHER_TIMEFRAME_INTERVAL`, `LOWER_TIMEFRAME_LIMIT`, `HIGHER_TIMEFRAME_LIMIT`, `CROSS_TIMEFRAME_MIN_ALIGNMENT_SCORE`, `CROSS_TIMEFRAME_MAX_VOL_GAP_PCT`
 - Event-driven data: `ENABLE_EVENT_DRIVEN_DATA`, `ENABLE_LOCAL_ORDER_BOOK`, `STREAM_TRADE_BUFFER_SIZE`, `STREAM_DEPTH_LEVELS`, `STREAM_DEPTH_SNAPSHOT_LIMIT`, `MAX_DEPTH_EVENT_AGE_MS`, `LOCAL_BOOK_BOOTSTRAP_WAIT_MS`, `LOCAL_BOOK_WARMUP_MS`, `BINANCE_FUTURES_API_BASE_URL`
 - Smart execution: `ENABLE_SMART_EXECUTION`, `ENABLE_PEGGED_ORDERS`, `DEFAULT_PEG_OFFSET_LEVELS`, `MAX_PEGGED_IMPACT_BPS`, `ENABLE_STP_TELEMETRY_QUERY`, `STP_TELEMETRY_LIMIT`, `MAKER_MIN_SPREAD_BPS`, `BASE_MAKER_PATIENCE_MS`, `MAX_MAKER_PATIENCE_MS`
 - Social sentiment: `ENABLE_REDDIT_SENTIMENT`, `REDDIT_SENTIMENT_SUBREDDITS`
 - Market structure: `MARKET_STRUCTURE_CACHE_MINUTES`, `MARKET_STRUCTURE_LOOKBACK_POINTS`
-- Macro sentiment: `ENABLE_MARKET_SENTIMENT_CONTEXT`, `MARKET_SENTIMENT_CACHE_MINUTES`, `ALTERNATIVE_API_BASE_URL`, `COINGECKO_API_BASE_URL`
+- Macro sentiment: `ENABLE_MARKET_SENTIMENT_CONTEXT`, `MARKET_SENTIMENT_CACHE_MINUTES`, `ALTERNATIVE_API_BASE_URL`, `COINGECKO_API_BASE_URL`, `ENABLE_ONCHAIN_LITE_CONTEXT`, `ONCHAIN_LITE_CACHE_MINUTES`, `ONCHAIN_LITE_STABLECOIN_IDS`
 - Volatility context: `ENABLE_VOLATILITY_CONTEXT`, `VOLATILITY_CACHE_MINUTES`, `DERIBIT_API_BASE_URL`
 - Official notices: `ANNOUNCEMENT_LOOKBACK_HOURS`, `ANNOUNCEMENT_CACHE_MINUTES`
 - Event calendar: `CALENDAR_LOOKBACK_DAYS`, `CALENDAR_CACHE_MINUTES`
-- News reliability: `NEWS_MIN_SOURCE_QUALITY`, `NEWS_MIN_RELIABILITY_SCORE`, `NEWS_STRICT_WHITELIST`
+- News reliability: `NEWS_MIN_SOURCE_QUALITY`, `NEWS_MIN_RELIABILITY_SCORE`, `NEWS_STRICT_WHITELIST`, `SOURCE_RELIABILITY_*`
 - Risk guards: `MAX_LOSS_STREAK`, `MAX_SYMBOL_LOSS_STREAK`, `SYMBOL_LOSS_COOLDOWN_MINUTES`, `MAX_ENTRIES_PER_SYMBOL_PER_DAY`, `MIN_BOOK_PRESSURE_FOR_ENTRY`, `EXIT_ON_SPREAD_SHOCK_BPS`
+- Governance: `DIVERGENCE_*`, `OFFLINE_TRAINER_MIN_READINESS`, `MODEL_PROMOTION_PROBATION_LIVE_TRADES`, `COUNTERFACTUAL_*`
+- Pair health: `PAIR_HEALTH_LOOKBACK_HOURS`, `PAIR_HEALTH_MIN_SCORE`, `PAIR_HEALTH_QUARANTINE_MINUTES`, `PAIR_HEALTH_MAX_INFRA_ISSUES`
 - Session intelligence: `ENABLE_SESSION_LOGIC`, `SESSION_*`, `BLOCK_WEEKEND_HIGH_RISK_STRATEGIES`
 - Drift monitoring: `ENABLE_DRIFT_MONITORING`, `DRIFT_*`, `MAX_SERVER_TIME_DRIFT_MS`, `CLOCK_SYNC_SAMPLE_COUNT`, `CLOCK_SYNC_MAX_AGE_MS`, `CLOCK_SYNC_MAX_RTT_MS`
 - Self-heal and rollback: `SELF_HEAL_*`, `STABLE_MODEL_*`

@@ -1,4 +1,4 @@
-﻿import { clamp } from "../utils/math.js";
+import { clamp } from "../utils/math.js";
 
 function regimeFlags(regime) {
   return {
@@ -54,6 +54,9 @@ export function buildFeatureVector({
   regimeSummary = { regime: "range" },
   strategySummary = {},
   sessionSummary = {},
+  timeframeSummary = {},
+  onChainLiteSummary = {},
+  pairHealthSummary = {},
   now = new Date()
 }) {
   const hour = now.getUTCHours() + now.getUTCMinutes() / 60;
@@ -123,6 +126,7 @@ export function buildFeatureVector({
     social_sentiment: clamp((newsSummary.socialSentiment || 0) * 3, -3, 3),
     social_risk: clamp((newsSummary.socialRisk || 0) * 3, 0, 3),
     social_coverage: clamp((newsSummary.socialCoverage || 0) / 2, 0, 3),
+    source_operational_reliability: clamp((newsSummary.operationalReliability || 0.7) * 3, 0, 3),
     announcement_sentiment: clamp((announcementSummary.sentimentScore || 0) * 3, -3, 3),
     announcement_risk: clamp((announcementSummary.riskScore || 0) * 3, 0, 3),
     announcement_freshness: clamp((announcementSummary.freshnessScore || 0) * 2, 0, 2),
@@ -164,8 +168,22 @@ export function buildFeatureVector({
     micro_trend: clamp((streamFeatures.microTrend || 0) * 800, -4, 4),
     portfolio_heat: clamp((portfolioFeatures.heat || 0) * 3, 0, 3),
     correlation_pressure: clamp((portfolioFeatures.maxCorrelation || 0) * 3, 0, 3),
+    portfolio_family_budget: clamp((portfolioFeatures.familyBudgetFactor || 1) * 2 - 1, -2, 2),
+    portfolio_regime_budget: clamp((portfolioFeatures.regimeBudgetFactor || 1) * 2 - 1, -2, 2),
     symbol_edge: clamp((symbolStats.avgPnlPct || 0) * 40, -3, 3),
     symbol_win_rate: clamp(((symbolStats.winRate || 0.5) - 0.5) * 6, -3, 3),
+    pair_health_score: clamp((pairHealthSummary.score || 0.5) * 4 - 2, -2, 2),
+    pair_health_infra: clamp((pairHealthSummary.infraPenalty || 0) * 4, 0, 4),
+    pair_quarantined: pairHealthSummary.quarantined ? 1 : 0,
+    tf_lower_bias: clamp((timeframeSummary.lowerBias || 0) * 3, -3, 3),
+    tf_higher_bias: clamp((timeframeSummary.higherBias || 0) * 3, -3, 3),
+    tf_alignment: clamp((timeframeSummary.alignmentScore || 0) * 4 - 2, -2, 2),
+    tf_vol_gap: clamp((timeframeSummary.volatilityGapPct || 0) * 100, 0, 4),
+    tf_conflict: (timeframeSummary.blockerReasons || []).length ? 1 : 0,
+    stablecoin_liquidity: clamp((onChainLiteSummary.liquidityScore || 0) * 3, 0, 3),
+    stablecoin_risk_off: clamp((onChainLiteSummary.riskOffScore || 0) * 3, 0, 3),
+    stablecoin_stress: clamp((onChainLiteSummary.stressScore || 0) * 3, 0, 3),
+    stablecoin_dominance: clamp(((onChainLiteSummary.stablecoinDominancePct || 8) - 8) / 3, -3, 3),
     session_asia: sessionSummary.session === "asia" ? 1 : 0,
     session_europe: sessionSummary.session === "europe" ? 1 : 0,
     session_us: sessionSummary.session === "us" ? 1 : 0,

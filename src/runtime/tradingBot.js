@@ -17,6 +17,7 @@ import { CalendarService } from "../events/calendarService.js";
 import { MarketStructureService } from "../market/marketStructureService.js";
 import { MarketSentimentService, EMPTY_MARKET_SENTIMENT } from "../market/marketSentimentService.js";
 import { VolatilityService, EMPTY_VOLATILITY_CONTEXT } from "../market/volatilityService.js";
+import { OnChainLiteService, EMPTY_ONCHAIN } from "../market/onChainLiteService.js";
 import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
 import { StateStore } from "../storage/stateStore.js";
@@ -30,10 +31,14 @@ import { UniverseSelector } from "./universeSelector.js";
 import { resolveDynamicWatchlist } from "./watchlistResolver.js";
 import { HealthMonitor } from "./healthMonitor.js";
 import { DriftMonitor } from "./driftMonitor.js";
+import { PairHealthMonitor } from "./pairHealthMonitor.js";
+import { DivergenceMonitor } from "./divergenceMonitor.js";
+import { OfflineTrainer } from "./offlineTrainer.js";
 import { SelfHealManager } from "./selfHealManager.js";
 import { StreamCoordinator } from "./streamCoordinator.js";
 import { buildDeepScanPlan, buildLightweightSnapshot } from "./scanPlanner.js";
 import { buildSessionSummary } from "./sessionManager.js";
+import { buildTimeframeConsensus } from "./timeframeConsensus.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
@@ -1034,6 +1039,117 @@ function summarizeMeta(summary = {}) {
     notes: [...(summary.notes || [])]
   };
 }
+function summarizeTimeframeConsensus(summary = {}) {
+  return {
+    enabled: Boolean(summary.enabled),
+    lowerInterval: summary.lowerInterval || null,
+    higherInterval: summary.higherInterval || null,
+    lowerBias: num(summary.lowerBias || 0, 4),
+    higherBias: num(summary.higherBias || 0, 4),
+    alignmentScore: num(summary.alignmentScore || 0, 4),
+    directionAgreement: summary.directionAgreement ?? 0.5,
+    volatilityGapPct: num(summary.volatilityGapPct || 0, 4),
+    reasons: [...(summary.reasons || [])],
+    blockerReasons: [...(summary.blockerReasons || [])],
+    summary: summary.summary || null
+  };
+}
+
+function summarizePairHealth(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    trackedSymbols: summary.trackedSymbols || 0,
+    averageScore: num(summary.averageScore || 0, 4),
+    quarantinedCount: summary.quarantinedCount || 0,
+    quarantinedSymbols: [...(summary.quarantinedSymbols || [])],
+    suggestions: [...(summary.suggestions || [])],
+    leadSymbol: summary.leadSymbol || null,
+    leadScore: summary.leadScore == null ? null : num(summary.leadScore, 4)
+  };
+}
+
+function summarizeDivergenceSummary(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    strategyCount: summary.strategyCount || 0,
+    comparableStrategyCount: summary.comparableStrategyCount || 0,
+    averageScore: num(summary.averageScore || 0, 4),
+    blockerCount: summary.blockerCount || 0,
+    watchCount: summary.watchCount || 0,
+    leadBlocker: summary.leadBlocker ? {
+      id: summary.leadBlocker.id || null,
+      divergenceScore: num(summary.leadBlocker.divergenceScore || 0, 4),
+      status: summary.leadBlocker.status || null
+    } : null,
+    strategies: arr(summary.strategies || []).slice(0, 8).map((item) => ({
+      id: item.id || null,
+      divergenceScore: num(item.divergenceScore || 0, 4),
+      status: item.status || null,
+      paperTradeCount: item.paper?.tradeCount || 0,
+      liveTradeCount: item.live?.tradeCount || 0,
+      pnlGap: num(item.gaps?.pnlPct || 0, 4),
+      slipGapBps: num(item.gaps?.slipBps || 0, 2),
+      winRateGap: num(item.gaps?.winRate || 0, 4)
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeOnChainLite(summary = {}) {
+  return {
+    coverage: summary.coverage || 0,
+    stablecoinMarketCapUsd: num(summary.stablecoinMarketCapUsd || 0, 2),
+    stablecoinVolumeUsd: num(summary.stablecoinVolumeUsd || 0, 2),
+    stablecoinChangePct24h: num(summary.stablecoinChangePct24h || 0, 2),
+    stablecoinDominancePct: num(summary.stablecoinDominancePct || 0, 2),
+    liquidityScore: num(summary.liquidityScore || 0, 4),
+    riskOffScore: num(summary.riskOffScore || 0, 4),
+    stressScore: num(summary.stressScore || 0, 4),
+    reasons: [...(summary.reasons || [])],
+    lastUpdatedAt: summary.lastUpdatedAt || null
+  };
+}
+
+function summarizeSourceReliability(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    providerCount: summary.providerCount || 0,
+    averageScore: num(summary.averageScore || 0, 4),
+    degradedCount: summary.degradedCount || 0,
+    coolingDownCount: summary.coolingDownCount || 0,
+    providers: arr(summary.providers || []).slice(0, 8).map((item) => ({
+      provider: item.provider || null,
+      score: num(item.score || 0, 4),
+      coolingDown: Boolean(item.coolingDown),
+      recentFailures: item.recentFailures || 0,
+      lastError: item.lastError || null
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeOfflineTrainer(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    learningReadyTrades: summary.learningReadyTrades || 0,
+    paperTrades: summary.paperTrades || 0,
+    liveTrades: summary.liveTrades || 0,
+    learningFrames: summary.learningFrames || 0,
+    decisionFrames: summary.decisionFrames || 0,
+    readinessScore: num(summary.readinessScore || 0, 4),
+    status: summary.status || "warmup",
+    counterfactuals: {
+      total: summary.counterfactuals?.total || 0,
+      missedWinners: summary.counterfactuals?.missedWinners || 0,
+      blockedCorrectly: summary.counterfactuals?.blockedCorrectly || 0,
+      averageMissedMovePct: num(summary.counterfactuals?.averageMissedMovePct || 0, 4)
+    },
+    strategies: arr(summary.strategies || []).slice(0, 6),
+    regimes: arr(summary.regimes || []).slice(0, 5),
+    notes: [...(summary.notes || [])]
+  };
+}
+
 function buildHealth() {
   return {
     consecutiveFailures: 0,
@@ -1077,6 +1193,9 @@ export class TradingBot {
     this.modelRegistry = new ModelRegistry(config);
     this.dataRecorder = new DataRecorder({ runtimeDir: config.runtimeDir, config, logger });
     this.backupManager = new StateBackupManager({ runtimeDir: config.runtimeDir, config, logger });
+    this.pairHealthMonitor = new PairHealthMonitor(config);
+    this.divergenceMonitor = new DivergenceMonitor(config);
+    this.offlineTrainer = new OfflineTrainer(config);
     this.universeSelector = new UniverseSelector(config);
     this.stream = new StreamCoordinator({ client: this.client, config, logger });
     this.symbolRules = {};
@@ -1104,6 +1223,12 @@ export class TradingBot {
     this.runtime.aiTelemetry = this.runtime.aiTelemetry || {};
     this.runtime.marketSentiment = this.runtime.marketSentiment || {};
     this.runtime.volatilityContext = this.runtime.volatilityContext || {};
+    this.runtime.onChainLite = this.runtime.onChainLite || summarizeOnChainLite(EMPTY_ONCHAIN);
+    this.runtime.sourceReliability = this.runtime.sourceReliability || summarizeSourceReliability({});
+    this.runtime.pairHealth = this.runtime.pairHealth || summarizePairHealth({});
+    this.runtime.divergence = this.runtime.divergence || summarizeDivergenceSummary({});
+    this.runtime.offlineTrainer = this.runtime.offlineTrainer || summarizeOfflineTrainer({});
+    this.runtime.counterfactualQueue = arr(this.runtime.counterfactualQueue);
     this.runtime.session = this.runtime.session || {};
     this.runtime.drift = this.runtime.drift || {};
     this.runtime.selfHeal = this.runtime.selfHeal || this.selfHeal.buildDefaultState();
@@ -1123,6 +1248,7 @@ export class TradingBot {
     this.journal.blockedSetups = arr(this.journal.blockedSetups);
     this.journal.universeRuns = arr(this.journal.universeRuns);
     this.journal.researchRuns = arr(this.journal.researchRuns);
+    this.journal.counterfactuals = arr(this.journal.counterfactuals);
     this.journal.equitySnapshots = arr(this.journal.equitySnapshots);
     this.journal.cycles = arr(this.journal.cycles);
     this.journal.events = arr(this.journal.events);
@@ -1133,11 +1259,12 @@ export class TradingBot {
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.model = new AdaptiveTradingModel(await this.store.loadModel(), this.config);
     this.rlPolicy = new ReinforcementExecutionPolicy(this.runtime.executionPolicyState, this.config);
-    this.news = new NewsService({ config: this.config, runtime: this.runtime, logger: this.logger });
+    this.news = new NewsService({ config: this.config, runtime: this.runtime, logger: this.logger, recordEvent: this.recordEvent.bind(this) });
     this.exchangeNotices = new BinanceAnnouncementService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.calendar = new CalendarService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.marketStructure = new MarketStructureService({ client: this.client, config: this.config, runtime: this.runtime, logger: this.logger });
     this.marketSentiment = new MarketSentimentService({ config: this.config, runtime: this.runtime, logger: this.logger });
+    this.onChainLite = new OnChainLiteService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.volatility = new VolatilityService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.runtime.strategyAttribution = summarizeAttributionSnapshot(
       this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: nowIso() })
@@ -1251,6 +1378,61 @@ export class TradingBot {
     await this.persist();
   }
 
+  async getTimeframeSnapshot(symbol, interval, limit) {
+    if (!interval || interval === this.config.klineInterval) {
+      return null;
+    }
+    const rawKlines = await this.client.getKlines(symbol, interval, limit);
+    const candles = normalizeKlines(rawKlines);
+    return { interval, candles, market: computeMarketFeatures(candles) };
+  }
+
+  queueCounterfactualCandidate(candidate, queuedAt) {
+    if (!candidate || candidate.decision?.allow) {
+      return;
+    }
+    const entryPrice = Number(candidate.marketSnapshot?.book?.mid || 0);
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
+      return;
+    }
+    const dueAt = new Date(new Date(queuedAt).getTime() + Math.max(5, this.config.counterfactualLookaheadMinutes || 90) * 60000).toISOString();
+    this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), { id: crypto.randomUUID(), symbol: candidate.symbol, queuedAt, dueAt, entryPrice, probability: candidate.score?.probability || 0, threshold: candidate.decision?.threshold || 0, strategy: candidate.strategySummary?.activeStrategy || null, regime: candidate.regimeSummary?.regime || null, blockerReasons: [...(candidate.decision?.reasons || [])].slice(0, 6), executionStyle: candidate.decision?.executionPlan?.entryStyle || null }].slice(-(this.config.counterfactualQueueLimit || 40));
+  }
+
+  async resolveCounterfactualQueue(nowAt = nowIso(), snapshotMap = {}) {
+    const due = [];
+    const pending = [];
+    const nowMs = new Date(nowAt).getTime();
+    for (const item of arr(this.runtime.counterfactualQueue)) {
+      const dueMs = new Date(item.dueAt || item.queuedAt || 0).getTime();
+      if (Number.isFinite(dueMs) && dueMs <= nowMs) {
+        due.push(item);
+      } else {
+        pending.push(item);
+      }
+    }
+    this.runtime.counterfactualQueue = pending;
+    for (const item of due) {
+      try {
+        const snapshot = snapshotMap[item.symbol] || this.marketCache[item.symbol] || await this.getMarketSnapshot(item.symbol);
+        const currentPrice = Number(snapshot?.book?.mid || 0);
+        if (!Number.isFinite(currentPrice) || !Number.isFinite(item.entryPrice) || item.entryPrice <= 0) {
+          continue;
+        }
+        const realizedMovePct = currentPrice / item.entryPrice - 1;
+        const winBar = Math.max(this.config.scaleOutTriggerPct || 0.014, (this.config.takeProfitPct || 0.03) * 0.35);
+        const lossBar = -Math.max((this.config.stopLossPct || 0.018) * 0.5, 0.006);
+        const outcome = realizedMovePct >= winBar ? "missed_winner" : realizedMovePct <= lossBar ? "blocked_correctly" : "neutral";
+        this.journal.counterfactuals.push({ ...item, resolvedAt: nowAt, currentPrice, realizedMovePct: num(realizedMovePct, 4), outcome });
+      } catch (error) {
+        this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: error.message });
+      }
+    }
+    if (this.journal.counterfactuals.length > 1000) {
+      this.journal.counterfactuals = this.journal.counterfactuals.slice(-1000);
+    }
+  }
+
   async close() {
     this.runtime.stream = this.stream.getStatus();
     this.runtime.lifecycle = this.runtime.lifecycle || {};
@@ -1344,29 +1526,18 @@ export class TradingBot {
 
   refreshGovernanceViews(referenceNow = nowIso()) {
     const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
-    const rawResearchRegistry = this.researchRegistry.buildRegistry({
-      journal: this.journal,
-      latestSummary: this.runtime.researchLab?.latestSummary || null,
-      modelBackups: this.modelBackups || [],
-      nowIso: referenceNow
-    });
-    this.runtime.strategyAttribution = summarizeAttributionSnapshot(
-      this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: referenceNow })
-    );
+    const rawResearchRegistry = this.researchRegistry.buildRegistry({ journal: this.journal, latestSummary: this.runtime.researchLab?.latestSummary || null, modelBackups: this.modelBackups || [], nowIso: referenceNow });
+    const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: referenceNow });
+    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: referenceNow });
+    this.runtime.strategyAttribution = summarizeAttributionSnapshot(this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: referenceNow }));
     this.runtime.researchRegistry = summarizeResearchRegistry(rawResearchRegistry);
-    this.runtime.modelRegistry = summarizeModelRegistry(
-      this.modelRegistry.buildRegistry({
-        snapshots: this.modelBackups || [],
-        report,
-        researchRegistry: rawResearchRegistry,
-        calibration: this.model.getCalibrationSummary(),
-        deployment: this.model.getDeploymentSummary(),
-        nowIso: referenceNow
-      })
-    );
+    this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
+    this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
+    this.runtime.modelRegistry = summarizeModelRegistry(this.modelRegistry.buildRegistry({ snapshots: this.modelBackups || [], report, researchRegistry: rawResearchRegistry, calibration: this.model.getCalibrationSummary(), deployment: this.model.getDeploymentSummary(), divergenceSummary, offlineTrainer: offlineTrainerSummary, nowIso: referenceNow }));
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
-    return { report, rawResearchRegistry };
+    this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
+    return { report, rawResearchRegistry, divergenceSummary, offlineTrainerSummary };
   }
 
   updateSafetyState({ now = new Date(), candidateSummaries = arr(this.runtime.latestDecisions) } = {}) {
@@ -1441,11 +1612,15 @@ export class TradingBot {
       modelBackups: this.modelBackups || [],
       nowIso: nowIso()
     });
+    const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: nowIso() });
+    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: nowIso() });
     trade.promotionPolicy = this.modelRegistry.buildPromotionPolicy({
       report,
       researchRegistry: rawResearchRegistry,
       calibration: this.model.getCalibrationSummary(),
-      deployment: this.model.getDeploymentSummary()
+      deployment: this.model.getDeploymentSummary(),
+      divergenceSummary,
+      offlineTrainer: offlineTrainerSummary
     });
     const learning = this.model.updateFromTrade(trade);
     Object.assign(trade, learning.label, { regimeAtEntry: trade.regimeAtEntry || learning.regime });
@@ -1518,14 +1693,20 @@ export class TradingBot {
         localBookSnapshot?.synced &&
         (localBookSnapshot.depthAgeMs || Number.MAX_SAFE_INTEGER) <= this.config.maxDepthEventAgeMs
       );
-      const [rawKlines, restBookTicker, restOrderBook] = await Promise.all([
+      const [rawKlines, restBookTicker, restOrderBook, lowerTimeframeSnapshot, higherTimeframeSnapshot] = await Promise.all([
         this.client.getKlines(symbol, this.config.klineInterval, this.config.klineLimit),
         streamFeatures.latestBookTicker?.bid && streamFeatures.latestBookTicker?.ask
           ? Promise.resolve(null)
           : this.client.getBookTicker(symbol),
-        useLocalBook ? Promise.resolve(null) : this.client.getOrderBook(symbol, Math.max(10, this.config.streamDepthLevels || 20))
+        useLocalBook ? Promise.resolve(null) : this.client.getOrderBook(symbol, Math.max(10, this.config.streamDepthLevels || 20)),
+        this.config.enableCrossTimeframeConsensus ? this.getTimeframeSnapshot(symbol, this.config.lowerTimeframeInterval, this.config.lowerTimeframeLimit).catch(() => null) : Promise.resolve(null),
+        this.config.enableCrossTimeframeConsensus ? this.getTimeframeSnapshot(symbol, this.config.higherTimeframeInterval, this.config.higherTimeframeLimit).catch(() => null) : Promise.resolve(null)
       ]);
       const candles = normalizeKlines(rawKlines);
+      const timeframes = {
+        lower: lowerTimeframeSnapshot,
+        higher: higherTimeframeSnapshot
+      };
       const effectiveBookTicker = streamFeatures.latestBookTicker?.bid && streamFeatures.latestBookTicker?.ask
         ? {
             bidPrice: streamFeatures.latestBookTicker.bid,
@@ -1563,6 +1744,7 @@ export class TradingBot {
         symbol,
         candles,
         market: computeMarketFeatures(candles),
+        timeframes,
         book,
         stream: streamFeatures,
         cachedAt: nowIso(),
@@ -1577,6 +1759,7 @@ export class TradingBot {
     } catch (error) {
       if (cachedSnapshot) {
         this.logger.warn("Using cached market snapshot", { symbol, error: error.message });
+        this.recordEvent("market_snapshot_cache_fallback", { symbol, error: error.message });
         return buildCachedSnapshotView({ symbol, cachedSnapshot, streamFeatures, localBookSnapshot }) || cachedSnapshot;
       }
       throw error;
@@ -1718,6 +1901,21 @@ export class TradingBot {
         label: "Macro sentiment",
         passed: (candidate.marketSentimentSummary?.riskScore || 0) < 0.84 || (candidate.marketSentimentSummary?.contrarianScore || 0) >= -0.2,
         detail: candidate.marketSentimentSummary?.fearGreedValue == null ? "Fear & Greed niet beschikbaar" : `FG ${num(candidate.marketSentimentSummary?.fearGreedValue || 0, 1)} | dom ${num(candidate.marketSentimentSummary?.btcDominancePct || 0, 1)}%`
+      },
+      {
+        label: "Cross timeframe",
+        passed: !(candidate.timeframeSummary?.blockerReasons || []).length,
+        detail: `${candidate.timeframeSummary?.higherInterval || "1h"}/${candidate.timeframeSummary?.lowerInterval || "5m"} align ${num((candidate.timeframeSummary?.alignmentScore || 0) * 100, 1)}%`
+      },
+      {
+        label: "Pair health",
+        passed: !(candidate.pairHealthSummary?.quarantined),
+        detail: `${candidate.pairHealthSummary?.health || "watch"} | score ${num((candidate.pairHealthSummary?.score || 0) * 100, 1)}%`
+      },
+      {
+        label: "Stablecoin flow",
+        passed: (candidate.onChainLiteSummary?.riskOffScore || 0) < 0.82 && (candidate.onChainLiteSummary?.stressScore || 0) < 0.78,
+        detail: `liq ${num((candidate.onChainLiteSummary?.liquidityScore || 0) * 100, 1)}% | stress ${num((candidate.onChainLiteSummary?.stressScore || 0) * 100, 1)}%`
       },
       {
         label: "Options volatility",
@@ -1954,6 +2152,7 @@ export class TradingBot {
     const marketStructureSummary = context.marketStructureSummary || (await this.marketStructure.getSymbolSummary(symbol, streamFeatures));
     const marketSentimentSummary = context.marketSentimentSummary || (this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT);
     const volatilitySummary = context.volatilitySummary || (this.config.enableVolatilityContext ? await this.volatility.getSummary() : EMPTY_VOLATILITY_CONTEXT);
+    const onChainLiteSummary = context.onChainLiteSummary || (this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(marketSentimentSummary) : EMPTY_ONCHAIN);
     const sessionSummary = this.config.enableSessionLogic
       ? buildSessionSummary({ now, marketSnapshot, marketStructureSummary, config: this.config })
       : { session: "disabled", sessionLabel: "Disabled", sizeMultiplier: 1, thresholdPenalty: 0, reasons: [], blockerReasons: [] };
@@ -1982,6 +2181,11 @@ export class TradingBot {
       streamFeatures,
       optimizerSummary
     });
+    const timeframeSummary = this.config.enableCrossTimeframeConsensus
+      ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config })
+      : summarizeTimeframeConsensus({ enabled: false });
+    const pairHealthSummary = context.pairHealthSummary || this.pairHealthMonitor.evaluateSymbol(context.pairHealthSnapshot || {}, { symbol, marketSnapshot, newsSummary, timeframeSummary });
+    const divergenceSummary = context.divergenceSummary || this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
     const attributionSummary = this.strategyAttribution.getAdjustment(context.attributionSnapshot || {}, {
       symbol,
       strategyId: strategySummary.activeStrategy || null,
@@ -1992,10 +2196,12 @@ export class TradingBot {
     const portfolioSummary = this.portfolio.evaluateCandidate({
       symbol,
       runtime: this.runtime,
+      journal: this.journal,
       marketSnapshot,
       candidateProfile: this.config.symbolProfiles[symbol] || defaultProfile(symbol),
       openPositionContexts,
-      regimeSummary
+      regimeSummary,
+      strategySummary
     });
     const currentExposure = this.risk.getCurrentExposure(this.runtime);
     const totalEquityProxy = Math.max(balance.quoteFree + currentExposure, 1);
@@ -2012,11 +2218,16 @@ export class TradingBot {
       calendarSummary,
       portfolioFeatures: {
         heat: currentExposure / totalEquityProxy,
-        maxCorrelation: portfolioSummary.maxCorrelation || 0
+        maxCorrelation: portfolioSummary.maxCorrelation || 0,
+        familyBudgetFactor: portfolioSummary.familyBudgetFactor || 1,
+        regimeBudgetFactor: portfolioSummary.regimeBudgetFactor || 1
       },
       streamFeatures,
       regimeSummary,
       strategySummary,
+      timeframeSummary,
+      onChainLiteSummary,
+      pairHealthSummary,
       sessionSummary,
       now
     });
@@ -2105,6 +2316,10 @@ export class TradingBot {
           driftSummary,
           selfHealState: this.runtime.selfHeal || this.selfHeal.buildDefaultState(),
           portfolioSummary,
+          timeframeSummary,
+          pairHealthSummary,
+          onChainLiteSummary,
+          divergenceSummary,
           journal: this.journal,
           nowIso: now.toISOString()
         })
@@ -2132,6 +2347,10 @@ export class TradingBot {
       symbolStats,
       portfolioSummary,
       regimeSummary,
+      timeframeSummary,
+      pairHealthSummary,
+      onChainLiteSummary,
+      divergenceSummary,
       nowIso: now.toISOString()
     });
     decision.rankScore = num((decision.rankScore || 0) + (attributionSummary.rankBoost || 0), 4);
@@ -2159,7 +2378,11 @@ export class TradingBot {
       marketStructureSummary,
       marketSentimentSummary,
       volatilitySummary,
+      onChainLiteSummary,
       calendarSummary,
+      timeframeSummary,
+      pairHealthSummary,
+      divergenceSummary,
       streamFeatures,
       rawFeatures,
       score,
@@ -2197,6 +2420,11 @@ export class TradingBot {
       const exchangeSummary = await this.exchangeNotices.getSymbolSummary(position.symbol, aliases);
       const calendarSummary = await this.calendar.getSymbolSummary(position.symbol, aliases);
       const marketStructureSummary = await this.marketStructure.getSymbolSummary(position.symbol, marketSnapshot.stream || this.stream.getSymbolStreamFeatures(position.symbol));
+      const marketSentimentSummary = this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT;
+      const onChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(marketSentimentSummary) : EMPTY_ONCHAIN;
+      const strategySummary = position.strategyDecision || position.entryRationale?.strategy || {};
+      const regimeSummary = this.model.inferRegime({ marketFeatures: marketSnapshot.market, newsSummary, streamFeatures: marketSnapshot.stream || {}, bookFeatures: marketSnapshot.book, marketStructureSummary, marketSentimentSummary, volatilitySummary: this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT, announcementSummary: exchangeSummary, calendarSummary });
+      const timeframeSummary = this.config.enableCrossTimeframeConsensus ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config }) : summarizeTimeframeConsensus({ enabled: false });
       const exitIntelligenceSummary = this.config.enableExitIntelligence
         ? this.exitIntelligence.evaluate({
             position,
@@ -2205,6 +2433,10 @@ export class TradingBot {
             announcementSummary: exchangeSummary,
             marketStructureSummary,
             calendarSummary,
+            marketSentimentSummary,
+            onChainLiteSummary,
+            timeframeSummary,
+            regimeSummary,
             runtime: this.runtime,
             journal: this.journal,
             nowIso: nowIso()
@@ -2237,7 +2469,12 @@ export class TradingBot {
       position.latestExchangeSummary = exchangeSummary;
       position.latestCalendarSummary = calendarSummary;
       position.latestMarketStructureSummary = marketStructureSummary;
+      position.latestTimeframeSummary = timeframeSummary;
+      position.latestOnChainLiteSummary = onChainLiteSummary;
       position.latestExitIntelligence = exitIntelligenceSummary;
+      position.replayCheckpoints = arr(position.replayCheckpoints || []);
+      position.replayCheckpoints.push({ at: nowIso(), price: num(marketSnapshot.book.mid, 6), spreadBps: num(marketSnapshot.book.spreadBps || 0, 2), bookPressure: num(marketSnapshot.book.bookPressure || 0, 3), newsRisk: num(newsSummary.riskScore || 0, 3), tfAlignment: num(timeframeSummary.alignmentScore || 0, 4), onChainStress: num(onChainLiteSummary.stressScore || 0, 4) });
+      position.replayCheckpoints = position.replayCheckpoints.slice(-24);
       position.lastReviewedAt = nowIso();
       if (exitDecision.shouldScaleOut) {
         const scaleOut = await this.broker.scaleOutPosition({
@@ -2269,6 +2506,7 @@ export class TradingBot {
         runtime: this.runtime
       });
       trade.exitIntelligenceSummary = exitIntelligenceSummary;
+      trade.replayCheckpoints = arr(position.replayCheckpoints || []);
       this.journal.trades.push(trade);
       await this.learnFromTrade(trade, "Closed position");
     }
@@ -2313,8 +2551,20 @@ export class TradingBot {
     const openPositionContexts = this.buildOpenPositionContexts(snapshotMap);
     const optimizerSnapshot = this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
     const attributionSnapshot = this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
+    const sharedMarketSentimentSummary = this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT;
+    const sharedVolatilitySummary = this.config.enableVolatilityContext ? await this.volatility.getSummary() : EMPTY_VOLATILITY_CONTEXT;
+    const sharedOnChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(sharedMarketSentimentSummary) : EMPTY_ONCHAIN;
+    const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: this.config.watchlist, nowIso: now.toISOString() });
+    const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
+    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: now.toISOString() });
     this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
     this.runtime.strategyAttribution = summarizeAttributionSnapshot(attributionSnapshot);
+    this.runtime.marketSentiment = summarizeMarketSentiment(sharedMarketSentimentSummary);
+    this.runtime.volatilityContext = summarizeVolatility(sharedVolatilitySummary);
+    this.runtime.onChainLite = summarizeOnChainLite(sharedOnChainLiteSummary);
+    this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
+    this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
+    this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
     const universeSnapshot = scanPlan.universeSnapshot;
     this.runtime.universe = summarizeUniverseSelection(universeSnapshot);
     this.journal.universeRuns.push({
@@ -2341,9 +2591,17 @@ export class TradingBot {
           openPositionContexts,
           optimizerSummary: optimizerSnapshot,
           attributionSnapshot,
-          universeSummary: universeEntryMap[symbol] || null
+          universeSummary: universeEntryMap[symbol] || null,
+          marketSentimentSummary: sharedMarketSentimentSummary,
+          volatilitySummary: sharedVolatilitySummary,
+          onChainLiteSummary: sharedOnChainLiteSummary,
+          pairHealthSnapshot,
+          divergenceSummary
         });
         candidates.push(candidate);
+        if (!candidate.decision.allow) {
+          this.queueCounterfactualCandidate(candidate, now.toISOString());
+        }
       } catch (error) {
         this.logger.warn("Candidate evaluation failed", { symbol, error: error.message });
         this.recordEvent("candidate_evaluation_failed", { symbol, error: error.message });
@@ -2351,6 +2609,7 @@ export class TradingBot {
     }
 
     candidates.sort((left, right) => right.decision.rankScore - left.decision.rankScore);
+    this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
     this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
       symbol: candidate.symbol,
       summary: this.buildCandidateSummary(candidate),
@@ -2409,6 +2668,9 @@ export class TradingBot {
       marketSentiment: summarizeMarketSentiment(candidate.marketSentimentSummary),
       volatility: summarizeVolatility(candidate.volatilitySummary),
       calendar: summarizeCalendarSummary(candidate.calendarSummary),
+      timeframe: summarizeTimeframeConsensus(candidate.timeframeSummary),
+      pairHealth: { symbol: candidate.pairHealthSummary?.symbol || candidate.symbol, score: num(candidate.pairHealthSummary?.score || 0, 4), health: candidate.pairHealthSummary?.health || "watch", quarantined: Boolean(candidate.pairHealthSummary?.quarantined), reasons: [...(candidate.pairHealthSummary?.reasons || [])].slice(0, 4) },
+      onChainLite: summarizeOnChainLite(candidate.onChainLiteSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
       indicators: summarizeIndicators(candidate.marketSnapshot.market),
@@ -2472,6 +2734,9 @@ export class TradingBot {
     this.runtime.volatilityContext = candidates[0]
       ? summarizeVolatility(candidates[0].volatilitySummary)
       : this.runtime.volatilityContext || summarizeVolatility(EMPTY_VOLATILITY_CONTEXT);
+    this.runtime.onChainLite = candidates[0]
+      ? summarizeOnChainLite(candidates[0].onChainLiteSummary)
+      : this.runtime.onChainLite || summarizeOnChainLite(EMPTY_ONCHAIN);
     this.runtime.session = candidates[0]
       ? summarizeSession(candidates[0].sessionSummary)
       : this.runtime.session || summarizeSession({});
@@ -2698,6 +2963,7 @@ export class TradingBot {
     const markedPrices = await this.manageOpenPositions();
     const balance = await this.broker.getBalance(this.runtime);
     const candidates = await this.scanCandidates(balance);
+    await this.resolveCounterfactualQueue(cycleAt);
     const executionBlockers = this.config.botMode === "live" ? driftIssues : [];
     const entryAttempt = await this.openBestCandidate(candidates, { executionBlockers });
     const openedPosition = entryAttempt.openedPosition || null;
@@ -2988,6 +3254,15 @@ export class TradingBot {
         riskScore: num(decision.marketStructure?.riskScore || 0, 3),
         reasons: arr(decision.marketStructure?.reasons || []).slice(0, 2)
       },
+      timeframe: {
+        alignmentScore: num(decision.timeframe?.alignmentScore || 0, 4),
+        blockerReasons: arr(decision.timeframe?.blockerReasons || []).slice(0, 2)
+      },
+      pairHealth: {
+        score: num(decision.pairHealth?.score || 0, 4),
+        health: decision.pairHealth?.health || null,
+        quarantined: Boolean(decision.pairHealth?.quarantined)
+      },
       session: {
         session: decision.session?.session || null,
         sessionLabel: decision.session?.sessionLabel || decision.session?.session || null,
@@ -3105,6 +3380,7 @@ export class TradingBot {
         provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
         captureEfficiency: num(trade.captureEfficiency || 0, 4)
       },
+      replayCheckpoints: arr(trade.replayCheckpoints || []).slice(-12),
       timeline: [
         { at: trade.entryAt, type: "analysis", label: "Gate", detail: gateDetail },
         { at: trade.entryAt, type: "entry", label: "Entry", detail: rationale.summary || `${trade.symbol} entry` },
@@ -3197,8 +3473,13 @@ export class TradingBot {
       deployment: this.model.getDeploymentSummary(),
       drift: summarizeDrift(this.runtime.drift || {}),
       selfHeal: summarizeSelfHeal(this.runtime.selfHeal || {}),
+      pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
+      divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
+      offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
+      sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
       session: summarizeSession(this.runtime.session || {}),
       marketSentiment: summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT),
+      onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
       volatility: summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT),
       stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
       dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
@@ -3276,7 +3557,12 @@ export class TradingBot {
       marketStructure: marketStructureOverview,
       marketSentiment: marketSentimentOverview,
       volatility: volatilityOverview,
+      onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
       calendar: calendarOverview,
+      sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
+      pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
+      divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
+      offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
       upcomingEvents: arr(topDecision.calendarEvents || leadPosition?.entryRationale?.calendarEvents || []).slice(0, 4),
       officialNotices: arr(topDecision.officialNotices || leadPosition?.entryRationale?.officialNotices || []).slice(0, 4),
       watchlist: this.runtime.watchlistSummary || null,

@@ -66,7 +66,7 @@ export class ModelRegistry {
     return ranked[0] || null;
   }
 
-  buildPromotionPolicy({ report = null, researchRegistry = null, calibration = null, deployment = null } = {}) {
+  buildPromotionPolicy({ report = null, researchRegistry = null, calibration = null, deployment = null, divergenceSummary = null, offlineTrainer = null } = {}) {
     const paperStats = report?.modes?.paper || report?.windows?.allTime || {};
     const liveStats = report?.modes?.live || {};
     const paperQualityScore = scoreSnapshot(
@@ -123,12 +123,23 @@ export class ModelRegistry {
     if (!(researchRegistry?.governance?.promotionCandidates || []).length) {
       blockerReasons.push("research_registry_not_ready");
     }
+    if ((divergenceSummary?.leadBlocker?.status || "") === "blocked" || (divergenceSummary?.averageScore || 0) >= this.config.divergenceBlockScore) {
+      blockerReasons.push("live_paper_divergence_too_high");
+    }
+    if ((offlineTrainer?.readinessScore || 0) < this.config.offlineTrainerMinReadiness) {
+      blockerReasons.push("offline_trainer_not_ready");
+    }
 
+    const probationRequired = (liveStats.tradeCount || 0) < this.config.modelPromotionProbationLiveTrades;
     const allowPromotion = blockerReasons.length === 0;
     return {
       allowPromotion,
+      probationRequired,
+      probationTradesRemaining: probationRequired ? Math.max(0, this.config.modelPromotionProbationLiveTrades - (liveStats.tradeCount || 0)) : 0,
       readyLevel: allowPromotion
-        ? "ready"
+        ? probationRequired
+          ? "probation"
+          : "ready"
         : (deployment?.shadowTradeCount || 0) < this.config.modelPromotionMinShadowTrades
           ? "warmup"
           : blockerReasons.length >= 4
@@ -141,11 +152,13 @@ export class ModelRegistry {
       paperQualityScore: num(paperQualityScore, 4),
       liveTradeCount: liveStats.tradeCount || 0,
       liveQualityScore: liveQualityScore == null ? null : num(liveQualityScore, 4),
+      divergenceScore: num(divergenceSummary?.averageScore || 0, 4),
+      offlineTrainerReadiness: num(offlineTrainer?.readinessScore || 0, 4),
       blockerReasons
     };
   }
 
-  buildRegistry({ snapshots = [], report = null, researchRegistry = null, calibration = null, deployment = null, nowIso = new Date().toISOString() } = {}) {
+  buildRegistry({ snapshots = [], report = null, researchRegistry = null, calibration = null, deployment = null, divergenceSummary = null, offlineTrainer = null, nowIso = new Date().toISOString() } = {}) {
     const entries = snapshots
       .map((snapshot) => mapSnapshot(snapshot, this.config))
       .sort((left, right) => new Date(right.at || 0).getTime() - new Date(left.at || 0).getTime())
@@ -153,7 +166,7 @@ export class ModelRegistry {
     const bestRollback = this.chooseRollback(snapshots);
     const latest = entries[0] || null;
     const promotionHint = researchRegistry?.governance?.promotionCandidates?.[0] || null;
-    const promotionPolicy = this.buildPromotionPolicy({ report, researchRegistry, calibration, deployment });
+    const promotionPolicy = this.buildPromotionPolicy({ report, researchRegistry, calibration, deployment, divergenceSummary, offlineTrainer });
     const currentQuality = latest ? latest.qualityScore : scoreSnapshot(
       {
         realizedPnl: report?.windows?.allTime?.realizedPnl || report?.realizedPnl || 0,
@@ -187,7 +200,9 @@ export class ModelRegistry {
           ? `Rollback kan terugvallen op snapshot ${bestRollback.at} met quality ${bestRollback.qualityScore}.`
           : "Nog geen rollback-klare modelsnapshot beschikbaar.",
         promotionPolicy.allowPromotion
-          ? "Promotiebeleid staat op groen voor een challenger-promotie."
+          ? promotionPolicy.probationRequired
+            ? `Promotie kan, maar eerst ${promotionPolicy.probationTradesRemaining} live probation trades afronden.`
+            : "Promotiebeleid staat op groen voor een challenger-promotie."
           : `Promotie wacht op: ${promotionPolicy.blockerReasons[0] || "meer data"}.`,
         promotionHint
           ? `${promotionHint.symbol} scoort als research-promotiekandidaat.`

@@ -137,6 +137,10 @@ export class RiskManager {
     driftSummary = {},
     selfHealState = {},
     metaSummary = {},
+    timeframeSummary = {},
+    pairHealthSummary = {},
+    onChainLiteSummary = {},
+    divergenceSummary = {},
     runtime,
     journal,
     balance,
@@ -191,11 +195,17 @@ export class RiskManager {
     if ((sessionSummary.blockerReasons || []).length) {
       reasons.push(...sessionSummary.blockerReasons);
     }
+    if ((timeframeSummary.blockerReasons || []).length) {
+      reasons.push(...timeframeSummary.blockerReasons);
+    }
     if ((driftSummary.blockerReasons || []).length) {
       reasons.push(...driftSummary.blockerReasons);
     }
     if (metaSummary.action === "block") {
       reasons.push(...(metaSummary.reasons || []));
+    }
+    if (pairHealthSummary.quarantined) {
+      reasons.push("pair_health_quarantine");
     }
     if (["paused", "paper_fallback"].includes(selfHealState.mode)) {
       reasons.push("self_heal_pause_entries");
@@ -254,6 +264,9 @@ export class RiskManager {
     if ((marketSentimentSummary.riskScore || 0) > 0.84 && (marketSentimentSummary.contrarianScore || 0) < -0.2) {
       reasons.push("macro_sentiment_overheated");
     }
+    if ((onChainLiteSummary.riskOffScore || 0) > 0.82 || (onChainLiteSummary.stressScore || 0) > 0.78) {
+      reasons.push("stablecoin_flow_risk_off");
+    }
     if ((volatilitySummary.riskScore || 0) > 0.86 && (marketSnapshot.market.realizedVolPct || 0) > this.config.maxRealizedVolPct * 0.55) {
       reasons.push("options_volatility_stress");
     }
@@ -298,6 +311,9 @@ export class RiskManager {
     }
     if (selfHealState.lowRiskOnly && !lowRiskCandidate && this.config.botMode !== "paper") {
       reasons.push("self_heal_low_risk_only");
+    }
+    if ((divergenceSummary?.leadBlocker?.status || "") === "blocked" && this.config.botMode === "live") {
+      reasons.push("live_paper_divergence_guard");
     }
     if ((metaSummary.dailyTradeCount || 0) >= this.config.maxEntriesPerDay) {
       reasons.push("daily_entry_budget_reached");
@@ -355,6 +371,10 @@ export class RiskManager {
     const rlFactor = clamp(rlAdvice.sizeMultiplier || 1, 0.78, 1.14);
     const memoryFactor = clamp(0.9 + (symbolStats.avgPnlPct || 0) * 4, 0.75, 1.15);
     const portfolioFactor = clamp(portfolioSummary.sizeMultiplier || 1, 0.25, 1.05);
+    const pairHealthFactor = clamp(0.78 + (pairHealthSummary.score || 0.5) * 0.34 - (pairHealthSummary.quarantined ? 0.24 : 0), 0.45, 1.08);
+    const timeframeFactor = clamp(0.76 + (timeframeSummary.alignmentScore || 0.5) * 0.36 - ((timeframeSummary.blockerReasons || []).length ? 0.16 : 0), 0.46, 1.08);
+    const onChainFactor = clamp(1 + (onChainLiteSummary.liquidityScore || 0) * 0.08 - (onChainLiteSummary.riskOffScore || 0) * 0.14 - (onChainLiteSummary.stressScore || 0) * 0.12, 0.58, 1.08);
+    const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
     const streakPenalty = clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
 
@@ -377,6 +397,10 @@ export class RiskManager {
       rlFactor *
       memoryFactor *
       portfolioFactor *
+      pairHealthFactor *
+      timeframeFactor *
+      onChainFactor *
+      divergenceFactor *
       heatPenalty *
       streakPenalty *
       sessionSizeMultiplier *
@@ -481,6 +505,10 @@ export class RiskManager {
       sessionSummary,
       driftSummary,
       selfHealState,
+      timeframeSummary,
+      pairHealthSummary,
+      onChainLiteSummary,
+      divergenceSummary,
       rankScore:
         score.probability -
         threshold +
@@ -497,9 +525,14 @@ export class RiskManager {
         (announcementSummary.sentimentScore || 0) * 0.02 +
         (marketSentimentSummary.contrarianScore || 0) * 0.02 +
         (marketStructureSummary.signalScore || 0) * 0.04 +
+        (pairHealthSummary.score || 0.5) * 0.04 +
+        (timeframeSummary.alignmentScore || 0) * 0.05 +
+        (onChainLiteSummary.liquidityScore || 0) * 0.03 +
         (marketSnapshot.book.bookPressure || 0) * 0.04 +
         (marketSnapshot.market.bullishPatternScore || 0) * 0.03 +
         (metaSummary.score || 0) * 0.05 -
+        (onChainLiteSummary.stressScore || 0) * 0.03 -
+        (divergenceSummary.averageScore || 0) * 0.04 -
         ((strategySummary.blockers || []).length ? 0.03 : 0) -
         (volatilitySummary.riskScore || 0) * 0.04 -
         (marketSnapshot.market.bearishPatternScore || 0) * 0.04 -

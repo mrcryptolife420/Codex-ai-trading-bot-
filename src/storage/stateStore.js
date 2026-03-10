@@ -20,6 +20,8 @@ const DEFAULT_RUNTIME = {
   newsCache: {},
   marketSentimentCache: null,
   volatilityContextCache: null,
+  onChainLiteCache: null,
+  newsSourceHealth: {},
   executionPolicyState: null,
   aiTelemetry: {},
   paperPortfolio: null,
@@ -30,6 +32,12 @@ const DEFAULT_RUNTIME = {
   },
   marketSentiment: {},
   volatilityContext: {},
+  onChainLite: {},
+  sourceReliability: {},
+  pairHealth: {},
+  divergence: {},
+  offlineTrainer: {},
+  counterfactualQueue: [],
   session: {},
   drift: {},
   selfHeal: {},
@@ -63,6 +71,7 @@ const DEFAULT_JOURNAL = {
   trades: [],
   scaleOuts: [],
   blockedSetups: [],
+  counterfactuals: [],
   universeRuns: [],
   researchRuns: [],
   equitySnapshots: [],
@@ -119,5 +128,6 @@ export class StateStore {
     await saveJson(this.modelBackupsPath, backups);
   }
 }
+
 
 

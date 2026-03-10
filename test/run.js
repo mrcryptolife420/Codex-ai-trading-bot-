@@ -39,6 +39,12 @@ import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtim
 import { DataRecorder } from "../src/runtime/dataRecorder.js";
 import { StateBackupManager } from "../src/runtime/stateBackupManager.js";
 import { StateStore } from "../src/storage/stateStore.js";
+import { PairHealthMonitor } from "../src/runtime/pairHealthMonitor.js";
+import { DivergenceMonitor } from "../src/runtime/divergenceMonitor.js";
+import { OfflineTrainer } from "../src/runtime/offlineTrainer.js";
+import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
+import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
+import { OnChainLiteService } from "../src/market/onChainLiteService.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -2176,7 +2182,101 @@ await runCheck("research registry surfaces promotion candidates from walk-forwar
   assert.ok(snapshot.governance.promotionCandidates.some((item) => item.symbol === "BTCUSDT"));
 });
 
+await runCheck("pair health monitor quarantines noisy symbols", async () => {
+  const monitor = new PairHealthMonitor(makeConfig({ pairHealthMinScore: 0.45, pairHealthMaxInfraIssues: 2, pairHealthQuarantineMinutes: 180 }));
+  const snapshot = monitor.buildSnapshot({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: -14, netPnlPct: -0.012, executionQualityScore: 0.42, entryExecutionAttribution: { slippageDeltaBps: 4.2 } }
+      ],
+      events: [
+        { type: "market_snapshot_cache_fallback", symbol: "BTCUSDT", at: "2026-03-10T10:00:00.000Z", error: "timeout" },
+        { type: "candidate_evaluation_failed", symbol: "BTCUSDT", at: "2026-03-10T11:00:00.000Z", error: "aborted due to timeout" },
+        { type: "position_open_failed", symbol: "BTCUSDT", at: "2026-03-10T11:30:00.000Z", error: "maker order expired" }
+      ]
+    },
+    runtime: {},
+    watchlist: ["BTCUSDT"],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  const btc = snapshot.bySymbol.BTCUSDT;
+  assert.equal(btc.quarantined, true);
+  assert.ok(btc.score < 0.45);
+});
+
+await runCheck("timeframe consensus blocks conflicting trend signals", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: { interval: "5m", market: { emaTrendScore: 0.8, momentum20: 0.02, breakoutPct: 0.014, supertrendDirection: 1, realizedVolPct: 0.018 } },
+        higher: { interval: "1h", market: { emaTrendScore: -0.7, momentum20: -0.018, breakoutPct: -0.01, supertrendDirection: -1, realizedVolPct: 0.021 } }
+      }
+    },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.ok(summary.alignmentScore < 0.42);
+  assert.ok(summary.blockerReasons.includes("cross_timeframe_misalignment"));
+});
+
+await runCheck("divergence monitor flags strategy drift between paper and live", async () => {
+  const monitor = new DivergenceMonitor(makeConfig({ divergenceMinPaperTrades: 2, divergenceMinLiveTrades: 2, divergenceAlertScore: 0.2, divergenceBlockScore: 0.4, divergenceAlertSlipGapBps: 2 }));
+  const summary = monitor.buildSummary({
+    journal: {
+      trades: [
+        { strategyAtEntry: "ema_trend", brokerMode: "paper", exitAt: "2026-03-08T10:00:00.000Z", pnlQuote: 25, netPnlPct: 0.02, executionQualityScore: 0.72, entryExecutionAttribution: { slippageDeltaBps: 0.4 } },
+        { strategyAtEntry: "ema_trend", brokerMode: "paper", exitAt: "2026-03-08T12:00:00.000Z", pnlQuote: 22, netPnlPct: 0.018, executionQualityScore: 0.7, entryExecutionAttribution: { slippageDeltaBps: 0.6 } },
+        { strategyAtEntry: "ema_trend", brokerMode: "live", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: -12, netPnlPct: -0.011, executionQualityScore: 0.42, entryExecutionAttribution: { slippageDeltaBps: 6.2 } },
+        { strategyAtEntry: "ema_trend", brokerMode: "live", exitAt: "2026-03-09T12:00:00.000Z", pnlQuote: -9, netPnlPct: -0.008, executionQualityScore: 0.45, entryExecutionAttribution: { slippageDeltaBps: 5.8 } }
+      ]
+    },
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.equal(summary.strategies[0].id, "ema_trend");
+  assert.ok(["watch", "blocked"].includes(summary.strategies[0].status));
+});
+
+await runCheck("source reliability engine cools down providers after rate limits", async () => {
+  const engine = new SourceReliabilityEngine(makeConfig({ sourceReliabilityMinOperationalScore: 0.2, sourceReliabilityMaxRecentFailures: 2, sourceReliabilityRateLimitCooldownMinutes: 15, sourceReliabilityTimeoutCooldownMinutes: 10, sourceReliabilityFailureCooldownMinutes: 5 }));
+  const runtime = {};
+  engine.noteFailure(runtime, "reddit_search", "429 rate limit", "2026-03-10T10:00:00.000Z");
+  const gate = engine.shouldUseProvider(runtime, "reddit_search", "2026-03-10T10:01:00.000Z");
+  assert.equal(gate.allow, false);
+  assert.equal(gate.reason, "provider_cooldown_active");
+});
+
+await runCheck("offline trainer summarizes learning readiness and counterfactuals", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 20, netPnlPct: 0.015, executionQualityScore: 0.71, labelScore: 0.82, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -5, netPnlPct: -0.004, executionQualityScore: 0.58, labelScore: 0.41, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" }
+      ]
+    },
+    dataRecorder: { learningFrames: 8, decisionFrames: 14 },
+    counterfactuals: [
+      { outcome: "missed_winner", realizedMovePct: 0.019 },
+      { outcome: "blocked_correctly", realizedMovePct: -0.011 }
+    ],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.equal(summary.counterfactuals.total, 2);
+  assert.ok(summary.readinessScore > 0.24);
+});
+
+await runCheck("on-chain lite summary captures stablecoin liquidity context", async () => {
+  const service = new OnChainLiteService({ config: makeConfig(), runtime: {}, logger: null, fetchImpl: async () => ({ ok: true, json: async () => [] }) });
+  const summary = service.summarize([
+    { market_cap: 110000000000, total_volume: 54000000000, price_change_percentage_24h: 1.1 },
+    { market_cap: 62000000000, total_volume: 16000000000, price_change_percentage_24h: 0.4 }
+  ], { totalMarketCapUsd: 2500000000000 });
+  assert.ok(summary.liquidityScore > 0.4);
+  assert.ok(summary.stablecoinDominancePct > 0);
+});
 console.log("All checks passed.");
+
 
 
 

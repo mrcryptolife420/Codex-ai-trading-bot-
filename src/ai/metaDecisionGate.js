@@ -43,6 +43,10 @@ export class MetaDecisionGate {
     driftSummary = {},
     selfHealState = {},
     portfolioSummary = {},
+    timeframeSummary = {},
+    pairHealthSummary = {},
+    onChainLiteSummary = {},
+    divergenceSummary = {},
     journal,
     nowIso
   }) {
@@ -75,6 +79,9 @@ export class MetaDecisionGate {
       Math.max(0, safeNumber(marketSnapshot?.book?.bookPressure, 0)) * 0.14 +
       Math.max(0, safeNumber(marketStructureSummary.signalScore, 0)) * 0.18 +
       Math.max(0, safeNumber(marketSentimentSummary.contrarianScore, 0)) * 0.1 +
+      Math.max(0, safeNumber(pairHealthSummary.score, 0.5) - 0.5) * 0.26 +
+      Math.max(0, safeNumber(timeframeSummary.alignmentScore, 0.5) - 0.5) * 0.24 +
+      Math.max(0, safeNumber(onChainLiteSummary.liquidityScore, 0) - 0.35) * 0.16 +
       Math.max(0, historicalEdge);
     const negativeScore =
       Math.max(0, safeNumber(newsSummary.riskScore, 0) - 0.45) * 0.34 +
@@ -85,7 +92,10 @@ export class MetaDecisionGate {
       Math.max(0, safeNumber(sessionSummary.riskScore, 0) - 0.35) * 0.2 +
       Math.max(0, safeNumber(portfolioSummary.maxCorrelation, 0) - 0.55) * 0.2 +
       Math.max(0, safeNumber(marketStructureSummary.longSqueezeScore, 0) - 0.35) * 0.16 +
-      Math.max(0, safeNumber(marketStructureSummary.crowdingBias, 0)) * 0.08;
+      Math.max(0, safeNumber(marketStructureSummary.crowdingBias, 0)) * 0.08 +
+      Math.max(0, 0.48 - safeNumber(timeframeSummary.alignmentScore, 0.5)) * 0.22 +
+      Math.max(0, 0.5 - safeNumber(pairHealthSummary.score, 0.5)) * 0.2 +
+      Math.max(0, safeNumber(onChainLiteSummary.stressScore, 0) - 0.35) * 0.16;
     const metaScore = clamp(0.5 + positiveScore - negativeScore, 0, 1);
     const metaConfidence = clamp(
       0.24 +
@@ -93,7 +103,8 @@ export class MetaDecisionGate {
         (newsSummary.coverage ? 0.08 : 0) +
         (committeeSummary.agreement ? 0.12 : 0) +
         (strategySummary.activeStrategy ? 0.1 : 0) +
-        (marketSnapshot?.book?.depthConfidence ? 0.08 : 0),
+        (marketSnapshot?.book?.depthConfidence ? 0.08 : 0) +
+        (timeframeSummary.enabled ? 0.06 : 0),
       0.18,
       0.96
     );
@@ -109,7 +120,9 @@ export class MetaDecisionGate {
         Math.max(0, safeNumber(strategySummary.fitScore, 0) - 0.45) * 0.34 +
         Math.max(0, safeNumber(committeeSummary.agreement, 0) - 0.3) * 0.18 +
         executionReadiness * 0.16 +
-        historyConfidence * 0.08 -
+        historyConfidence * 0.08 +
+        Math.max(0, safeNumber(timeframeSummary.alignmentScore, 0) - 0.4) * 0.12 +
+        Math.max(0, safeNumber(pairHealthSummary.score, 0.5) - 0.45) * 0.1 -
         negativeScore * 0.22,
       0,
       1
@@ -123,12 +136,22 @@ export class MetaDecisionGate {
       1
     );
     const canarySizeMultiplier = canaryActive ? this.config.canaryLiveSizeMultiplier : 1;
+    const pairHealthMultiplier = clamp(0.82 + safeNumber(pairHealthSummary.score, 0.5) * 0.3, 0.65, 1.08);
+    const timeframeMultiplier = clamp(0.78 + safeNumber(timeframeSummary.alignmentScore, 0.5) * 0.34, 0.7, 1.08);
+    const divergencePenalty = (divergenceSummary?.leadBlocker?.status || "") === "blocked"
+      ? 0.78
+      : (divergenceSummary?.averageScore || 0) >= this.config.divergenceAlertScore
+        ? 0.9
+        : 1;
     const sizeMultiplier = clamp(
       (0.56 + metaScore * 0.58) *
         (0.82 + historyConfidence * 0.16) *
         (0.82 + qualityScore * 0.12) *
         dailyBudgetFactor *
         canarySizeMultiplier *
+        pairHealthMultiplier *
+        timeframeMultiplier *
+        divergencePenalty *
         (selfHealState.lowRiskOnly ? 0.9 : 1),
       0.16,
       1.12
@@ -145,6 +168,15 @@ export class MetaDecisionGate {
     } else if (qualityScore < this.config.tradeQualityCautionScore) {
       reasons.push("trade_quality_caution");
     }
+    if ((pairHealthSummary.quarantined || false)) {
+      reasons.push("pair_health_quarantine");
+    }
+    if ((timeframeSummary.blockerReasons || []).length) {
+      reasons.push(...timeframeSummary.blockerReasons);
+    }
+    if ((divergenceSummary?.leadBlocker?.status || "") === "blocked") {
+      reasons.push("live_paper_divergence_guard");
+    }
     if (dailyBudgetFactor < 0.999) {
       reasons.push("daily_risk_budget_scaled");
     }
@@ -156,7 +188,7 @@ export class MetaDecisionGate {
     }
 
     const action =
-      reasons.includes("meta_gate_reject") || reasons.includes("trade_quality_reject") || todayTradeCount >= this.config.maxEntriesPerDay
+      reasons.includes("meta_gate_reject") || reasons.includes("trade_quality_reject") || reasons.includes("pair_health_quarantine") || reasons.includes("live_paper_divergence_guard") || todayTradeCount >= this.config.maxEntriesPerDay
         ? "block"
         : reasons.includes("meta_gate_caution") || reasons.includes("trade_quality_caution")
           ? "caution"
@@ -179,7 +211,9 @@ export class MetaDecisionGate {
         `execution:${executionReadiness.toFixed(3)}`,
         `history:${historyConfidence.toFixed(3)}`,
         `spread:${spreadBps.toFixed(2)}`,
-        `expected_slip:${expectedSlip.toFixed(2)}`
+        `expected_slip:${expectedSlip.toFixed(2)}`,
+        `pair:${safeNumber(pairHealthSummary.score, 0.5).toFixed(3)}`,
+        `tf:${safeNumber(timeframeSummary.alignmentScore, 0.5).toFixed(3)}`
       ],
       thresholdPenalty: Number(thresholdPenalty.toFixed(4)),
       sizeMultiplier: Number(sizeMultiplier.toFixed(4)),
@@ -192,6 +226,8 @@ export class MetaDecisionGate {
         : 0,
       canarySizeMultiplier: Number(canarySizeMultiplier.toFixed(4)),
       historyConfidence: Number(historyConfidence.toFixed(4)),
+      pairHealthScore: Number(safeNumber(pairHealthSummary.score, 0.5).toFixed(4)),
+      timeframeAlignment: Number(safeNumber(timeframeSummary.alignmentScore, 0.5).toFixed(4)),
       notes: [
         `meta_score:${metaScore.toFixed(3)}`,
         `meta_conf:${metaConfidence.toFixed(3)}`,
@@ -199,7 +235,9 @@ export class MetaDecisionGate {
         `daily_budget:${dailyBudgetFactor.toFixed(3)}`,
         `canary:${canaryActive}`,
         `symbol_hist:${symbolTrades.length}`,
-        `strategy_hist:${strategyTrades.length}`
+        `strategy_hist:${strategyTrades.length}`,
+        `pair_health:${safeNumber(pairHealthSummary.score, 0.5).toFixed(3)}`,
+        `tf_align:${safeNumber(timeframeSummary.alignmentScore, 0.5).toFixed(3)}`
       ],
       reasons
     };
