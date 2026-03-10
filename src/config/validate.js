@@ -139,6 +139,14 @@ export function validateConfig(config) {
   assertRange("RESEARCH_STEP_CANDLES", config.researchStepCandles, 12, 500, errors);
   assertRange("RESEARCH_MAX_WINDOWS", config.researchMaxWindows, 1, 30, errors);
   assertRange("RESEARCH_MAX_SYMBOLS", config.researchMaxSymbols, 1, 20, errors);
+  assertRange("DATA_RECORDER_RETENTION_DAYS", config.dataRecorderRetentionDays, 3, 365, errors);
+  assertRange("MODEL_REGISTRY_MIN_SCORE", config.modelRegistryMinScore, 0, 1, errors);
+  assertRange("MODEL_REGISTRY_ROLLBACK_DRAWDOWN_PCT", config.modelRegistryRollbackDrawdownPct, 0.001, 0.5, errors);
+  assertRange("MODEL_REGISTRY_MAX_ENTRIES", config.modelRegistryMaxEntries, 1, 100, errors);
+  assertRange("STATE_BACKUP_INTERVAL_MINUTES", config.stateBackupIntervalMinutes, 1, 1440, errors);
+  assertRange("STATE_BACKUP_RETENTION", config.stateBackupRetention, 1, 100, errors);
+  assertRange("SERVICE_RESTART_DELAY_SECONDS", config.serviceRestartDelaySeconds, 1, 3600, errors);
+  assertRange("SERVICE_MAX_RESTARTS_PER_HOUR", config.serviceMaxRestartsPerHour, 1, 500, errors);
 
   if (config.maxPositionFraction > config.maxTotalExposureFraction) {
     errors.push("MAX_POSITION_FRACTION cannot exceed MAX_TOTAL_EXPOSURE_FRACTION.");
@@ -209,6 +217,12 @@ export function validateConfig(config) {
   }
   if (config.paperExplorationMinBookPressure < config.minBookPressureForEntry) {
     warnings.push("PAPER_EXPLORATION_MIN_BOOK_PRESSURE is looser than MIN_BOOK_PRESSURE_FOR_ENTRY; paper warm-up entries may tolerate mild sell pressure.");
+  }
+  if (!config.dataRecorderEnabled) {
+    warnings.push("DATA_RECORDER_ENABLED=false disables the richer feature-store for replay and retraining.");
+  }
+  if (!config.stateBackupEnabled) {
+    warnings.push("STATE_BACKUP_ENABLED=false removes automatic runtime backups and crash-recovery snapshots.");
   }
 
   if (config.botMode === "live") {

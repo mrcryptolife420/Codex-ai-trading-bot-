@@ -239,6 +239,26 @@ function summarizePatterns(market = {}) {
   };
 }
 
+function summarizeIndicators(market = {}) {
+  return {
+    adx14: num(market.adx14 || 0, 2),
+    plusDi14: num(market.plusDi14 || 0, 2),
+    minusDi14: num(market.minusDi14 || 0, 2),
+    dmiSpread: num(market.dmiSpread || 0, 3),
+    trendQualityScore: num(market.trendQualityScore || 0, 3),
+    supertrendDirection: market.supertrendDirection || 0,
+    supertrendDistancePct: num(market.supertrendDistancePct || 0, 4),
+    supertrendFlipScore: num(market.supertrendFlipScore || 0, 3),
+    stochRsiK: num(market.stochRsiK || 0, 2),
+    stochRsiD: num(market.stochRsiD || 0, 2),
+    mfi14: num(market.mfi14 || 0, 2),
+    cmf20: num(market.cmf20 || 0, 3),
+    keltnerWidthPct: num(market.keltnerWidthPct || 0, 4),
+    keltnerSqueezeScore: num(market.keltnerSqueezeScore || 0, 3),
+    squeezeReleaseScore: num(market.squeezeReleaseScore || 0, 3)
+  };
+}
+
 function summarizeUniverseSelection(universe = {}) {
   return {
     generatedAt: universe.generatedAt || null,
@@ -1327,6 +1347,7 @@ export class TradingBot {
     }
 
     await this.dataRecorder.recordTrade(trade);
+    await this.dataRecorder.recordLearningEvent({ trade, learning });
     this.refreshGovernanceViews(nowIso());
 
     this.logger.info(logLabel, {
@@ -1721,6 +1742,7 @@ export class TradingBot {
       meta: summarizeMeta(candidate.metaSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
+      indicators: summarizeIndicators(candidate.marketSnapshot.market),
       strategy: summarizeStrategy(candidate.strategySummary),
       universe: candidate.universeSummary ? { ...candidate.universeSummary } : null,
       strategyAttribution: summarizeAttributionAdjustment(candidate.attributionSummary),
@@ -2258,6 +2280,7 @@ export class TradingBot {
       calendar: summarizeCalendarSummary(candidate.calendarSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
+      indicators: summarizeIndicators(candidate.marketSnapshot.market),
       universe: candidate.universeSummary ? { ...candidate.universeSummary } : null,
       strategyAttribution: summarizeAttributionAdjustment(candidate.attributionSummary),
       executionPlan: summarizePlan(candidate.decision.executionPlan),

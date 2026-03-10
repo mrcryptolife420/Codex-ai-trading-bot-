@@ -692,6 +692,13 @@ function renderDecisions(snapshot) {
               <div class="mini-stat"><span class="kicker">Options vol</span><strong>${decision.volatility?.marketOptionIv == null ? "-" : `${formatNumber(decision.volatility.marketOptionIv, 1)}`}</strong><div class="meta">${escapeHtml(decision.volatility?.regime || "unknown")} | prem ${formatNumber(decision.volatility?.ivPremium || 0, 1)}</div></div>
               <div class="mini-stat"><span class="kicker">Strategy</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">fit ${formatPct((decision.strategy?.fitScore || decision.strategySummary?.fitScore || 0), 1)} | conf ${formatPct((decision.strategy?.confidence || decision.strategySummary?.confidence || 0), 1)}</div></div>
             </div>
+            <div class="mini-grid compact-grid">
+              <div class="mini-stat"><span class="kicker">ADX / DMI</span><strong>${formatNumber(decision.indicators?.adx14 || 0, 1)}</strong><div class="meta">dmi ${formatNumber(decision.indicators?.dmiSpread || 0, 2)} | tq ${formatNumber(decision.indicators?.trendQualityScore || 0, 2)}</div></div>
+              <div class="mini-stat"><span class="kicker">Supertrend</span><strong>${decision.indicators?.supertrendDirection > 0 ? "up" : decision.indicators?.supertrendDirection < 0 ? "down" : "flat"}</strong><div class="meta">dist ${formatPct(decision.indicators?.supertrendDistancePct || 0, 2)} | flip ${formatNumber(decision.indicators?.supertrendFlipScore || 0, 2)}</div></div>
+              <div class="mini-stat"><span class="kicker">Stoch RSI</span><strong>${formatNumber(decision.indicators?.stochRsiK || 0, 1)}</strong><div class="meta">signal ${formatNumber(decision.indicators?.stochRsiD || 0, 1)}</div></div>
+              <div class="mini-stat"><span class="kicker">MFI</span><strong>${formatNumber(decision.indicators?.mfi14 || 0, 1)}</strong><div class="meta">cmf ${formatNumber(decision.indicators?.cmf20 || 0, 2)}</div></div>
+              <div class="mini-stat"><span class="kicker">Keltner squeeze</span><strong>${formatPct(decision.indicators?.keltnerSqueezeScore || 0, 1)}</strong><div class="meta">release ${formatPct(decision.indicators?.squeezeReleaseScore || 0, 1)}</div></div>
+            </div>
             <div class="mini-grid">
               <div class="mini-stat"><span class="kicker">Transformer</span><strong>${formatPct(decision.transformer?.probability || 0, 1)}</strong><div class="meta">conf ${formatPct(decision.transformer?.confidence || 0, 1)} | ${escapeHtml(decision.transformer?.dominantHead || "trend")}</div></div>
               <div class="mini-stat"><span class="kicker">Committee</span><strong>${formatPct(decision.committee?.probability || 0, 1)}</strong><div class="meta">agree ${formatPct(decision.committee?.agreement || 0, 1)} | net ${formatNumber(decision.committee?.netScore || 0, 3)}</div></div>
@@ -1197,7 +1204,7 @@ function renderOperations(snapshot) {
   const recovery = snapshot.dashboard.safety?.recovery || {};
   const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
   elements.opsSummary.innerHTML = [
-    insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)}` : "Nog geen recorder-run"),
+    insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0}`),
     insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
     insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.latestSnapshotAt ? `laatst ${formatDate(modelRegistry.latestSnapshotAt)}` : "Nog geen modelsnapshot"),
     insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")
@@ -1375,6 +1382,7 @@ refreshSnapshot().catch((error) => {
     }
   });
 }, POLL_MS);
+
 
 
 

@@ -9,12 +9,45 @@ function dayKey(at) {
   return `${at || new Date().toISOString()}`.slice(0, 10);
 }
 
+function normalizeNumericMap(values = {}, digits = 4) {
+  return Object.fromEntries(
+    Object.entries(values || {})
+      .filter(([, value]) => Number.isFinite(value))
+      .map(([name, value]) => [name, num(value, digits)])
+  );
+}
+
+function pickTopNumericMap(values = {}, limit = 18, digits = 4) {
+  return Object.fromEntries(
+    Object.entries(normalizeNumericMap(values, digits))
+      .sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))
+      .slice(0, limit)
+  );
+}
+
+function makeIndicatorFrame(source = {}) {
+  return {
+    adx14: num(source.adx14 || 0, 2),
+    dmiSpread: num(source.dmiSpread || 0, 3),
+    trendQualityScore: num(source.trendQualityScore || 0, 3),
+    supertrendDirection: source.supertrendDirection || 0,
+    supertrendDistancePct: num(source.supertrendDistancePct || 0, 4),
+    stochRsiK: num(source.stochRsiK || 0, 2),
+    stochRsiD: num(source.stochRsiD || 0, 2),
+    mfi14: num(source.mfi14 || 0, 2),
+    cmf20: num(source.cmf20 || 0, 3),
+    keltnerSqueezeScore: num(source.keltnerSqueezeScore || 0, 3),
+    squeezeReleaseScore: num(source.squeezeReleaseScore || 0, 3)
+  };
+}
+
 function makeDecisionFrame(candidate = {}) {
   return {
     symbol: candidate.symbol,
     allow: Boolean(candidate.decision?.allow),
     probability: num(candidate.score?.probability || 0, 4),
     confidence: num(candidate.score?.confidence || 0, 4),
+    calibrationConfidence: num(candidate.score?.calibrationConfidence || 0, 4),
     threshold: num(candidate.decision?.threshold || 0, 4),
     rankScore: num(candidate.decision?.rankScore || 0, 4),
     regime: candidate.regimeSummary?.regime || null,
@@ -27,7 +60,13 @@ function makeDecisionFrame(candidate = {}) {
     fundingRate: num(candidate.marketStructureSummary?.fundingRate || 0, 6),
     openInterestChangePct: num(candidate.marketStructureSummary?.openInterestChangePct || 0, 4),
     bookPressure: num(candidate.marketSnapshot?.book?.bookPressure || 0, 4),
-    spreadBps: num(candidate.marketSnapshot?.book?.spreadBps || 0, 2)
+    spreadBps: num(candidate.marketSnapshot?.book?.spreadBps || 0, 2),
+    topSignals: (candidate.score?.contributions || []).slice(0, 5).map((item) => ({
+      name: item.name,
+      contribution: num(item.contribution || 0, 4),
+      rawValue: num(item.rawValue || 0, 4)
+    })),
+    indicators: makeIndicatorFrame(candidate.marketSnapshot?.market || {})
   };
 }
 
@@ -48,6 +87,7 @@ export class DataRecorder {
       cycleFrames: 0,
       decisionFrames: 0,
       tradeFrames: 0,
+      learningFrames: 0,
       researchFrames: 0,
       lastPruneAt: null
     };
@@ -61,6 +101,7 @@ export class DataRecorder {
       ensureDir(path.join(this.rootDir, "cycles")),
       ensureDir(path.join(this.rootDir, "decisions")),
       ensureDir(path.join(this.rootDir, "trades")),
+      ensureDir(path.join(this.rootDir, "learning")),
       ensureDir(path.join(this.rootDir, "research"))
     ]);
   }
@@ -99,7 +140,12 @@ export class DataRecorder {
     if (!this.config.dataRecorderEnabled || !candidates.length) {
       return 0;
     }
-    const frames = candidates.slice(0, 12).map((candidate) => ({ at, ...makeDecisionFrame(candidate) }));
+    const frames = candidates.slice(0, 12).map((candidate) => ({
+      at,
+      ...makeDecisionFrame(candidate),
+      rawFeatureCount: Object.keys(candidate.rawFeatures || {}).length,
+      topRawFeatures: pickTopNumericMap(candidate.rawFeatures || {}, 12, 4)
+    }));
     const filePath = path.join(this.rootDir, "decisions", `${dayKey(at)}.jsonl`);
     for (const frame of frames) {
       await appendJsonLine(filePath, frame);
@@ -114,23 +160,92 @@ export class DataRecorder {
       return null;
     }
     const at = trade.exitAt || trade.entryAt || new Date().toISOString();
+    const entryRationale = trade.entryRationale || {};
     const payload = {
       at,
       symbol: trade.symbol,
       pnlQuote: num(trade.pnlQuote || 0, 2),
       netPnlPct: num(trade.netPnlPct || 0, 4),
+      labelScore: num(trade.labelScore || 0, 4),
       strategy: trade.strategyAtEntry || null,
       regime: trade.regimeAtEntry || null,
       reason: trade.reason || null,
+      brokerMode: trade.brokerMode || null,
       entryStyle: trade.entryExecutionAttribution?.entryStyle || null,
       provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
       executionQualityScore: num(trade.executionQualityScore || 0, 4),
       captureEfficiency: num(trade.captureEfficiency || 0, 4),
+      rawFeatureCount: Object.keys(trade.rawFeatures || {}).length,
+      topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 12, 4),
+      indicators: makeIndicatorFrame(entryRationale.indicators || {}),
       headlines: (trade.entryRationale?.headlines || []).slice(0, 3).map((item) => item.title || item),
       blockers: [...(trade.entryRationale?.blockerReasons || [])].slice(0, 6)
     };
     await this.write("trades", at, payload);
     this.state.tradeFrames += 1;
+    return payload;
+  }
+
+  async recordLearningEvent({ trade, learning }) {
+    if (!this.config.dataRecorderEnabled || !trade || !learning) {
+      return null;
+    }
+    const at = trade.exitAt || trade.entryAt || new Date().toISOString();
+    const rationale = trade.entryRationale || {};
+    const payload = {
+      at,
+      symbol: trade.symbol,
+      brokerMode: trade.brokerMode || null,
+      strategy: trade.strategyAtEntry || rationale.strategy?.activeStrategy || null,
+      family: rationale.strategy?.family || null,
+      regime: trade.regimeAtEntry || learning.regime || null,
+      pnlQuote: num(trade.pnlQuote || 0, 2),
+      netPnlPct: num(trade.netPnlPct || 0, 4),
+      mfePct: num(trade.mfePct || 0, 4),
+      maePct: num(trade.maePct || 0, 4),
+      labelScore: num(learning.label?.labelScore ?? trade.labelScore ?? 0, 4),
+      executionQualityScore: num(trade.executionQualityScore || 0, 4),
+      captureEfficiency: num(trade.captureEfficiency || 0, 4),
+      gate: {
+        probability: num(rationale.probability || 0, 4),
+        confidence: num(rationale.confidence || 0, 4),
+        calibrationConfidence: num(rationale.calibrationConfidence || 0, 4),
+        threshold: num(rationale.threshold || 0, 4),
+        rankScore: num(rationale.rankScore || 0, 4)
+      },
+      model: {
+        championBefore: num(learning.championLearning?.predictionBeforeUpdate || 0, 4),
+        challengerBefore: num(learning.challengerLearning?.predictionBeforeUpdate || 0, 4),
+        championError: num(learning.championLearning?.error || 0, 4),
+        challengerError: num(learning.challengerLearning?.error || 0, 4),
+        championSampleWeight: num(learning.championLearning?.sampleWeight || 0, 4),
+        challengerSampleWeight: num(learning.challengerLearning?.sampleWeight || 0, 4),
+        transformerAbsoluteError: num(learning.transformerLearning?.absoluteError || 0, 4),
+        transformerProbability: num(learning.transformerLearning?.probability || 0, 4),
+        calibrationObservations: learning.calibration?.observations || 0,
+        calibrationEce: num(learning.calibration?.expectedCalibrationError || 0, 4),
+        promotion: Boolean(learning.promotion)
+      },
+      news: {
+        providerBreakdown: [...(rationale.providerBreakdown || [])].slice(0, 4),
+        headlineTitles: (rationale.headlines || []).slice(0, 4).map((item) => item.title || item),
+        officialNoticeCount: (rationale.officialNotices || []).length,
+        dominantEventType: rationale.dominantEventType || rationale.exchange?.dominantEventType || null
+      },
+      rationale: {
+        summary: rationale.summary || null,
+        topSignals: (rationale.topSignals || []).slice(0, 8),
+        strategyReasons: [...(rationale.strategy?.reasons || [])].slice(0, 6),
+        blockerReasons: [...(rationale.blockerReasons || [])].slice(0, 8),
+        executionReasons: [...(rationale.executionReasons || [])].slice(0, 6),
+        checks: (rationale.checks || []).slice(0, 8)
+      },
+      indicators: makeIndicatorFrame(rationale.indicators || {}),
+      rawFeatures: normalizeNumericMap(trade.rawFeatures || {}, 4),
+      topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 20, 4)
+    };
+    await this.write("learning", at, payload);
+    this.state.learningFrames += 1;
     return payload;
   }
 
@@ -159,7 +274,7 @@ export class DataRecorder {
       return;
     }
     const keepCount = Math.max(3, this.config.dataRecorderRetentionDays || 21);
-    for (const bucket of ["cycles", "decisions", "trades", "research"]) {
+    for (const bucket of ["cycles", "decisions", "trades", "learning", "research"]) {
       const files = await listFiles(path.join(this.rootDir, bucket));
       for (const file of pruneOldFiles(files, keepCount)) {
         await removeFile(file);

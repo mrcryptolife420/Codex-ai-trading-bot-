@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { AdaptiveTradingModel } from "../src/ai/adaptiveModel.js";
 import { ExecutionEngine } from "../src/execution/executionEngine.js";
 import { buildSymbolRules, resolveMarketBuyQuantity } from "../src/binance/symbolFilters.js";
@@ -12,6 +15,7 @@ import { LocalOrderBookEngine } from "../src/market/localOrderBook.js";
 import { parseIcsEvents, summarizeCalendarEvents } from "../src/events/calendarService.js";
 import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
+import { loadConfig } from "../src/config/index.js";
 import { validateConfig } from "../src/config/validate.js";
 import { HealthMonitor } from "../src/runtime/healthMonitor.js";
 import { LiveBroker } from "../src/execution/liveBroker.js";
@@ -30,6 +34,7 @@ import { buildSessionSummary } from "../src/runtime/sessionManager.js";
 import { DriftMonitor } from "../src/runtime/driftMonitor.js";
 import { SelfHealManager } from "../src/runtime/selfHealManager.js";
 import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtime/researchLab.js";
+import { DataRecorder } from "../src/runtime/dataRecorder.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -424,6 +429,12 @@ await runCheck("indicator layer computes orderbook pressure and candle patterns"
   assert.equal(typeof market.liquiditySweepLabel, "string");
   assert.equal(typeof market.structureBreakLabel, "string");
   assert.ok(Number.isFinite(market.priceZScore));
+  assert.ok(Number.isFinite(market.adx14));
+  assert.ok(Number.isFinite(market.stochRsiK));
+  assert.ok(Number.isFinite(market.mfi14));
+  assert.ok(Number.isFinite(market.cmf20));
+  assert.ok(Number.isFinite(market.keltnerSqueezeScore));
+  assert.ok(Number.isFinite(market.supertrendDistancePct));
 });
 
 await runCheck("rss parser tags providers and filters aliases", async () => {
@@ -969,7 +980,18 @@ await runCheck("strategy router selects donchian breakout in expansion condition
         trendStrength: 0.012,
         structureBreakScore: 1,
         liquiditySweepScore: 0,
-        wickSkew: -0.08
+        wickSkew: -0.08,
+        adx14: 31,
+        dmiSpread: 0.24,
+        trendQualityScore: 0.54,
+        supertrendDirection: 1,
+        supertrendDistancePct: 0.011,
+        keltnerSqueezeScore: 0.74,
+        squeezeReleaseScore: 0.69,
+        stochRsiK: 72,
+        stochRsiD: 66,
+        mfi14: 68,
+        cmf20: 0.14
       },
       book: {
         bookPressure: 0.41,
@@ -1468,6 +1490,103 @@ await runCheck("config validation blocks inverted drift thresholds", async () =>
   }));
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((error) => error.includes("DRIFT_FEATURE_SCORE_BLOCK")));
+});
+
+await runCheck("config loader parses recorder and backup settings", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-config-"));
+  try {
+    await fs.writeFile(path.join(tempDir, ".env"), [
+      "WATCHLIST=BTCUSDT",
+      "DATA_RECORDER_ENABLED=true",
+      "DATA_RECORDER_RETENTION_DAYS=17",
+      "MODEL_REGISTRY_MIN_SCORE=0.63",
+      "MODEL_REGISTRY_ROLLBACK_DRAWDOWN_PCT=0.07",
+      "MODEL_REGISTRY_MAX_ENTRIES=9",
+      "STATE_BACKUP_ENABLED=true",
+      "STATE_BACKUP_INTERVAL_MINUTES=45",
+      "STATE_BACKUP_RETENTION=8",
+      "SERVICE_RESTART_DELAY_SECONDS=11",
+      "SERVICE_MAX_RESTARTS_PER_HOUR=14",
+      "GIT_SHORT_CLONE_PATH=C:\\code\\short-bot"
+    ].join("\n"));
+    const config = await loadConfig(tempDir);
+    assert.equal(config.dataRecorderEnabled, true);
+    assert.equal(config.dataRecorderRetentionDays, 17);
+    assert.equal(config.modelRegistryMinScore, 0.63);
+    assert.equal(config.modelRegistryRollbackDrawdownPct, 0.07);
+    assert.equal(config.modelRegistryMaxEntries, 9);
+    assert.equal(config.stateBackupEnabled, true);
+    assert.equal(config.stateBackupIntervalMinutes, 45);
+    assert.equal(config.stateBackupRetention, 8);
+    assert.equal(config.serviceRestartDelaySeconds, 11);
+    assert.equal(config.serviceMaxRestartsPerHour, 14);
+    assert.equal(config.gitShortClonePath, "C:\\code\\short-bot");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder stores rich learning events for paper retraining", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordLearningEvent({
+      trade: {
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        exitAt: "2026-03-10T10:30:00.000Z",
+        pnlQuote: 24.4,
+        netPnlPct: 0.018,
+        mfePct: 0.026,
+        maePct: -0.007,
+        regimeAtEntry: "trend",
+        strategyAtEntry: "ema_trend",
+        executionQualityScore: 0.82,
+        captureEfficiency: 0.74,
+        rawFeatures: { momentum_5: 1.2, adx_strength: 1.7, stoch_rsi: -0.8, cmf: 0.42 },
+        entryRationale: {
+          probability: 0.61,
+          confidence: 0.42,
+          calibrationConfidence: 0.33,
+          threshold: 0.55,
+          rankScore: 0.19,
+          summary: "Trend continuation bevestigd door ADX en supertrend.",
+          indicators: { adx14: 28.4, dmiSpread: 0.18, trendQualityScore: 0.42, supertrendDirection: 1, supertrendDistancePct: 0.006, stochRsiK: 18.4, stochRsiD: 22.6, mfi14: 41.8, cmf20: 0.12, keltnerSqueezeScore: 0.73, squeezeReleaseScore: 0.66 },
+          topSignals: [{ name: "adx_strength", contribution: 0.18, rawValue: 1.7 }],
+          providerBreakdown: [{ name: "coindesk", count: 2 }],
+          headlines: [{ title: "ETF inflows support BTC" }],
+          officialNotices: [],
+          blockerReasons: [],
+          executionReasons: ["pegged maker"],
+          strategy: { family: "trend_following", reasons: ["adx rising"] },
+          checks: [{ label: "spread", passed: true, detail: "tight book" }]
+        }
+      },
+      learning: {
+        regime: "trend",
+        label: { labelScore: 0.91 },
+        championLearning: { predictionBeforeUpdate: 0.58, error: 0.21, sampleWeight: 1.4 },
+        challengerLearning: { predictionBeforeUpdate: 0.56, error: 0.24, sampleWeight: 1.5 },
+        transformerLearning: { absoluteError: 0.17, probability: 0.6 },
+        calibration: { observations: 18, expectedCalibrationError: 0.07 },
+        promotion: null
+      }
+    });
+    const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
+    const payload = JSON.parse(stored.trim());
+    assert.equal(payload.symbol, "BTCUSDT");
+    assert.equal(payload.model.calibrationObservations, 18);
+    assert.equal(payload.rawFeatures.momentum_5, 1.2);
+    assert.equal(payload.indicators.supertrendDirection, 1);
+    assert.ok(payload.rationale.topSignals.length >= 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 

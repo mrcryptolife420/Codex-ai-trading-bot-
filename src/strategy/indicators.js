@@ -21,6 +21,14 @@ export function ema(values, length) {
   return current;
 }
 
+function trueRange(current, previousClose) {
+  return Math.max(
+    current.high - current.low,
+    Math.abs(current.high - previousClose),
+    Math.abs(current.low - previousClose)
+  );
+}
+
 export function rsi(values, length = 14) {
   if (values.length < length + 1) {
     return 50;
@@ -50,13 +58,7 @@ export function atr(candles, length = 14) {
   for (let index = 1; index < candles.length; index += 1) {
     const current = candles[index];
     const previous = candles[index - 1];
-    trueRanges.push(
-      Math.max(
-        current.high - current.low,
-        Math.abs(current.high - previous.close),
-        Math.abs(current.low - previous.close)
-      )
-    );
+    trueRanges.push(trueRange(current, previous.close));
   }
   return average(selectRecent(trueRanges, length));
 }
@@ -104,6 +106,10 @@ function buildObvSeries(candles) {
     series.push((series.at(-1) || 0) + delta);
   }
   return series;
+}
+
+function buildRsiSeries(values, length = 14) {
+  return values.map((_, index) => rsi(values.slice(0, index + 1), length));
 }
 
 function candleShape(candle) {
@@ -179,6 +185,196 @@ function bollingerBands(values, length = 20, deviations = 2) {
   };
 }
 
+function keltnerChannels(candles, emaLength = 20, atrLength = 20, multiplier = 1.5) {
+  const closes = candles.map((candle) => candle.close);
+  const basis = ema(closes, emaLength);
+  const range = atr(candles, atrLength);
+  return {
+    basis,
+    upper: basis + range * multiplier,
+    lower: basis - range * multiplier,
+    range
+  };
+}
+
+function directionalMovement(candles, length = 14) {
+  if (candles.length < length + 1) {
+    return {
+      adx: 18,
+      plusDi: 20,
+      minusDi: 20,
+      dmiSpread: 0,
+      trendBias: 0
+    };
+  }
+
+  const trueRanges = [];
+  const plusMoves = [];
+  const minusMoves = [];
+  for (let index = 1; index < candles.length; index += 1) {
+    const current = candles[index];
+    const previous = candles[index - 1];
+    const upMove = current.high - previous.high;
+    const downMove = previous.low - current.low;
+    trueRanges.push(trueRange(current, previous.close));
+    plusMoves.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusMoves.push(downMove > upMove && downMove > 0 ? downMove : 0);
+  }
+
+  const recentTr = selectRecent(trueRanges, length);
+  const recentPlus = selectRecent(plusMoves, length);
+  const recentMinus = selectRecent(minusMoves, length);
+  const trSum = recentTr.reduce((total, value) => total + value, 0);
+  const plusDi = trSum ? (recentPlus.reduce((total, value) => total + value, 0) / trSum) * 100 : 0;
+  const minusDi = trSum ? (recentMinus.reduce((total, value) => total + value, 0) / trSum) * 100 : 0;
+
+  const dxSeries = [];
+  for (let end = length; end <= trueRanges.length; end += 1) {
+    const trWindow = trueRanges.slice(end - length, end);
+    const plusWindow = plusMoves.slice(end - length, end);
+    const minusWindow = minusMoves.slice(end - length, end);
+    const windowTr = trWindow.reduce((total, value) => total + value, 0);
+    const windowPlusDi = windowTr ? (plusWindow.reduce((total, value) => total + value, 0) / windowTr) * 100 : 0;
+    const windowMinusDi = windowTr ? (minusWindow.reduce((total, value) => total + value, 0) / windowTr) * 100 : 0;
+    dxSeries.push(windowPlusDi + windowMinusDi ? (Math.abs(windowPlusDi - windowMinusDi) / (windowPlusDi + windowMinusDi)) * 100 : 0);
+  }
+
+  const adx = average(selectRecent(dxSeries, length), dxSeries.at(-1) || Math.abs(plusDi - minusDi));
+  const dmiSpread = (plusDi - minusDi) / 100;
+  const trendBias = clamp(dmiSpread * Math.min(adx / 24, 1.5), -1, 1);
+  return {
+    adx,
+    plusDi,
+    minusDi,
+    dmiSpread,
+    trendBias
+  };
+}
+
+function stochRsi(values, rsiLength = 14, stochLength = 14, smoothK = 3, smoothD = 3) {
+  const rsiSeries = buildRsiSeries(values, rsiLength);
+  if (rsiSeries.length < stochLength) {
+    return { k: 50, d: 50 };
+  }
+
+  const rawSeries = rsiSeries.map((value, index) => {
+    const recent = rsiSeries.slice(Math.max(0, index - stochLength + 1), index + 1);
+    if (recent.length < stochLength) {
+      return 0.5;
+    }
+    const low = Math.min(...recent);
+    const high = Math.max(...recent);
+    if (high === low) {
+      return 0.5;
+    }
+    return (value - low) / (high - low);
+  });
+  const kSeries = rawSeries.map((_, index) => average(rawSeries.slice(Math.max(0, index - smoothK + 1), index + 1), rawSeries[index] || 0.5) * 100);
+  const dSeries = kSeries.map((_, index) => average(kSeries.slice(Math.max(0, index - smoothD + 1), index + 1), kSeries[index] || 50));
+  return {
+    k: kSeries.at(-1) || 50,
+    d: dSeries.at(-1) || 50
+  };
+}
+
+function moneyFlowIndex(candles, length = 14) {
+  if (candles.length < length + 1) {
+    return 50;
+  }
+  let positiveFlow = 0;
+  let negativeFlow = 0;
+  for (let index = candles.length - length; index < candles.length; index += 1) {
+    const previous = candles[index - 1];
+    const current = candles[index];
+    const previousTypical = (previous.high + previous.low + previous.close) / 3;
+    const currentTypical = (current.high + current.low + current.close) / 3;
+    const rawMoneyFlow = currentTypical * current.volume;
+    if (currentTypical > previousTypical) {
+      positiveFlow += rawMoneyFlow;
+    } else if (currentTypical < previousTypical) {
+      negativeFlow += rawMoneyFlow;
+    }
+  }
+  if (negativeFlow === 0) {
+    return 100;
+  }
+  if (positiveFlow === 0) {
+    return 0;
+  }
+  const moneyRatio = positiveFlow / negativeFlow;
+  return 100 - 100 / (1 + moneyRatio);
+}
+
+function chaikinMoneyFlow(candles, length = 20) {
+  const recent = selectRecent(candles, length);
+  const volumeTotal = recent.reduce((total, candle) => total + candle.volume, 0);
+  if (!volumeTotal) {
+    return 0;
+  }
+  const flowTotal = recent.reduce((total, candle) => {
+    const range = candle.high - candle.low;
+    const moneyFlowMultiplier = range > 0 ? ((candle.close - candle.low) - (candle.high - candle.close)) / range : 0;
+    return total + moneyFlowMultiplier * candle.volume;
+  }, 0);
+  return flowTotal / volumeTotal;
+}
+
+function supertrend(candles, atrLength = 10, multiplier = 3) {
+  if (candles.length < atrLength + 2) {
+    return {
+      line: candles.at(-1)?.close || 0,
+      direction: 0,
+      distancePct: 0,
+      flipScore: 0
+    };
+  }
+
+  const trueRanges = [];
+  let finalUpper = 0;
+  let finalLower = 0;
+  let trendLine = 0;
+  let direction = 1;
+  let previousDirection = 1;
+
+  for (let index = 1; index < candles.length; index += 1) {
+    const current = candles[index];
+    const previous = candles[index - 1];
+    trueRanges.push(trueRange(current, previous.close));
+    const atrValue = average(selectRecent(trueRanges, atrLength), trueRanges.at(-1) || 0);
+    const hl2 = (current.high + current.low) / 2;
+    const basicUpper = hl2 + atrValue * multiplier;
+    const basicLower = hl2 - atrValue * multiplier;
+
+    if (index === 1) {
+      finalUpper = basicUpper;
+      finalLower = basicLower;
+      trendLine = current.close >= basicLower ? basicLower : basicUpper;
+      direction = current.close >= basicLower ? 1 : -1;
+      previousDirection = direction;
+      continue;
+    }
+
+    finalUpper = basicUpper < finalUpper || previous.close > finalUpper ? basicUpper : finalUpper;
+    finalLower = basicLower > finalLower || previous.close < finalLower ? basicLower : finalLower;
+    previousDirection = direction;
+
+    if (trendLine === finalUpper) {
+      trendLine = current.close <= finalUpper ? finalUpper : finalLower;
+    } else {
+      trendLine = current.close >= finalLower ? finalLower : finalUpper;
+    }
+    direction = trendLine === finalLower ? 1 : -1;
+  }
+
+  const lastClose = candles.at(-1)?.close || 0;
+  return {
+    line: trendLine,
+    direction,
+    distancePct: lastClose ? (lastClose - trendLine) / lastClose : 0,
+    flipScore: direction !== previousDirection ? direction : 0
+  };
+}
+
 function donchianChannel(highs, lows, length = 20, includeCurrent = true) {
   const highsSource = includeCurrent ? highs : highs.slice(0, -1);
   const lowsSource = includeCurrent ? lows : lows.slice(0, -1);
@@ -227,6 +423,12 @@ export function computeMarketFeatures(candles) {
   const atr14 = atr(candles, 14);
   const atr30 = atr(candles, 30);
   const macdValues = macd(closes);
+  const dmi = directionalMovement(candles, 14);
+  const stochRsiValues = stochRsi(closes, 14, 14, 3, 3);
+  const mfi14 = moneyFlowIndex(candles, 14);
+  const cmf20 = chaikinMoneyFlow(candles, 20);
+  const keltner = keltnerChannels(candles, 20, 20, 1.5);
+  const supertrendValue = supertrend(candles, 10, 3);
   const volumeLookback = selectRecent(volumes, 30);
   const priorVolumes = volumeLookback.slice(0, -1);
   const volumeMean = average(priorVolumes, volumes[volumes.length - 1] || 0);
@@ -270,6 +472,12 @@ export function computeMarketFeatures(candles) {
   const closeLocation = lastRange ? (lastCandle.close - lastCandle.low) / lastRange : 0.5;
   const liquiditySweep = detectLiquiditySweep(lastCandle, priorChannel.upper, priorChannel.lower);
   const structureBreak = detectStructureBreak(lastClose, priorChannel.upper, priorChannel.lower, momentum5, closeLocation);
+  const keltnerWidthPct = keltner.basis ? (keltner.upper - keltner.lower) / keltner.basis : 0;
+  const insideKeltner = bollinger.upper <= keltner.upper && bollinger.lower >= keltner.lower ? 1 : 0;
+  const squeezeCompression = keltnerWidthPct > 0 ? 1 - clamp(bollingerWidthPct / Math.max(keltnerWidthPct, 1e-9), 0, 1.6) : 0;
+  const keltnerSqueezeScore = clamp(insideKeltner ? 0.72 + Math.max(squeezeCompression, 0) * 0.28 : Math.max(0, squeezeCompression + 0.35), 0, 1);
+  const squeezeReleaseScore = clamp(keltnerSqueezeScore * 0.45 + bollingerSqueezeScore * 0.35 + clamp(closeLocation - 0.45, 0, 0.55) * 0.35 + Math.max(dmi.dmiSpread, 0) * 0.2, 0, 1);
+  const trendQualityScore = clamp(((dmi.adx - 18) / 24) * 0.4 + dmi.dmiSpread * 1.6 * 0.35 + supertrendValue.direction * 0.18 + Math.max(supertrendValue.distancePct * 90, -1) * 0.07, -1, 1);
 
   return {
     lastClose,
@@ -279,6 +487,15 @@ export function computeMarketFeatures(candles) {
     emaTrendSlopePct: priorFast ? pctChange(priorFast, emaFast) : 0,
     emaTrendScore: lastClose ? (((emaFast - emaSlow) / lastClose) * 0.65 + (priorFast ? pctChange(priorFast, emaFast) * 0.35 : 0)) : 0,
     rsi14,
+    adx14: dmi.adx,
+    plusDi14: dmi.plusDi,
+    minusDi14: dmi.minusDi,
+    dmiSpread: dmi.dmiSpread,
+    trendQualityScore,
+    stochRsiK: stochRsiValues.k,
+    stochRsiD: stochRsiValues.d,
+    mfi14,
+    cmf20,
     atrPct: lastClose ? atr14 / lastClose : 0,
     atrExpansion: atr30 ? atr14 / atr30 - 1 : 0,
     macdHistogramPct: lastClose ? macdValues.histogram / lastClose : 0,
@@ -307,6 +524,15 @@ export function computeMarketFeatures(candles) {
     bollingerPosition,
     bollingerSqueezeScore,
     priceZScore,
+    keltnerUpper: keltner.upper,
+    keltnerLower: keltner.lower,
+    keltnerWidthPct,
+    keltnerSqueezeScore,
+    squeezeReleaseScore,
+    supertrendLine: supertrendValue.line,
+    supertrendDirection: supertrendValue.direction,
+    supertrendDistancePct: supertrendValue.distancePct,
+    supertrendFlipScore: supertrendValue.flipScore,
     liquiditySweepScore: liquiditySweep.score,
     liquiditySweepLabel: liquiditySweep.label,
     structureBreakScore: structureBreak.score,
