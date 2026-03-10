@@ -53,6 +53,7 @@
 - `node src/cli.js once`
 - `node src/cli.js status`
 - `node src/cli.js doctor`
+- Escalated runtime checks with real network access for `node src/cli.js doctor` and `node src/cli.js status`
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
 - Dashboard homepage smoke test on `http://127.0.0.1:3011/`
 

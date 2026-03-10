@@ -72,6 +72,14 @@ export function validateConfig(config) {
   assertRange("TRANSFORMER_LOOKBACK_CANDLES", config.transformerLookbackCandles, 8, 120, errors);
   assertRange("TRANSFORMER_LEARNING_RATE", config.transformerLearningRate, 0.0001, 0.5, errors);
   assertRange("TRANSFORMER_MIN_CONFIDENCE", config.transformerMinConfidence, 0, 1, errors);
+  assertRange("SEQUENCE_CHALLENGER_LEARNING_RATE", config.sequenceChallengerLearningRate, 0.0001, 0.5, errors);
+  assertRange("SEQUENCE_CHALLENGER_L2", config.sequenceChallengerL2, 0, 0.1, errors);
+  assertRange("META_NEURAL_LEARNING_RATE", config.metaNeuralLearningRate, 0.0001, 0.5, errors);
+  assertRange("META_NEURAL_L2", config.metaNeuralL2, 0, 0.1, errors);
+  assertRange("EXIT_NEURAL_LEARNING_RATE", config.exitNeuralLearningRate, 0.0001, 0.5, errors);
+  assertRange("EXIT_NEURAL_L2", config.exitNeuralL2, 0, 0.1, errors);
+  assertRange("EXECUTION_NEURAL_LEARNING_RATE", config.executionNeuralLearningRate, 0.0001, 0.5, errors);
+  assertRange("EXECUTION_NEURAL_L2", config.executionNeuralL2, 0, 0.1, errors);
   assertRange("COMMITTEE_MIN_CONFIDENCE", config.committeeMinConfidence, 0, 1, errors);
   assertRange("COMMITTEE_MIN_AGREEMENT", config.committeeMinAgreement, 0, 1, errors);
   assertRange("CALIBRATION_BINS", config.calibrationBins, 3, 50, errors);

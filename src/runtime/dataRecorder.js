@@ -67,6 +67,11 @@ function makeDecisionFrame(candidate = {}) {
       contribution: num(item.contribution || 0, 4),
       rawValue: num(item.rawValue || 0, 4)
     })),
+    sequenceProbability: num(candidate.score?.sequence?.probability || 0, 4),
+    sequenceConfidence: num(candidate.score?.sequence?.confidence || 0, 4),
+    metaNeuralProbability: num(candidate.score?.metaNeural?.probability || 0, 4),
+    metaNeuralConfidence: num(candidate.score?.metaNeural?.confidence || 0, 4),
+    expertDominantRegime: candidate.score?.expertMix?.dominantRegime || null,
     indicators: makeIndicatorFrame(candidate.marketSnapshot?.market || {})
   };
 }
@@ -259,6 +264,10 @@ export class DataRecorder {
         challengerSampleWeight: num(learning.challengerLearning?.sampleWeight || 0, 4),
         transformerAbsoluteError: num(learning.transformerLearning?.absoluteError || 0, 4),
         transformerProbability: num(learning.transformerLearning?.probability || 0, 4),
+        sequenceTarget: num(learning.sequenceLearning?.target || 0, 4),
+        metaTarget: num(learning.metaNeuralLearning?.target || 0, 4),
+        executionSizingTarget: num(learning.executionNeuralLearning?.targets?.sizing || 0, 4),
+        exitTarget: num(learning.exitNeuralLearning?.targets?.exit || 0, 4),
         calibrationObservations: learning.calibration?.observations || 0,
         calibrationEce: num(learning.calibration?.expectedCalibrationError || 0, 4),
         promotion: Boolean(learning.promotion)
@@ -272,6 +281,9 @@ export class DataRecorder {
       rationale: {
         summary: rationale.summary || null,
         topSignals: (rationale.topSignals || []).slice(0, 8),
+        sequenceDrivers: (rationale.sequence?.drivers || []).slice(0, 6),
+        metaNeuralDrivers: (rationale.metaNeural?.drivers || []).slice(0, 6),
+        expertMix: rationale.expertMix || null,
         strategyReasons: [...(rationale.strategy?.reasons || [])].slice(0, 6),
         blockerReasons: [...(rationale.blockerReasons || [])].slice(0, 8),
         executionReasons: [...(rationale.executionReasons || [])].slice(0, 6),

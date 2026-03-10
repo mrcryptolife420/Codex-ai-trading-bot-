@@ -58,7 +58,7 @@ export class ExecutionEngine {
     this.config = config;
   }
 
-  buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null }) {
+  buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null, executionNeuralSummary = null }) {
     const spreadBps = marketSnapshot.book.spreadBps || 0;
     const tradeFlow = marketSnapshot.book.tradeFlowImbalance || 0;
     const localBook = marketSnapshot.book.localBook || {};
@@ -85,9 +85,10 @@ export class ExecutionEngine {
     }
 
     const rlPreferMakerShift = rlAdvice?.preferMakerBoost || 0;
+    const neuralPreferMakerShift = executionNeuralSummary?.preferMakerBoost || 0;
     const committeeTailwind = committeeSummary ? Math.max(0, committeeSummary.netScore || 0) * 0.06 : 0;
     const microstructureTailwind = depthConfidence * 0.18 + queueImbalance * 0.14 + queueRefreshScore * 0.1 + resilienceScore * 0.08 - expectedImpactBps / 28;
-    const preferMakerScore = (basePreferMaker ? 0.55 : 0.35) + rlPreferMakerShift + committeeTailwind + strategyMakerBias + microstructureTailwind - (score.probability > this.config.aggressiveEntryThreshold ? 0.18 : 0);
+    const preferMakerScore = (basePreferMaker ? 0.55 : 0.35) + rlPreferMakerShift + neuralPreferMakerShift + committeeTailwind + strategyMakerBias + microstructureTailwind - (score.probability > this.config.aggressiveEntryThreshold ? 0.18 : 0);
     const preferMaker = preferMakerScore >= 0.5;
 
     const preferPegged = Boolean(
@@ -116,7 +117,7 @@ export class ExecutionEngine {
       strategyPatienceBias *= 0.92;
     }
     const expectedMakerFillPct = clamp(0.34 + depthConfidence * 0.24 + queueImbalance * 0.16 + queueRefreshScore * 0.14 + tradeFlow * 0.1 - expectedImpactBps / 16, 0.08, 0.98);
-    const patienceMultiplier = clamp((rlAdvice?.patienceMultiplier || 1) * strategyPatienceBias * (preferPegged ? 1.08 : 1) * (expectedMakerFillPct >= 0.58 ? 1.12 : 0.92), 0.75, 1.6);
+    const patienceMultiplier = clamp((rlAdvice?.patienceMultiplier || 1) * (executionNeuralSummary?.patienceMultiplier || 1) * strategyPatienceBias * (preferPegged ? 1.08 : 1) * (expectedMakerFillPct >= 0.58 ? 1.12 : 0.92), 0.75, 1.6);
     const makerPatienceMs = Math.round(
       clamp(
         this.config.baseMakerPatienceMs * patienceMultiplier * (1 + Math.max(0, spreadBps / 10)) * (tradeFlow > 0 ? 1.1 : 0.8),
@@ -159,7 +160,17 @@ export class ExecutionEngine {
       rlAction: rlAdvice?.action || "balanced",
       rlBucket: rlAdvice?.bucket || null,
       expectedReward: rlAdvice?.expectedReward || 0,
-      sizeMultiplier: rlAdvice?.sizeMultiplier || 1,
+      sizeMultiplier: clamp((rlAdvice?.sizeMultiplier || 1) * (executionNeuralSummary?.sizeMultiplier || 1), 0.6, 1.2),
+      executionNeural: executionNeuralSummary
+        ? {
+            preferMakerBoost: executionNeuralSummary.preferMakerBoost || 0,
+            patienceMultiplier: executionNeuralSummary.patienceMultiplier || 1,
+            sizeMultiplier: executionNeuralSummary.sizeMultiplier || 1,
+            aggressiveness: executionNeuralSummary.aggressiveness || 1,
+            confidence: executionNeuralSummary.confidence || 0,
+            drivers: [...(executionNeuralSummary.drivers || [])]
+          }
+        : null,
       strategy: strategySummary.activeStrategy || null,
       strategyFamily: strategySummary.family || null,
       strategyFit: strategySummary.fitScore || 0,
@@ -177,7 +188,8 @@ export class ExecutionEngine {
         `depth_conf:${depthConfidence.toFixed(3)}`,
         `impact_bps:${expectedImpactBps.toFixed(2)}`,
         `committee:${(committeeSummary?.netScore || 0).toFixed(3)}`,
-        `rl:${rlAdvice?.action || "balanced"}`
+        `rl:${rlAdvice?.action || "balanced"}`,
+        `exec_nn:${(executionNeuralSummary?.confidence || 0).toFixed(3)}`
       ]
     };
   }

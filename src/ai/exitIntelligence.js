@@ -30,6 +30,7 @@ export class ExitIntelligence {
     timeframeSummary = {},
     onChainLiteSummary = {},
     regimeSummary = {},
+    exitNeuralSummary = {},
     runtime = {},
     journal = {},
     nowIso = new Date().toISOString()
@@ -102,11 +103,12 @@ export class ExitIntelligence {
       Math.max(0, safeNumber(book.queueImbalance) < 0 ? Math.abs(safeNumber(book.queueImbalance)) : 0) * 0.08 +
       Math.max(0, executionRegretScore - 0.16) * 0.08;
 
-    const holdScore = clamp(0.44 + holdTailwind - exitPressure * 0.24, 0, 1);
-    const trimScore = clamp(0.18 + trimPressure + Math.max(0, pnlPct) * 1.9 - holdTailwind * 0.08, 0, 1);
-    const trailScore = clamp(0.22 + trailPressure - holdTailwind * 0.05, 0, 1);
+    const neuralBlend = clamp(safeNumber(exitNeuralSummary.confidence) * 0.28, 0, 0.28);
+    const holdScore = clamp((0.44 + holdTailwind - exitPressure * 0.24) * (1 - neuralBlend) + safeNumber(exitNeuralSummary.holdScore, 0.25) * neuralBlend, 0, 1);
+    const trimScore = clamp((0.18 + trimPressure + Math.max(0, pnlPct) * 1.9 - holdTailwind * 0.08) * (1 - neuralBlend) + safeNumber(exitNeuralSummary.trimScore, 0.25) * neuralBlend, 0, 1);
+    const trailScore = clamp((0.22 + trailPressure - holdTailwind * 0.05) * (1 - neuralBlend) + safeNumber(exitNeuralSummary.trailScore, 0.25) * neuralBlend, 0, 1);
     const exitScore = clamp(
-      0.26 + exitPressure - holdTailwind * 0.16 + (pnlPct < 0 ? Math.min(Math.abs(pnlPct) * 5.2, 0.18) : 0),
+      (0.26 + exitPressure - holdTailwind * 0.16 + (pnlPct < 0 ? Math.min(Math.abs(pnlPct) * 5.2, 0.18) : 0)) * (1 - neuralBlend) + safeNumber(exitNeuralSummary.exitScore, 0.25) * neuralBlend,
       0,
       1
     );
@@ -118,7 +120,8 @@ export class ExitIntelligence {
         (safeNumber(marketStructureSummary.confidence) || safeNumber(marketStructureSummary.liquidationCount) ? 0.14 : 0) +
         Math.min(0.16, Math.abs(pnlPct) * 3) +
         Math.min(0.12, heldMinutes / 480) +
-        Math.min(0.1, Math.abs(higherBias) * 0.2),
+        Math.min(0.1, Math.abs(higherBias) * 0.2) +
+        Math.min(0.12, safeNumber(exitNeuralSummary.confidence) * 0.14),
       0.24,
       0.96
     );
@@ -131,6 +134,7 @@ export class ExitIntelligence {
     pushReason(positiveReasons, safeNumber(market.bullishPatternScore) > 0.2, "bullish_pattern_context");
     pushReason(positiveReasons, higherBias > 0.16, "higher_timeframe_support");
     pushReason(positiveReasons, onChainLiquidity > 0.58, "stablecoin_liquidity_support");
+    pushReason(positiveReasons, safeNumber(exitNeuralSummary.holdScore) > 0.36, "exit_neural_hold_bias");
 
     const riskReasons = [];
     pushReason(riskReasons, spreadPressure > 1, "spread_shock_risk");
@@ -146,6 +150,7 @@ export class ExitIntelligence {
     pushReason(riskReasons, alignmentScore < this.config.crossTimeframeMinAlignmentScore, "timeframe_misalignment");
     pushReason(riskReasons, onChainStress > 0.58, "stablecoin_stress_risk");
     pushReason(riskReasons, executionRegretScore > 0.36, "execution_regret_risk");
+    pushReason(riskReasons, safeNumber(exitNeuralSummary.exitScore) > 0.42, "exit_neural_exit_bias");
 
     let action = "hold";
     if (exitScore >= this.config.exitIntelligenceExitScore && confidence >= this.config.exitIntelligenceMinConfidence) {
@@ -198,6 +203,16 @@ export class ExitIntelligence {
       runtimeMode: runtime.selfHeal?.mode || "normal",
       realizedTradeCount: Array.isArray(journal?.trades) ? journal.trades.length : 0,
       executionRegretScore: num(executionRegretScore),
+      neural: {
+        confidence: num(safeNumber(exitNeuralSummary.confidence)),
+        dominantAction: exitNeuralSummary.dominantAction || null,
+        holdScore: num(safeNumber(exitNeuralSummary.holdScore)),
+        trimScore: num(safeNumber(exitNeuralSummary.trimScore)),
+        trailScore: num(safeNumber(exitNeuralSummary.trailScore)),
+        exitScore: num(safeNumber(exitNeuralSummary.exitScore)),
+        inputs: { ...(exitNeuralSummary.inputs || {}) },
+        drivers: [...(exitNeuralSummary.drivers || [])]
+      },
       regime: regimeSummary.regime || position.regimeAtEntry || "range",
       timeframeAlignment: num(alignmentScore),
       onChainStress: num(onChainStress)

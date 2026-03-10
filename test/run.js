@@ -2266,6 +2266,170 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.ok(summary.readinessScore > 0.24);
 });
 
+await runCheck("adaptive model exposes expert mix and neural overlays", async () => {
+  const model = new AdaptiveTradingModel(undefined, makeConfig({ enableTransformerChallenger: false }));
+  const rawFeatures = {
+    momentum_20: 0.011,
+    ema_gap: 0.0048,
+    breakout_pct: 0.007,
+    realized_vol_pct: 0.019,
+    book_pressure: 0.15
+  };
+  const marketSnapshot = {
+    candles: Array.from({ length: 24 }, (_, index) => ({
+      openTime: `2026-03-10T${String(index).padStart(2, "0")}:00:00.000Z`,
+      closeTime: `2026-03-10T${String(index).padStart(2, "0")}:15:00.000Z`,
+      open: 100 + index * 0.1,
+      high: 100.3 + index * 0.1,
+      low: 99.8 + index * 0.1,
+      close: 100.12 + index * 0.14,
+      volume: 1200 + index * 18
+    })),
+    market: { emaTrendScore: 0.62, momentum20: 0.011, breakoutPct: 0.007, realizedVolPct: 0.019 },
+    book: {
+      spreadBps: 4.2,
+      bookPressure: 0.15,
+      depthConfidence: 0.64,
+      tradeFlowImbalance: 0.09,
+      localBook: { depthConfidence: 0.64, queueImbalance: 0.11, queueRefreshScore: 0.18, resilienceScore: 0.22 },
+      entryEstimate: { touchSlippageBps: 0.8, midSlippageBps: 0.5 }
+    },
+    timeframes: {
+      lower: { market: { emaTrendScore: 0.55, momentum20: 0.01, breakoutPct: 0.006, supertrendDirection: 1, realizedVolPct: 0.018 } },
+      higher: { market: { emaTrendScore: 0.48, momentum20: 0.008, breakoutPct: 0.004, supertrendDirection: 1, realizedVolPct: 0.021 } }
+    }
+  };
+  const score = model.score(rawFeatures, {
+    regimeSummary: { regime: "trend", confidence: 0.74, bias: 0.31 },
+    marketFeatures: marketSnapshot.market,
+    marketSnapshot,
+    bookFeatures: marketSnapshot.book,
+    newsSummary: { reliabilityScore: 0.74, riskScore: 0.18, eventRiskScore: 0.08 },
+    marketStructureSummary: { signalScore: 0.24, riskScore: 0.28, longSqueezeScore: 0.12, crowdingBias: 0.08 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.72 },
+    timeframeSummary: { enabled: true, alignmentScore: 0.7, lowerBias: 0.18, higherBias: 0.24, directionAgreement: 1, volatilityGapPct: 0.003 },
+    pairHealthSummary: { score: 0.68 },
+    divergenceSummary: { averageScore: 0.12 }
+  });
+  assert.ok(score.sequence.probability >= 0 && score.sequence.probability <= 1);
+  assert.ok(score.metaNeural.probability >= 0 && score.metaNeural.probability <= 1);
+  assert.ok(score.executionNeural.confidence >= 0);
+  assert.ok(["trend", "range", "breakout", "high_vol", "event_risk"].includes(score.expertMix.dominantRegime));
+});
+
+await runCheck("adaptive model learns from sequence meta and execution overlays", async () => {
+  const model = new AdaptiveTradingModel(undefined, makeConfig({ enableTransformerChallenger: false }));
+  const rawFeatures = { momentum_20: 0.01, ema_gap: 0.004, breakout_pct: 0.006, realized_vol_pct: 0.018 };
+  const marketSnapshot = {
+    candles: Array.from({ length: 24 }, (_, index) => ({
+      open: 50 + index * 0.05,
+      high: 50.2 + index * 0.05,
+      low: 49.8 + index * 0.05,
+      close: 50.08 + index * 0.08,
+      volume: 600 + index * 14
+    })),
+    market: { emaTrendScore: 0.52, momentum20: 0.01, breakoutPct: 0.006, realizedVolPct: 0.018 },
+    book: {
+      spreadBps: 4,
+      bookPressure: 0.12,
+      depthConfidence: 0.58,
+      tradeFlowImbalance: 0.06,
+      localBook: { depthConfidence: 0.58, queueImbalance: 0.08, queueRefreshScore: 0.11, resilienceScore: 0.16 },
+      entryEstimate: { touchSlippageBps: 0.7, midSlippageBps: 0.45 }
+    },
+    timeframes: {
+      lower: { market: { emaTrendScore: 0.51, momentum20: 0.009, breakoutPct: 0.005, supertrendDirection: 1, realizedVolPct: 0.017 } },
+      higher: { market: { emaTrendScore: 0.47, momentum20: 0.007, breakoutPct: 0.003, supertrendDirection: 1, realizedVolPct: 0.02 } }
+    }
+  };
+  const score = model.score(rawFeatures, {
+    regimeSummary: { regime: "trend", confidence: 0.7, bias: 0.28 },
+    marketFeatures: marketSnapshot.market,
+    marketSnapshot,
+    bookFeatures: marketSnapshot.book,
+    newsSummary: { reliabilityScore: 0.72, riskScore: 0.16, eventRiskScore: 0.05 },
+    marketStructureSummary: { signalScore: 0.22, riskScore: 0.24, longSqueezeScore: 0.1, crowdingBias: 0.06 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7 },
+    timeframeSummary: { enabled: true, alignmentScore: 0.68, lowerBias: 0.16, higherBias: 0.21, directionAgreement: 1, volatilityGapPct: 0.003 },
+    pairHealthSummary: { score: 0.66 },
+    divergenceSummary: { averageScore: 0.1 }
+  });
+  const learning = model.updateFromTrade({
+    symbol: "BTCUSDT",
+    exitAt: "2026-03-10T12:00:00.000Z",
+    brokerMode: "paper",
+    pnlQuote: 24,
+    netPnlPct: 0.018,
+    mfePct: 0.024,
+    maePct: -0.004,
+    captureEfficiency: 0.64,
+    executionQualityScore: 0.72,
+    rawFeatures,
+    regimeAtEntry: "trend",
+    strategyAtEntry: "ema_trend",
+    entryExecutionAttribution: {
+      entryStyle: "limit_maker",
+      makerFillRatio: 0.68,
+      takerFillRatio: 0.32,
+      slippageDeltaBps: 0.8,
+      workingTimeMs: 1800,
+      depthConfidence: 0.58,
+      queueImbalance: 0.08,
+      queueRefreshScore: 0.11,
+      resilienceScore: 0.16,
+      tradeFlow: 0.06
+    },
+    entryRationale: {
+      probability: score.probability,
+      confidence: score.confidence,
+      calibrationConfidence: score.calibrationConfidence,
+      strategy: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7 },
+      sequence: score.sequence,
+      metaNeural: score.metaNeural,
+      executionNeural: score.executionNeural,
+      expertMix: score.expertMix,
+      timeframe: { alignmentScore: 0.68 },
+      orderBook: { bookPressure: 0.12 },
+      committee: { netScore: 0.2, agreement: 0.62 },
+      pairHealth: { score: 0.66 }
+    },
+    exitIntelligenceSummary: {
+      action: "trail",
+      heldMinutes: 75,
+      progressToScaleOut: 1.1,
+      onChainStress: 0.22,
+      timeframeAlignment: 0.68,
+      executionRegretScore: 0.08
+    }
+  });
+  assert.ok(learning.sequenceLearning);
+  assert.ok(learning.metaNeuralLearning);
+  assert.ok(learning.executionNeuralLearning);
+  assert.ok(learning.exitNeuralLearning);
+});
+
+await runCheck("offline trainer reports false positive and false negative scorecards", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: -12, netPnlPct: -0.011, executionQualityScore: 0.42, labelScore: 0.39, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: 16, netPnlPct: 0.013, executionQualityScore: 0.66, labelScore: 0.74, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" }
+      ]
+    },
+    dataRecorder: { learningFrames: 9, decisionFrames: 14 },
+    counterfactuals: [
+      { outcome: "missed_winner", realizedMovePct: 0.022, strategy: "breakout_strategy" },
+      { outcome: "blocked_correctly", realizedMovePct: -0.009, strategy: "ema_trend" }
+    ],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.equal(summary.falsePositiveTrades, 1);
+  assert.equal(summary.falseNegativeTrades, 1);
+  assert.ok(summary.falsePositiveByStrategy.some((item) => item.id === "ema_trend"));
+  assert.ok(summary.falseNegativeByStrategy.some((item) => item.id === "breakout_strategy"));
+});
+
 await runCheck("on-chain lite summary captures stablecoin liquidity context", async () => {
   const service = new OnChainLiteService({ config: makeConfig(), runtime: {}, logger: null, fetchImpl: async () => ({ ok: true, json: async () => [] }) });
   const summary = service.summarize([
@@ -2276,6 +2440,7 @@ await runCheck("on-chain lite summary captures stablecoin liquidity context", as
   assert.ok(summary.stablecoinDominancePct > 0);
 });
 console.log("All checks passed.");
+
 
 
 

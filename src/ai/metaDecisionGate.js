@@ -47,6 +47,7 @@ export class MetaDecisionGate {
     pairHealthSummary = {},
     onChainLiteSummary = {},
     divergenceSummary = {},
+    metaNeuralSummary = {},
     journal,
     nowIso
   }) {
@@ -82,6 +83,7 @@ export class MetaDecisionGate {
       Math.max(0, safeNumber(pairHealthSummary.score, 0.5) - 0.5) * 0.26 +
       Math.max(0, safeNumber(timeframeSummary.alignmentScore, 0.5) - 0.5) * 0.24 +
       Math.max(0, safeNumber(onChainLiteSummary.liquidityScore, 0) - 0.35) * 0.16 +
+      Math.max(0, safeNumber(metaNeuralSummary.probability, 0.5) - 0.5) * 0.32 +
       Math.max(0, historicalEdge);
     const negativeScore =
       Math.max(0, safeNumber(newsSummary.riskScore, 0) - 0.45) * 0.34 +
@@ -95,8 +97,11 @@ export class MetaDecisionGate {
       Math.max(0, safeNumber(marketStructureSummary.crowdingBias, 0)) * 0.08 +
       Math.max(0, 0.48 - safeNumber(timeframeSummary.alignmentScore, 0.5)) * 0.22 +
       Math.max(0, 0.5 - safeNumber(pairHealthSummary.score, 0.5)) * 0.2 +
-      Math.max(0, safeNumber(onChainLiteSummary.stressScore, 0) - 0.35) * 0.16;
-    const metaScore = clamp(0.5 + positiveScore - negativeScore, 0, 1);
+      Math.max(0, safeNumber(onChainLiteSummary.stressScore, 0) - 0.35) * 0.16 +
+      Math.max(0, 0.5 - safeNumber(metaNeuralSummary.probability, 0.5)) * 0.34;
+    const baseMetaScore = clamp(0.5 + positiveScore - negativeScore, 0, 1);
+    const neuralBlend = clamp(safeNumber(metaNeuralSummary.confidence, 0) * 0.26, 0, 0.26);
+    const metaScore = clamp(baseMetaScore * (1 - neuralBlend) + safeNumber(metaNeuralSummary.probability, baseMetaScore) * neuralBlend, 0, 1);
     const metaConfidence = clamp(
       0.24 +
         historyConfidence * 0.34 +
@@ -104,7 +109,8 @@ export class MetaDecisionGate {
         (committeeSummary.agreement ? 0.12 : 0) +
         (strategySummary.activeStrategy ? 0.1 : 0) +
         (marketSnapshot?.book?.depthConfidence ? 0.08 : 0) +
-        (timeframeSummary.enabled ? 0.06 : 0),
+        (timeframeSummary.enabled ? 0.06 : 0) +
+        Math.min(0.12, safeNumber(metaNeuralSummary.confidence, 0) * 0.14),
       0.18,
       0.96
     );
@@ -122,7 +128,9 @@ export class MetaDecisionGate {
         executionReadiness * 0.16 +
         historyConfidence * 0.08 +
         Math.max(0, safeNumber(timeframeSummary.alignmentScore, 0) - 0.4) * 0.12 +
-        Math.max(0, safeNumber(pairHealthSummary.score, 0.5) - 0.45) * 0.1 -
+        Math.max(0, safeNumber(pairHealthSummary.score, 0.5) - 0.45) * 0.1 +
+        Math.max(0, safeNumber(metaNeuralSummary.probability, 0.5) - 0.5) * 0.18 +
+        safeNumber(metaNeuralSummary.confidence, 0) * 0.08 -
         negativeScore * 0.22,
       0,
       1
@@ -163,6 +171,11 @@ export class MetaDecisionGate {
     } else if (metaScore < this.config.metaCautionScore) {
       reasons.push("meta_gate_caution");
     }
+    if (safeNumber(metaNeuralSummary.confidence, 0) >= this.config.metaMinConfidence && safeNumber(metaNeuralSummary.probability, 0.5) < this.config.metaBlockScore) {
+      reasons.push("meta_neural_reject");
+    } else if (safeNumber(metaNeuralSummary.confidence, 0) >= this.config.metaMinConfidence - 0.06 && safeNumber(metaNeuralSummary.probability, 0.5) < this.config.metaCautionScore) {
+      reasons.push("meta_neural_caution");
+    }
     if (qualityScore < this.config.tradeQualityMinScore) {
       reasons.push("trade_quality_reject");
     } else if (qualityScore < this.config.tradeQualityCautionScore) {
@@ -188,9 +201,9 @@ export class MetaDecisionGate {
     }
 
     const action =
-      reasons.includes("meta_gate_reject") || reasons.includes("trade_quality_reject") || reasons.includes("pair_health_quarantine") || reasons.includes("live_paper_divergence_guard") || todayTradeCount >= this.config.maxEntriesPerDay
+      reasons.includes("meta_gate_reject") || reasons.includes("meta_neural_reject") || reasons.includes("trade_quality_reject") || reasons.includes("pair_health_quarantine") || reasons.includes("live_paper_divergence_guard") || todayTradeCount >= this.config.maxEntriesPerDay
         ? "block"
-        : reasons.includes("meta_gate_caution") || reasons.includes("trade_quality_caution")
+        : reasons.includes("meta_gate_caution") || reasons.includes("meta_neural_caution") || reasons.includes("trade_quality_caution")
           ? "caution"
           : "pass";
 
@@ -228,6 +241,9 @@ export class MetaDecisionGate {
       historyConfidence: Number(historyConfidence.toFixed(4)),
       pairHealthScore: Number(safeNumber(pairHealthSummary.score, 0.5).toFixed(4)),
       timeframeAlignment: Number(safeNumber(timeframeSummary.alignmentScore, 0.5).toFixed(4)),
+      neuralProbability: Number(safeNumber(metaNeuralSummary.probability, 0.5).toFixed(4)),
+      neuralConfidence: Number(safeNumber(metaNeuralSummary.confidence, 0).toFixed(4)),
+      neuralDrivers: [...(metaNeuralSummary.contributions || [])].slice(0, 4),
       notes: [
         `meta_score:${metaScore.toFixed(3)}`,
         `meta_conf:${metaConfidence.toFixed(3)}`,

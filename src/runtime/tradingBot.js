@@ -44,6 +44,7 @@ import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
 import { minutesBetween, nowIso } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
+import { clamp } from "../utils/math.js";
 
 const EMPTY_NEWS = {
   coverage: 0,
@@ -146,6 +147,10 @@ const EMPTY_CALENDAR = {
   items: []
 };
 
+
+function safeNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
 
 function num(value, decimals = 4, fallback = 0) {
   return Number.isFinite(value) ? Number(value.toFixed(decimals)) : fallback;
@@ -449,6 +454,15 @@ function summarizeExitIntelligence(summary = {}) {
     shouldTightenStop: Boolean(summary.shouldTightenStop),
     positiveReasons: [...(summary.positiveReasons || [])],
     riskReasons: [...(summary.riskReasons || [])],
+    neural: {
+      confidence: num(summary.neural?.confidence || 0, 4),
+      dominantAction: summary.neural?.dominantAction || null,
+      holdScore: num(summary.neural?.holdScore || 0, 4),
+      trimScore: num(summary.neural?.trimScore || 0, 4),
+      trailScore: num(summary.neural?.trailScore || 0, 4),
+      exitScore: num(summary.neural?.exitScore || 0, 4),
+      drivers: arr(summary.neural?.drivers || []).slice(0, 4)
+    },
     nextReviewBias: summary.nextReviewBias || "hold"
   };
 }
@@ -675,6 +689,59 @@ function summarizeTransformer(transformer = {}) {
   };
 }
 
+function summarizeSequence(sequence = {}) {
+  return {
+    probability: num(sequence.probability || 0, 4),
+    confidence: num(sequence.confidence || 0, 4),
+    drivers: arr(sequence.drivers || []).slice(0, 4).map((item) => ({
+      name: item.name,
+      contribution: num(item.contribution || item.score || 0, 4),
+      rawValue: num(item.rawValue || 0, 4)
+    })),
+    inputs: { ...(sequence.inputs || {}) }
+  };
+}
+
+function summarizeExpertMix(summary = {}) {
+  return {
+    dominantRegime: summary.dominantRegime || null,
+    secondaryRegime: summary.secondaryRegime || null,
+    confidence: num(summary.confidence || 0, 4),
+    weights: Object.fromEntries(Object.entries(summary.weights || {}).map(([name, value]) => [name, num(value || 0, 4)])),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeExecutionNeural(summary = {}) {
+  return {
+    preferMakerBoost: num(summary.preferMakerBoost || 0, 4),
+    patienceMultiplier: num(summary.patienceMultiplier || 1, 4),
+    sizeMultiplier: num(summary.sizeMultiplier || 1, 4),
+    aggressiveness: num(summary.aggressiveness || 1, 4),
+    confidence: num(summary.confidence || 0, 4),
+    drivers: arr(summary.drivers || []).slice(0, 4).map((item) => ({
+      name: item.name,
+      contribution: num(item.contribution || 0, 4),
+      rawValue: num(item.rawValue || 0, 4)
+    })),
+    inputs: { ...(summary.inputs || {}) }
+  };
+}
+
+function summarizeMetaNeural(summary = {}) {
+  return {
+    action: summary.action || "pass",
+    probability: num(summary.probability || 0, 4),
+    confidence: num(summary.confidence || 0, 4),
+    drivers: arr(summary.contributions || []).slice(0, 4).map((item) => ({
+      name: item.name,
+      contribution: num(item.contribution || 0, 4),
+      rawValue: num(item.rawValue || 0, 4)
+    })),
+    inputs: { ...(summary.inputs || {}) }
+  };
+}
+
 function summarizeAgent(agent = {}) {
   return {
     id: agent.id,
@@ -786,6 +853,7 @@ function summarizePlan(plan) {
         expectedMakerFillPct: num(plan.expectedMakerFillPct || 0, 3),
         tradeFlow: num(plan.tradeFlow || 0, 3),
         trailingDelta: plan.trailingDelta,
+        executionNeural: summarizeExecutionNeural(plan.executionNeural || {}),
         strategy: plan.strategy || null,
         strategyFit: num(plan.strategyFit || 0, 3),
         rationale: [...(plan.rationale || [])]
@@ -1035,6 +1103,9 @@ function summarizeMeta(summary = {}) {
     canaryTradesRemaining: summary.canaryTradesRemaining || 0,
     canarySizeMultiplier: num(summary.canarySizeMultiplier ?? 1, 4),
     historyConfidence: num(summary.historyConfidence || 0, 4),
+    neuralProbability: num(summary.neuralProbability || 0, 4),
+    neuralConfidence: num(summary.neuralConfidence || 0, 4),
+    neuralDrivers: arr(summary.neuralDrivers || []).slice(0, 4),
     reasons: [...(summary.reasons || [])],
     notes: [...(summary.notes || [])]
   };
@@ -1142,10 +1213,15 @@ function summarizeOfflineTrainer(summary = {}) {
       total: summary.counterfactuals?.total || 0,
       missedWinners: summary.counterfactuals?.missedWinners || 0,
       blockedCorrectly: summary.counterfactuals?.blockedCorrectly || 0,
+      falseNegatives: summary.counterfactuals?.falseNegatives || 0,
       averageMissedMovePct: num(summary.counterfactuals?.averageMissedMovePct || 0, 4)
     },
+    falsePositiveTrades: summary.falsePositiveTrades || 0,
+    falseNegativeTrades: summary.falseNegativeTrades || 0,
     strategies: arr(summary.strategies || []).slice(0, 6),
     regimes: arr(summary.regimes || []).slice(0, 5),
+    falsePositiveByStrategy: arr(summary.falsePositiveByStrategy || []).slice(0, 5),
+    falseNegativeByStrategy: arr(summary.falseNegativeByStrategy || []).slice(0, 5),
     notes: [...(summary.notes || [])]
   };
 }
@@ -2084,6 +2160,10 @@ export class TradingBot {
       optimizer: summarizeOptimizer(candidate.optimizerSummary),
       optimizerApplied: summarizeOptimizerApplied(candidate.decision.optimizerApplied),
       transformer: summarizeTransformer(candidate.score.transformer),
+      sequence: summarizeSequence(candidate.score.sequence),
+      expertMix: summarizeExpertMix(candidate.score.expertMix),
+      metaNeural: summarizeMetaNeural(candidate.score.metaNeural),
+      executionNeural: summarizeExecutionNeural(candidate.score.executionNeural),
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
       stopLossPct: num(candidate.decision.stopLossPct, 4),
@@ -2242,7 +2322,11 @@ export class TradingBot {
       marketSentimentSummary,
       volatilitySummary,
       announcementSummary: exchangeSummary,
-      calendarSummary
+      calendarSummary,
+      strategySummary,
+      timeframeSummary,
+      pairHealthSummary,
+      divergenceSummary
     });
     const driftSummary = this.config.enableDriftMonitoring
       ? this.driftMonitor.evaluateCandidate({
@@ -2272,7 +2356,8 @@ export class TradingBot {
       strategySummary,
       portfolioSummary,
       committeeSummary: null,
-      rlAdvice: provisionalRlAdvice
+      rlAdvice: provisionalRlAdvice,
+      executionNeuralSummary: score.executionNeural
     });
     const committeeSummary = this.committee.evaluate({
       symbol,
@@ -2299,6 +2384,26 @@ export class TradingBot {
       committeeSummary,
       newsSummary
     });
+    score.metaNeural = this.model.metaNeural.score({
+      score,
+      committeeSummary,
+      strategySummary,
+      marketSnapshot,
+      newsSummary,
+      marketStructureSummary,
+      pairHealthSummary,
+      timeframeSummary,
+      divergenceSummary,
+      threshold: this.config.modelThreshold
+    });
+    score.executionNeural = this.model.executionNeural.score({
+      score,
+      marketSnapshot,
+      committeeSummary,
+      strategySummary,
+      pairHealthSummary,
+      timeframeSummary
+    });
     const metaSummary = this.config.enableMetaDecisionGate
       ? this.metaGate.evaluate({
           symbol,
@@ -2320,6 +2425,7 @@ export class TradingBot {
           pairHealthSummary,
           onChainLiteSummary,
           divergenceSummary,
+          metaNeuralSummary: score.metaNeural,
           journal: this.journal,
           nowIso: now.toISOString()
         })
@@ -2365,7 +2471,8 @@ export class TradingBot {
       strategySummary,
       portfolioSummary,
       committeeSummary,
-      rlAdvice
+      rlAdvice,
+      executionNeuralSummary: score.executionNeural
     });
     decision.committeeSummary = committeeSummary;
     decision.rlAdvice = rlAdvice;
@@ -2425,6 +2532,39 @@ export class TradingBot {
       const strategySummary = position.strategyDecision || position.entryRationale?.strategy || {};
       const regimeSummary = this.model.inferRegime({ marketFeatures: marketSnapshot.market, newsSummary, streamFeatures: marketSnapshot.stream || {}, bookFeatures: marketSnapshot.book, marketStructureSummary, marketSentimentSummary, volatilitySummary: this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT, announcementSummary: exchangeSummary, calendarSummary });
       const timeframeSummary = this.config.enableCrossTimeframeConsensus ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config }) : summarizeTimeframeConsensus({ enabled: false });
+      const currentPrice = marketSnapshot.book.mid || position.lastMarkedPrice || position.entryPrice;
+      const currentValue = currentPrice * safeNumber(position.quantity || 0);
+      const totalCost = safeNumber(position.totalCost || position.notional || currentValue, currentValue);
+      const pnlPct = totalCost ? (currentValue - totalCost) / totalCost : 0;
+      const highestPrice = Math.max(safeNumber(position.highestPrice, position.entryPrice), safeNumber(position.entryPrice, currentPrice));
+      const drawdownFromHighPct = highestPrice ? (currentPrice - highestPrice) / highestPrice : 0;
+      const heldMinutes = minutesBetween(position.entryAt, nowIso());
+      const progressToScaleOut = clamp(
+        pnlPct / Math.max(position.scaleOutTrailOffsetPct || this.config.scaleOutTriggerPct || 0.01, 0.004),
+        -1,
+        2.2
+      );
+      const timePressure = clamp(heldMinutes / Math.max(this.config.maxHoldMinutes || 1, 1), 0, 1.5);
+      const spreadPressure = clamp(safeNumber(marketSnapshot.book.spreadBps) / Math.max(this.config.exitOnSpreadShockBps || 1, 1), 0, 1.5);
+      const entrySlipDelta = safeNumber(position.entryExecutionAttribution?.slippageDeltaBps);
+      const executionRegretScore = clamp(Math.max(0, entrySlipDelta) / 8 + Math.max(0, -safeNumber(marketSnapshot.book.bookPressure)) * 0.18, 0, 1);
+      const exitNeuralSummary = this.model.scoreExit({
+        pnlPct,
+        drawdownFromHighPct,
+        heldMinutes,
+        maxHoldMinutes: this.config.maxHoldMinutes,
+        bookPressure: marketSnapshot.book.bookPressure,
+        signalScore: marketStructureSummary.signalScore,
+        riskScore: marketStructureSummary.riskScore,
+        higherBias: timeframeSummary.higherBias,
+        alignmentScore: timeframeSummary.alignmentScore,
+        onChainLiquidity: onChainLiteSummary.liquidityScore,
+        onChainStress: onChainLiteSummary.stressScore,
+        spreadPressure,
+        timePressure,
+        executionRegretScore,
+        progressToScaleOut
+      });
       const exitIntelligenceSummary = this.config.enableExitIntelligence
         ? this.exitIntelligence.evaluate({
             position,
@@ -2437,6 +2577,7 @@ export class TradingBot {
             onChainLiteSummary,
             timeframeSummary,
             regimeSummary,
+            exitNeuralSummary,
             runtime: this.runtime,
             journal: this.journal,
             nowIso: nowIso()
@@ -2705,6 +2846,10 @@ export class TradingBot {
       optimizerApplied: summarizeOptimizerApplied(candidate.decision.optimizerApplied),
       topSignals: candidate.score.contributions.slice(0, 4).map(summarizeSignal),
       transformer: summarizeTransformer(candidate.score.transformer),
+      sequence: summarizeSequence(candidate.score.sequence),
+      expertMix: summarizeExpertMix(candidate.score.expertMix),
+      metaNeural: summarizeMetaNeural(candidate.score.metaNeural),
+      executionNeural: summarizeExecutionNeural(candidate.score.executionNeural),
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
       session: summarizeSession(candidate.sessionSummary),
@@ -3270,7 +3415,17 @@ export class TradingBot {
       },
       meta: {
         qualityScore: num(decision.meta?.qualityScore ?? decision.meta?.score ?? 0, 4),
-        qualityBand: decision.meta?.qualityBand || null
+        qualityBand: decision.meta?.qualityBand || null,
+        neuralProbability: num(decision.meta?.neuralProbability || 0, 4),
+        neuralConfidence: num(decision.meta?.neuralConfidence || 0, 4)
+      },
+      sequence: {
+        probability: num(decision.sequence?.probability || 0, 4),
+        confidence: num(decision.sequence?.confidence || 0, 4)
+      },
+      expertMix: {
+        dominantRegime: decision.expertMix?.dominantRegime || null,
+        confidence: num(decision.expertMix?.confidence || 0, 4)
       }
     };
   }
@@ -3372,6 +3527,9 @@ export class TradingBot {
       exitIntelligence: summarizeExitIntelligence(trade.exitIntelligenceSummary || {}),
       scaleOuts,
       meta: summarizeMeta(rationale.meta || {}),
+      metaNeural: summarizeMetaNeural(rationale.metaNeural || {}),
+      sequence: summarizeSequence(rationale.sequence || {}),
+      expertMix: summarizeExpertMix(rationale.expertMix || {}),
       blockersAtEntry: arr(rationale.blockerReasons || []).slice(0, 5),
       headlines,
       candleContext: arr(rationale.candleContext || []).slice(0, 24),
@@ -3385,6 +3543,8 @@ export class TradingBot {
         { at: trade.entryAt, type: "analysis", label: "Gate", detail: gateDetail },
         { at: trade.entryAt, type: "entry", label: "Entry", detail: rationale.summary || `${trade.symbol} entry` },
         { at: trade.entryAt, type: "committee", label: "Committee", detail: `agree ${num(committee.agreement || 0, 3)} | net ${num(committee.netScore || 0, 3)} | vetoes ${(committee.vetoes || []).length}` },
+        ...(rationale.sequence ? [{ at: trade.entryAt, type: "sequence", label: "Sequence", detail: `p ${num(rationale.sequence.probability || 0, 3)} | c ${num(rationale.sequence.confidence || 0, 3)}` }] : []),
+        ...(rationale.expertMix ? [{ at: trade.entryAt, type: "experts", label: "Experts", detail: `${rationale.expertMix.dominantRegime || "range"} | ${((rationale.expertMix.confidence || 0) * 100).toFixed(0)}%` }] : []),
         ...(headlines.length ? [{ at: trade.entryAt, type: "news", label: "Nieuws", detail: headlines.join(" | ") }] : []),
         ...(arr(rationale.checks || []).slice(0, 3).map((check) => ({ at: trade.entryAt, type: "check", label: check.label || "Check", detail: `${check.passed ? "pass" : "fail"} | ${check.detail || ""}`.trim() }))),
         ...scaleOuts.map((event) => ({ at: event.at, type: "scale_out", label: "Scale-out", detail: `${event.reason || "partial_exit"} | ${num((event.fraction || 0) * 100, 1)}% | ${num(event.realizedPnl || 0, 2)} USD` })),
