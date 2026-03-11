@@ -85,6 +85,8 @@ Standaard draait het dashboard lokaal op `http://127.0.0.1:3011`. Pas dit aan me
 5. Vul daarna je Binance API keys in `.env` in als je live wilt traden.
 6. Start het dashboard met [Start-Dashboard.cmd](/C:/Users/highlife/Documents/Playground/Start-Dashboard.cmd) of de watchdog met [Start-BotService.cmd](/C:/Users/highlife/Documents/Playground/Start-BotService.cmd).
 
+Wil je met een enkele klik zowel dashboard als bot starten via dezelfde actuele codebase, gebruik dan [Start-Everything.cmd](/C:/Users/highlife/Documents/Playground/Start-Everything.cmd). Dat start het dashboard, wacht tot de lokale API klaar is en activeert daarna automatisch `Start bot`.
+
 Het installscript:
 
 - maakt automatisch een `.env` aan als die ontbreekt
@@ -138,6 +140,7 @@ node src/cli.js dashboard
 node src/cli.js run
 npm.cmd run service:windows
 Start-BotService.cmd
+Start-Everything.cmd
 ```
 
 ## Hoe de AI beslist
