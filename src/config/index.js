@@ -206,6 +206,12 @@ const DEFAULTS = {
   paperExplorationSizeMultiplier: 0.45,
   paperExplorationCooldownMinutes: 90,
   paperExplorationMinBookPressure: -0.36,
+  paperRecoveryProbeEnabled: true,
+  paperRecoveryProbeThresholdBuffer: 0.035,
+  paperRecoveryProbeSizeMultiplier: 0.22,
+  paperRecoveryProbeCooldownMinutes: 60,
+  paperRecoveryProbeMinBookPressure: -0.28,
+  paperRecoveryProbeAllowMinTradeOverride: true,
   exitOnSpreadShockBps: 20,
   minVolTargetFraction: 0.4,
   maxVolTargetFraction: 1.05,
@@ -631,6 +637,12 @@ export async function loadConfig(projectRoot = process.cwd()) {
     paperExplorationSizeMultiplier: parseNumber(env.PAPER_EXPLORATION_SIZE_MULTIPLIER, DEFAULTS.paperExplorationSizeMultiplier),
     paperExplorationCooldownMinutes: parseNumber(env.PAPER_EXPLORATION_COOLDOWN_MINUTES, DEFAULTS.paperExplorationCooldownMinutes),
     paperExplorationMinBookPressure: parseNumber(env.PAPER_EXPLORATION_MIN_BOOK_PRESSURE, DEFAULTS.paperExplorationMinBookPressure),
+    paperRecoveryProbeEnabled: parseBoolean(env.PAPER_RECOVERY_PROBE_ENABLED, DEFAULTS.paperRecoveryProbeEnabled),
+    paperRecoveryProbeThresholdBuffer: parseNumber(env.PAPER_RECOVERY_PROBE_THRESHOLD_BUFFER, DEFAULTS.paperRecoveryProbeThresholdBuffer),
+    paperRecoveryProbeSizeMultiplier: parseNumber(env.PAPER_RECOVERY_PROBE_SIZE_MULTIPLIER, DEFAULTS.paperRecoveryProbeSizeMultiplier),
+    paperRecoveryProbeCooldownMinutes: parseNumber(env.PAPER_RECOVERY_PROBE_COOLDOWN_MINUTES, DEFAULTS.paperRecoveryProbeCooldownMinutes),
+    paperRecoveryProbeMinBookPressure: parseNumber(env.PAPER_RECOVERY_PROBE_MIN_BOOK_PRESSURE, DEFAULTS.paperRecoveryProbeMinBookPressure),
+    paperRecoveryProbeAllowMinTradeOverride: parseBoolean(env.PAPER_RECOVERY_PROBE_ALLOW_MIN_TRADE_OVERRIDE, DEFAULTS.paperRecoveryProbeAllowMinTradeOverride),
     exitOnSpreadShockBps: parseNumber(env.EXIT_ON_SPREAD_SHOCK_BPS, DEFAULTS.exitOnSpreadShockBps),
     minVolTargetFraction: parseNumber(env.MIN_VOL_TARGET_FRACTION, DEFAULTS.minVolTargetFraction),
     maxVolTargetFraction: parseNumber(env.MAX_VOL_TARGET_FRACTION, DEFAULTS.maxVolTargetFraction),
@@ -784,7 +796,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

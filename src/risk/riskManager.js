@@ -40,6 +40,14 @@ function isSoftPaperReason(reason) {
   ].includes(reason);
 }
 
+function isPaperRecoveryProbeReason(reason) {
+  return [
+    "capital_governor_blocked",
+    "capital_governor_recovery",
+    "trade_size_below_minimum"
+  ].includes(reason);
+}
+
 function canRelaxPaperSelfHeal(selfHealState = {}) {
   const issues = new Set(selfHealState.issues || []);
   return Boolean(selfHealState.learningAllowed) || !issues.has("health_circuit_open");
@@ -722,6 +730,68 @@ export class RiskManager {
           suppressedReasons,
           guardrailReliefReasons: paperGuardrailRelief,
           selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
+          selfHealIssues: [...(selfHealState.issues || [])]
+        };
+      }
+    }
+
+    const recoveryProbeSuppressedReasons = reasons.filter((reason) =>
+      isPaperRecoveryProbeReason(reason) || isPaperLeniencyReason(reason, selfHealState)
+    );
+    const recoveryProbeGuardrailReasons = recoveryProbeSuppressedReasons.filter((reason) =>
+      [
+        "capital_governor_blocked",
+        "capital_governor_recovery",
+        "trade_size_below_minimum"
+      ].includes(reason)
+    );
+
+    if (
+      !allow &&
+      this.config.botMode === "paper" &&
+      this.config.paperRecoveryProbeEnabled &&
+      openPositions.length === 0 &&
+      minutesSincePortfolioTrade >= this.config.paperRecoveryProbeCooldownMinutes &&
+      reasons.some((reason) => ["capital_governor_blocked", "capital_governor_recovery"].includes(reason)) &&
+      reasons.every((reason) => isPaperRecoveryProbeReason(reason) || isPaperLeniencyReason(reason, selfHealState)) &&
+      score.probability >= threshold - this.config.paperRecoveryProbeThresholdBuffer &&
+      (marketSnapshot.book.bookPressure || 0) >= this.config.paperRecoveryProbeMinBookPressure &&
+      (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.5, 10) &&
+      (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.82 &&
+      (newsSummary.riskScore || 0) <= 0.36 &&
+      (announcementSummary.riskScore || 0) <= 0.24 &&
+      (calendarSummary.riskScore || 0) <= 0.3 &&
+      (marketStructureSummary.riskScore || 0) <= 0.36 &&
+      (volatilitySummary.riskScore || 0) <= 0.76 &&
+      !(sessionSummary.blockerReasons || []).length &&
+      !(driftSummary.blockerReasons || []).length &&
+      canRelaxPaperSelfHeal(selfHealState)
+    ) {
+      const recoveryBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
+      const recoveryProbeFloor = this.config.paperRecoveryProbeAllowMinTradeOverride
+        ? Math.max(5, this.config.minTradeUsdt * this.config.paperRecoveryProbeSizeMultiplier)
+        : this.config.minTradeUsdt;
+      const recoveryProbeQuoteAmount = Math.min(
+        recoveryBudget,
+        Math.max(recoveryProbeFloor, quoteAmount * this.config.paperRecoveryProbeSizeMultiplier)
+      );
+      if (recoveryProbeQuoteAmount > 0 && (this.config.paperRecoveryProbeAllowMinTradeOverride || recoveryProbeQuoteAmount >= this.config.minTradeUsdt)) {
+        allow = true;
+        entryMode = "paper_recovery_probe";
+        suppressedReasons = [...reasons];
+        paperGuardrailRelief = recoveryProbeGuardrailReasons;
+        finalQuoteAmount = recoveryProbeQuoteAmount;
+        paperExploration = {
+          mode: "paper_recovery_probe",
+          thresholdBuffer: this.config.paperRecoveryProbeThresholdBuffer,
+          sizeMultiplier: this.config.paperRecoveryProbeSizeMultiplier,
+          minBookPressure: this.config.paperRecoveryProbeMinBookPressure,
+          minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
+          warmupProgress: calibrationWarmup,
+          suppressedReasons,
+          guardrailReliefReasons: paperGuardrailRelief,
+          selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
+          allowMinTradeOverride: Boolean(this.config.paperRecoveryProbeAllowMinTradeOverride),
           selfHealIssues: [...(selfHealState.issues || [])]
         };
       }

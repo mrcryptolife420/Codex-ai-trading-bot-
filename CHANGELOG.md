@@ -21,6 +21,7 @@
 - Parameter-governor scopes that learn bounded threshold, stop, take-profit, scale-out, hold-time, and execution-aggressiveness adjustments from closed-trade outcomes.
 
 ### Improved
+- Split paper-mode leniency into `paper_exploration` versus `paper_recovery_probe`, so capital-governor recovery can keep learning with tiny probe sizing while market/data-quality blockers still stay hard.
 - Deepened model-promotion governance so regime readiness now sits beside threshold, exit, calibration, and feature-health feedback instead of only paper/live scorecards.
 - Extended replay cards with veto-chain and alternate-exit context so post-trade review shows more than entry/exit prices alone.
 - Refreshed status serialization so live runtime output now includes lifecycle and operator layers end-to-end.
@@ -29,6 +30,7 @@
 - Expanded operator dashboards with readiness summaries, active lifecycle actions, lifecycle journals, threshold probation context, and execution-calibration status.
 - Deepened exit learning with strategy- and regime-scoped exit policies that tune scale-outs, trailing behavior, and hold windows per context.
 - Expanded dashboard governance, research, and operations panels with imported-strategy scorecards, parameter-governor summaries, venue-confirmation status, and capital-ladder state.
+- Clarified dashboard decision cards so paper-only candidates now show whether they were a generic warm-up or a capital-recovery probe, plus which guardrails were consciously relaxed.
 - Kept imported strategy candidates as raw DSL records in runtime state instead of recycling scored seed/genome output, preventing governance refreshes from inflating or corrupting follow-up research inputs.
 - Extended the execution planner so strategy-meta and governor signals can nudge maker preference and sizing without bypassing the existing safety clamps.
 

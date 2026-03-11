@@ -201,6 +201,10 @@ export function validateConfig(config) {
   assertRange("PAPER_EXPLORATION_SIZE_MULTIPLIER", config.paperExplorationSizeMultiplier, 0.1, 1, errors);
   assertRange("PAPER_EXPLORATION_COOLDOWN_MINUTES", config.paperExplorationCooldownMinutes, 0, 1440, errors);
   assertRange("PAPER_EXPLORATION_MIN_BOOK_PRESSURE", config.paperExplorationMinBookPressure, -1, 1, errors);
+  assertRange("PAPER_RECOVERY_PROBE_THRESHOLD_BUFFER", config.paperRecoveryProbeThresholdBuffer, 0, 0.2, errors);
+  assertRange("PAPER_RECOVERY_PROBE_SIZE_MULTIPLIER", config.paperRecoveryProbeSizeMultiplier, 0.05, 1, errors);
+  assertRange("PAPER_RECOVERY_PROBE_COOLDOWN_MINUTES", config.paperRecoveryProbeCooldownMinutes, 0, 1440, errors);
+  assertRange("PAPER_RECOVERY_PROBE_MIN_BOOK_PRESSURE", config.paperRecoveryProbeMinBookPressure, -1, 1, errors);
   assertRange("ANNOUNCEMENT_LOOKBACK_HOURS", config.announcementLookbackHours, 1, 168, errors);
   assertRange("ONCHAIN_LITE_TRENDING_LIMIT", config.onChainLiteTrendingLimit, 1, 20, errors);
   assertRange("ANNOUNCEMENT_CACHE_MINUTES", config.announcementCacheMinutes, 1, 240, errors);

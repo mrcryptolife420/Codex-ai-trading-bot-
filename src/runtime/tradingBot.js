@@ -3655,14 +3655,15 @@ export class TradingBot {
   }
 
   buildCandidateChecks(candidate) {
-    const explorationMode = candidate.decision.entryMode === "paper_exploration";
+    const explorationMode = ["paper_exploration", "paper_recovery_probe"].includes(candidate.decision.entryMode);
+    const recoveryProbeMode = candidate.decision.entryMode === "paper_recovery_probe";
     const suppressedReasons = new Set(candidate.decision.suppressedReasons || []);
     return [
       {
         label: "Model confidence",
         passed: candidate.score.probability >= candidate.decision.threshold || explorationMode,
         detail: explorationMode
-          ? `${num(candidate.score.probability * 100, 1)}% via paper warm-up override | base ${num((candidate.decision.baseThreshold || candidate.decision.threshold) * 100, 1)}%`
+          ? `${num(candidate.score.probability * 100, 1)}% via ${recoveryProbeMode ? "paper recovery probe" : "paper warm-up override"} | base ${num((candidate.decision.baseThreshold || candidate.decision.threshold) * 100, 1)}%`
           : `${num(candidate.score.probability * 100, 1)}% vs ${num(candidate.decision.threshold * 100, 1)}% threshold | base ${num((candidate.decision.baseThreshold || candidate.decision.threshold) * 100, 1)}%`
       },
       {
@@ -3832,7 +3833,7 @@ export class TradingBot {
       {
         label: "Capital governor",
         passed: candidate.decision.capitalGovernorApplied?.blocked !== true || (explorationMode && (suppressedReasons.has("capital_governor_blocked") || suppressedReasons.has("capital_governor_recovery"))),
-        detail: `${candidate.decision.capitalGovernorApplied?.status || "ready"} | size ${num((candidate.decision.capitalGovernorApplied?.sizeMultiplier || 1) * 100, 1)}%${explorationMode && (suppressedReasons.has("capital_governor_blocked") || suppressedReasons.has("capital_governor_recovery")) ? " | paper leniency" : ""}`
+        detail: `${candidate.decision.capitalGovernorApplied?.status || "ready"} | size ${num((candidate.decision.capitalGovernorApplied?.sizeMultiplier || 1) * 100, 1)}%${explorationMode && (suppressedReasons.has("capital_governor_blocked") || suppressedReasons.has("capital_governor_recovery")) ? ` | ${recoveryProbeMode ? "paper recovery probe" : "paper leniency"}` : ""}`
       },
       {
         label: "Execution cost budget",
@@ -3878,9 +3879,11 @@ export class TradingBot {
     const executionText = candidate.decision.executionPlan?.entryStyle === "pegged_limit_maker" ? "pegged-maker-entry" : candidate.decision.executionPlan?.entryStyle === "limit_maker" ? "maker-entry" : "market-entry";
     const explorationText = candidate.decision.entryMode === "paper_exploration"
       ? `paper warm-up mode met kleinere testpositie (${num((candidate.decision.paperExploration?.sizeMultiplier || 0) * 100, 1)}%)`
-      : executionText;
+      : candidate.decision.entryMode === "paper_recovery_probe"
+        ? `paper recovery probe met extra kleine herstelpositie (${num((candidate.decision.paperExploration?.sizeMultiplier || 0) * 100, 1)}%)`
+        : executionText;
     const paperGuardrailText = (candidate.decision.paperGuardrailRelief || []).length
-      ? `paper leniency versoepelde ${candidate.decision.paperGuardrailRelief.join(", ")}`
+      ? `${candidate.decision.entryMode === "paper_recovery_probe" ? "paper recovery probe versoepelde" : "paper leniency versoepelde"} ${candidate.decision.paperGuardrailRelief.join(", ")}`
       : null;
     const setupStyle = buildSetupStyle(candidate);
     const strategyText = candidate.strategySummary?.strategyLabel ? `${candidate.strategySummary.strategyLabel} (${num((candidate.strategySummary.fitScore || 0) * 100, 1)}%)` : setupStyle;
@@ -5930,7 +5933,6 @@ export class TradingBot {
     };
   }
 }
-
 
 
 

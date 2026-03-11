@@ -193,6 +193,12 @@ function makeConfig(overrides = {}) {
     paperExplorationSizeMultiplier: 0.45,
     paperExplorationCooldownMinutes: 90,
     paperExplorationMinBookPressure: -0.28,
+    paperRecoveryProbeEnabled: true,
+    paperRecoveryProbeThresholdBuffer: 0.035,
+    paperRecoveryProbeSizeMultiplier: 0.22,
+    paperRecoveryProbeCooldownMinutes: 60,
+    paperRecoveryProbeMinBookPressure: -0.28,
+    paperRecoveryProbeAllowMinTradeOverride: true,
     exitOnSpreadShockBps: 20,
     minVolTargetFraction: 0.4,
     maxVolTargetFraction: 1.05,
@@ -2436,6 +2442,120 @@ await runCheck("risk manager keeps paper exploration available for governance pa
   assert.ok(decision.suppressedReasons.includes("execution_cost_budget_exceeded"));
   assert.ok(decision.suppressedReasons.includes("capital_governor_blocked"));
   assert.ok(decision.paperGuardrailRelief.includes("self_heal_pause_entries"));
+});
+
+await runCheck("risk manager uses paper recovery probe for capital governor recovery with sub-min trade sizing", async () => {
+  const manager = new RiskManager(makeConfig({
+    maxPositionFraction: 0.05,
+    riskPerTrade: 0.002,
+    minTradeUsdt: 25,
+    paperRecoveryProbeSizeMultiplier: 0.22
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "ADAUSDT",
+    score: {
+      probability: 0.508,
+      calibrationConfidence: 0.52,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.52, confidence: 0.09 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.5, bookPressure: -0.12, microPriceEdgeBps: 0.16 },
+      market: { realizedVolPct: 0.015, atrPct: 0.01, bearishPatternScore: 0.04, bullishPatternScore: 0.14, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.11, signalScore: 0.04, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.24, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.42, ivPremium: 4 },
+    calendarSummary: { riskScore: 0.07, bullishScore: 0, urgencyScore: 0.02 },
+    committeeSummary: { agreement: 0.35, probability: 0.51, netScore: -0.02, sizeMultiplier: 0.96, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.37, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "pullback_trend",
+      family: "trend_following",
+      fitScore: 0.55,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 10, sampleConfidence: 0.62 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 120 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    capitalGovernorSummary: { status: "blocked", allowEntries: false, sizeMultiplier: 0, recoveryMode: true, notes: ["drawdown recovery active"] },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-11T09:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_recovery_probe");
+  assert.ok(decision.suppressedReasons.includes("capital_governor_blocked"));
+  assert.ok(decision.suppressedReasons.includes("capital_governor_recovery"));
+  assert.ok(decision.suppressedReasons.includes("trade_size_below_minimum"));
+  assert.ok(decision.paperGuardrailRelief.includes("trade_size_below_minimum"));
+  assert.ok(decision.quoteAmount > 0);
+  assert.ok(decision.quoteAmount < makeConfig().minTradeUsdt);
+  assert.equal(decision.paperExploration?.allowMinTradeOverride, true);
+});
+
+await runCheck("risk manager keeps paper recovery probe blocked when market quality blockers remain", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ADAUSDT",
+    score: {
+      probability: 0.528,
+      calibrationConfidence: 0.5,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.53, confidence: 0.09 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.5, bookPressure: -0.41, microPriceEdgeBps: 0.16 },
+      market: { realizedVolPct: 0.015, atrPct: 0.01, bearishPatternScore: 0.04, bullishPatternScore: 0.14, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.11, signalScore: 0.04, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.24, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.42, ivPremium: 4 },
+    calendarSummary: { riskScore: 0.07, bullishScore: 0, urgencyScore: 0.02 },
+    committeeSummary: { agreement: 0.35, probability: 0.53, netScore: -0.02, sizeMultiplier: 0.96, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.37, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "pullback_trend",
+      family: "trend_following",
+      fitScore: 0.55,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 10, sampleConfidence: 0.62 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 120 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    capitalGovernorSummary: { status: "blocked", allowEntries: false, sizeMultiplier: 0, recoveryMode: true, notes: ["drawdown recovery active"] },
+    qualityQuorumSummary: { status: "degraded", observeOnly: false, quorumScore: 0.51, blockerReasons: ["local_book_quality_too_low"], cautionReasons: [] },
+    nowIso: "2026-03-11T09:05:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.notEqual(decision.entryMode, "paper_recovery_probe");
+  assert.ok(decision.reasons.includes("orderbook_sell_pressure"));
+  assert.ok(decision.reasons.includes("quality_quorum_degraded"));
 });
 
 await runCheck("risk manager keeps health-circuit self heal as a hard paper block", async () => {
