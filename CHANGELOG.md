@@ -21,6 +21,8 @@
 - A neural strategy meta-selector that learns preferred strategy families and execution styles per market context and feeds that guidance into entry sizing, threshold bias, and execution planning.
 - Reference-venue confirmation summaries and capital-ladder staging that can downgrade sizing, keep live in shadow, or block entries when external price confirmation or deployment readiness falls behind.
 - Parameter-governor scopes that learn bounded threshold, stop, take-profit, scale-out, hold-time, and execution-aggressiveness adjustments from closed-trade outcomes.
+- Shared candidate insight summaries for `dataQuality`, `signalQuality`, and per-layer `confidenceBreakdown`, so runtime, risk, and dashboard all reason over the same explainable quality model.
+- Shared trend-state phase classification with explicit `early_ignition`, `healthy_continuation`, `late_crowded`, `range_acceptance`, and transition labels.
 
 ### Improved
 - Hardened exchange-capability normalization so persisted string values like `"false"` no longer flip regional shorting flags back on in runtime summaries or downtrend guards.
@@ -36,6 +38,12 @@
 - Clarified dashboard decision cards so paper-only candidates now show whether they were a generic warm-up or a capital-recovery probe, plus which guardrails were consciously relaxed.
 - Kept imported strategy candidates as raw DSL records in runtime state instead of recycling scored seed/genome output, preventing governance refreshes from inflating or corrupting follow-up research inputs.
 - Extended the execution planner so strategy-meta and governor signals can nudge maker preference and sizing without bypassing the existing safety clamps.
+- Unified regime, strategy-routing, and risk tuning around the same shared trend-state summary instead of parallel heuristic branches with slightly different weights.
+- Added explicit sideways/range-acceptance detection using directional persistence, structure, acceleration, VWAP acceptance, and breakout follow-through instead of treating range as only “not trend”.
+- Expanded the indicator/feature layer with anchored VWAP acceptance/rejection, upside-versus-downside realized volatility split, trend failure scoring, and richer trend maturity/exhaustion signals.
+- Improved dashboard decision visibility with explicit trend phase, confidence breakdown, signal-quality, data-quality, dominant source states, and clearer risk-layer blocker context.
+- Applied the shared trend-state semantics to backtest and research contexts as well, reducing live-vs-offline feature drift without a broad refactor.
+- Made doctor preview scans read-only and bounded candidate evaluation with concurrency limits, reducing accidental runtime/journal mutation and improving scan latency on larger universes.
 
 ### Fixed
 - Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.
@@ -45,6 +53,8 @@
 - Stopped per-position exchange sync failures from aborting the broader reconcile pass; failed symbols now degrade into `reconcile_required` while the rest of the book still updates.
 - Cleared stale protective-order assumptions when exchange order-list truth disagrees, so later rebuilds can recover instead of believing a dead protective order still exists.
 - Fixed strategy-research persistence so imported candidates no longer get replaced by summarized scorecards, which previously risked lossy rescoring and self-referential research growth across governance refreshes.
+- Fixed candidate quality/explainability contract drift so live `once`/`status` output now carries trend-state, data-quality, signal-quality, and confidence summaries end-to-end instead of dashboard fields falling back to zeroed placeholders.
+- Fixed doctor preview behavior so observability scans no longer mutate blocked-setup journals, universe runs, or latest-decision runtime state.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`
@@ -55,7 +65,9 @@
 - `node --check test/run.js`
 - `node test/run.js`
 - `node src/cli.js status`
+- `node src/cli.js once`
 - Added regression coverage for the strategy DSL, strategy research miner, neural strategy meta selector, reference-venue confirmation, parameter governor, capital ladder, runtime state migration, and the new execution/risk integrations.
+- Added regression coverage for candidate insight summaries, read-only doctor scans, shared trend-state dashboard serialization, and the new quality/confidence overlays in risk decisions.
 
 ## Unreleased - 2026-03-10
 
