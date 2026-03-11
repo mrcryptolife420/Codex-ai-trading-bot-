@@ -5,6 +5,7 @@ import { buildFeatureVector } from "../strategy/features.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { buildTrendStateSummary } from "../strategy/trendState.js";
+import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
 
@@ -144,6 +145,7 @@ function buildContext({ candles, index, symbol, model, config }) {
     newsSummary,
     timeframeSummary: {}
   });
+  const marketStateSummary = buildMarketStateSummary({ trendStateSummary, marketFeatures: market, bookFeatures: book, newsSummary });
   const rawFeatures = buildFeatureVector({
     symbolStats: model.getSymbolStats(symbol),
     marketFeatures: market,
@@ -164,6 +166,7 @@ function buildContext({ candles, index, symbol, model, config }) {
     regimeSummary,
     strategySummary,
     trendStateSummary,
+    marketStateSummary,
     rawFeatures
   };
 }

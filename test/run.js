@@ -31,6 +31,7 @@ import { classifyRegime } from "../src/ai/regimeModel.js";
 import { buildFeatureVector } from "../src/strategy/features.js";
 import { evaluateStrategySet } from "../src/strategy/strategyRouter.js";
 import { buildTrendStateSummary } from "../src/strategy/trendState.js";
+import { buildMarketStateSummary } from "../src/strategy/marketState.js";
 import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../src/strategy/candidateInsights.js";
 import { StrategyOptimizer } from "../src/ai/strategyOptimizer.js";
 import { StrategyAttribution } from "../src/ai/strategyAttribution.js";
@@ -334,9 +335,13 @@ function makeConfig(overrides = {}) {
     serviceMaxRestartsPerHour: 20,
     operatorAlertMaxItems: 8,
     operatorAlertWebhookUrls: [],
+    operatorAlertDiscordWebhookUrls: [],
+    operatorAlertTelegramBotToken: "",
+    operatorAlertTelegramChatId: "",
     operatorAlertDispatchMinSeverity: "high",
     operatorAlertDispatchCooldownMinutes: 30,
     operatorAlertSilenceMinutes: 180,
+    exchangeTruthLoopIntervalSeconds: 90,
     gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
     ...overrides
   };
@@ -538,6 +543,9 @@ await runCheck("strategy DSL blocks unsafe imports and keeps safe research candi
   assert.equal(summary.importedCandidates.length, 1);
   assert.ok(summary.candidates.some((item) => item.id === "feed_trend_alpha"));
   assert.ok(summary.genome.candidateCount > 0);
+  assert.ok(summary.candidates[0].score.robustnessScore >= 0);
+  assert.ok(summary.candidates[0].score.uniquenessScore >= 0);
+  assert.ok(summary.candidates[0].promotionStage);
 });
 
 await runCheck("symbol filters enforce minimum notional", async () => {
@@ -2005,6 +2013,33 @@ await runCheck("trend state summary detects sideways tapes and soft data confide
   assert.ok(summary.rangeScore > summary.uptrendScore);
   assert.ok(summary.dataConfidenceScore < 0.55);
   assert.ok(summary.reasons.includes("data_confidence_soft"));
+});
+
+await runCheck("market state summary exposes canonical market-state aliases", async () => {
+  const trendStateSummary = buildTrendStateSummary({
+    marketFeatures: {
+      momentum20: 0.022,
+      emaGap: 0.0075,
+      dmiSpread: 0.22,
+      swingStructureScore: 0.48,
+      trendMaturityScore: 0.64,
+      trendExhaustionScore: 0.24,
+      realizedVolPct: 0.016,
+      supertrendDirection: 1
+    },
+    bookFeatures: { spreadBps: 6, bookPressure: 0.24, depthConfidence: 0.72 },
+    newsSummary: { confidence: 0.7, providerDiversity: 2, freshnessScore: 0.8 },
+    timeframeSummary: {}
+  });
+  const marketState = buildMarketStateSummary({
+    trendStateSummary,
+    marketFeatures: { trendFailureScore: 0.18 }
+  });
+  assert.equal(marketState.direction, trendStateSummary.direction);
+  assert.equal(marketState.phase, trendStateSummary.phase);
+  assert.ok(marketState.trendMaturity > 0.5);
+  assert.ok(marketState.dataConfidence > 0.5);
+  assert.equal(marketState.trendFailure, 0.18);
 });
 
 await runCheck("candidate insight summaries expose data quality, signal quality and confidence breakdown", async () => {
@@ -3679,6 +3714,7 @@ await runCheck("state store migrates runtime and journal schemas forward", async
     assert.deepEqual(runtime.capitalGovernor, {});
     assert.ok(Array.isArray(runtime.ops.incidentTimeline));
     assert.deepEqual(runtime.ops.alertState.acknowledgedAtById, {});
+    assert.deepEqual(runtime.ops.alertState.resolvedAtById, {});
     assert.equal(runtime.health.consecutiveFailures, 1);
     assert.equal(journal.schemaVersion, 2);
     assert.equal(journal.trades.length, 1);
@@ -4292,6 +4328,7 @@ await runCheck("operator alerts surface critical safety issues", async () => {
         alertState: {
           acknowledgedAtById: { self_heal_paused: "2026-03-09T09:30:00.000Z" },
           silencedUntilById: { readiness_degraded: "2026-03-09T12:30:00.000Z" },
+          resolvedAtById: {},
           delivery: { lastDeliveredAtById: { health_circuit_open: "2026-03-09T09:45:00.000Z" } }
         }
       }
@@ -4308,7 +4345,7 @@ await runCheck("operator alerts surface critical safety issues", async () => {
   assert.ok(alerts.alerts.some((item) => item.id === "capital_governor_blocked"));
   assert.ok(alerts.alerts.some((item) => item.id === "health_circuit_open"));
   assert.ok(alerts.alerts.some((item) => item.id === "execution_cost_budget_blocked"));
-  assert.ok(alerts.alerts.some((item) => item.id === "self_heal_paused" && item.acknowledgedAt));
+  assert.ok(alerts.alerts.some((item) => item.id === "self_heal_paused" && item.acknowledgedAt && item.state === "acked"));
 });
 
 await runCheck("capital governor blocks entries after weekly drawdown breach", async () => {
@@ -4343,6 +4380,7 @@ await runCheck("operator alert dispatcher builds and dispatches webhook plans sa
         alertState: {
           acknowledgedAtById: {},
           silencedUntilById: {},
+          resolvedAtById: {},
           delivery: { lastDeliveredAtById: {} }
         }
       }
@@ -4371,6 +4409,40 @@ await runCheck("operator alert dispatcher builds and dispatches webhook plans sa
   assert.equal(sent, 1);
   assert.equal(summary.status, "delivered");
   assert.ok(summary.lastDeliveredAtById.health_circuit_open);
+});
+
+await runCheck("operator alert dispatcher supports discord and telegram channels", async () => {
+  const alerts = buildOperatorAlerts({
+    runtime: {
+      health: { circuitOpen: true },
+      ops: {
+        alertState: {
+          acknowledgedAtById: {},
+          silencedUntilById: {},
+          resolvedAtById: {},
+          delivery: { lastDeliveredAtById: {} }
+        }
+      }
+    },
+    config: makeConfig({
+      operatorAlertDiscordWebhookUrls: ["https://discord.example/hook"],
+      operatorAlertTelegramBotToken: "token",
+      operatorAlertTelegramChatId: "12345"
+    }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  const plan = buildOperatorAlertDispatchPlan({
+    alerts,
+    config: makeConfig({
+      operatorAlertDiscordWebhookUrls: ["https://discord.example/hook"],
+      operatorAlertTelegramBotToken: "token",
+      operatorAlertTelegramChatId: "12345"
+    }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(plan.endpointCount, 2);
+  assert.ok(plan.endpoints.some((item) => item.kind === "discord"));
+  assert.ok(plan.endpoints.some((item) => item.kind === "telegram"));
 });
 
 await runCheck("reference venue service produces route advice and venue health", async () => {
@@ -4603,9 +4675,11 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
     selfHeal: { issues: ["loss_streak_warning"] },
     qualityQuorum: { status: "degraded", quorumScore: 0.75, blockerReasons: [], cautionReasons: ["calendar"] },
     trendState: { direction: "sideways", phase: "range_acceptance", uptrendScore: 0.2, downtrendScore: 0.18, rangeScore: 0.76, rangeAcceptanceScore: 0.71, dataConfidenceScore: 0.62, completenessScore: 0.64, reasons: ["range_acceptance"] },
+    marketState: { direction: "sideways", phase: "range_acceptance", trendMaturity: 0.22, trendExhaustion: 0.18, rangeAcceptance: 0.71, trendFailure: 0.16, dataConfidence: 0.62, featureCompleteness: 0.64, reasons: ["range_acceptance"] },
     dataQuality: { status: "degraded", overallScore: 0.63, freshnessScore: 0.58, trustScore: 0.66, coverageScore: 0.61, degradedButAllowed: true, sources: [{ label: "news", status: "degraded" }] },
     signalQuality: { overallScore: 0.57, setupFit: 0.58, structureQuality: 0.61, executionViability: 0.42, newsCleanliness: 0.63, quorumQuality: 0.54 },
-    confidenceBreakdown: { marketConfidence: 0.56, dataConfidence: 0.62, executionConfidence: 0.41, modelConfidence: 0.58, overallConfidence: 0.54 }
+    confidenceBreakdown: { marketConfidence: 0.56, dataConfidence: 0.62, executionConfidence: 0.41, modelConfidence: 0.58, overallConfidence: 0.54 },
+    executionCostBudget: { status: "watch" }
   });
   assert.deepEqual(view.sessionBlockers, ["session_liquidity_guard"]);
   assert.deepEqual(view.driftBlockers, ["drift_confidence_guard"]);
@@ -4614,11 +4688,13 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
   assert.equal(view.dataQuality.degradedButAllowed, true);
   assert.equal(view.signalQuality.executionViability, 0.42);
   assert.equal(view.confidenceBreakdown.executionConfidence, 0.41);
+  assert.equal(view.marketState.phase, "range_acceptance");
+  assert.equal(view.executionBudget.status, "watch");
 });
 
-await runCheck("doctor preview scan uses read-only candidate scan mode", async () => {
+await runCheck("doctor preview scan uses explicit read-only candidate scan mode", async () => {
   const bot = Object.create(TradingBot.prototype);
-  let capturedOptions = null;
+  let called = 0;
   bot.config = makeConfig();
   bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
   bot.runtime = {
@@ -4651,12 +4727,13 @@ await runCheck("doctor preview scan uses read-only candidate scan mode", async (
   bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
   bot.dataRecorder = { getSummary: () => ({ filesWritten: 0 }) };
   bot.buildResearchView = () => null;
-  bot.scanCandidates = async (_balance, options) => {
-    capturedOptions = options;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.scanCandidatesReadOnly = async () => {
+    called += 1;
     return [];
   };
   const report = await bot.runDoctor();
-  assert.deepEqual(capturedOptions, { readOnly: true });
+  assert.equal(called, 1);
   assert.equal(report.mode, "paper");
 });
 

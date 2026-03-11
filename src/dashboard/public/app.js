@@ -1497,14 +1497,15 @@ function renderOperations(snapshot) {
           <div class="event-row">
             <div>
               <strong>${escapeHtml(item.title || "Alert")}</strong>
-              <div class="meta">${escapeHtml(item.id || "-")} | ${item.acknowledgedAt ? `ack ${escapeHtml(formatDate(item.acknowledgedAt))}` : "nog niet bevestigd"}${item.silencedUntil ? ` | stil tot ${escapeHtml(formatDate(item.silencedUntil))}` : ""}</div>
+              <div class="meta">${escapeHtml(item.id || "-")} | ${escapeHtml(item.state || "new")}${item.acknowledgedAt ? ` | ack ${escapeHtml(formatDate(item.acknowledgedAt))}` : ""}${item.silencedUntil ? ` | stil tot ${escapeHtml(formatDate(item.silencedUntil))}` : ""}${item.resolvedAt ? ` | opgelost ${escapeHtml(formatDate(item.resolvedAt))}` : ""}</div>
               <div>${escapeHtml(item.reason || item.action || "Geen extra detail")}</div>
             </div>
             <div>
-              <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.muted ? "muted" : item.severity || "info")}</div>
+              <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.state || (item.muted ? "muted" : item.severity || "info"))}</div>
               <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; justify-content:flex-end;">
                 ${item.acknowledgedAt ? "" : `<button class="secondary" data-alert-action="ack" data-alert-id="${escapeHtml(item.id || "")}">Ack</button>`}
                 <button class="secondary" data-alert-action="silence" data-alert-id="${escapeHtml(item.id || "")}" data-alert-minutes="${escapeHtml(alertSilenceMinutes)}">Stil ${escapeHtml(String(Math.round(alertSilenceMinutes / 60) || 1))}u</button>
+                ${item.resolvedAt ? "" : `<button class="secondary" data-alert-action="resolve" data-alert-id="${escapeHtml(item.id || "")}">Resolve</button>`}
               </div>
             </div>
           </div>
@@ -1874,6 +1875,10 @@ elements.opsList.addEventListener("click", (event) => {
       id: alertId,
       minutes: Number(button.dataset.alertMinutes || 180)
     }));
+    return;
+  }
+  if (button.dataset.alertAction === "resolve") {
+    runAction("Alert oplossen", () => api("/api/alerts/resolve", "POST", { id: alertId }));
   }
 });
 

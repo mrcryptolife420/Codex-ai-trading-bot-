@@ -20,6 +20,7 @@ function makeAlert(id, severity, title, reason, action, extra = {}) {
 function resolveAlertState(id, alertState = {}, nowIso = new Date().toISOString()) {
   const acknowledgedAt = alertState.acknowledgedAtById?.[id] || null;
   const silencedUntil = alertState.silencedUntilById?.[id] || null;
+  const resolvedAt = alertState.resolvedAtById?.[id] || null;
   const lastDeliveredAt = alertState.delivery?.lastDeliveredAtById?.[id] || null;
   const muted = (() => {
     const silenceMs = new Date(silencedUntil || 0).getTime();
@@ -29,9 +30,11 @@ function resolveAlertState(id, alertState = {}, nowIso = new Date().toISOString(
   return {
     acknowledgedAt,
     silencedUntil,
+    resolvedAt,
     lastDeliveredAt,
     muted,
-    active: !muted
+    active: !muted && !resolvedAt,
+    state: resolvedAt ? "resolved" : muted ? "silenced" : acknowledgedAt ? "acked" : "new"
   };
 }
 
@@ -155,6 +158,7 @@ export function buildOperatorAlerts({
     activeCount: activeAlerts.length,
     mutedCount: alerts.filter((item) => item.muted).length,
     acknowledgedCount: alerts.filter((item) => item.acknowledgedAt).length,
+    resolvedCount: alerts.filter((item) => item.resolvedAt).length,
     criticalCount: activeAlerts.filter((item) => item.severity === "critical").length,
     status: activeAlerts.some((item) => item.severity === "critical")
       ? "critical"

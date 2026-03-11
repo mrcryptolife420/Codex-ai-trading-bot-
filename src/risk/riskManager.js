@@ -1,6 +1,6 @@
 import { clamp } from "../utils/math.js";
 import { minutesBetween, sameUtcDay } from "../utils/time.js";
-import { buildTrendStateSummary } from "../strategy/trendState.js";
+import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
 
 function safeValue(value) {
@@ -481,7 +481,7 @@ export class RiskManager {
     const executionCostBudget = this.resolveExecutionCostBudget(executionCostSummary, strategySummary, regimeSummary);
     const capitalGovernor = this.resolveCapitalGovernor(capitalGovernorSummary);
     const exchangeCapabilities = summarizeExchangeCapabilities(exchangeCapabilitiesSummary);
-    const trendStateSummary = buildTrendStateSummary({
+    const marketStateSummary = buildMarketStateSummary({
       marketFeatures: marketSnapshot.market || {},
       bookFeatures: marketSnapshot.book || {},
       newsSummary,
@@ -490,6 +490,7 @@ export class RiskManager {
       venueConfirmationSummary,
       timeframeSummary
     });
+    const trendStateSummary = marketStateSummary.trendStateSummary;
     const dataQualitySummary = buildDataQualitySummary({
       newsSummary,
       announcementSummary,

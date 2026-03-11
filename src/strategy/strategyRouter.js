@@ -1,5 +1,5 @@
 import { clamp } from "../utils/math.js";
-import { buildTrendStateSummary } from "./trendState.js";
+import { buildMarketStateSummary } from "./marketState.js";
 
 export const STRATEGY_META = {
   breakout: { label: "Breakout composite", family: "breakout", familyLabel: "Breakout", setupStyle: "breakout_continuation" },
@@ -99,7 +99,7 @@ function buildInputs(context) {
   const bullishPattern = clamp(safeValue(market.bullishPatternScore), 0, 1);
   const bearishPattern = clamp(safeValue(market.bearishPatternScore), 0, 1);
   const exchangeCapabilities = context.exchangeCapabilities || context.exchangeCapabilitiesSummary || {};
-  const trendState = context.trendStateSummary || buildTrendStateSummary({
+  const marketState = context.marketStateSummary || buildMarketStateSummary({
     marketFeatures: market,
     bookFeatures: book,
     newsSummary: news,
@@ -108,7 +108,26 @@ function buildInputs(context) {
     venueConfirmationSummary: context.venueConfirmationSummary || {},
     timeframeSummary: context.timeframeSummary || {}
   });
-  return { market, book, stream, regime, structure, news, announcement, calendar, macro, volatility, eventRisk, newsTailwind, orderflow, bullishPattern, bearishPattern, exchangeCapabilities, trendState };
+  return {
+    market,
+    book,
+    stream,
+    regime,
+    structure,
+    news,
+    announcement,
+    calendar,
+    macro,
+    volatility,
+    eventRisk,
+    newsTailwind,
+    orderflow,
+    bullishPattern,
+    bearishPattern,
+    exchangeCapabilities,
+    marketState,
+    trendState: marketState.trendStateSummary
+  };
 }
 
 function buildDowntrendState(inputs = {}) {

@@ -109,6 +109,19 @@ function buildParameterDiffs(candidate = {}, config = {}) {
   };
 }
 
+function buildPromotionStage(status = "observe", overallScore = 0) {
+  if (status === "blocked") {
+    return "blocked";
+  }
+  if (status === "paper_candidate" && overallScore >= 0.76) {
+    return "paper_probation";
+  }
+  if (status === "paper_candidate") {
+    return "paper_candidate";
+  }
+  return overallScore >= 0.52 ? "observe" : "backlog";
+}
+
 export class StrategyResearchMiner {
   constructor(config, logger = console) {
     this.config = config;
@@ -152,12 +165,25 @@ export class StrategyResearchMiner {
     const simplicityScore = clamp(1 - safeNumber(normalized.complexityScore, 0.4) * 0.55, 0.18, 1);
     const safetyScore = normalized.safety?.safe ? 1 : 0.08;
     const stress = evaluateStrategyStress({ candidate: normalized, relatedTrades: collectRelatedTrades(journal, normalized), nowIso });
+    const robustnessScore = clamp(
+      (stress.survivalScore || 0) * 0.68 +
+        clamp(1 - Math.abs(safeNumber(stress.tailLossPct, 0)) / 0.18, 0, 1) * 0.32,
+      0,
+      1
+    );
+    const uniquenessScore = clamp(
+      noveltyScore * 0.72 +
+        clamp(1 - governanceSupport, 0, 1) * 0.18 +
+        clamp(1 - safeNumber(normalized.complexityScore, 0.4), 0, 1) * 0.1,
+      0,
+      1
+    );
     const overall = clamp(
       safetyScore * 0.34 +
         governanceSupport * 0.24 +
         simplicityScore * 0.14 +
-        (stress.survivalScore || 0) * 0.2 +
-        noveltyScore * 0.08,
+        robustnessScore * 0.16 +
+        uniquenessScore * 0.12,
       0,
       1
     );
@@ -170,6 +196,7 @@ export class StrategyResearchMiner {
           : overall >= 0.46
             ? "observe"
             : "blocked";
+    const promotionStage = buildPromotionStage(status, overall);
     return {
       ...normalized,
       score: {
@@ -178,11 +205,14 @@ export class StrategyResearchMiner {
         governanceSupport: num(governanceSupport),
         simplicityScore: num(simplicityScore),
         noveltyScore: num(noveltyScore),
-        stressScore: num(stress.survivalScore || 0)
+        stressScore: num(stress.survivalScore || 0),
+        robustnessScore: num(robustnessScore),
+        uniquenessScore: num(uniquenessScore)
       },
       stress,
       parameterDiffs: buildParameterDiffs(normalized, this.config),
       status,
+      promotionStage,
       paperReady: status === "paper_candidate",
       notes: [
         ...(normalized.safety?.warnings || []),

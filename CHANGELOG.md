@@ -3,6 +3,12 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- A canonical `marketState` contract layered on top of the existing trend-state engine, with stable `direction`, `phase`, `trendMaturity`, `trendExhaustion`, `rangeAcceptance`, `trendFailure`, `dataConfidence`, and `featureCompleteness` fields for runtime, dashboard, backtest, and research consumers.
+- Explicit scan-mode wrappers for `scanCandidatesReadOnly()`, `scanCandidatesForCycle()`, and `scanCandidatesForResearch()` so observability and production paths can stay readable without duplicating scan logic.
+- A rate-limited exchange-truth refresh loop for non-cycle runtime paths, allowing `doctor`, `status`, and dashboard snapshots to refresh live reconcile truth without waiting for a full trading cycle.
+- Discord and Telegram operator-alert delivery channels alongside the existing generic webhooks, keeping alert fan-out config-driven and still safe to mock in tests.
+- Research-candidate governance fields `robustnessScore`, `uniquenessScore`, and `promotionStage`, so imported/genome strategies now surface paper-readiness with more explainable scoring.
+- Stable decision/ops alias contracts for `marketState`, `riskPolicy`, `executionBudget`, and `capitalPolicy`, reducing dashboard/runtime contract drift without breaking existing payloads.
 - Region-aware Binance capability resolution with a conservative Belgium profile, plus defensive bear-market handling for spot-only accounts.
 - A new `bear_rally_reclaim` strategy path aimed at monetizing downtrends through spot-safe capitulation/reclaim setups instead of assuming shorting access.
 - Persisted order-lifecycle, exchange-truth, shadow-trading, service, and operator-ops state in the runtime schema so restarts and dashboards can reason about position state instead of only raw open positions.
@@ -25,6 +31,9 @@
 - Shared trend-state phase classification with explicit `early_ignition`, `healthy_continuation`, `late_crowded`, `range_acceptance`, and transition labels.
 
 ### Improved
+- Normalized operator alerts around explicit `new`, `acked`, `silenced`, and `resolved` states, and surfaced those states directly in dashboard actions and payloads.
+- Reused the canonical market-state wrapper in regime inference, strategy routing, risk, backtest, and research paths instead of leaving trend semantics implied by only raw trend-state fields.
+- Strengthened runtime explainability so decision payloads now carry market-state aliases even when older consumers still depend on `trendState`.
 - Hardened exchange-capability normalization so persisted string values like `"false"` no longer flip regional shorting flags back on in runtime summaries or downtrend guards.
 - Split paper-mode leniency into `paper_exploration` versus `paper_recovery_probe`, so capital-governor recovery can keep learning with tiny probe sizing while market/data-quality blockers still stay hard.
 - Deepened model-promotion governance so regime readiness now sits beside threshold, exit, calibration, and feature-health feedback instead of only paper/live scorecards.
@@ -46,6 +55,9 @@
 - Made doctor preview scans read-only and bounded candidate evaluation with concurrency limits, reducing accidental runtime/journal mutation and improving scan latency on larger universes.
 
 ### Fixed
+- Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
+- Fixed dashboard/operator alert actions so alerts can now be resolved explicitly instead of only acknowledged or silenced.
+- Fixed strategy-research summaries so newer robustness/uniqueness scoring survives serialization into runtime and dashboard snapshots.
 - Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.
 - Prevented `openBestCandidate()` from crashing in lightweight prototype-based tests when `this.config` is absent.
 - Kept recovered/rebuilt live positions explicitly marked as `reconcile_required` or `protected` so lifecycle state no longer goes stale after broker recovery paths.

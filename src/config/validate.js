@@ -169,6 +169,7 @@ export function validateConfig(config) {
   assertRange("MODEL_PROMOTION_PROBATION_LIVE_TRADES", config.modelPromotionProbationLiveTrades, 1, 100, errors);
   assertRange("EXCHANGE_TRUTH_FREEZE_MISMATCH_COUNT", config.exchangeTruthFreezeMismatchCount, 1, 20, errors);
   assertRange("EXCHANGE_TRUTH_RECENT_FILL_LOOKBACK_MINUTES", config.exchangeTruthRecentFillLookbackMinutes, 1, 240, errors);
+  assertRange("EXCHANGE_TRUTH_LOOP_INTERVAL_SECONDS", config.exchangeTruthLoopIntervalSeconds, 15, 3600, errors);
   assertRange("POSITION_FAILURE_PROTECT_ONLY_COUNT", config.positionFailureProtectOnlyCount, 1, 20, errors);
   assertRange("POSITION_FAILURE_MANUAL_REVIEW_COUNT", config.positionFailureManualReviewCount, 1, 30, errors);
   assertRange("SHADOW_TRADE_DECISION_LIMIT", config.shadowTradeDecisionLimit, 1, 20, errors);
@@ -267,6 +268,9 @@ export function validateConfig(config) {
     warnings.push("Belgium capability profile has shorting enabled via override; verify your Binance account and local eligibility before enabling any short-biased automation.");
   }
   assertRange("OPERATOR_ALERT_SILENCE_MINUTES", config.operatorAlertSilenceMinutes, 1, 10080, errors);
+  if ((config.operatorAlertTelegramBotToken && !config.operatorAlertTelegramChatId) || (!config.operatorAlertTelegramBotToken && config.operatorAlertTelegramChatId)) {
+    warnings.push("Configure both OPERATOR_ALERT_TELEGRAM_BOT_TOKEN and OPERATOR_ALERT_TELEGRAM_CHAT_ID to enable Telegram alert delivery.");
+  }
 
   if (config.maxPositionFraction > config.maxTotalExposureFraction) {
     errors.push("MAX_POSITION_FRACTION cannot exceed MAX_TOTAL_EXPOSURE_FRACTION.");

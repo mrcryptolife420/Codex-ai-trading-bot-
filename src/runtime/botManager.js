@@ -337,6 +337,16 @@ export class BotManager {
     });
   }
 
+  async resolveAlert(id, resolved = true) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.resolveAlert(id, { resolved });
+      return this.getSnapshot();
+    });
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();

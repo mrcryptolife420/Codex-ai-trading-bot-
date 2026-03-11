@@ -355,8 +355,12 @@ const DEFAULTS = {
   serviceRestartMaxDelaySeconds: 180,
   serviceStatusFilename: "service-status.json",
   serviceMaxRestartsPerHour: 20,
+  exchangeTruthLoopIntervalSeconds: 90,
   operatorAlertMaxItems: 8,
   operatorAlertWebhookUrls: [],
+  operatorAlertDiscordWebhookUrls: [],
+  operatorAlertTelegramBotToken: "",
+  operatorAlertTelegramChatId: "",
   operatorAlertDispatchMinSeverity: "high",
   operatorAlertDispatchCooldownMinutes: 30,
   operatorAlertSilenceMinutes: 180,
@@ -795,8 +799,12 @@ export async function loadConfig(projectRoot = process.cwd()) {
     serviceRestartMaxDelaySeconds: parseNumber(env.SERVICE_RESTART_MAX_DELAY_SECONDS, DEFAULTS.serviceRestartMaxDelaySeconds),
     serviceStatusFilename: env.SERVICE_STATUS_FILENAME || DEFAULTS.serviceStatusFilename,
     serviceMaxRestartsPerHour: parseNumber(env.SERVICE_MAX_RESTARTS_PER_HOUR, DEFAULTS.serviceMaxRestartsPerHour),
+    exchangeTruthLoopIntervalSeconds: parseNumber(env.EXCHANGE_TRUTH_LOOP_INTERVAL_SECONDS, DEFAULTS.exchangeTruthLoopIntervalSeconds),
     operatorAlertMaxItems: parseNumber(env.OPERATOR_ALERT_MAX_ITEMS, DEFAULTS.operatorAlertMaxItems),
     operatorAlertWebhookUrls: parseTextCsv(env.OPERATOR_ALERT_WEBHOOK_URLS, DEFAULTS.operatorAlertWebhookUrls),
+    operatorAlertDiscordWebhookUrls: parseTextCsv(env.OPERATOR_ALERT_DISCORD_WEBHOOK_URLS, DEFAULTS.operatorAlertDiscordWebhookUrls),
+    operatorAlertTelegramBotToken: (env.OPERATOR_ALERT_TELEGRAM_BOT_TOKEN || DEFAULTS.operatorAlertTelegramBotToken).trim(),
+    operatorAlertTelegramChatId: (env.OPERATOR_ALERT_TELEGRAM_CHAT_ID || DEFAULTS.operatorAlertTelegramChatId).trim(),
     operatorAlertDispatchMinSeverity: (env.OPERATOR_ALERT_DISPATCH_MIN_SEVERITY || DEFAULTS.operatorAlertDispatchMinSeverity).trim().toLowerCase(),
     operatorAlertDispatchCooldownMinutes: parseNumber(env.OPERATOR_ALERT_DISPATCH_COOLDOWN_MINUTES, DEFAULTS.operatorAlertDispatchCooldownMinutes),
     operatorAlertSilenceMinutes: parseNumber(env.OPERATOR_ALERT_SILENCE_MINUTES, DEFAULTS.operatorAlertSilenceMinutes),
@@ -815,7 +823,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

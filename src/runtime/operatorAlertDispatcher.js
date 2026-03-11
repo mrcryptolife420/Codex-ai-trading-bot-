@@ -24,6 +24,28 @@ function severityRank(value) {
   }[`${value || "info"}`.toLowerCase()] ?? 0;
 }
 
+function buildEndpoints(config = {}) {
+  const webhooks = arr(config.operatorAlertWebhookUrls || []).filter(Boolean).map((url, index) => ({
+    id: `webhook_${index + 1}`,
+    url,
+    kind: "webhook"
+  }));
+  const discord = arr(config.operatorAlertDiscordWebhookUrls || []).filter(Boolean).map((url, index) => ({
+    id: `discord_${index + 1}`,
+    url,
+    kind: "discord"
+  }));
+  const telegram = config.operatorAlertTelegramBotToken && config.operatorAlertTelegramChatId
+    ? [{
+        id: "telegram_primary",
+        kind: "telegram",
+        url: `https://api.telegram.org/bot${config.operatorAlertTelegramBotToken}/sendMessage`,
+        chatId: config.operatorAlertTelegramChatId
+      }]
+    : [];
+  return [...webhooks, ...discord, ...telegram];
+}
+
 export function buildOperatorAlertDispatchPlan({
   alerts = {},
   config = {},
@@ -32,7 +54,7 @@ export function buildOperatorAlertDispatchPlan({
   const cooldownMinutes = Math.max(1, safeNumber(config.operatorAlertDispatchCooldownMinutes, 30));
   const minimumSeverity = `${config.operatorAlertDispatchMinSeverity || "high"}`.toLowerCase();
   const minimumRank = severityRank(minimumSeverity);
-  const endpoints = arr(config.operatorAlertWebhookUrls || []).filter(Boolean);
+  const endpoints = buildEndpoints(config);
   const eligibleAlerts = arr(alerts.alerts || []).filter((item) =>
     !item.muted &&
     !item.acknowledgedAt &&
@@ -61,7 +83,12 @@ export function buildOperatorAlertDispatchPlan({
       reason: item.reason,
       action: item.action
     })),
-    endpoints: endpoints.map((url, index) => ({ id: `webhook_${index + 1}`, url }))
+    endpoints: endpoints.map((endpoint) => ({
+      id: endpoint.id,
+      url: endpoint.url,
+      kind: endpoint.kind,
+      chatId: endpoint.chatId || null
+    }))
   };
 }
 
@@ -90,7 +117,7 @@ export async function dispatchOperatorAlerts({
       lastDeliveryAt: deliveryState.lastDeliveryAt || null,
       notes: [
         plan.status === "disabled"
-          ? "Geen alert-webhooks geconfigureerd."
+          ? "Geen operator alert-kanalen geconfigureerd."
           : plan.eligibleCount
             ? "Alert dispatch wacht op een geldige fetch-implementatie."
             : "Geen nieuwe operator alerts klaar voor dispatch."
@@ -111,12 +138,22 @@ export async function dispatchOperatorAlerts({
 
   for (const endpoint of plan.endpoints) {
     try {
+      const body = endpoint.kind === "telegram"
+        ? JSON.stringify({
+            chat_id: endpoint.chatId,
+            text: [`${alerts.status || "clear"}`.toUpperCase(), ...plan.alerts.map((item) => `- ${item.title}: ${item.reason}`)].join("\n")
+          })
+        : endpoint.kind === "discord"
+          ? JSON.stringify({
+              content: [`Operator alerts (${alerts.status || "clear"})`, ...plan.alerts.map((item) => `- ${item.title}: ${item.reason}`)].join("\n")
+            })
+          : JSON.stringify(payload);
       const response = await fetchImpl(endpoint.url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(payload)
+        body
       });
       if (!response?.ok) {
         throw new Error(`HTTP ${response?.status || "unknown"}`);
@@ -152,11 +189,11 @@ export async function dispatchOperatorAlerts({
     lastDeliveredAtById,
     notes: [
       deliveredCount
-        ? `${plan.alerts.length} operator alert(s) zijn via webhook verzonden.`
-        : "Geen operator alerts via webhook verstuurd.",
+        ? `${plan.alerts.length} operator alert(s) zijn verzonden.`
+        : "Geen operator alerts verzonden.",
       failedCount
-        ? `Webhook delivery had ${failedCount} mislukte alert afleveringen.`
-        : "Geen webhook delivery-fouten gemeld."
+        ? `Alert delivery had ${failedCount} mislukte afleveringen.`
+        : "Geen alert-delivery fouten gemeld."
     ]
   };
 }

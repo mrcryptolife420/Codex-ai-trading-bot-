@@ -102,6 +102,7 @@ const DEFAULT_RUNTIME = {
     alertState: {
       acknowledgedAtById: {},
       silencedUntilById: {},
+      resolvedAtById: {},
       delivery: {
         lastDeliveryAt: null,
         lastError: null,
