@@ -1135,6 +1135,7 @@ function summarizeSelfHeal(summary = {}) {
     sizeMultiplier: num(summary.sizeMultiplier ?? 1, 3),
     thresholdPenalty: num(summary.thresholdPenalty || 0, 3),
     lowRiskOnly: Boolean(summary.lowRiskOnly),
+    learningAllowed: Boolean(summary.learningAllowed),
     cooldownUntil: summary.cooldownUntil || null,
     lastTriggeredAt: summary.lastTriggeredAt || null,
     lastRecoveryAt: summary.lastRecoveryAt || null,
@@ -2969,7 +2970,15 @@ export class TradingBot {
         action: "Onderzoek de laatste cycle failures en heropen entries pas na een schone run."
       });
     }
-    if (["paused", "paper_fallback"].includes(selfHeal.mode)) {
+    if (selfHeal.mode === "paper_calibration_probe") {
+      runbooks.push({
+        id: "paper_calibration_probe",
+        severity: "neutral",
+        title: "Paper calibration probe actief",
+        reason: selfHeal.reason || "Calibration drift is te hoog voor normale paper sizing.",
+        action: "Laat alleen kleine probe-entries lopen en volg calibration, quorum en recente paper outcomes tot de self-heal herstelt."
+      });
+    } else if (["paused", "paper_fallback"].includes(selfHeal.mode)) {
       runbooks.push({
         id: "self_heal_active",
         severity: "neutral",
@@ -5921,8 +5930,6 @@ export class TradingBot {
     };
   }
 }
-
-
 
 
 

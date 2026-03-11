@@ -127,6 +127,8 @@ export function validateConfig(config) {
   assertRange("SELF_HEAL_WARNING_LOSS_STREAK", config.selfHealWarningLossStreak, 1, 20, errors);
   assertRange("SELF_HEAL_MAX_RECENT_DRAWDOWN_PCT", config.selfHealMaxRecentDrawdownPct, 0.001, 0.5, errors);
   assertRange("SELF_HEAL_WARNING_DRAWDOWN_PCT", config.selfHealWarningDrawdownPct, 0.001, 0.5, errors);
+  assertRange("SELF_HEAL_PAPER_CALIBRATION_PROBE_SIZE_MULTIPLIER", config.selfHealPaperCalibrationProbeSizeMultiplier, 0.05, 1, errors);
+  assertRange("SELF_HEAL_PAPER_CALIBRATION_PROBE_THRESHOLD_PENALTY", config.selfHealPaperCalibrationProbeThresholdPenalty, 0, 0.2, errors);
   assertRange("LOSS_STREAK_LOOKBACK_MINUTES", config.lossStreakLookbackMinutes, 30, 10080, errors);
   assertRange("STABLE_MODEL_MAX_SNAPSHOTS", config.stableModelMaxSnapshots, 1, 50, errors);
   assertRange("STABLE_MODEL_MIN_TRADES", config.stableModelMinTrades, 1, 500, errors);

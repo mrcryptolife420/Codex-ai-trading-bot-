@@ -190,6 +190,8 @@ const DEFAULTS = {
   selfHealWarningLossStreak: 2,
   selfHealMaxRecentDrawdownPct: 0.03,
   selfHealWarningDrawdownPct: 0.018,
+  selfHealPaperCalibrationProbeSizeMultiplier: 0.22,
+  selfHealPaperCalibrationProbeThresholdPenalty: 0.03,
   lossStreakLookbackMinutes: 720,
   stableModelMaxSnapshots: 5,
   stableModelMinTrades: 6,
@@ -613,6 +615,8 @@ export async function loadConfig(projectRoot = process.cwd()) {
     selfHealWarningLossStreak: parseNumber(env.SELF_HEAL_WARNING_LOSS_STREAK, DEFAULTS.selfHealWarningLossStreak),
     selfHealMaxRecentDrawdownPct: parseNumber(env.SELF_HEAL_MAX_RECENT_DRAWDOWN_PCT, DEFAULTS.selfHealMaxRecentDrawdownPct),
     selfHealWarningDrawdownPct: parseNumber(env.SELF_HEAL_WARNING_DRAWDOWN_PCT, DEFAULTS.selfHealWarningDrawdownPct),
+    selfHealPaperCalibrationProbeSizeMultiplier: parseNumber(env.SELF_HEAL_PAPER_CALIBRATION_PROBE_SIZE_MULTIPLIER, DEFAULTS.selfHealPaperCalibrationProbeSizeMultiplier),
+    selfHealPaperCalibrationProbeThresholdPenalty: parseNumber(env.SELF_HEAL_PAPER_CALIBRATION_PROBE_THRESHOLD_PENALTY, DEFAULTS.selfHealPaperCalibrationProbeThresholdPenalty),
     lossStreakLookbackMinutes: parseNumber(env.LOSS_STREAK_LOOKBACK_MINUTES, DEFAULTS.lossStreakLookbackMinutes),
     stableModelMaxSnapshots: parseNumber(env.STABLE_MODEL_MAX_SNAPSHOTS, DEFAULTS.stableModelMaxSnapshots),
     stableModelMinTrades: parseNumber(env.STABLE_MODEL_MIN_TRADES, DEFAULTS.stableModelMinTrades),
@@ -780,7 +784,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

@@ -172,6 +172,8 @@ function makeConfig(overrides = {}) {
     selfHealWarningLossStreak: 2,
     selfHealMaxRecentDrawdownPct: 0.03,
     selfHealWarningDrawdownPct: 0.018,
+    selfHealPaperCalibrationProbeSizeMultiplier: 0.22,
+    selfHealPaperCalibrationProbeThresholdPenalty: 0.03,
     lossStreakLookbackMinutes: 720,
     stableModelMaxSnapshots: 5,
     stableModelMinTrades: 6,
@@ -1848,6 +1850,48 @@ await runCheck("self heal clears recovered circuit pauses in paper mode", async 
   assert.equal(state.mode, "normal");
   assert.equal(state.active, false);
   assert.ok(state.lastRecoveryAt);
+});
+
+await runCheck("self heal uses paper calibration probe instead of full pause on calibration break", async () => {
+  const manager = new SelfHealManager(makeConfig({
+    selfHealPaperCalibrationProbeSizeMultiplier: 0.24,
+    selfHealPaperCalibrationProbeThresholdPenalty: 0.035
+  }), { warn() {} });
+  const state = manager.evaluate({
+    previousState: manager.buildDefaultState(),
+    report: { recentTrades: [], windows: { today: { realizedPnl: 0 } } },
+    driftSummary: { severity: 0.1 },
+    health: { circuitOpen: false },
+    calibration: { observations: 18, expectedCalibrationError: 0.31 },
+    botMode: "paper",
+    hasStableModel: true,
+    now: new Date("2026-03-08T04:00:00.000Z")
+  });
+  assert.equal(state.mode, "paper_calibration_probe");
+  assert.equal(state.active, true);
+  assert.equal(state.reason, "calibration_break");
+  assert.equal(state.learningAllowed, true);
+  assert.equal(state.sizeMultiplier, 0.24);
+  assert.equal(state.thresholdPenalty, 0.035);
+  assert.ok(state.actions.includes("paper_probe_entries"));
+  assert.ok(state.actions.includes("reset_rl_policy"));
+  assert.ok(state.actions.includes("restore_stable_model"));
+});
+
+await runCheck("self heal keeps live calibration break on hard fallback behavior", async () => {
+  const manager = new SelfHealManager(makeConfig(), { warn() {} });
+  const state = manager.evaluate({
+    previousState: manager.buildDefaultState(),
+    report: { recentTrades: [], windows: { today: { realizedPnl: 0 } } },
+    driftSummary: { severity: 0.1 },
+    health: { circuitOpen: false },
+    calibration: { observations: 18, expectedCalibrationError: 0.31 },
+    botMode: "live",
+    hasStableModel: false,
+    now: new Date("2026-03-08T04:00:00.000Z")
+  });
+  assert.equal(state.mode, "paper_fallback");
+  assert.equal(state.learningAllowed, false);
 });
 
 await runCheck("strategy optimizer builds recency-weighted priors", async () => {

@@ -30,6 +30,10 @@ function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
 }
 
+function canUsePaperCalibrationProbe({ botMode, criticalIssues = [], health = {} }) {
+  return botMode === "paper" && !health.circuitOpen && criticalIssues.length === 1 && criticalIssues[0] === "calibration_break";
+}
+
 export class SelfHealManager {
   constructor(config, logger) {
     this.config = config;
@@ -47,6 +51,7 @@ export class SelfHealManager {
       sizeMultiplier: 1,
       thresholdPenalty: 0,
       lowRiskOnly: false,
+      learningAllowed: false,
       cooldownUntil: null,
       lastTriggeredAt: null,
       lastRecoveryAt: null,
@@ -106,6 +111,27 @@ export class SelfHealManager {
     const cooldownActive = previous.cooldownUntil && new Date(previous.cooldownUntil).getTime() > now.getTime();
     const recoveredPaperCooldown = botMode === "paper" && cooldownActive && !health.circuitOpen && !criticalIssues.length && !warningIssues.length;
     if (criticalIssues.length) {
+      if (canUsePaperCalibrationProbe({ botMode, criticalIssues, health })) {
+        state.mode = "paper_calibration_probe";
+        state.active = true;
+        state.reason = "calibration_break";
+        state.issues = criticalIssues;
+        state.actions = ["paper_probe_entries"];
+        if (this.config.selfHealResetRlOnTrigger) {
+          state.actions.push("reset_rl_policy");
+        }
+        if (this.config.selfHealRestoreStableModel && hasStableModel) {
+          state.actions.push("restore_stable_model");
+        }
+        state.managerAction = null;
+        state.sizeMultiplier = this.config.selfHealPaperCalibrationProbeSizeMultiplier;
+        state.thresholdPenalty = this.config.selfHealPaperCalibrationProbeThresholdPenalty;
+        state.lowRiskOnly = true;
+        state.learningAllowed = true;
+        state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
+        state.lastTriggeredAt = nowIso();
+        return state;
+      }
       state.mode = botMode === "live" && this.config.selfHealSwitchToPaper ? "paper_fallback" : "paused";
       state.active = true;
       state.reason = criticalIssues[0];
@@ -123,6 +149,7 @@ export class SelfHealManager {
       state.sizeMultiplier = 0;
       state.thresholdPenalty = 0.12;
       state.lowRiskOnly = true;
+      state.learningAllowed = false;
       state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
       state.lastTriggeredAt = nowIso();
       return state;
@@ -142,6 +169,7 @@ export class SelfHealManager {
       state.sizeMultiplier = cooldownActive ? 0.42 : 0.58;
       state.thresholdPenalty = cooldownActive ? 0.06 : 0.04;
       state.lowRiskOnly = true;
+      state.learningAllowed = botMode === "paper" && state.reason === "calibration_warning";
       state.cooldownUntil = previous.cooldownUntil && cooldownActive
         ? previous.cooldownUntil
         : new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
@@ -165,6 +193,7 @@ export class SelfHealManager {
       sizeMultiplier: num(safe.sizeMultiplier ?? 1),
       thresholdPenalty: num(safe.thresholdPenalty || 0),
       lowRiskOnly: Boolean(safe.lowRiskOnly),
+      learningAllowed: Boolean(safe.learningAllowed),
       cooldownUntil: safe.cooldownUntil || null,
       lastTriggeredAt: safe.lastTriggeredAt || null,
       lastRecoveryAt: safe.lastRecoveryAt || null,

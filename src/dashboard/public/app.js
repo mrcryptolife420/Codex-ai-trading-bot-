@@ -1030,7 +1030,7 @@ function renderIntelligence(snapshot) {
   ].join("");
 
   elements.safetySummary.innerHTML = [
-    insightCard("Self-heal", (selfHeal.mode || "normal").replaceAll("_", " "), selfHeal.reason || "geen actieve guard", selfHeal.active ? "neutral" : "positive"),
+    insightCard("Self-heal", (selfHeal.mode || "normal").replaceAll("_", " "), selfHeal.learningAllowed ? `${selfHeal.reason || "guard"} | paper learning actief` : (selfHeal.reason || "geen actieve guard"), selfHeal.active ? "neutral" : "positive"),
     insightCard("Recorder", `${(snapshot.dashboard.dataRecorder || {}).filesWritten || 0} writes`, (snapshot.dashboard.dataRecorder || {}).lastRecordAt ? `laatst ${formatDate((snapshot.dashboard.dataRecorder || {}).lastRecordAt)}` : "nog geen data"),
     insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "nog geen backup"),
     insightCard("Recovery", recovery.uncleanShutdownDetected ? "waarschuwing" : "schoon", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : "geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")

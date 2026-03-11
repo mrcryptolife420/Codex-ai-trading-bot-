@@ -42,7 +42,7 @@ function isSoftPaperReason(reason) {
 
 function canRelaxPaperSelfHeal(selfHealState = {}) {
   const issues = new Set(selfHealState.issues || []);
-  return !issues.has("health_circuit_open");
+  return Boolean(selfHealState.learningAllowed) || !issues.has("health_circuit_open");
 }
 
 function isPaperLeniencyReason(reason, selfHealState = {}) {
