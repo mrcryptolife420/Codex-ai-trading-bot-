@@ -50,6 +50,8 @@
 - Unified regime, strategy-routing, and risk tuning around the same shared trend-state summary instead of parallel heuristic branches with slightly different weights.
 - Added explicit sideways/range-acceptance detection using directional persistence, structure, acceleration, VWAP acceptance, and breakout follow-through instead of treating range as only “not trend”.
 - Expanded the indicator/feature layer with anchored VWAP acceptance/rejection, upside-versus-downside realized volatility split, trend failure scoring, and richer trend maturity/exhaustion signals.
+- Added relative-strength signals versus BTC, ETH, cluster peers, and sector peers so continuation and relative-weakness context reaches runtime decisions without introducing a duplicate trend engine.
+- Added close-location quality, breakout follow-through, volume acceptance, and replenishment-quality signals to the shared feature stack and regression coverage.
 - Improved dashboard decision visibility with explicit trend phase, confidence breakdown, signal-quality, data-quality, dominant source states, and clearer risk-layer blocker context.
 - Applied the shared trend-state semantics to backtest and research contexts as well, reducing live-vs-offline feature drift without a broad refactor.
 - Made doctor preview scans read-only and bounded candidate evaluation with concurrency limits, reducing accidental runtime/journal mutation and improving scan latency on larger universes.
@@ -67,6 +69,7 @@
 - Fixed strategy-research persistence so imported candidates no longer get replaced by summarized scorecards, which previously risked lossy rescoring and self-referential research growth across governance refreshes.
 - Fixed candidate quality/explainability contract drift so live `once`/`status` output now carries trend-state, data-quality, signal-quality, and confidence summaries end-to-end instead of dashboard fields falling back to zeroed placeholders.
 - Fixed doctor preview behavior so observability scans no longer mutate blocked-setup journals, universe runs, or latest-decision runtime state.
+- Fixed the relative-strength candidate-scan path so runtime smoke runs no longer fail on a missing shared `average()` helper import while building peer-strength summaries.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`

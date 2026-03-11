@@ -583,6 +583,32 @@ export function computeMarketFeatures(candles) {
     0,
     1
   );
+  const closeLocationQuality = clamp(
+    momentum20 >= 0
+      ? closeLocation * 0.7 + Math.max(0, 1 - upperWick / Math.max(lastRange, 1e-9)) * 0.3
+      : (1 - closeLocation) * 0.7 + Math.max(0, 1 - lowerWick / Math.max(lastRange, 1e-9)) * 0.3,
+    0,
+    1
+  );
+  const breakoutFollowThroughScore = clamp(
+    Math.max(0, Math.max(donchianBreakoutPct, 0) * 28) * 0.28 +
+      Math.max(0, structureBreak.score) * 0.18 +
+      Math.max(0, closeLocation - 0.52) * 0.24 +
+      Math.max(0, volumeZ - 0.3) / 2.2 * 0.14 +
+      Math.max(0, donchianPosition - 0.6) * 0.16,
+    0,
+    1
+  );
+  const volumeAcceptanceScore = clamp(
+    Math.max(0, 1 - Math.abs(priceZScore) / 2.8) * 0.18 +
+      Math.max(0, anchoredVwapAcceptanceScore) * 0.24 +
+      Math.max(0, 1 - anchoredVwapRejectionScore) * 0.12 +
+      Math.max(0, closeLocationQuality) * 0.16 +
+      Math.max(0, cmf20 + 0.2) / 1.2 * 0.12 +
+      Math.max(0, obvBase ? ((obvSeries.at(-1) || 0) - (obvSeries.at(-8) || 0)) / obvBase : 0) * 0.18,
+    0,
+    1
+  );
 
   return {
     lastClose,
@@ -632,6 +658,9 @@ export function computeMarketFeatures(candles) {
     trendMaturityScore,
     trendExhaustionScore,
     trendFailureScore,
+    closeLocationQuality,
+    breakoutFollowThroughScore,
+    volumeAcceptanceScore,
     bullishPatternScore: patterns.bullishPatternScore,
     bearishPatternScore: patterns.bearishPatternScore,
     insideBar: patterns.insideBar,

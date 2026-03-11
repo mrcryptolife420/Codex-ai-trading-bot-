@@ -58,7 +58,7 @@ import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySu
 import { summarizeStrategyDsl } from "../research/strategyDsl.js";
 import { minutesBetween, nowIso } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
-import { clamp } from "../utils/math.js";
+import { average, clamp } from "../utils/math.js";
 
 const EMPTY_NEWS = {
   coverage: 0,
@@ -253,6 +253,42 @@ function defaultProfile(symbol) {
   return { symbol, cluster: "other", sector: "other", betaGroup: "other" };
 }
 
+function getMomentum20(snapshot) {
+  return Number.isFinite(snapshot?.market?.momentum20) ? snapshot.market.momentum20 : 0;
+}
+
+function buildRelativeStrengthMap(snapshotMap = {}, symbols = [], config = {}) {
+  const profiles = Object.fromEntries(symbols.map((symbol) => [symbol, config.symbolProfiles?.[symbol] || defaultProfile(symbol)]));
+  const clusterMomenta = new Map();
+  const sectorMomenta = new Map();
+  for (const symbol of symbols) {
+    const momentum20 = getMomentum20(snapshotMap[symbol]);
+    const profile = profiles[symbol];
+    if (!clusterMomenta.has(profile.cluster)) {
+      clusterMomenta.set(profile.cluster, []);
+    }
+    if (!sectorMomenta.has(profile.sector)) {
+      sectorMomenta.set(profile.sector, []);
+    }
+    clusterMomenta.get(profile.cluster).push(momentum20);
+    sectorMomenta.get(profile.sector).push(momentum20);
+  }
+  const btcMomentum = getMomentum20(snapshotMap.BTCUSDT);
+  const ethMomentum = getMomentum20(snapshotMap.ETHUSDT);
+  return Object.fromEntries(symbols.map((symbol) => {
+    const momentum20 = getMomentum20(snapshotMap[symbol]);
+    const profile = profiles[symbol];
+    const clusterValues = clusterMomenta.get(profile.cluster) || [momentum20];
+    const sectorValues = sectorMomenta.get(profile.sector) || [momentum20];
+    return [symbol, {
+      relativeStrengthVsBtc: momentum20 - btcMomentum,
+      relativeStrengthVsEth: momentum20 - ethMomentum,
+      clusterRelativeStrength: momentum20 - average(clusterValues, momentum20),
+      sectorRelativeStrength: momentum20 - average(sectorValues, momentum20)
+    }];
+  }));
+}
+
 function summarizeSignal(signal) {
   return {
     name: signal.name,
@@ -366,6 +402,13 @@ function summarizeIndicators(market = {}) {
     stochRsiD: num(market.stochRsiD || 0, 2),
     mfi14: num(market.mfi14 || 0, 2),
     cmf20: num(market.cmf20 || 0, 3),
+    relativeStrengthVsBtc: num(market.relativeStrengthVsBtc || 0, 4),
+    relativeStrengthVsEth: num(market.relativeStrengthVsEth || 0, 4),
+    clusterRelativeStrength: num(market.clusterRelativeStrength || 0, 4),
+    sectorRelativeStrength: num(market.sectorRelativeStrength || 0, 4),
+    closeLocationQuality: num(market.closeLocationQuality || 0, 3),
+    breakoutFollowThroughScore: num(market.breakoutFollowThroughScore || 0, 3),
+    volumeAcceptanceScore: num(market.volumeAcceptanceScore || 0, 3),
     keltnerWidthPct: num(market.keltnerWidthPct || 0, 4),
     keltnerSqueezeScore: num(market.keltnerSqueezeScore || 0, 3),
     squeezeReleaseScore: num(market.squeezeReleaseScore || 0, 3)
@@ -3684,6 +3727,7 @@ export class TradingBot {
       book.localBookSynced = Boolean(localBookSnapshot?.synced);
       book.queueImbalance = localBookSnapshot?.queueImbalance || 0;
       book.queueRefreshScore = localBookSnapshot?.queueRefreshScore || 0;
+      book.replenishmentScore = localBookSnapshot?.queueRefreshScore || 0;
       book.resilienceScore = localBookSnapshot?.resilienceScore || 0;
       book.depthConfidence = localBookSnapshot?.depthConfidence || 0;
       book.depthAgeMs = localBookSnapshot?.depthAgeMs ?? null;
@@ -4157,6 +4201,12 @@ export class TradingBot {
   async evaluateCandidate(symbol, balance, now, context = {}) {
     const aliases = this.config.symbolMetadata[symbol] || [symbol];
     const marketSnapshot = context.marketSnapshot || (await this.getMarketSnapshot(symbol));
+    if (context.relativeStrengthSummary) {
+      marketSnapshot.market = {
+        ...(marketSnapshot.market || {}),
+        ...context.relativeStrengthSummary
+      };
+    }
     const newsSummary = context.newsSummary || (await this.news.getSymbolSummary(symbol, aliases));
     const streamFeatures = marketSnapshot.stream || this.stream.getSymbolStreamFeatures(symbol);
     const exchangeSummary = context.exchangeSummary || (await this.exchangeNotices.getSymbolSummary(symbol, aliases));
@@ -4799,6 +4849,7 @@ export class TradingBot {
       ...shallowSnapshotMap,
       ...Object.fromEntries(snapshotEntries.filter(([, snapshot]) => snapshot))
     };
+    const relativeStrengthMap = buildRelativeStrengthMap(snapshotMap, Object.keys(snapshotMap), this.config);
     const openPositionContexts = this.buildOpenPositionContexts(snapshotMap);
     const optimizerSnapshot = this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
     const attributionSnapshot = this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
@@ -4851,7 +4902,8 @@ export class TradingBot {
             onChainLiteSummary: sharedOnChainLiteSummary,
             pairHealthSnapshot,
             divergenceSummary,
-            sourceReliabilitySummary
+            sourceReliabilitySummary,
+            relativeStrengthSummary: relativeStrengthMap[symbol] || null
           });
           return candidate;
         } catch (error) {

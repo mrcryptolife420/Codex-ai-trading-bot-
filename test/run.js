@@ -1935,6 +1935,9 @@ await runCheck("market feature computation surfaces non-duplicate trend-state in
   assert.ok(features.upsideAccelerationScore > 0);
   assert.ok(features.trendMaturityScore > 0);
   assert.ok(Number.isFinite(features.anchoredVwapGapPct));
+  assert.ok(features.closeLocationQuality > 0);
+  assert.ok(features.breakoutFollowThroughScore >= 0);
+  assert.ok(features.volumeAcceptanceScore > 0);
 });
 
 await runCheck("market feature computation keeps anchored VWAP finite on short histories", async () => {
@@ -2649,6 +2652,13 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
       trendExhaustionScore: 0.22,
       upsideAccelerationScore: 0.34,
       downsideAccelerationScore: 0.06,
+      relativeStrengthVsBtc: 0.006,
+      relativeStrengthVsEth: 0.004,
+      clusterRelativeStrength: 0.003,
+      sectorRelativeStrength: 0.002,
+      closeLocationQuality: 0.84,
+      breakoutFollowThroughScore: 0.62,
+      volumeAcceptanceScore: 0.58,
       liquiditySweepScore: 0,
       structureBreakScore: 1,
       bullishPatternScore: 0.14,
@@ -2656,7 +2666,7 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
       insideBar: 0
     },
     trendStateSummary,
-    bookFeatures: { spreadBps: 4, depthImbalance: 0.18, weightedDepthImbalance: 0.16, microPriceEdgeBps: 0.9, bookPressure: 0.22, wallImbalance: 0.08, orderbookImbalanceSignal: 0.14, queueImbalance: 0.1, queueRefreshScore: 0.12, resilienceScore: 0.18, depthConfidence: 0.72, bidConcentration: 0.58, askConcentration: 0.42 },
+    bookFeatures: { spreadBps: 4, depthImbalance: 0.18, weightedDepthImbalance: 0.16, microPriceEdgeBps: 0.9, bookPressure: 0.22, wallImbalance: 0.08, orderbookImbalanceSignal: 0.14, queueImbalance: 0.1, queueRefreshScore: 0.12, replenishmentScore: 0.16, resilienceScore: 0.18, depthConfidence: 0.72, bidConcentration: 0.58, askConcentration: 0.42 },
     venueConfirmationSummary: { confirmed: true, status: "confirmed", divergenceBps: 2.8, averageHealthScore: 0.82 },
     newsSummary: { sentimentScore: 0.08, confidence: 0.7, riskScore: 0.08, freshnessScore: 0.6, providerDiversity: 2, sourceDiversity: 1.2, socialSentiment: 0.04, socialRisk: 0.02, socialCoverage: 1.5, operationalReliability: 0.8, eventBullishScore: 0.02, eventBearishScore: 0, eventRiskScore: 0.04 },
     announcementSummary: { sentimentScore: 0.01, riskScore: 0.02, freshnessScore: 0.5, maxSeverity: 0.1, eventBullishScore: 0, eventBearishScore: 0, eventRiskScore: 0.01 },
@@ -2680,6 +2690,9 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
   assert.ok(rawFeatures.trend_state_up > 0);
   assert.ok(rawFeatures.data_confidence > 0);
   assert.ok(rawFeatures.feature_completeness > 0);
+  assert.ok(rawFeatures.relative_strength_btc > 0);
+  assert.ok(rawFeatures.breakout_follow_through > 0);
+  assert.ok(rawFeatures.replenishment_quality > 0);
 });
 
 await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
