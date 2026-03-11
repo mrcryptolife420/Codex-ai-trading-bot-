@@ -27,6 +27,8 @@ import { HealthMonitor } from "../src/runtime/healthMonitor.js";
 import { LiveBroker } from "../src/execution/liveBroker.js";
 import { buildPerformanceReport } from "../src/runtime/reportBuilder.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../src/strategy/indicators.js";
+import { classifyRegime } from "../src/ai/regimeModel.js";
+import { buildFeatureVector } from "../src/strategy/features.js";
 import { evaluateStrategySet } from "../src/strategy/strategyRouter.js";
 import { StrategyOptimizer } from "../src/ai/strategyOptimizer.js";
 import { StrategyAttribution } from "../src/ai/strategyAttribution.js";
@@ -1902,6 +1904,57 @@ await runCheck("strategy router surfaces bear rally reclaim during spot-only dow
   assert.ok(summary.strategies.some((item) => item.id === "bear_rally_reclaim" && item.fitScore > 0.45));
 });
 
+await runCheck("market feature computation surfaces non-duplicate trend-state indicators", async () => {
+  const candles = Array.from({ length: 36 }, (_, index) => {
+    const drift = index < 24 ? index * 0.45 : 24 * 0.45 + (index - 24) * 0.82;
+    const close = 100 + drift;
+    return {
+      open: close - 0.18,
+      high: close + 0.44,
+      low: close - 0.36,
+      close,
+      volume: 1200 + index * 20 + (index > 28 ? 180 : 0)
+    };
+  });
+  const features = computeMarketFeatures(candles);
+  assert.ok(features.swingStructureScore > 0.2);
+  assert.ok(features.upsideAccelerationScore > 0);
+  assert.ok(features.trendMaturityScore > 0);
+  assert.ok(Number.isFinite(features.anchoredVwapGapPct));
+});
+
+await runCheck("regime model uses trend-state features to classify persistent trends", async () => {
+  const regime = classifyRegime({
+    marketFeatures: {
+      breakoutPct: 0.003,
+      donchianBreakoutPct: 0.004,
+      emaGap: 0.008,
+      momentum20: 0.016,
+      swingStructureScore: 0.58,
+      higherHighRate: 0.88,
+      lowerLowRate: 0.1,
+      trendMaturityScore: 0.72,
+      trendExhaustionScore: 0.24,
+      trendQualityScore: 0.48,
+      upsideAccelerationScore: 0.34,
+      downsideAccelerationScore: 0.08,
+      bullishPatternScore: 0.14,
+      bearishPatternScore: 0.04,
+      anchoredVwapGapPct: 0.011
+    },
+    newsSummary: { eventRiskScore: 0.04, sentimentScore: 0.06, socialCoverage: 1 },
+    streamFeatures: { tradeFlowImbalance: 0.12, microTrend: 0.0011 },
+    marketStructureSummary: { signalScore: 0.16, crowdingBias: 0.1, fundingRate: 0.00002, liquidationIntensity: 0.08 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.12, fearGreedValue: 61 },
+    volatilitySummary: { riskScore: 0.21, regime: "calm" },
+    announcementSummary: { riskScore: 0.02, highPriorityCount: 0, maxSeverity: 0.1 },
+    calendarSummary: { riskScore: 0.05, urgencyScore: 0.08, highImpactCount: 0 },
+    bookFeatures: { bookPressure: 0.18 }
+  });
+  assert.equal(regime.regime, "trend");
+  assert.ok(regime.reasons.includes("trend_maturity"));
+});
+
 
 await runCheck("risk manager ignores stale loss streaks outside the lookback window", async () => {
   const manager = new RiskManager(makeConfig({ lossStreakLookbackMinutes: 60 }));
@@ -2216,9 +2269,134 @@ await runCheck("risk manager applies parameter governor, venue confirmation and 
   assert.equal(decision.allow, true);
   assert.equal(decision.capitalLadderApplied.stage, "seed");
   assert.ok(decision.parameterGovernorApplied.active);
+  assert.ok(decision.trendStateTuningApplied);
   assert.ok(decision.venueConfirmationSummary.confirmed);
   assert.ok(decision.maxHoldMinutes > makeConfig().maxHoldMinutes);
   assert.ok(decision.quoteAmount < 250);
+});
+
+await runCheck("risk manager only applies scoped threshold tuning when both strategy and regime scope match", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.61,
+      calibrationConfidence: 0.48,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.6, confidence: 0.2 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.18, microPriceEdgeBps: 0.7 },
+      market: { realizedVolPct: 0.017, atrPct: 0.009, bullishPatternScore: 0.1, bearishPatternScore: 0.03 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.04 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.06, signalScore: 0.1, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.03, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.63, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.62, confidence: 0.48, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    thresholdTuningSummary: {
+      appliedRecommendation: {
+        id: "scoped-adjustment",
+        status: "confirmed",
+        adjustment: -0.03,
+        confidence: 0.8,
+        affectedStrategies: ["ema_trend"],
+        affectedRegimes: ["breakout"]
+      }
+    },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.thresholdTuningApplied.status, "out_of_scope");
+  assert.equal(decision.thresholdTuningApplied.adjustment, 0);
+});
+
+await runCheck("feature vector includes venue confirmation and trend-state signals", async () => {
+  const rawFeatures = buildFeatureVector({
+    symbolStats: { avgPnlPct: 0.01, winRate: 0.56 },
+    marketFeatures: {
+      momentum5: 0.004,
+      momentum20: 0.012,
+      emaGap: 0.006,
+      emaTrendScore: 0.008,
+      emaTrendSlopePct: 0.002,
+      rsi14: 61,
+      adx14: 28,
+      dmiSpread: 0.22,
+      trendQualityScore: 0.44,
+      supertrendDistancePct: 0.01,
+      supertrendDirection: 1,
+      supertrendFlipScore: 0,
+      stochRsiK: 68,
+      stochRsiD: 63,
+      mfi14: 64,
+      cmf20: 0.12,
+      macdHistogramPct: 0.0014,
+      atrPct: 0.01,
+      atrExpansion: 0.24,
+      realizedVolPct: 0.019,
+      volumeZ: 1.1,
+      breakoutPct: 0.004,
+      donchianBreakoutPct: 0.005,
+      donchianPosition: 0.84,
+      donchianWidthPct: 0.022,
+      trendStrength: 0.011,
+      vwapGapPct: 0.008,
+      vwapSlopePct: 0.0016,
+      anchoredVwapGapPct: 0.012,
+      anchoredVwapSlopePct: 0.001,
+      obvSlope: 0.14,
+      rangeCompression: 0.78,
+      bollingerSqueezeScore: 0.42,
+      bollingerPosition: 0.76,
+      priceZScore: 0.88,
+      keltnerWidthPct: 0.02,
+      keltnerSqueezeScore: 0.48,
+      squeezeReleaseScore: 0.52,
+      candleBodyRatio: 0.62,
+      wickSkew: -0.08,
+      closeLocation: 0.82,
+      trendPersistence: 0.78,
+      swingStructureScore: 0.58,
+      trendMaturityScore: 0.68,
+      trendExhaustionScore: 0.22,
+      upsideAccelerationScore: 0.34,
+      downsideAccelerationScore: 0.06,
+      liquiditySweepScore: 0,
+      structureBreakScore: 1,
+      bullishPatternScore: 0.14,
+      bearishPatternScore: 0.04,
+      insideBar: 0
+    },
+    bookFeatures: { spreadBps: 4, depthImbalance: 0.18, weightedDepthImbalance: 0.16, microPriceEdgeBps: 0.9, bookPressure: 0.22, wallImbalance: 0.08, orderbookImbalanceSignal: 0.14, queueImbalance: 0.1, queueRefreshScore: 0.12, resilienceScore: 0.18, depthConfidence: 0.72, bidConcentration: 0.58, askConcentration: 0.42 },
+    venueConfirmationSummary: { confirmed: true, status: "confirmed", divergenceBps: 2.8, averageHealthScore: 0.82 },
+    newsSummary: { sentimentScore: 0.08, confidence: 0.7, riskScore: 0.08, freshnessScore: 0.6, providerDiversity: 2, sourceDiversity: 1.2, socialSentiment: 0.04, socialRisk: 0.02, socialCoverage: 1.5, operationalReliability: 0.8, eventBullishScore: 0.02, eventBearishScore: 0, eventRiskScore: 0.04 },
+    announcementSummary: { sentimentScore: 0.01, riskScore: 0.02, freshnessScore: 0.5, maxSeverity: 0.1, eventBullishScore: 0, eventBearishScore: 0, eventRiskScore: 0.01 },
+    marketStructureSummary: { fundingRate: 0.00002, basisBps: 6, openInterestChangePct: 0.02, takerImbalance: 0.12, crowdingBias: 0.08, globalLongShortImbalance: 0.06, topTraderImbalance: 0.04, leverageBuildupScore: 0.14, shortSqueezeScore: 0.1, longSqueezeScore: 0.08, riskScore: 0.16, signalScore: 0.18, liquidationImbalance: 0.06, liquidationIntensity: 0.08 },
+    marketSentimentSummary: { contrarianScore: 0.08, btcDominancePct: 54, riskScore: 0.24 },
+    volatilitySummary: { marketOptionIv: 46, marketHistoricalVol: 39, ivPremium: 2, riskScore: 0.22, regime: "calm" },
+    calendarSummary: { riskScore: 0.06, bullishScore: 0.02, bearishScore: 0, urgencyScore: 0.08 },
+    portfolioFeatures: { heat: 0.12, maxCorrelation: 0.24, familyBudgetFactor: 1, regimeBudgetFactor: 1, strategyBudgetFactor: 1, dailyBudgetFactor: 1, clusterHeat: 0.18, allocatorScore: 0.64 },
+    streamFeatures: { tradeFlowImbalance: 0.12, microTrend: 0.0014 },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7, confidence: 0.62, agreementGap: 0.08, optimizerBoost: 0.02 },
+    sessionSummary: { session: "europe", isWeekend: false, lowLiquidity: false, inFundingCaution: false, riskScore: 0.08 },
+    timeframeSummary: { lowerBias: 0.12, higherBias: 0.2, alignmentScore: 0.72, volatilityGapPct: 0.002, blockerReasons: [] },
+    onChainLiteSummary: { liquidityScore: 0.62, riskOffScore: 0.22, stressScore: 0.18, stablecoinDominancePct: 8.4, stablecoinConcentrationPct: 56, marketBreadthScore: 0.6, majorsMomentumScore: 0.64, altLiquidityScore: 0.58, trendingScore: 0.18 },
+    pairHealthSummary: { score: 0.7, infraPenalty: 0, quarantined: false },
+    now: new Date("2026-03-10T10:00:00.000Z")
+  });
+  assert.ok(rawFeatures.swing_structure > 0);
+  assert.ok(rawFeatures.trend_maturity > 0);
+  assert.ok(rawFeatures.venue_confirmation > 0);
 });
 
 await runCheck("risk manager blocks entries when the data quorum falls to observe-only", async () => {

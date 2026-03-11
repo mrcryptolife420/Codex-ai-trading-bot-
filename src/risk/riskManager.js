@@ -99,6 +99,9 @@ function buildDowntrendPolicy({ marketSnapshot = {}, marketStructureSummary = {}
     Math.max(0, -safeValue(market.momentum20)) * 18 * 0.24 +
     Math.max(0, -safeValue(market.emaGap)) * 38 * 0.18 +
     Math.max(0, -safeValue(market.dmiSpread)) * 2.5 * 0.12 +
+    Math.max(0, -safeValue(market.swingStructureScore)) * 0.14 +
+    safeValue(market.downsideAccelerationScore) * 0.08 +
+    Math.max(0, -safeValue(market.anchoredVwapGapPct)) * 18 * 0.05 +
     (safeValue(market.supertrendDirection) < 0 ? 0.16 : 0) +
     safeValue(market.bearishPatternScore) * 0.11 +
     safeValue(marketStructureSummary.longSqueezeScore) * 0.08 +
@@ -120,7 +123,62 @@ function matchesScopedAdjustment(entry = {}, strategyId = null, regimeId = null)
   const regimes = entry.affectedRegimes || [];
   const strategyMatch = !strategies.length || (strategyId && strategies.includes(strategyId));
   const regimeMatch = !regimes.length || (regimeId && regimes.includes(regimeId));
-  return strategyMatch || regimeMatch;
+  return strategyMatch && regimeMatch;
+}
+
+function resolveTrendStateTuning({ marketSnapshot = {}, strategySummary = {}, regimeSummary = {} } = {}) {
+  const market = marketSnapshot.market || {};
+  const family = strategySummary.family || "";
+  const strategyId = strategySummary.activeStrategy || "";
+  const trendFamily = ["trend_following", "breakout"].includes(family);
+  const meanReversionFamily = family === "mean_reversion";
+  const matureTrend = safeValue(market.trendMaturityScore) >= 0.6;
+  const exhaustedTrend = safeValue(market.trendExhaustionScore) >= 0.68;
+  const strongDownsideAcceleration = safeValue(market.downsideAccelerationScore) >= 0.6;
+  const strongUpsideAcceleration = safeValue(market.upsideAccelerationScore) >= 0.6;
+  const strongNegativeStructure = safeValue(market.swingStructureScore) <= -0.32;
+  const strongPositiveStructure = safeValue(market.swingStructureScore) >= 0.32;
+  let thresholdShift = 0;
+  let sizeMultiplier = 1;
+  const notes = [];
+
+  if (trendFamily && ["trend", "breakout"].includes(regimeSummary.regime || "")) {
+    if (matureTrend && strongPositiveStructure && !exhaustedTrend && !strongDownsideAcceleration) {
+      thresholdShift -= 0.008;
+      sizeMultiplier *= 1.04;
+      notes.push("trend_follow_through");
+    }
+    if (exhaustedTrend || strongDownsideAcceleration) {
+      thresholdShift += 0.01;
+      sizeMultiplier *= 0.9;
+      notes.push("trend_exhaustion_caution");
+    }
+  }
+
+  if (meanReversionFamily && strongDownsideAcceleration && strongNegativeStructure && !["bear_rally_reclaim"].includes(strategyId)) {
+    thresholdShift += 0.01;
+    sizeMultiplier *= 0.88;
+    notes.push("mean_reversion_vs_downtrend");
+  }
+
+  if (meanReversionFamily && strategyId === "bear_rally_reclaim" && exhaustedTrend && strongDownsideAcceleration) {
+    thresholdShift -= 0.006;
+    sizeMultiplier *= 1.03;
+    notes.push("bear_bounce_probe_window");
+  }
+
+  if (trendFamily && strongUpsideAcceleration && exhaustedTrend) {
+    thresholdShift += 0.004;
+    sizeMultiplier *= 0.96;
+    notes.push("late_trend_extension");
+  }
+
+  return {
+    active: notes.length > 0,
+    thresholdShift: clamp(thresholdShift, -0.012, 0.012),
+    sizeMultiplier: clamp(sizeMultiplier, 0.82, 1.06),
+    notes
+  };
 }
 
 export class RiskManager {
@@ -414,6 +472,7 @@ export class RiskManager {
       regimeSummary,
       exchangeCapabilities
     });
+    const trendStateTuning = resolveTrendStateTuning({ marketSnapshot, strategySummary, regimeSummary });
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -426,8 +485,14 @@ export class RiskManager {
     const thresholdFloor = this.config.botMode === "paper"
       ? Math.max(0.5, this.config.minModelConfidence - paperWarmupDiscount)
       : this.config.minModelConfidence;
-    const threshold = clamp(
+    let threshold = clamp(
       baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty + thresholdTuningAdjustment.adjustment + parameterGovernorAdjustment.thresholdShift + safeValue(strategyMetaSummary.thresholdShift || 0),
+      thresholdFloor,
+      0.99
+    );
+    threshold = clamp(
+      threshold +
+      trendStateTuning.thresholdShift,
       thresholdFloor,
       0.99
     );
@@ -734,15 +799,16 @@ export class RiskManager {
       executionCostSizeMultiplier *
       spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
+    const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier;
 
-    if (quoteAmount < this.config.minTradeUsdt) {
+    if (adjustedQuoteAmount < this.config.minTradeUsdt) {
       reasons.push("trade_size_below_minimum");
     }
 
     let allow = reasons.length === 0;
     let entryMode = "standard";
     let suppressedReasons = [];
-    let finalQuoteAmount = quoteAmount;
+    let finalQuoteAmount = adjustedQuoteAmount;
     let paperExploration = null;
     let paperGuardrailRelief = [];
 
@@ -781,7 +847,7 @@ export class RiskManager {
       const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
       const explorationQuoteAmount = Math.min(
         explorationBudget,
-        Math.max(this.config.minTradeUsdt, quoteAmount * this.config.paperExplorationSizeMultiplier)
+        Math.max(this.config.minTradeUsdt, adjustedQuoteAmount * this.config.paperExplorationSizeMultiplier)
       );
       if (explorationQuoteAmount >= this.config.minTradeUsdt) {
         allow = true;
@@ -842,7 +908,7 @@ export class RiskManager {
         : this.config.minTradeUsdt;
       const recoveryProbeQuoteAmount = Math.min(
         recoveryBudget,
-        Math.max(recoveryProbeFloor, quoteAmount * this.config.paperRecoveryProbeSizeMultiplier)
+        Math.max(recoveryProbeFloor, adjustedQuoteAmount * this.config.paperRecoveryProbeSizeMultiplier)
       );
       if (recoveryProbeQuoteAmount > 0 && (this.config.paperRecoveryProbeAllowMinTradeOverride || recoveryProbeQuoteAmount >= this.config.minTradeUsdt)) {
         allow = true;
@@ -878,6 +944,7 @@ export class RiskManager {
       thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
       thresholdTuningApplied: thresholdTuningAdjustment,
       parameterGovernorApplied: parameterGovernorAdjustment,
+      trendStateTuningApplied: trendStateTuning,
       strategyRetirementApplied: strategyRetirementPolicy,
       executionCostBudgetApplied: executionCostBudget,
       capitalGovernorApplied: capitalGovernor,
@@ -895,6 +962,7 @@ export class RiskManager {
         thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
         thresholdTuningAdjustment: thresholdTuningAdjustment.adjustment,
         parameterGovernorThresholdShift: parameterGovernorAdjustment.thresholdShift,
+        trendStateThresholdShift: trendStateTuning.thresholdShift,
         globalThresholdTilt: optimizerAdjustments.globalThresholdTilt,
         familyThresholdTilt: optimizerAdjustments.familyThresholdTilt,
         strategyThresholdTilt: optimizerAdjustments.strategyThresholdTilt,

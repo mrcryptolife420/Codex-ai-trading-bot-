@@ -409,6 +409,61 @@ function detectStructureBreak(lastClose, priorHigh, priorLow, momentum5, closeLo
   };
 }
 
+function computeSwingStructure(highs = [], lows = [], length = 8) {
+  const recentHighs = selectRecent(highs, length + 1);
+  const recentLows = selectRecent(lows, length + 1);
+  const sampleCount = Math.max(0, Math.min(recentHighs.length, recentLows.length) - 1);
+  if (!sampleCount) {
+    return {
+      swingStructureScore: 0,
+      higherHighRate: 0.5,
+      higherLowRate: 0.5,
+      lowerHighRate: 0.5,
+      lowerLowRate: 0.5
+    };
+  }
+
+  let higherHighs = 0;
+  let higherLows = 0;
+  let lowerHighs = 0;
+  let lowerLows = 0;
+  for (let index = 1; index < recentHighs.length; index += 1) {
+    higherHighs += recentHighs[index] > recentHighs[index - 1] ? 1 : 0;
+    lowerHighs += recentHighs[index] < recentHighs[index - 1] ? 1 : 0;
+    higherLows += recentLows[index] > recentLows[index - 1] ? 1 : 0;
+    lowerLows += recentLows[index] < recentLows[index - 1] ? 1 : 0;
+  }
+
+  const higherHighRate = higherHighs / sampleCount;
+  const higherLowRate = higherLows / sampleCount;
+  const lowerHighRate = lowerHighs / sampleCount;
+  const lowerLowRate = lowerLows / sampleCount;
+  return {
+    swingStructureScore: clamp(((higherHighRate + higherLowRate) - (lowerHighRate + lowerLowRate)) / 2, -1, 1),
+    higherHighRate,
+    higherLowRate,
+    lowerHighRate,
+    lowerLowRate
+  };
+}
+
+function computeDirectionalAcceleration(returns = []) {
+  const recent = selectRecent(returns, 4);
+  const baseline = selectRecent(returns.slice(0, -4), 8);
+  const mean = (values, selector) => {
+    const filtered = values.filter(selector);
+    return filtered.length ? average(filtered, 0) : 0;
+  };
+  const upsideRecent = mean(recent, (value) => value > 0);
+  const upsideBaseline = mean(baseline, (value) => value > 0);
+  const downsideRecent = Math.abs(mean(recent, (value) => value < 0));
+  const downsideBaseline = Math.abs(mean(baseline, (value) => value < 0));
+  return {
+    upsideAccelerationScore: clamp((upsideRecent - upsideBaseline) * 160, 0, 1),
+    downsideAccelerationScore: clamp((downsideRecent - downsideBaseline) * 160, 0, 1)
+  };
+}
+
 export function computeMarketFeatures(candles) {
   const closes = candles.map((candle) => candle.close);
   const highs = candles.map((candle) => candle.high);
@@ -441,11 +496,12 @@ export function computeMarketFeatures(candles) {
   }
   const recentReturns = selectRecent(returns, 8);
   const realizedVolPct = standardDeviation(selectRecent(returns, 30));
-  const breakoutBase = Math.max(...selectRecent(highs, 20));
   const priorChannel = donchianChannel(highs, lows, 20, false);
   const currentChannel = donchianChannel(highs, lows, 20, true);
   const vwap = volumeWeightedAveragePrice(candles, 30);
   const priorVwap = volumeWeightedAveragePrice(candles, 30, 10);
+  const anchoredVwap = volumeWeightedAveragePrice(candles, Math.min(90, Math.max(30, candles.length)));
+  const priorAnchoredVwap = volumeWeightedAveragePrice(candles, Math.min(90, Math.max(30, Math.max(0, candles.length - 8))), 8);
   const obvSeries = buildObvSeries(candles);
   const obvBase = Math.max(Math.abs(obvSeries.at(-21) || 0), average(volumes, 1), 1);
   const lastRange = Math.max(lastCandle.high - lastCandle.low, 1e-9);
@@ -472,12 +528,30 @@ export function computeMarketFeatures(candles) {
   const closeLocation = lastRange ? (lastCandle.close - lastCandle.low) / lastRange : 0.5;
   const liquiditySweep = detectLiquiditySweep(lastCandle, priorChannel.upper, priorChannel.lower);
   const structureBreak = detectStructureBreak(lastClose, priorChannel.upper, priorChannel.lower, momentum5, closeLocation);
+  const swingStructure = computeSwingStructure(highs, lows, 8);
+  const directionalAcceleration = computeDirectionalAcceleration(returns);
   const keltnerWidthPct = keltner.basis ? (keltner.upper - keltner.lower) / keltner.basis : 0;
   const insideKeltner = bollinger.upper <= keltner.upper && bollinger.lower >= keltner.lower ? 1 : 0;
   const squeezeCompression = keltnerWidthPct > 0 ? 1 - clamp(bollingerWidthPct / Math.max(keltnerWidthPct, 1e-9), 0, 1.6) : 0;
   const keltnerSqueezeScore = clamp(insideKeltner ? 0.72 + Math.max(squeezeCompression, 0) * 0.28 : Math.max(0, squeezeCompression + 0.35), 0, 1);
   const squeezeReleaseScore = clamp(keltnerSqueezeScore * 0.45 + bollingerSqueezeScore * 0.35 + clamp(closeLocation - 0.45, 0, 0.55) * 0.35 + Math.max(dmi.dmiSpread, 0) * 0.2, 0, 1);
   const trendQualityScore = clamp(((dmi.adx - 18) / 24) * 0.4 + dmi.dmiSpread * 1.6 * 0.35 + supertrendValue.direction * 0.18 + Math.max(supertrendValue.distancePct * 90, -1) * 0.07, -1, 1);
+  const trendMaturityScore = clamp(
+    Math.max(0, trendPersistence - 0.52) * 0.32 +
+    Math.max(0, swingStructure.swingStructureScore) * 0.28 +
+    Math.max(0, trendQualityScore) * 0.22 +
+    Math.max(0, donchianPosition - 0.55) * 0.18,
+    0,
+    1
+  );
+  const trendExhaustionScore = clamp(
+    Math.max(0, Math.abs(priceZScore) - 1.15) / 1.8 * 0.34 +
+    Math.max(0, volumeZ - 1.4) / 2.4 * 0.2 +
+    Math.max(directionalAcceleration.upsideAccelerationScore, directionalAcceleration.downsideAccelerationScore) * 0.24 +
+    Math.max(0, Math.abs(donchianPosition - 0.5) - 0.36) / 0.14 * 0.22,
+    0,
+    1
+  );
 
   return {
     lastClose,
@@ -501,16 +575,27 @@ export function computeMarketFeatures(candles) {
     macdHistogramPct: lastClose ? macdValues.histogram / lastClose : 0,
     realizedVolPct,
     volumeZ,
-    breakoutPct: breakoutBase ? pctChange(breakoutBase, lastClose) : 0,
+    breakoutPct: priorChannel.upper ? pctChange(priorChannel.upper, lastClose) : 0,
     trendStrength: lastClose ? pctChange(sma(closes, 50), lastClose) : 0,
     vwapGapPct: vwap ? pctChange(vwap, lastClose) : 0,
     vwapSlopePct,
+    anchoredVwapGapPct: anchoredVwap ? pctChange(anchoredVwap, lastClose) : 0,
+    anchoredVwapSlopePct: priorAnchoredVwap ? pctChange(priorAnchoredVwap, anchoredVwap) : 0,
     obvSlope: obvBase ? ((obvSeries.at(-1) || 0) - (obvSeries.at(-21) || 0)) / obvBase : 0,
     rangeCompression: atr30 ? atr14 / atr30 : 1,
     candleBodyRatio: lastRange ? Math.abs(lastCandle.close - lastCandle.open) / lastRange : 0,
     wickSkew: lastRange ? (upperWick - lowerWick) / lastRange : 0,
     closeLocation,
     trendPersistence,
+    swingStructureScore: swingStructure.swingStructureScore,
+    higherHighRate: swingStructure.higherHighRate,
+    higherLowRate: swingStructure.higherLowRate,
+    lowerHighRate: swingStructure.lowerHighRate,
+    lowerLowRate: swingStructure.lowerLowRate,
+    upsideAccelerationScore: directionalAcceleration.upsideAccelerationScore,
+    downsideAccelerationScore: directionalAcceleration.downsideAccelerationScore,
+    trendMaturityScore,
+    trendExhaustionScore,
     bullishPatternScore: patterns.bullishPatternScore,
     bearishPatternScore: patterns.bearishPatternScore,
     insideBar: patterns.insideBar,

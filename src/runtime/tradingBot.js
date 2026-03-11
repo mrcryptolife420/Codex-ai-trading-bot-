@@ -4200,6 +4200,7 @@ export class TradingBot {
       symbolStats,
       marketFeatures: marketSnapshot.market,
       bookFeatures: marketSnapshot.book,
+      venueConfirmationSummary,
       newsSummary,
       announcementSummary: exchangeSummary,
       marketStructureSummary,
@@ -5983,7 +5984,6 @@ export class TradingBot {
     };
   }
 }
-
 
 
 
