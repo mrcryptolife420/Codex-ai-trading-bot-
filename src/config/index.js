@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { coinAliases } from "../data/coinAliases.js";
 import { getCoinProfile } from "../data/coinProfiles.js";
+import { resolveExchangeCapabilities } from "./exchangeCapabilities.js";
 import { validateConfig } from "./validate.js";
 
 const DEFAULTS = {
@@ -13,6 +14,9 @@ const DEFAULTS = {
   maxTotalExposureFraction: 0.6,
   riskPerTrade: 0.01,
   maxDailyDrawdown: 0.04,
+  userRegion: "BE",
+  exchangeCapabilitiesEnabled: [],
+  exchangeCapabilitiesDisabled: [],
   minModelConfidence: 0.5,
   entryCooldownMinutes: 20,
   symbolLossCooldownMinutes: 240,
@@ -416,6 +420,17 @@ function parseTextCsv(value, fallback) {
   return items.length > 0 ? items : fallback;
 }
 
+function parseLowerCsv(value, fallback) {
+  if (!value) {
+    return fallback;
+  }
+  const items = value
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  return items.length > 0 ? items : fallback;
+}
+
 function normalizeMode(value, fallback) {
   const normalized = `${value || fallback}`.trim().toLowerCase();
   return normalized === "live" ? "live" : "paper";
@@ -456,6 +471,9 @@ export async function loadConfig(projectRoot = process.cwd()) {
     maxTotalExposureFraction: parseNumber(env.MAX_TOTAL_EXPOSURE_FRACTION, DEFAULTS.maxTotalExposureFraction),
     riskPerTrade: parseNumber(env.RISK_PER_TRADE, DEFAULTS.riskPerTrade),
     maxDailyDrawdown: parseNumber(env.MAX_DAILY_DRAWDOWN, DEFAULTS.maxDailyDrawdown),
+    userRegion: (env.USER_REGION || DEFAULTS.userRegion).trim().toUpperCase(),
+    exchangeCapabilitiesEnabled: parseLowerCsv(env.EXCHANGE_CAPABILITIES_ENABLED, DEFAULTS.exchangeCapabilitiesEnabled),
+    exchangeCapabilitiesDisabled: parseLowerCsv(env.EXCHANGE_CAPABILITIES_DISABLED, DEFAULTS.exchangeCapabilitiesDisabled),
     minModelConfidence: parseNumber(env.MIN_MODEL_CONFIDENCE, DEFAULTS.minModelConfidence),
     entryCooldownMinutes: parseNumber(env.ENTRY_COOLDOWN_MINUTES, DEFAULTS.entryCooldownMinutes),
     symbolLossCooldownMinutes: parseNumber(env.SYMBOL_LOSS_COOLDOWN_MINUTES, DEFAULTS.symbolLossCooldownMinutes),
@@ -793,10 +811,10 @@ export async function loadConfig(projectRoot = process.cwd()) {
     marketCapRanks: Object.fromEntries(watchlist.map((symbol, index) => [symbol, index + 1]))
   };
 
+  config.exchangeCapabilities = resolveExchangeCapabilities(config);
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

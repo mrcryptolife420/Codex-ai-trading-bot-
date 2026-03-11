@@ -64,6 +64,57 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function toBoolean(value, fallback = false) {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off", ""].includes(normalized)) {
+      return false;
+    }
+  }
+  if (value == null) {
+    return fallback;
+  }
+  return Boolean(value);
+}
+
+function summarizeExchangeCapabilities(capabilities = {}) {
+  return {
+    region: capabilities.region || "GLOBAL",
+    spotEnabled: toBoolean(capabilities.spotEnabled, true),
+    marginEnabled: toBoolean(capabilities.marginEnabled),
+    futuresEnabled: toBoolean(capabilities.futuresEnabled),
+    shortingEnabled: toBoolean(capabilities.shortingEnabled),
+    leveragedTokensEnabled: toBoolean(capabilities.leveragedTokensEnabled),
+    spotBearMarketMode: capabilities.spotBearMarketMode || "defensive_rebounds",
+    notes: [...(capabilities.notes || [])]
+  };
+}
+
+function buildDowntrendPolicy({ marketSnapshot = {}, marketStructureSummary = {}, regimeSummary = {}, exchangeCapabilities = {} } = {}) {
+  const market = marketSnapshot.market || {};
+  const downtrendScore = clamp(
+    Math.max(0, -safeValue(market.momentum20)) * 18 * 0.24 +
+    Math.max(0, -safeValue(market.emaGap)) * 38 * 0.18 +
+    Math.max(0, -safeValue(market.dmiSpread)) * 2.5 * 0.12 +
+    (safeValue(market.supertrendDirection) < 0 ? 0.16 : 0) +
+    safeValue(market.bearishPatternScore) * 0.11 +
+    safeValue(marketStructureSummary.longSqueezeScore) * 0.08 +
+    (regimeSummary.regime === "trend" ? 0.06 : regimeSummary.regime === "high_vol" ? 0.04 : 0),
+    0,
+    1
+  );
+  return {
+    downtrendScore,
+    strongDowntrend: downtrendScore >= 0.58,
+    severeDowntrend: downtrendScore >= 0.74,
+    shortingUnavailable: exchangeCapabilities.shortingEnabled === false,
+    spotOnly: exchangeCapabilities.spotEnabled !== false && exchangeCapabilities.shortingEnabled === false
+  };
+}
+
 function matchesScopedAdjustment(entry = {}, strategyId = null, regimeId = null) {
   const strategies = entry.affectedStrategies || [];
   const regimes = entry.affectedRegimes || [];
@@ -344,7 +395,8 @@ export class RiskManager {
     nowIso
     ,
     venueConfirmationSummary = {},
-    strategyMetaSummary = {}
+    strategyMetaSummary = {},
+    exchangeCapabilitiesSummary = {}
   }) {
     const reasons = [];
     const openPositions = runtime.openPositions || [];
@@ -355,6 +407,13 @@ export class RiskManager {
     const strategyRetirementPolicy = this.resolveStrategyRetirement(strategyRetirementSummary, strategySummary);
     const executionCostBudget = this.resolveExecutionCostBudget(executionCostSummary, strategySummary, regimeSummary);
     const capitalGovernor = this.resolveCapitalGovernor(capitalGovernorSummary);
+    const exchangeCapabilities = summarizeExchangeCapabilities(exchangeCapabilitiesSummary);
+    const downtrendPolicy = buildDowntrendPolicy({
+      marketSnapshot,
+      marketStructureSummary,
+      regimeSummary,
+      exchangeCapabilities
+    });
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -394,6 +453,7 @@ export class RiskManager {
     const capitalGovernorSizeMultiplier = clamp(capitalGovernor.sizeMultiplier || 1, 0, 1);
     const retirementSizeMultiplier = clamp(strategyRetirementPolicy.sizeMultiplier || 1, 0, 1);
     const executionCostSizeMultiplier = clamp(executionCostBudget.sizeMultiplier || 1, 0.45, 1);
+    const spotDowntrendPenalty = downtrendPolicy.spotOnly && downtrendPolicy.strongDowntrend ? (downtrendPolicy.severeDowntrend ? 0.52 : 0.68) : 1;
     const lowRiskCandidate = ["trend_following", "mean_reversion", "orderflow"].includes(strategySummary.family || "") &&
       (marketSnapshot.book.spreadBps || 0) <= Math.max(this.config.maxSpreadBps * 0.4, 3) &&
       (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
@@ -431,6 +491,14 @@ export class RiskManager {
       reasons.push("strategy_retired");
     } else if (strategyRetirementPolicy.active && (strategyRetirementPolicy.status || "") === "cooldown" && score.probability < threshold + 0.04) {
       reasons.push("strategy_cooldown");
+    }
+    if (
+      downtrendPolicy.spotOnly &&
+      downtrendPolicy.strongDowntrend &&
+      !["bear_rally_reclaim", "vwap_reversion", "zscore_reversion", "liquidity_sweep", "funding_rate_extreme"].includes(strategySummary.activeStrategy || "") &&
+      score.probability < threshold + 0.08
+    ) {
+      reasons.push("spot_downtrend_guard");
     }
     if (["paused", "paper_fallback"].includes(selfHealState.mode)) {
       reasons.push("self_heal_pause_entries");
@@ -664,6 +732,7 @@ export class RiskManager {
       capitalLadderSizeMultiplier *
       retirementSizeMultiplier *
       executionCostSizeMultiplier *
+      spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
 
     if (quoteAmount < this.config.minTradeUsdt) {
@@ -812,6 +881,8 @@ export class RiskManager {
       strategyRetirementApplied: strategyRetirementPolicy,
       executionCostBudgetApplied: executionCostBudget,
       capitalGovernorApplied: capitalGovernor,
+      exchangeCapabilitiesApplied: exchangeCapabilities,
+      downtrendPolicy,
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,

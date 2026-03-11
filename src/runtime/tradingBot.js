@@ -1544,6 +1544,36 @@ function summarizeExchangeTruth(summary = {}) {
   };
 }
 
+function toBoolean(value, fallback = false) {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off", ""].includes(normalized)) {
+      return false;
+    }
+  }
+  if (value == null) {
+    return fallback;
+  }
+  return Boolean(value);
+}
+
+function summarizeExchangeCapabilities(summary = {}) {
+  return {
+    region: summary.region || "GLOBAL",
+    venue: summary.venue || "binance",
+    spotEnabled: toBoolean(summary.spotEnabled, true),
+    marginEnabled: toBoolean(summary.marginEnabled),
+    futuresEnabled: toBoolean(summary.futuresEnabled),
+    shortingEnabled: toBoolean(summary.shortingEnabled),
+    leveragedTokensEnabled: toBoolean(summary.leveragedTokensEnabled),
+    spotBearMarketMode: summary.spotBearMarketMode || "defensive_rebounds",
+    notes: [...(summary.notes || [])]
+  };
+}
+
 function summarizeOrderLifecycle(summary = {}) {
   const positions = Object.values(summary.positions || {}).map((item) => ({
     id: item.id || null,
@@ -2220,6 +2250,7 @@ export class TradingBot {
     this.runtime.capitalGovernor = this.runtime.capitalGovernor || {};
     this.runtime.exchangeTruth = this.runtime.exchangeTruth || {};
     this.runtime.exchangeSafety = this.runtime.exchangeSafety || {};
+    this.runtime.exchangeCapabilities = summarizeExchangeCapabilities(this.config.exchangeCapabilities || {});
     this.runtime.executionCost = this.runtime.executionCost || {};
     this.runtime.strategyRetirement = this.runtime.strategyRetirement || {};
     this.runtime.replayChaos = this.runtime.replayChaos || {};
@@ -3774,6 +3805,11 @@ export class TradingBot {
         detail: `${candidate.pairHealthSummary?.health || "watch"} | score ${num((candidate.pairHealthSummary?.score || 0) * 100, 1)}%`
       },
       {
+        label: "Bear market mode",
+        passed: !candidate.decision.downtrendPolicy?.strongDowntrend || !candidate.decision.downtrendPolicy?.shortingUnavailable || !candidate.decision.reasons?.includes("spot_downtrend_guard"),
+        detail: `${candidate.decision.downtrendPolicy?.strongDowntrend ? "downtrend" : "normal"} | score ${num((candidate.decision.downtrendPolicy?.downtrendScore || 0) * 100, 1)}% | ${candidate.decision.exchangeCapabilitiesApplied?.spotBearMarketMode || "defensive_rebounds"}`
+      },
+      {
         label: "Data quorum",
         passed: !candidate.qualityQuorumSummary?.observeOnly && (candidate.qualityQuorumSummary?.status || "ready") !== "degraded",
         detail: `${candidate.qualityQuorumSummary?.status || "ready"} | score ${num((candidate.qualityQuorumSummary?.quorumScore || 0) * 100, 1)}% | ${(candidate.qualityQuorumSummary?.blockerReasons || [])[0] || "geen blocker"}`
@@ -3916,10 +3952,13 @@ export class TradingBot {
       : candidate.qualityQuorumSummary?.status === "degraded"
         ? `data quorum degraded (${candidate.qualityQuorumSummary.cautionReasons?.[0] || candidate.qualityQuorumSummary.blockerReasons?.[0] || "extra voorzichtigheid"})`
         : `data quorum ${candidate.qualityQuorumSummary?.status || "ready"} op ${num((candidate.qualityQuorumSummary?.quorumScore || 0) * 100, 1)}%`;
+    const downtrendText = candidate.decision?.downtrendPolicy?.strongDowntrend && candidate.decision?.downtrendPolicy?.shortingUnavailable
+      ? `spot bear-market mode actief op ${num((candidate.decision.downtrendPolicy.downtrendScore || 0) * 100, 1)}% downtrend`
+      : "geen speciale bear-market modus";
     if (candidate.decision.allow) {
-      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText}, ${quorumText}${paperGuardrailText ? `, ${paperGuardrailText}` : ""} en ${explorationText} als execution-plan.`;
+      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText}, ${quorumText}, ${downtrendText}${paperGuardrailText ? `, ${paperGuardrailText}` : ""} en ${explorationText} als execution-plan.`;
     }
-    return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText}, ${quorumText} en ${optimizerText}.`;
+    return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText}, ${quorumText}, ${downtrendText} en ${optimizerText}.`;
   }
 
   buildEntryRationale(candidate) {
@@ -4089,7 +4128,8 @@ export class TradingBot {
       calendarSummary,
       regimeSummary,
       streamFeatures,
-      optimizerSummary
+      optimizerSummary,
+      exchangeCapabilities: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}
     });
     const timeframeSummary = this.config.enableCrossTimeframeConsensus
       ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config })
@@ -4340,6 +4380,7 @@ export class TradingBot {
       onChainLiteSummary,
       divergenceSummary,
       venueConfirmationSummary,
+      exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
       strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
       nowIso: now.toISOString()
     });
@@ -5469,6 +5510,12 @@ export class TradingBot {
         sessionLabel: decision.session?.sessionLabel || decision.session?.session || null,
         blockerReasons: arr(decision.session?.blockerReasons || []).slice(0, 2)
       },
+      downtrendPolicy: {
+        downtrendScore: num(decision.downtrendPolicy?.downtrendScore || 0, 4),
+        strongDowntrend: Boolean(decision.downtrendPolicy?.strongDowntrend),
+        shortingUnavailable: Boolean(decision.downtrendPolicy?.shortingUnavailable),
+        spotOnly: Boolean(decision.downtrendPolicy?.spotOnly)
+      },
       meta: {
         qualityScore: num(decision.meta?.qualityScore ?? decision.meta?.score ?? 0, 4),
         qualityBand: decision.meta?.qualityBand || null,
@@ -5716,6 +5763,7 @@ export class TradingBot {
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
       sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
+      exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       session: summarizeSession(this.runtime.session || {}),
       marketSentiment: summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT),
       onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
@@ -5771,6 +5819,7 @@ export class TradingBot {
         openExposure: num(report.openExposure || 0, 2),
         watchlistSize: this.config.watchlist.length
       },
+      exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       health: this.health.getStatus(this.runtime),
       stream: this.stream.getStatus(),
       ai: {
@@ -5920,6 +5969,7 @@ export class TradingBot {
       stream: dashboard.stream,
       ai: dashboard.ai,
       portfolio: dashboard.portfolio,
+      exchangeCapabilities: dashboard.exchangeCapabilities,
       exchange: dashboard.exchange,
       marketStructure: dashboard.marketStructure,
       qualityQuorum: dashboard.qualityQuorum,
@@ -5933,16 +5983,6 @@ export class TradingBot {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
 
 
 

@@ -22,6 +22,7 @@ import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
 import { loadConfig } from "../src/config/index.js";
 import { validateConfig } from "../src/config/validate.js";
+import { resolveExchangeCapabilities } from "../src/config/exchangeCapabilities.js";
 import { HealthMonitor } from "../src/runtime/healthMonitor.js";
 import { LiveBroker } from "../src/execution/liveBroker.js";
 import { buildPerformanceReport } from "../src/runtime/reportBuilder.js";
@@ -67,7 +68,7 @@ async function runCheck(name, fn) {
 }
 
 function makeConfig(overrides = {}) {
-  return {
+  const config = {
     botMode: "paper",
     watchlist: ["BTCUSDT"],
     enableDynamicWatchlist: true,
@@ -85,6 +86,9 @@ function makeConfig(overrides = {}) {
     maxTotalExposureFraction: 0.5,
     riskPerTrade: 0.01,
     maxDailyDrawdown: 0.04,
+    userRegion: "BE",
+    exchangeCapabilitiesEnabled: [],
+    exchangeCapabilitiesDisabled: [],
     modelThreshold: 0.55,
     minModelConfidence: 0.53,
     paperFeeBps: 10,
@@ -106,6 +110,7 @@ function makeConfig(overrides = {}) {
     dashboardEquityPointLimit: 1440,
     dashboardCyclePointLimit: 720,
     dashboardDecisionLimit: 24,
+    exchangeCapabilities: resolveExchangeCapabilities({ userRegion: "BE", exchangeCapabilitiesEnabled: [], exchangeCapabilitiesDisabled: [] }),
     announcementLookbackHours: 48,
     announcementCacheMinutes: 15,
     marketStructureCacheMinutes: 3,
@@ -331,6 +336,8 @@ function makeConfig(overrides = {}) {
     gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
     ...overrides
   };
+  config.exchangeCapabilities = resolveExchangeCapabilities(config);
+  return config;
 }
 
 const exchangeInfo = {
@@ -1794,6 +1801,107 @@ await runCheck("strategy router selects donchian breakout in expansion condition
   assert.equal(summary.family, "breakout");
 });
 
+await runCheck("exchange capability resolver keeps Belgium profile spot-first by default", async () => {
+  const capabilities = resolveExchangeCapabilities({
+    userRegion: "BE",
+    exchangeCapabilitiesEnabled: [],
+    exchangeCapabilitiesDisabled: []
+  });
+  assert.equal(capabilities.region, "BE");
+  assert.equal(capabilities.spotEnabled, true);
+  assert.equal(capabilities.shortingEnabled, false);
+  assert.equal(capabilities.marginEnabled, false);
+  assert.equal(capabilities.futuresEnabled, false);
+});
+
+await runCheck("risk manager normalizes persisted string capability flags before applying downtrend guards", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "live", userRegion: "BE" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.6,
+      calibrationConfidence: 0.9,
+      shouldAbstain: false,
+      committee: { netScore: 0.2, confidence: 0.7, agreement: 0.8, vetoes: [] },
+      transformer: { probability: 0.62, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      market: {
+        momentum20: -0.03,
+        emaGap: -0.015,
+        dmiSpread: -0.18,
+        supertrendDirection: -1,
+        bearishPatternScore: 0.44,
+        realizedVolPct: 0.01
+      },
+      book: { spreadBps: 4, bookPressure: 0.12 }
+    },
+    newsSummary: { riskScore: 0.05 },
+    announcementSummary: { riskScore: 0.01 },
+    marketStructureSummary: { longSqueezeScore: 0.46 },
+    marketSentimentSummary: { riskScore: 0.3 },
+    volatilitySummary: { riskScore: 0.2 },
+    calendarSummary: { riskScore: 0.05, proximityHours: 72 },
+    committeeSummary: { vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.5, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.68, confidence: 0.5, blockers: [], agreementGap: 0.04 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.82 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 1, blockerReasons: [] },
+    exchangeCapabilitiesSummary: { region: "BE", spotEnabled: "true", shortingEnabled: "false", marginEnabled: "false", futuresEnabled: "false" },
+    nowIso: "2026-03-11T10:00:00.000Z"
+  });
+  assert.equal(decision.exchangeCapabilitiesApplied.shortingEnabled, false);
+  assert.equal(decision.downtrendPolicy.shortingUnavailable, true);
+  assert.ok(decision.reasons.includes("spot_downtrend_guard"));
+});
+
+await runCheck("strategy router surfaces bear rally reclaim during spot-only downtrends", async () => {
+  const summary = evaluateStrategySet({
+    symbol: "BTCUSDT",
+    marketSnapshot: {
+      market: {
+        momentum20: -0.024,
+        emaGap: -0.013,
+        dmiSpread: -0.16,
+        supertrendDirection: -1,
+        vwapGapPct: -0.021,
+        priceZScore: -2.1,
+        rsi14: 28,
+        stochRsiK: 14,
+        closeLocation: 0.84,
+        wickSkew: -0.62,
+        liquiditySweepScore: 0.72,
+        bullishPatternScore: 0.36,
+        bearishPatternScore: 0.18,
+        realizedVolPct: 0.028,
+        cmf20: 0.08,
+        volumeZ: 1.1
+      },
+      book: {
+        bookPressure: 0.22,
+        weightedDepthImbalance: 0.18,
+        microPriceEdgeBps: 1.4
+      }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0 },
+    announcementSummary: { riskScore: 0.02 },
+    calendarSummary: { riskScore: 0.04 },
+    marketStructureSummary: { longSqueezeScore: 0.44, signalScore: 0.12 },
+    marketSentimentSummary: { riskScore: 0.42, contrarianScore: 0.18 },
+    volatilitySummary: { riskScore: 0.46 },
+    regimeSummary: { regime: "trend", confidence: 0.78 },
+    streamFeatures: { tradeFlowImbalance: 0.18 },
+    exchangeCapabilities: resolveExchangeCapabilities({ userRegion: "BE" })
+  });
+  assert.equal(summary.family, "mean_reversion");
+  assert.ok(summary.strategies.some((item) => item.id === "bear_rally_reclaim" && item.fitScore > 0.45));
+});
+
 
 await runCheck("risk manager ignores stale loss streaks outside the lookback window", async () => {
   const manager = new RiskManager(makeConfig({ lossStreakLookbackMinutes: 60 }));
@@ -2242,6 +2350,53 @@ await runCheck("risk manager respects capital governor recovery and blocking sta
   assert.equal(recovery.allow, true);
   assert.equal(recovery.capitalGovernorApplied.status, "recovery");
   assert.ok(recovery.quoteAmount < 500);
+});
+
+await runCheck("risk manager blocks aggressive spot longs during strong downtrends when shorting is unavailable", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "live", userRegion: "BE" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.61,
+      calibrationConfidence: 0.44,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.6, confidence: 0.16 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.04, microPriceEdgeBps: 0.1 },
+      market: {
+        realizedVolPct: 0.026,
+        atrPct: 0.011,
+        bearishPatternScore: 0.58,
+        bullishPatternScore: 0.08,
+        momentum20: -0.032,
+        emaGap: -0.018,
+        dmiSpread: -0.22,
+        supertrendDirection: -1
+      }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.01, eventBullishScore: 0, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.12, signalScore: 0.05, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0, longSqueezeScore: 0.42 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.58, probability: 0.6, netScore: 0.1, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.66, confidence: 0.48, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.76 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.92, blockerReasons: [] },
+    exchangeCapabilitiesSummary: resolveExchangeCapabilities({ userRegion: "BE" }),
+    nowIso: "2026-03-11T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("spot_downtrend_guard"));
+  assert.equal(decision.exchangeCapabilitiesApplied.shortingEnabled, false);
+  assert.equal(decision.downtrendPolicy.strongDowntrend, true);
 });
 
 await runCheck("risk manager rewards stronger portfolio allocator scores in rank ordering", async () => {

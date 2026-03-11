@@ -262,6 +262,10 @@ export function validateConfig(config) {
   assertRange("SERVICE_MAX_RESTARTS_PER_HOUR", config.serviceMaxRestartsPerHour, 1, 500, errors);
   assertRange("OPERATOR_ALERT_MAX_ITEMS", config.operatorAlertMaxItems, 1, 50, errors);
   assertRange("OPERATOR_ALERT_DISPATCH_COOLDOWN_MINUTES", config.operatorAlertDispatchCooldownMinutes, 1, 1440, errors);
+
+  if ((config.userRegion || "").toUpperCase() === "BE" && config.exchangeCapabilities?.shortingEnabled) {
+    warnings.push("Belgium capability profile has shorting enabled via override; verify your Binance account and local eligibility before enabling any short-biased automation.");
+  }
   assertRange("OPERATOR_ALERT_SILENCE_MINUTES", config.operatorAlertSilenceMinutes, 1, 10080, errors);
 
   if (config.maxPositionFraction > config.maxTotalExposureFraction) {

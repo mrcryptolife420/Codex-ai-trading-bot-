@@ -11,6 +11,7 @@ export const STRATEGY_META = {
   atr_breakout: { label: "ATR breakout", family: "breakout", familyLabel: "Breakout", setupStyle: "atr_breakout" },
   vwap_reversion: { label: "VWAP reversion", family: "mean_reversion", familyLabel: "Mean reversion", setupStyle: "vwap_reversion" },
   zscore_reversion: { label: "Z-score reversion", family: "mean_reversion", familyLabel: "Mean reversion", setupStyle: "zscore_reversion" },
+  bear_rally_reclaim: { label: "Bear rally reclaim", family: "mean_reversion", familyLabel: "Mean reversion", setupStyle: "bear_rally_reclaim" },
   liquidity_sweep: { label: "Liquidity sweep", family: "market_structure", familyLabel: "Market structure", setupStyle: "liquidity_sweep" },
   market_structure_break: { label: "Market structure break", family: "market_structure", familyLabel: "Market structure", setupStyle: "market_structure_break" },
   funding_rate_extreme: { label: "Funding rate extreme", family: "derivatives", familyLabel: "Derivatives", setupStyle: "funding_reversion" },
@@ -96,7 +97,34 @@ function buildInputs(context) {
   );
   const bullishPattern = clamp(safeValue(market.bullishPatternScore), 0, 1);
   const bearishPattern = clamp(safeValue(market.bearishPatternScore), 0, 1);
-  return { market, book, stream, regime, structure, news, announcement, calendar, macro, volatility, eventRisk, newsTailwind, orderflow, bullishPattern, bearishPattern };
+  const exchangeCapabilities = context.exchangeCapabilities || context.exchangeCapabilitiesSummary || {};
+  return { market, book, stream, regime, structure, news, announcement, calendar, macro, volatility, eventRisk, newsTailwind, orderflow, bullishPattern, bearishPattern, exchangeCapabilities };
+}
+
+function buildDowntrendState(inputs = {}) {
+  const market = inputs.market || {};
+  const structure = inputs.structure || {};
+  const macro = inputs.macro || {};
+  const volatility = inputs.volatility || {};
+  const bearishPattern = safeValue(inputs.bearishPattern);
+  const downtrendScore = clamp(
+    ratio(-safeValue(market.momentum20) * 100, 0.04, 1.8) * 0.22 +
+    ratio(-safeValue(market.emaGap) * 100, 0.02, 0.95) * 0.18 +
+    ratio(-safeValue(market.dmiSpread), 0.01, 0.28) * 0.12 +
+    (safeValue(market.supertrendDirection) < 0 ? 0.16 : 0) +
+    ratio(-safeValue(market.vwapGapPct) * 100, 0.02, 1.8) * 0.08 +
+    bearishPattern * 0.11 +
+    ratio(safeValue(structure.longSqueezeScore), 0.08, 1) * 0.07 +
+    ratio(safeValue(macro.riskScore), 0.35, 0.95) * 0.03 +
+    ratio(safeValue(volatility.riskScore), 0.35, 0.95) * 0.03,
+    0,
+    1
+  );
+  return {
+    downtrendScore,
+    strong: downtrendScore >= 0.58,
+    severe: downtrendScore >= 0.74
+  };
 }
 function applyOptimizer(strategies, optimizerSummary = {}) {
   if (!optimizerSummary || (!optimizerSummary.strategyPriors && !optimizerSummary.familyPriors)) {
@@ -409,6 +437,70 @@ function evaluateZScoreReversion(context) {
   ], { regimeFit, zscore, bandLocation, discountToVwap, stochReset, mfiReset, reboundPressure });
 }
 
+function evaluateBearRallyReclaim(context) {
+  const inputs = buildInputs(context);
+  const { market, regime, eventRisk, orderflow, bullishPattern, bearishPattern, structure, exchangeCapabilities } = inputs;
+  const downtrend = buildDowntrendState(inputs);
+  const shortingUnavailable = exchangeCapabilities.shortingEnabled === false;
+  const regimeFit = regime === "trend" ? 0.92 : regime === "high_vol" ? 0.86 : regime === "range" ? 0.56 : 0.34;
+  const capitulation = clamp(
+    ratio(-safeValue(market.priceZScore), 0.35, 2.8) * 0.24 +
+    ratio(50 - safeValue(market.rsi14), 4, 22) * 0.16 +
+    ratio(25 - safeValue(market.stochRsiK), 0, 25) * 0.14 +
+    ratio(-safeValue(market.vwapGapPct) * 100, 0.08, 2.2) * 0.16 +
+    ratio(safeValue(market.liquiditySweepScore), 0.06, 1) * 0.14 +
+    ratio(safeValue(structure.longSqueezeScore), 0.08, 1) * 0.16,
+    0,
+    1
+  );
+  const reclaim = clamp(
+    ratio(safeValue(market.closeLocation), 0.5, 1) * 0.22 +
+    ratio(safeValue(context.marketSnapshot?.book?.bookPressure), -0.02, 0.78) * 0.22 +
+    ratio(-safeValue(market.wickSkew), 0.05, 0.9) * 0.16 +
+    ratio(safeValue(market.bullishPatternScore), 0.08, 1) * 0.12 +
+    orderflow * 0.18 +
+    ratio(safeValue(market.cmf20), -0.1, 0.24) * 0.1,
+    0,
+    1
+  );
+  const volPenalty = clamp(ratio(safeValue(market.realizedVolPct), 0.025, 0.09) * 0.14, 0, 0.14);
+  const spotOnlyBonus = shortingUnavailable ? 0.06 : 0;
+  const score = clamp(
+    downtrend.downtrendScore * 0.24 +
+    regimeFit * 0.15 +
+    capitulation * 0.24 +
+    reclaim * 0.22 +
+    bullishPattern * 0.05 +
+    orderflow * 0.04 -
+    bearishPattern * 0.07 -
+    eventRisk * 0.07 -
+    volPenalty +
+    spotOnlyBonus +
+    (downtrend.strong ? 0.05 : 0),
+    0,
+    1
+  );
+  const confidence = clamp(
+    0.28 +
+    average([downtrend.downtrendScore, regimeFit, capitulation, reclaim], 0) * 0.54 -
+    eventRisk * 0.06 +
+    spotOnlyBonus * 0.25,
+    0,
+    1
+  );
+  return buildStrategy("bear_rally_reclaim", score, confidence, [
+    `downtrend ${(downtrend.downtrendScore * 100).toFixed(0)}%`,
+    `z ${safeValue(market.priceZScore).toFixed(2)}`,
+    `rsi ${safeValue(market.rsi14).toFixed(1)}`,
+    `reclaim ${safeValue(market.closeLocation).toFixed(2)}`,
+    shortingUnavailable ? "spot-safe bear bounce" : "bear bounce / short squeeze"
+  ], [
+    downtrend.downtrendScore < 0.48 ? "trend_not_bearish_enough" : null,
+    reclaim < 0.46 ? "reclaim_not_confirmed" : null,
+    eventRisk > 0.78 ? "event_risk_headwind" : null
+  ], { regimeFit, downtrendScore: downtrend.downtrendScore, capitulation, reclaim });
+}
+
 function evaluateLiquiditySweep(context) {
   const { market, regime, eventRisk, orderflow, bullishPattern, bearishPattern } = buildInputs(context);
   const regimeFit = regime === "range" ? 0.86 : regime === "breakout" ? 0.72 : regime === "high_vol" ? 0.62 : 0.44;
@@ -539,6 +631,7 @@ export function evaluateStrategySet(context) {
     evaluateAtrBreakout(context),
     evaluateVwapReversion(context),
     evaluateZScoreReversion(context),
+    evaluateBearRallyReclaim(context),
     evaluateLiquiditySweep(context),
     evaluateMarketStructureBreak(context),
     evaluateFundingRateExtreme(context),

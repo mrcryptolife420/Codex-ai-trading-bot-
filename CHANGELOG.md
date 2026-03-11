@@ -3,6 +3,8 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Region-aware Binance capability resolution with a conservative Belgium profile, plus defensive bear-market handling for spot-only accounts.
+- A new `bear_rally_reclaim` strategy path aimed at monetizing downtrends through spot-safe capitulation/reclaim setups instead of assuming shorting access.
 - Persisted order-lifecycle, exchange-truth, shadow-trading, service, and operator-ops state in the runtime schema so restarts and dashboards can reason about position state instead of only raw open positions.
 - Threshold-tuning recommendations, exit-learning scorecards, feature-decay tracking, calibration governance, and regime-deployment summaries in the offline trainer.
 - Exchange-truth mismatch summaries that count runtime-vs-exchange inventory drift and can freeze new live entries when reconcile risk is too high.
@@ -21,6 +23,7 @@
 - Parameter-governor scopes that learn bounded threshold, stop, take-profit, scale-out, hold-time, and execution-aggressiveness adjustments from closed-trade outcomes.
 
 ### Improved
+- Hardened exchange-capability normalization so persisted string values like `"false"` no longer flip regional shorting flags back on in runtime summaries or downtrend guards.
 - Split paper-mode leniency into `paper_exploration` versus `paper_recovery_probe`, so capital-governor recovery can keep learning with tiny probe sizing while market/data-quality blockers still stay hard.
 - Deepened model-promotion governance so regime readiness now sits beside threshold, exit, calibration, and feature-health feedback instead of only paper/live scorecards.
 - Extended replay cards with veto-chain and alternate-exit context so post-trade review shows more than entry/exit prices alone.
