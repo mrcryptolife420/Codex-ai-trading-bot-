@@ -272,6 +272,17 @@ export class RiskManager {
     };
   }
 
+  resolveCapitalGovernor(capitalGovernorSummary = {}) {
+    return {
+      active: Boolean(capitalGovernorSummary.status),
+      status: capitalGovernorSummary.status || "warmup",
+      blocked: capitalGovernorSummary.allowEntries === false,
+      recoveryMode: Boolean(capitalGovernorSummary.recoveryMode),
+      sizeMultiplier: clamp(safeValue(capitalGovernorSummary.sizeMultiplier ?? 1), 0, 1),
+      notes: [...(capitalGovernorSummary.notes || [])]
+    };
+  }
+
   evaluateEntry({
     symbol,
     score,
@@ -296,6 +307,7 @@ export class RiskManager {
     qualityQuorumSummary = {},
     executionCostSummary = {},
     strategyRetirementSummary = {},
+    capitalGovernorSummary = {},
     runtime,
     journal,
     balance,
@@ -318,6 +330,7 @@ export class RiskManager {
     const parameterGovernorAdjustment = this.resolveParameterGovernor(parameterGovernorSummary, strategySummary, regimeSummary);
     const strategyRetirementPolicy = this.resolveStrategyRetirement(strategyRetirementSummary, strategySummary);
     const executionCostBudget = this.resolveExecutionCostBudget(executionCostSummary, strategySummary, regimeSummary);
+    const capitalGovernor = this.resolveCapitalGovernor(capitalGovernorSummary);
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const selfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -351,6 +364,7 @@ export class RiskManager {
     const strategyMetaSizeMultiplier = clamp(safeValue(strategyMetaSummary.sizeMultiplier) || 1, 0.75, 1.15);
     const venueSizeMultiplier = clamp((venueConfirmationSummary.status || "") === "blocked" ? 0.45 : (venueConfirmationSummary.confirmed ? 1.04 : 0.9), 0.45, 1.05);
     const capitalLadderSizeMultiplier = clamp(safeValue(capitalLadderSummary.sizeMultiplier) || 1, 0, 1.2);
+    const capitalGovernorSizeMultiplier = clamp(capitalGovernor.sizeMultiplier || 1, 0, 1);
     const retirementSizeMultiplier = clamp(strategyRetirementPolicy.sizeMultiplier || 1, 0, 1);
     const executionCostSizeMultiplier = clamp(executionCostBudget.sizeMultiplier || 1, 0.45, 1);
     const lowRiskCandidate = ["trend_following", "mean_reversion", "orderflow"].includes(strategySummary.family || "") &&
@@ -367,6 +381,9 @@ export class RiskManager {
     }
     if (capitalLadderSummary.allowEntries === false) {
       reasons.push("capital_ladder_shadow_only");
+    }
+    if (capitalGovernor.blocked) {
+      reasons.push("capital_governor_blocked");
     }
     if ((timeframeSummary.blockerReasons || []).length) {
       reasons.push(...timeframeSummary.blockerReasons);
@@ -496,6 +513,9 @@ export class RiskManager {
     if (executionCostBudget.blocked) {
       reasons.push("execution_cost_budget_exceeded");
     }
+    if (capitalGovernor.recoveryMode && score.probability < threshold + 0.025) {
+      reasons.push("capital_governor_recovery");
+    }
     if ((driftSummary.severity || 0) >= 0.45 && (score.calibrationConfidence || 0) < this.config.minCalibrationConfidence + 0.05) {
       reasons.push("drift_confidence_guard");
     }
@@ -613,6 +633,7 @@ export class RiskManager {
       metaSizeMultiplier *
       strategyMetaSizeMultiplier *
       venueSizeMultiplier *
+      capitalGovernorSizeMultiplier *
       capitalLadderSizeMultiplier *
       retirementSizeMultiplier *
       executionCostSizeMultiplier *
@@ -684,6 +705,7 @@ export class RiskManager {
       parameterGovernorApplied: parameterGovernorAdjustment,
       strategyRetirementApplied: strategyRetirementPolicy,
       executionCostBudgetApplied: executionCostBudget,
+      capitalGovernorApplied: capitalGovernor,
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,

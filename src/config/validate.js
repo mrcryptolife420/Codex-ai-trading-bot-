@@ -222,6 +222,11 @@ export function validateConfig(config) {
   assertRange("CAPITAL_LADDER_SCALED_MULTIPLIER", config.capitalLadderScaledMultiplier, 0.05, 1, errors);
   assertRange("CAPITAL_LADDER_FULL_MULTIPLIER", config.capitalLadderFullMultiplier, 0.1, 1.5, errors);
   assertRange("CAPITAL_LADDER_MIN_APPROVED_CANDIDATES", config.capitalLadderMinApprovedCandidates, 0, 20, errors);
+  assertRange("CAPITAL_GOVERNOR_WEEKLY_DRAWDOWN_PCT", config.capitalGovernorWeeklyDrawdownPct, 0.005, 0.5, errors);
+  assertRange("CAPITAL_GOVERNOR_BAD_DAY_STREAK", config.capitalGovernorBadDayStreak, 1, 10, errors);
+  assertRange("CAPITAL_GOVERNOR_RECOVERY_TRADES", config.capitalGovernorRecoveryTrades, 1, 50, errors);
+  assertRange("CAPITAL_GOVERNOR_RECOVERY_MIN_WIN_RATE", config.capitalGovernorRecoveryMinWinRate, 0, 1, errors);
+  assertRange("CAPITAL_GOVERNOR_MIN_SIZE_MULTIPLIER", config.capitalGovernorMinSizeMultiplier, 0.05, 1, errors);
   assertRange("DAILY_RISK_BUDGET_FLOOR", config.dailyRiskBudgetFloor, 0.05, 1, errors);
   assertRange("PORTFOLIO_MAX_CVAR_PCT", config.portfolioMaxCvarPct, 0.001, 0.2, errors);
   assertRange("PORTFOLIO_DRAWDOWN_BUDGET_PCT", config.portfolioDrawdownBudgetPct, 0.005, 0.5, errors);
@@ -249,6 +254,9 @@ export function validateConfig(config) {
   assertRange("SERVICE_RESTART_BACKOFF_MULTIPLIER", config.serviceRestartBackoffMultiplier, 1, 10, errors);
   assertRange("SERVICE_RESTART_MAX_DELAY_SECONDS", config.serviceRestartMaxDelaySeconds, 1, 7200, errors);
   assertRange("SERVICE_MAX_RESTARTS_PER_HOUR", config.serviceMaxRestartsPerHour, 1, 500, errors);
+  assertRange("OPERATOR_ALERT_MAX_ITEMS", config.operatorAlertMaxItems, 1, 50, errors);
+  assertRange("OPERATOR_ALERT_DISPATCH_COOLDOWN_MINUTES", config.operatorAlertDispatchCooldownMinutes, 1, 1440, errors);
+  assertRange("OPERATOR_ALERT_SILENCE_MINUTES", config.operatorAlertSilenceMinutes, 1, 10080, errors);
 
   if (config.maxPositionFraction > config.maxTotalExposureFraction) {
     errors.push("MAX_POSITION_FRACTION cannot exceed MAX_TOTAL_EXPOSURE_FRACTION.");

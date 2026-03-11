@@ -177,10 +177,10 @@ function toneClass(value) {
 
 function healthTone(value) {
   const normalized = `${value || "neutral"}`.toLowerCase();
-  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready", "confirmed", "paper_candidate", "active", "full", "clear"].includes(normalized)) {
+  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready", "confirmed", "paper_candidate", "active", "full", "clear", "delivered"].includes(normalized)) {
     return "positive";
   }
-  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown", "shadow", "critical", "high"].includes(normalized)) {
+  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown", "shadow", "critical", "high", "failed"].includes(normalized)) {
     return "negative";
   }
   return "neutral";
@@ -1409,19 +1409,22 @@ function renderOperations(snapshot) {
   const executionCalibration = ops.executionCalibration || {};
   const thresholdTuning = ops.thresholdTuning || {};
   const capitalLadder = ops.capitalLadder || {};
+  const capitalGovernor = ops.capitalGovernor || {};
+  const alertDelivery = ops.alertDelivery || {};
+  const alertSilenceMinutes = snapshot.configSummary?.operatorAlertSilenceMinutes || 180;
   const incidentLead = (ops.incidentTimeline || [])[0] || {};
   const leadRunbook = (ops.runbooks || [])[0] || {};
   const leadCalibration = Object.entries(executionCalibration.styles || {})[0] || [];
   const leadGovernor = (parameterGovernor.strategyScopes || [])[0] || (parameterGovernor.regimeScopes || [])[0] || {};
   elements.opsSummary.innerHTML = [
-    insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0}`),
+    insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0} | snap ${recorder.snapshotFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0} | snap ${recorder.snapshotFrames || 0}`),
     insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
     insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.latestSnapshotAt ? `laatst ${formatDate(modelRegistry.latestSnapshotAt)}` : "Nog geen modelsnapshot"),
     insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive"),
     insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is operationeel klaar", healthTone(readiness.status || "ready")),
     insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
     insightCard("Safety audit", exchangeSafety.status || "ready", exchangeSafety.notes?.[0] || "Geen extra exchange-safety waarschuwing", healthTone(exchangeSafety.status || "ready")),
-    insightCard("Venue check", `${venueConfirmation.venueCount || venueConfirmation.confirmedCount || 0} venues`, venueConfirmation.averageDivergenceBps != null ? `div ${formatNumber(venueConfirmation.averageDivergenceBps || 0, 2)} bps` : (venueConfirmation.notes || [])[0] || "Nog geen externe confirmatie", healthTone(venueConfirmation.status)),
+    insightCard("Venue check", `${venueConfirmation.venueCount || venueConfirmation.confirmedCount || 0} venues`, venueConfirmation.routeAdvice?.preferredEntryStyle ? `${venueConfirmation.routeAdvice.preferredEntryStyle} | div ${formatNumber(venueConfirmation.averageDivergenceBps || 0, 2)} bps` : (venueConfirmation.notes || [])[0] || "Nog geen externe confirmatie", healthTone(venueConfirmation.status)),
     insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
     insightCard("Exec calib", `${executionCalibration.liveTradeCount || 0} live`, leadCalibration[0] ? `${leadCalibration[0]} ${formatNumber(leadCalibration[1]?.slippageBiasBps || 0, 2)} bps` : "Nog geen style-calibratie", healthTone(executionCalibration.status || "warmup")),
     insightCard("Exec budget", executionCost.status || "warmup", executionCost.worstStyle ? `${executionCost.worstStyle} | ${formatNumber(executionCost.averageTotalCostBps || 0, 2)} bps` : "Nog geen execution-cost budget", healthTone(executionCost.status || "warmup")),
@@ -1429,7 +1432,9 @@ function renderOperations(snapshot) {
     insightCard("Governor", leadGovernor.id || "-", leadGovernor.id ? `${leadGovernor.scopeType} | thr ${formatNumber(leadGovernor.thresholdShift || 0, 4)}` : "Nog geen scoped governor", healthTone(parameterGovernor.status || "warmup")),
     insightCard("Retirement", `${strategyRetirement.retireCount || 0} retire`, strategyRetirement.policies?.[0]?.id ? `${strategyRetirement.policies[0].id} | ${strategyRetirement.policies[0].status}` : "Geen strategy retirement", healthTone(strategyRetirement.status || "ready")),
     insightCard("Capital ladder", capitalLadder.stage || "paper", capitalLadder.notes?.[0] || "Nog geen ladder-notitie", healthTone(capitalLadder.stage || "paper")),
-    insightCard("Alerts", `${alerts.count || 0}`, alerts.alerts?.[0]?.title || "Geen operator alerts", healthTone(alerts.status || "clear")),
+    insightCard("Capital governor", capitalGovernor.status || "warmup", capitalGovernor.notes?.[0] || "Nog geen capital governor update", healthTone(capitalGovernor.status || "warmup")),
+    insightCard("Alerts", `${alerts.activeCount || alerts.count || 0}`, alerts.alerts?.[0]?.title || "Geen operator alerts", healthTone(alerts.status || "clear")),
+    insightCard("Alert delivery", alertDelivery.status || "disabled", alertDelivery.lastDeliveryAt ? `laatst ${formatDate(alertDelivery.lastDeliveryAt)}` : alertDelivery.notes?.[0] || "Nog geen alert delivery", healthTone(alertDelivery.status || "disabled")),
     insightCard("Chaos lab", replayChaos.status || "warmup", replayChaos.worstStrategy ? `${replayChaos.worstStrategy} | ${replayChaos.worstScenario || "-"}` : "Nog geen replay chaos data", healthTone(replayChaos.status || "warmup")),
     insightCard("Service", service.watchdogStatus || "idle", service.lastHeartbeatAt ? `heartbeat ${formatDate(service.lastHeartbeatAt)}` : "Nog geen heartbeat", healthTone(service.watchdogStatus || "idle")),
     insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
@@ -1444,9 +1449,11 @@ function renderOperations(snapshot) {
     ...(venueConfirmation.notes || []),
     ...(strategyRetirement.notes || []),
     ...(executionCost.notes || []),
+    ...(capitalGovernor.notes || []),
     ...(replayChaos.notes || []),
     ...(ops.shadowTrading?.notes || []),
     ...(capitalLadder.notes || []),
+    ...(alertDelivery.notes || []),
     ...(parameterGovernor.notes || []),
     ...(executionCalibration.notes || []),
     ...(thresholdTuning.notes || []),
@@ -1465,6 +1472,22 @@ function renderOperations(snapshot) {
               <div>${escapeHtml(item.detail || item.stage || "Pending exchange action")}</div>
             </div>
             <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.stage || "pending")}</div>
+          </div>
+        `),
+        ...(alerts.alerts || []).slice(0, 6).map((item) => `
+          <div class="event-row">
+            <div>
+              <strong>${escapeHtml(item.title || "Alert")}</strong>
+              <div class="meta">${escapeHtml(item.id || "-")} | ${item.acknowledgedAt ? `ack ${escapeHtml(formatDate(item.acknowledgedAt))}` : "nog niet bevestigd"}${item.silencedUntil ? ` | stil tot ${escapeHtml(formatDate(item.silencedUntil))}` : ""}</div>
+              <div>${escapeHtml(item.reason || item.action || "Geen extra detail")}</div>
+            </div>
+            <div>
+              <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.muted ? "muted" : item.severity || "info")}</div>
+              <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; justify-content:flex-end;">
+                ${item.acknowledgedAt ? "" : `<button class="secondary" data-alert-action="ack" data-alert-id="${escapeHtml(item.id || "")}">Ack</button>`}
+                <button class="secondary" data-alert-action="silence" data-alert-id="${escapeHtml(item.id || "")}" data-alert-minutes="${escapeHtml(alertSilenceMinutes)}">Stil ${escapeHtml(String(Math.round(alertSilenceMinutes / 60) || 1))}u</button>
+              </div>
+            </div>
           </div>
         `),
         ...(ops.incidentTimeline || []).slice(0, 6).map((item) => `
@@ -1812,6 +1835,26 @@ elements.decisionAllowedOnly.addEventListener("change", (event) => {
   decisionAllowedOnly = Boolean(event.target.checked);
   if (latestSnapshot) {
     renderDecisions(latestSnapshot);
+  }
+});
+elements.opsList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-alert-action]");
+  if (!button) {
+    return;
+  }
+  const alertId = `${button.dataset.alertId || ""}`.trim();
+  if (!alertId) {
+    return;
+  }
+  if (button.dataset.alertAction === "ack") {
+    runAction("Alert bevestigen", () => api("/api/alerts/ack", "POST", { id: alertId }));
+    return;
+  }
+  if (button.dataset.alertAction === "silence") {
+    runAction("Alert tijdelijk stilzetten", () => api("/api/alerts/silence", "POST", {
+      id: alertId,
+      minutes: Number(button.dataset.alertMinutes || 180)
+    }));
   }
 });
 

@@ -136,6 +136,12 @@ async function handleApi(request, response, manager) {
   if (url.pathname === "/api/mode") {
     return sendJson(response, 200, await manager.setMode(body.mode));
   }
+  if (url.pathname === "/api/alerts/ack") {
+    return sendJson(response, 200, await manager.acknowledgeAlert(body.id, body.acknowledged !== false));
+  }
+  if (url.pathname === "/api/alerts/silence") {
+    return sendJson(response, 200, await manager.silenceAlert(body.id, body.minutes));
+  }
 
   return sendJson(response, 404, { error: "Unknown API route" });
 }

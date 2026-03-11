@@ -309,6 +309,11 @@ const DEFAULTS = {
   capitalLadderScaledMultiplier: 0.55,
   capitalLadderFullMultiplier: 1,
   capitalLadderMinApprovedCandidates: 1,
+  capitalGovernorWeeklyDrawdownPct: 0.08,
+  capitalGovernorBadDayStreak: 3,
+  capitalGovernorRecoveryTrades: 4,
+  capitalGovernorRecoveryMinWinRate: 0.55,
+  capitalGovernorMinSizeMultiplier: 0.25,
   dailyRiskBudgetFloor: 0.35,
   portfolioMaxCvarPct: 0.028,
   portfolioDrawdownBudgetPct: 0.05,
@@ -338,6 +343,11 @@ const DEFAULTS = {
   serviceRestartMaxDelaySeconds: 180,
   serviceStatusFilename: "service-status.json",
   serviceMaxRestartsPerHour: 20,
+  operatorAlertMaxItems: 8,
+  operatorAlertWebhookUrls: [],
+  operatorAlertDispatchMinSeverity: "high",
+  operatorAlertDispatchCooldownMinutes: 30,
+  operatorAlertSilenceMinutes: 180,
   gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
   liveTradingAcknowledged: "",
   dashboardPort: 3011,
@@ -717,6 +727,11 @@ export async function loadConfig(projectRoot = process.cwd()) {
     capitalLadderScaledMultiplier: parseNumber(env.CAPITAL_LADDER_SCALED_MULTIPLIER, DEFAULTS.capitalLadderScaledMultiplier),
     capitalLadderFullMultiplier: parseNumber(env.CAPITAL_LADDER_FULL_MULTIPLIER, DEFAULTS.capitalLadderFullMultiplier),
     capitalLadderMinApprovedCandidates: parseNumber(env.CAPITAL_LADDER_MIN_APPROVED_CANDIDATES, DEFAULTS.capitalLadderMinApprovedCandidates),
+    capitalGovernorWeeklyDrawdownPct: parseNumber(env.CAPITAL_GOVERNOR_WEEKLY_DRAWDOWN_PCT, DEFAULTS.capitalGovernorWeeklyDrawdownPct),
+    capitalGovernorBadDayStreak: parseNumber(env.CAPITAL_GOVERNOR_BAD_DAY_STREAK, DEFAULTS.capitalGovernorBadDayStreak),
+    capitalGovernorRecoveryTrades: parseNumber(env.CAPITAL_GOVERNOR_RECOVERY_TRADES, DEFAULTS.capitalGovernorRecoveryTrades),
+    capitalGovernorRecoveryMinWinRate: parseNumber(env.CAPITAL_GOVERNOR_RECOVERY_MIN_WIN_RATE, DEFAULTS.capitalGovernorRecoveryMinWinRate),
+    capitalGovernorMinSizeMultiplier: parseNumber(env.CAPITAL_GOVERNOR_MIN_SIZE_MULTIPLIER, DEFAULTS.capitalGovernorMinSizeMultiplier),
     dailyRiskBudgetFloor: parseNumber(env.DAILY_RISK_BUDGET_FLOOR, DEFAULTS.dailyRiskBudgetFloor),
     portfolioMaxCvarPct: parseNumber(env.PORTFOLIO_MAX_CVAR_PCT, DEFAULTS.portfolioMaxCvarPct),
     portfolioDrawdownBudgetPct: parseNumber(env.PORTFOLIO_DRAWDOWN_BUDGET_PCT, DEFAULTS.portfolioDrawdownBudgetPct),
@@ -746,6 +761,11 @@ export async function loadConfig(projectRoot = process.cwd()) {
     serviceRestartMaxDelaySeconds: parseNumber(env.SERVICE_RESTART_MAX_DELAY_SECONDS, DEFAULTS.serviceRestartMaxDelaySeconds),
     serviceStatusFilename: env.SERVICE_STATUS_FILENAME || DEFAULTS.serviceStatusFilename,
     serviceMaxRestartsPerHour: parseNumber(env.SERVICE_MAX_RESTARTS_PER_HOUR, DEFAULTS.serviceMaxRestartsPerHour),
+    operatorAlertMaxItems: parseNumber(env.OPERATOR_ALERT_MAX_ITEMS, DEFAULTS.operatorAlertMaxItems),
+    operatorAlertWebhookUrls: parseTextCsv(env.OPERATOR_ALERT_WEBHOOK_URLS, DEFAULTS.operatorAlertWebhookUrls),
+    operatorAlertDispatchMinSeverity: (env.OPERATOR_ALERT_DISPATCH_MIN_SEVERITY || DEFAULTS.operatorAlertDispatchMinSeverity).trim().toLowerCase(),
+    operatorAlertDispatchCooldownMinutes: parseNumber(env.OPERATOR_ALERT_DISPATCH_COOLDOWN_MINUTES, DEFAULTS.operatorAlertDispatchCooldownMinutes),
+    operatorAlertSilenceMinutes: parseNumber(env.OPERATOR_ALERT_SILENCE_MINUTES, DEFAULTS.operatorAlertSilenceMinutes),
     gitShortClonePath: env.GIT_SHORT_CLONE_PATH || DEFAULTS.gitShortClonePath,
     liveTradingAcknowledged: env.LIVE_TRADING_ACKNOWLEDGED || DEFAULTS.liveTradingAcknowledged,
     dashboardPort: parseNumber(env.DASHBOARD_PORT, DEFAULTS.dashboardPort),
@@ -760,7 +780,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

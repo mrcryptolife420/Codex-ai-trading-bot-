@@ -120,7 +120,7 @@ export class ExecutionEngine {
     };
   }
 
-  buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null, executionNeuralSummary = null, strategyMetaSummary = null, capitalLadderSummary = null }) {
+  buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null, executionNeuralSummary = null, strategyMetaSummary = null, capitalLadderSummary = null, venueConfirmationSummary = null }) {
     const spreadBps = marketSnapshot.book.spreadBps || 0;
     const tradeFlow = marketSnapshot.book.tradeFlowImbalance || 0;
     const localBook = marketSnapshot.book.localBook || {};
@@ -149,11 +149,13 @@ export class ExecutionEngine {
     const rlPreferMakerShift = rlAdvice?.preferMakerBoost || 0;
     const neuralPreferMakerShift = executionNeuralSummary?.preferMakerBoost || 0;
     const strategyMetaMakerShift = strategyMetaSummary?.makerBias || 0;
+    const venueRouteAdvice = venueConfirmationSummary?.routeAdvice || {};
+    const venueMakerShift = safeNumber(venueRouteAdvice.preferMakerBoost, 0);
     const parameterGovernorBias = safeNumber(decision?.parameterGovernorApplied?.executionAggressivenessBias || 1, 1);
     const governorMakerShift = clamp((1 - parameterGovernorBias) * 0.18, -0.08, 0.08);
     const committeeTailwind = committeeSummary ? Math.max(0, committeeSummary.netScore || 0) * 0.06 : 0;
     const microstructureTailwind = depthConfidence * 0.18 + queueImbalance * 0.14 + queueRefreshScore * 0.1 + resilienceScore * 0.08 - expectedImpactBps / 28;
-    const preferMakerScore = (basePreferMaker ? 0.55 : 0.35) + rlPreferMakerShift + neuralPreferMakerShift + strategyMetaMakerShift + governorMakerShift + committeeTailwind + strategyMakerBias + microstructureTailwind - (score.probability > this.config.aggressiveEntryThreshold ? 0.18 : 0);
+    const preferMakerScore = (basePreferMaker ? 0.55 : 0.35) + rlPreferMakerShift + neuralPreferMakerShift + strategyMetaMakerShift + venueMakerShift + governorMakerShift + committeeTailwind + strategyMakerBias + microstructureTailwind - (score.probability > this.config.aggressiveEntryThreshold && venueRouteAdvice.aggressiveTakerAllowed !== false ? 0.18 : 0);
     const preferMaker = preferMakerScore >= 0.5;
 
     const preferPegged = Boolean(
@@ -225,7 +227,7 @@ export class ExecutionEngine {
       rlAction: rlAdvice?.action || "balanced",
       rlBucket: rlAdvice?.bucket || null,
       expectedReward: rlAdvice?.expectedReward || 0,
-      sizeMultiplier: clamp((rlAdvice?.sizeMultiplier || 1) * (executionNeuralSummary?.sizeMultiplier || 1) * (strategyMetaSummary?.sizeMultiplier || 1) * (capitalLadderSummary?.sizeMultiplier || 1), 0.4, 1.2),
+      sizeMultiplier: clamp((rlAdvice?.sizeMultiplier || 1) * (executionNeuralSummary?.sizeMultiplier || 1) * (strategyMetaSummary?.sizeMultiplier || 1) * (capitalLadderSummary?.sizeMultiplier || 1) * safeNumber(venueRouteAdvice.sizeMultiplier, 1), 0.35, 1.2),
       executionNeural: executionNeuralSummary
         ? {
             preferMakerBoost: executionNeuralSummary.preferMakerBoost || 0,
@@ -265,6 +267,7 @@ export class ExecutionEngine {
         `rl:${rlAdvice?.action || "balanced"}`,
         `exec_nn:${(executionNeuralSummary?.confidence || 0).toFixed(3)}`,
         `meta_exec:${(strategyMetaSummary?.confidence || 0).toFixed(3)}`,
+        `venue_route:${venueRouteAdvice.preferredEntryStyle || "none"}`,
         `gov_exec:${parameterGovernorBias.toFixed(3)}`,
         `ladder:${capitalLadderSummary?.stage || "paper"}`
       ]

@@ -45,8 +45,10 @@ import { buildSessionSummary } from "./sessionManager.js";
 import { buildTimeframeConsensus } from "./timeframeConsensus.js";
 import { buildExchangeSafetyAudit } from "./exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "./operatorAlertEngine.js";
+import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts as deliverOperatorAlerts } from "./operatorAlertDispatcher.js";
 import { buildStrategyRetirementSnapshot } from "./strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "./replayChaosLab.js";
+import { buildCapitalGovernor } from "./capitalGovernor.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
@@ -1766,7 +1768,23 @@ function summarizeVenueConfirmation(summary = {}) {
     blockedCount: summary.blockedCount || 0,
     divergenceBps: summary.divergenceBps == null ? null : num(summary.divergenceBps, 2),
     averageDivergenceBps: summary.averageDivergenceBps == null ? null : num(summary.averageDivergenceBps, 2),
+    averageHealthScore: summary.averageHealthScore == null ? null : num(summary.averageHealthScore, 4),
     blockerReasons: [...(summary.blockerReasons || [])],
+    routeAdvice: {
+      preferredEntryStyle: summary.routeAdvice?.preferredEntryStyle || null,
+      preferMakerBoost: num(summary.routeAdvice?.preferMakerBoost || 0, 4),
+      sizeMultiplier: num(summary.routeAdvice?.sizeMultiplier ?? 1, 4),
+      aggressiveTakerAllowed: summary.routeAdvice?.aggressiveTakerAllowed !== false,
+      confidence: num(summary.routeAdvice?.confidence || 0, 4),
+      preferredVenues: [...(summary.routeAdvice?.preferredVenues || [])],
+      degradedVenues: [...(summary.routeAdvice?.degradedVenues || [])]
+    },
+    venueHealth: arr(summary.venueHealth || []).slice(0, 5).map((item) => ({
+      venue: item.venue || null,
+      divergenceBps: item.divergenceBps == null ? null : num(item.divergenceBps || 0, 2),
+      healthScore: num(item.healthScore || 0, 4),
+      status: item.status || "watch"
+    })),
     venues: arr(summary.venues || []).slice(0, 5).map((item) => ({
       venue: item.venue || null,
       mid: num(item.mid || 0, 8),
@@ -1787,6 +1805,30 @@ function summarizeCapitalLadder(summary = {}) {
     promotionReadyLevel: summary.promotionReadyLevel || null,
     blockerReasons: [...(summary.blockerReasons || [])],
     notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeCapitalGovernor(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    status: summary.status || "warmup",
+    allowEntries: summary.allowEntries !== false,
+    recoveryMode: Boolean(summary.recoveryMode),
+    releaseReady: Boolean(summary.releaseReady),
+    sizeMultiplier: num(summary.sizeMultiplier ?? 1, 4),
+    dailyLossFraction: num(summary.dailyLossFraction || 0, 4),
+    weeklyLossFraction: num(summary.weeklyLossFraction || 0, 4),
+    drawdownPct: num(summary.drawdownPct || 0, 4),
+    redDayStreak: summary.redDayStreak || 0,
+    recoveryTradeCount: summary.recoveryTradeCount || 0,
+    recoveryWinRate: num(summary.recoveryWinRate || 0, 4),
+    recoveryAveragePnl: num(summary.recoveryAveragePnl || 0, 4),
+    blockerReasons: [...(summary.blockerReasons || [])],
+    notes: [...(summary.notes || [])],
+    dailyLedger: arr(summary.dailyLedger || []).slice(-7).map((item) => ({
+      day: item.day || null,
+      pnlQuote: num(item.pnlQuote || 0, 2)
+    }))
   };
 }
 
@@ -1894,6 +1936,9 @@ function summarizeOperatorAlerts(summary = {}) {
   return {
     generatedAt: summary.generatedAt || null,
     count: summary.count || 0,
+    activeCount: summary.activeCount || 0,
+    mutedCount: summary.mutedCount || 0,
+    acknowledgedCount: summary.acknowledgedCount || 0,
     criticalCount: summary.criticalCount || 0,
     status: summary.status || "clear",
     alerts: arr(summary.alerts || []).slice(0, 8).map((item) => ({
@@ -1901,8 +1946,26 @@ function summarizeOperatorAlerts(summary = {}) {
       severity: item.severity || "info",
       title: item.title || null,
       reason: item.reason || null,
-      action: item.action || null
+      action: item.action || null,
+      acknowledgedAt: item.acknowledgedAt || null,
+      silencedUntil: item.silencedUntil || null,
+      muted: Boolean(item.muted),
+      lastDeliveredAt: item.lastDeliveredAt || null
     }))
+  };
+}
+
+function summarizeAlertDelivery(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    status: summary.status || "disabled",
+    endpointCount: summary.endpointCount || 0,
+    eligibleCount: summary.eligibleCount || 0,
+    deliveredCount: summary.deliveredCount || 0,
+    failedCount: summary.failedCount || 0,
+    lastDeliveryAt: summary.lastDeliveryAt || null,
+    lastError: summary.lastError || null,
+    notes: [...(summary.notes || [])]
   };
 }
 
@@ -2153,13 +2216,29 @@ export class TradingBot {
     this.runtime.executionCalibration = this.runtime.executionCalibration || {};
     this.runtime.venueConfirmation = this.runtime.venueConfirmation || {};
     this.runtime.capitalLadder = this.runtime.capitalLadder || {};
+    this.runtime.capitalGovernor = this.runtime.capitalGovernor || {};
     this.runtime.exchangeTruth = this.runtime.exchangeTruth || {};
     this.runtime.exchangeSafety = this.runtime.exchangeSafety || {};
     this.runtime.executionCost = this.runtime.executionCost || {};
     this.runtime.strategyRetirement = this.runtime.strategyRetirement || {};
     this.runtime.replayChaos = this.runtime.replayChaos || {};
     this.runtime.orderLifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
-    this.runtime.ops = this.runtime.ops || { lastUpdatedAt: null, incidentTimeline: [], runbooks: [], performanceChange: null, readiness: null, alerts: { count: 0, criticalCount: 0, status: "clear", alerts: [] }, replayChaos: null };
+    this.runtime.ops = this.runtime.ops || {
+      lastUpdatedAt: null,
+      incidentTimeline: [],
+      runbooks: [],
+      performanceChange: null,
+      readiness: null,
+      alerts: { count: 0, activeCount: 0, criticalCount: 0, status: "clear", alerts: [] },
+      alertState: { acknowledgedAtById: {}, silencedUntilById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
+      alertDelivery: summarizeAlertDelivery({}),
+      replayChaos: null
+    };
+    this.runtime.ops.alertState = this.runtime.ops.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    this.runtime.ops.alertState.acknowledgedAtById = this.runtime.ops.alertState.acknowledgedAtById || {};
+    this.runtime.ops.alertState.silencedUntilById = this.runtime.ops.alertState.silencedUntilById || {};
+    this.runtime.ops.alertState.delivery = this.runtime.ops.alertState.delivery || { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} };
+    this.runtime.ops.alertDelivery = this.runtime.ops.alertDelivery || summarizeAlertDelivery({});
     this.runtime.service = this.runtime.service || { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, lastExitCode: null, statusFile: null };
     this.runtime.counterfactualQueue = arr(this.runtime.counterfactualQueue);
     this.runtime.session = this.runtime.session || {};
@@ -2632,6 +2711,12 @@ export class TradingBot {
     this.runtime.parameterGovernor = summarizeParameterGovernor(parameterGovernor);
     this.runtime.executionCalibration = summarizeExecutionCalibration(executionCalibration);
     this.runtime.executionCost = summarizeExecutionCost(report.executionCostSummary || {});
+    this.runtime.capitalGovernor = summarizeCapitalGovernor(buildCapitalGovernor({
+      journal: this.journal,
+      runtime: this.runtime,
+      config: this.config,
+      nowIso: referenceNow
+    }));
     this.runtime.strategyRetirement = summarizeStrategyRetirement(buildStrategyRetirementSnapshot({
       report,
       offlineTrainer: offlineTrainerSummary,
@@ -2823,6 +2908,8 @@ export class TradingBot {
     const drift = this.runtime.drift || {};
     const venueConfirmation = this.runtime.venueConfirmation || {};
     const capitalLadder = this.runtime.capitalLadder || {};
+    const capitalGovernor = this.runtime.capitalGovernor || {};
+    const alertDelivery = this.runtime.ops?.alertDelivery || {};
     const strategyResearch = this.runtime.strategyResearch || {};
     const strategyRetirement = this.runtime.strategyRetirement || {};
     const executionCost = this.runtime.executionCost || {};
@@ -2936,6 +3023,23 @@ export class TradingBot {
         action: "Werk eerst promotion-policy, research-kandidaten en probation af voordat live sizing omhoog mag."
       });
     }
+    if ((capitalGovernor.status || "") === "blocked") {
+      runbooks.push({
+        id: "capital_governor_blocked",
+        severity: "negative",
+        title: "Capital governor blokkeert nieuwe entries",
+        reason: capitalGovernor.notes?.[0] || "Dag- of weekdrawdown blijft boven budget.",
+        action: "Laat alleen recovery trades en kapitaalafbouw lopen tot de recovery-window herstelt."
+      });
+    } else if ((capitalGovernor.status || "") === "recovery") {
+      runbooks.push({
+        id: "capital_governor_recovery",
+        severity: "neutral",
+        title: "Capital governor draait in recovery",
+        reason: capitalGovernor.notes?.[0] || "Nieuwe entries krijgen kleinere sizing.",
+        action: "Bevestig eerst recovery winrate en gemiddelde PnL voordat sizing weer normaal wordt."
+      });
+    }
     if ((replayChaos.status || "") === "blocked") {
       runbooks.push({
         id: "replay_chaos_blocked",
@@ -2943,6 +3047,15 @@ export class TradingBot {
         title: "Replay chaos lab ziet kwetsbare setup",
         reason: replayChaos.notes?.[2] || "De zwakste strategy-stressscore vraagt extra aandacht.",
         action: "Vergelijk replay checkpoints, stress scenario's en execution profile voor de zwakke strategie."
+      });
+    }
+    if ((alertDelivery.status || "") === "failed") {
+      runbooks.push({
+        id: "alert_delivery_failed",
+        severity: "neutral",
+        title: "Operator alert delivery faalde",
+        reason: alertDelivery.lastError || alertDelivery.notes?.[0] || "Webhook delivery kwam niet door.",
+        action: "Controleer webhook URLs en netwerktoegang zodat kritieke alerts opnieuw kunnen worden afgeleverd."
       });
     }
     if ((strategyResearch.approvedCandidateCount || 0) > 0) {
@@ -2998,6 +3111,7 @@ export class TradingBot {
     const decomposition = report?.pnlDecomposition || {};
     const executionCost = report?.executionCostSummary || {};
     const retiredStrategy = arr(this.runtime.strategyRetirement?.policies || []).find((item) => item.status === "retire") || null;
+    const capitalGovernor = this.runtime.capitalGovernor || {};
     const status = pnlDeltaPerTrade > 5 || winRateDelta > 0.08
       ? "positive"
       : pnlDeltaPerTrade < -5 || winRateDelta < -0.08
@@ -3038,6 +3152,11 @@ export class TradingBot {
         this.runtime.capitalLadder?.stage
           ? `Capital ladder: ${this.runtime.capitalLadder.stage}.`
           : "Capital ladder warmt nog op.",
+        capitalGovernor.status === "blocked"
+          ? "Capital governor blokkeert momenteel nieuwe entries."
+          : capitalGovernor.status === "recovery"
+            ? `Capital governor recovery op ${num((capitalGovernor.sizeMultiplier || 1) * 100, 1)}% sizing.`
+            : "Capital governor laat normale sizing toe.",
         (this.runtime.strategyResearch?.approvedCandidateCount || 0)
           ? `${this.runtime.strategyResearch.approvedCandidateCount} research-kandidaten klaar voor paper probation.`
           : "Nog geen nieuwe strategy research-kandidaten klaar."
@@ -3065,12 +3184,15 @@ export class TradingBot {
     if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
       reasons.push("capital_ladder_shadow_only");
     }
+    if (this.config.botMode === "live" && this.runtime.capitalGovernor?.allowEntries === false) {
+      reasons.push("capital_governor_blocked");
+    }
     return {
       checkedAt: referenceNow,
       ready: reasons.length === 0,
-      status: reasons.includes("exchange_truth_freeze") || reasons.includes("health_circuit_open") || reasons.includes("exchange_safety_blocked")
+      status: reasons.includes("exchange_truth_freeze") || reasons.includes("health_circuit_open") || reasons.includes("exchange_safety_blocked") || reasons.includes("capital_governor_blocked")
         ? "blocked"
-        : reasons.length
+      : reasons.length
           ? "degraded"
           : "ready",
       reasons
@@ -3146,6 +3268,13 @@ export class TradingBot {
       exchangeSafety,
       strategyRetirement: this.runtime.strategyRetirement || {},
       executionCost: this.runtime.executionCost || {},
+      capitalGovernor: this.runtime.capitalGovernor || {},
+      config: this.config,
+      nowIso: referenceNow
+    }));
+    const alertDelivery = summarizeAlertDelivery(buildOperatorAlertDispatchPlan({
+      alerts,
+      config: this.config,
       nowIso: referenceNow
     }));
     this.runtime.ops = {
@@ -3155,6 +3284,8 @@ export class TradingBot {
       performanceChange: this.buildPerformanceChangeView(evaluation),
       readiness,
       alerts,
+      alertState: this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
+      alertDelivery,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {})
     };
     this.runtime.service = {
@@ -3163,6 +3294,78 @@ export class TradingBot {
       watchdogStatus: this.runtime.lifecycle?.activeRun ? "running" : (this.runtime.service?.watchdogStatus || "idle")
     };
     return this.runtime.ops;
+  }
+
+  async dispatchOperatorAlerts(referenceNow = nowIso()) {
+    const deliveryResult = await deliverOperatorAlerts({
+      alerts: this.runtime.ops?.alerts || {},
+      runtime: this.runtime,
+      config: this.config,
+      nowIso: referenceNow
+    });
+    const result = summarizeAlertDelivery(deliveryResult);
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    this.runtime.ops = {
+      ...(this.runtime.ops || {}),
+      alertState: {
+        ...currentAlertState,
+        delivery: {
+          ...(currentAlertState.delivery || {}),
+          lastDeliveryAt: result.lastDeliveryAt || currentAlertState.delivery?.lastDeliveryAt || null,
+          lastError: result.lastError || null,
+          lastDeliveredAtById: {
+            ...(currentAlertState.delivery?.lastDeliveredAtById || {}),
+            ...(deliveryResult.lastDeliveredAtById || {})
+          }
+        }
+      },
+      alertDelivery: result
+    };
+    return result;
+  }
+
+  async acknowledgeAlert(alertId, { acknowledged = true, at = nowIso() } = {}) {
+    if (!alertId) {
+      throw new Error("Alert id ontbreekt.");
+    }
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    const acknowledgedAtById = { ...(currentAlertState.acknowledgedAtById || {}) };
+    if (acknowledged) {
+      acknowledgedAtById[alertId] = at;
+    } else {
+      delete acknowledgedAtById[alertId];
+    }
+    this.runtime.ops = {
+      ...(this.runtime.ops || {}),
+      alertState: {
+        ...currentAlertState,
+        acknowledgedAtById
+      }
+    };
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
+  async silenceAlert(alertId, { minutes = this.config.operatorAlertSilenceMinutes || 180, at = nowIso() } = {}) {
+    if (!alertId) {
+      throw new Error("Alert id ontbreekt.");
+    }
+    const durationMinutes = Math.max(1, Number(minutes || this.config.operatorAlertSilenceMinutes || 180));
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    this.runtime.ops = {
+      ...(this.runtime.ops || {}),
+      alertState: {
+        ...currentAlertState,
+        silencedUntilById: {
+          ...(currentAlertState.silencedUntilById || {}),
+          [alertId]: new Date(new Date(at).getTime() + durationMinutes * 60_000).toISOString()
+        }
+      }
+    };
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
   }
 
   updateSafetyState({ now = new Date(), candidateSummaries = arr(this.runtime.latestDecisions) } = {}) {
@@ -3271,6 +3474,7 @@ export class TradingBot {
     }
 
     await this.dataRecorder.recordTrade(trade);
+    await this.dataRecorder.recordTradeReplaySnapshot(trade);
     await this.dataRecorder.recordLearningEvent({ trade, learning });
     this.refreshGovernanceViews(nowIso());
 
@@ -3614,6 +3818,11 @@ export class TradingBot {
         label: "Capital ladder",
         passed: candidate.decision.capitalLadderApplied?.allowEntries !== false,
         detail: `${candidate.decision.capitalLadderApplied?.stage || "paper"} | size ${num((candidate.decision.capitalLadderApplied?.sizeMultiplier || 1) * 100, 1)}%`
+      },
+      {
+        label: "Capital governor",
+        passed: candidate.decision.capitalGovernorApplied?.allowEntries !== false,
+        detail: `${candidate.decision.capitalGovernorApplied?.status || "ready"} | size ${num((candidate.decision.capitalGovernorApplied?.sizeMultiplier || 1) * 100, 1)}%`
       }
     ];
   }
@@ -3762,6 +3971,7 @@ export class TradingBot {
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
       parameterGovernor: candidate.decision.parameterGovernorApplied || null,
+      capitalGovernor: summarizeCapitalGovernor(candidate.decision.capitalGovernorApplied || this.runtime.capitalGovernor || {}),
       capitalLadder: summarizeCapitalLadder(candidate.decision.capitalLadderApplied || this.runtime.capitalLadder || {}),
       venueConfirmation: summarizeVenueConfirmation(candidate.venueConfirmationSummary || {}),
       stopLossPct: num(candidate.decision.stopLossPct, 4),
@@ -3999,7 +4209,8 @@ export class TradingBot {
       portfolioSummary,
       committeeSummary: null,
       rlAdvice: provisionalRlAdvice,
-      executionNeuralSummary: score.executionNeural
+      executionNeuralSummary: score.executionNeural,
+      venueConfirmationSummary: context.venueConfirmationSummary || {}
     });
     const committeeSummary = this.committee.evaluate({
       symbol,
@@ -4098,6 +4309,7 @@ export class TradingBot {
       thresholdTuningSummary: this.runtime.thresholdTuning || {},
       parameterGovernorSummary: this.runtime.parameterGovernor || {},
       capitalLadderSummary: this.runtime.capitalLadder || {},
+      capitalGovernorSummary: this.runtime.capitalGovernor || {},
       executionCostSummary: this.runtime.executionCost || {},
       strategyRetirementSummary: this.runtime.strategyRetirement || {},
       timeframeSummary,
@@ -4124,7 +4336,8 @@ export class TradingBot {
       rlAdvice,
       executionNeuralSummary: score.executionNeural,
       strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
-      capitalLadderSummary: this.runtime.capitalLadder || {}
+      capitalLadderSummary: this.runtime.capitalLadder || {},
+      venueConfirmationSummary
     });
     decision.committeeSummary = committeeSummary;
     decision.rlAdvice = rlAdvice;
@@ -4906,7 +5119,7 @@ export class TradingBot {
       lastHeartbeatAt: cycleAt,
       watchdogStatus: "running"
     };
-    this.refreshGovernanceViews(cycleAt);
+    const governance = this.refreshGovernanceViews(cycleAt);
     await this.dataRecorder.recordDecisions({ at: cycleAt, candidates });
     await this.dataRecorder.recordCycle({
       at: cycleAt,
@@ -4927,6 +5140,25 @@ export class TradingBot {
       marketSentiment: this.runtime.marketSentiment,
       volatility: this.runtime.volatilityContext
     });
+    await this.dataRecorder.recordSnapshotManifest({
+      at: cycleAt,
+      mode: this.config.botMode,
+      candidates,
+      openedPosition,
+      overview: {
+        equity: portfolio.equity,
+        quoteFree: portfolio.balance.quoteFree,
+        openPositions: this.runtime.openPositions.length
+      },
+      ops: {
+        readiness: this.runtime.ops?.readiness || {},
+        alerts: this.runtime.ops?.alerts || {},
+        exchangeSafety: this.runtime.exchangeSafety || {},
+        capitalGovernor: this.runtime.capitalGovernor || {}
+      },
+      report: governance.report || {}
+    });
+    await this.dispatchOperatorAlerts(cycleAt);
     await this.backupManager.maybeBackup({
       runtime: this.runtime,
       journal: this.journal,
@@ -5554,7 +5786,9 @@ export class TradingBot {
         service: summarizeServiceState(this.runtime.service || {}),
         thresholdTuning: summarizeThresholdTuningState(this.runtime.thresholdTuning || {}),
         executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {}),
-        capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {})
+        capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {}),
+        capitalGovernor: summarizeCapitalGovernor(this.runtime.capitalGovernor || {}),
+        alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {})
       },
       portfolio: this.buildPortfolioView(),
       exchange: exchangeOverview,
@@ -5644,7 +5878,8 @@ export class TradingBot {
         dashboardPort: this.config.dashboardPort,
         dashboardEquityPointLimit: this.config.dashboardEquityPointLimit,
         dashboardCyclePointLimit: this.config.dashboardCyclePointLimit,
-        dashboardDecisionLimit: this.config.dashboardDecisionLimit
+        dashboardDecisionLimit: this.config.dashboardDecisionLimit,
+        operatorAlertSilenceMinutes: this.config.operatorAlertSilenceMinutes
       }
     };
   }
@@ -5675,15 +5910,6 @@ export class TradingBot {
     };
   }
 }
-
-
-
-
-
-
-
-
-
 
 
 

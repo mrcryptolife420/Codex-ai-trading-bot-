@@ -23,6 +23,10 @@ function normalizeQuote(item = {}) {
   };
 }
 
+function average(values = [], fallback = 0) {
+  return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
+}
+
 export class ReferenceVenueService {
   constructor(config, logger = console) {
     this.config = config;
@@ -33,8 +37,7 @@ export class ReferenceVenueService {
     if (!this.config.referenceVenueFetchEnabled || !(this.config.referenceVenueQuoteUrls || []).length) {
       return [];
     }
-    const quotes = [];
-    for (const template of this.config.referenceVenueQuoteUrls || []) {
+    const responses = await Promise.all((this.config.referenceVenueQuoteUrls || []).map(async (template) => {
       const url = `${template}`.replaceAll("{symbol}", encodeURIComponent(symbol));
       try {
         const response = await fetch(url);
@@ -43,14 +46,13 @@ export class ReferenceVenueService {
         }
         const payload = await response.json();
         const items = Array.isArray(payload) ? payload : Array.isArray(payload?.quotes) ? payload.quotes : [payload];
-        for (const item of items) {
-          quotes.push(normalizeQuote(item));
-        }
+        return items.map(normalizeQuote);
       } catch (error) {
         this.logger.warn?.("Reference venue fetch failed", { symbol, url, error: error.message });
+        return [];
       }
-    }
-    return quotes.filter((item) => item.mid > 0);
+    }));
+    return responses.flat().filter((item) => item.mid > 0);
   }
 
   async getSymbolSummary(symbol, marketSnapshot = {}, { referenceQuotes = null } = {}) {
@@ -65,8 +67,19 @@ export class ReferenceVenueService {
         confirmed: false,
         venueCount: 0,
         divergenceBps: null,
+        averageHealthScore: null,
         blockerReasons: [],
         notes: ["Nog geen reference-venue quotes beschikbaar."],
+        routeAdvice: {
+          preferredEntryStyle: "market",
+          preferMakerBoost: 0,
+          sizeMultiplier: 1,
+          aggressiveTakerAllowed: true,
+          confidence: 0,
+          preferredVenues: [],
+          degradedVenues: []
+        },
+        venueHealth: [],
         venues: []
       };
     }
@@ -79,6 +92,33 @@ export class ReferenceVenueService {
     const maxDivergenceBps = this.config.referenceVenueMaxDivergenceBps || 18;
     const confirmed = quotes.length >= minQuotes && divergenceBps <= maxDivergenceBps;
     const blocked = quotes.length >= minQuotes && divergenceBps > maxDivergenceBps;
+    const venueHealth = quotes
+      .map((item) => {
+        const venueDivergenceBps = localMid > 0 && item.mid > 0 ? Math.abs(localMid - item.mid) / item.mid * 10_000 : divergenceBps;
+        const healthScore = clamp(1 - venueDivergenceBps / Math.max(maxDivergenceBps, 0.0001), 0, 1);
+        return {
+          venue: item.venue || "reference",
+          mid: item.mid,
+          divergenceBps: num(venueDivergenceBps, 2),
+          healthScore: num(healthScore),
+          status: healthScore >= 0.78 ? "healthy" : healthScore >= 0.52 ? "watch" : "degraded"
+        };
+      })
+      .sort((left, right) => (right.healthScore || 0) - (left.healthScore || 0));
+    const averageHealthScore = average(venueHealth.map((item) => item.healthScore || 0), 0);
+    const routeAdvice = {
+      preferredEntryStyle: blocked
+        ? "limit_maker"
+        : confirmed && divergenceBps <= maxDivergenceBps * 0.35 && averageHealthScore >= 0.72
+          ? "market"
+          : "limit_maker",
+      preferMakerBoost: blocked ? 0.08 : confirmed ? -0.02 : 0.04,
+      sizeMultiplier: blocked ? 0.45 : confirmed ? 1.02 : 0.9,
+      aggressiveTakerAllowed: confirmed && divergenceBps <= maxDivergenceBps * 0.35 && averageHealthScore >= 0.72,
+      confidence: num(clamp(0.3 + averageHealthScore * 0.5 + (confirmed ? 0.2 : 0), 0, 1)),
+      preferredVenues: venueHealth.filter((item) => item.status === "healthy").slice(0, 3).map((item) => item.venue),
+      degradedVenues: venueHealth.filter((item) => item.status === "degraded").slice(0, 3).map((item) => item.venue)
+    };
     return {
       generatedAt: new Date().toISOString(),
       symbol,
@@ -90,6 +130,7 @@ export class ReferenceVenueService {
       confirmed,
       venueCount: quotes.length,
       divergenceBps: num(divergenceBps, 2),
+      averageHealthScore: num(averageHealthScore),
       blockerReasons: blocked ? ["reference_venue_divergence"] : [],
       notes: [
         blocked
@@ -98,6 +139,8 @@ export class ReferenceVenueService {
             ? `${quotes.length} reference venues bevestigen de Binance mid.`
             : `${quotes.length}/${minQuotes} reference venues beschikbaar voor bevestiging.`
       ],
+      routeAdvice,
+      venueHealth: venueHealth.slice(0, 6),
       venues: quotes
         .map((item) => ({
           ...item,
@@ -116,9 +159,19 @@ export class ReferenceVenueService {
       confirmedCount: summaries.filter((item) => item.confirmed).length,
       blockedCount: summaries.filter((item) => item.status === "blocked").length,
       averageDivergenceBps: num(summaries.length ? summaries.reduce((total, item) => total + safeNumber(item.divergenceBps, 0), 0) / summaries.length : 0, 2),
+      averageHealthScore: num(summaries.length ? summaries.reduce((total, item) => total + safeNumber(item.averageHealthScore, 0), 0) / summaries.length : 0),
       leadSymbol: lead?.symbol || null,
       status: lead?.status || "warmup",
       blockerReasons: [...(lead?.blockerReasons || [])],
+      routeAdvice: lead?.routeAdvice || {
+        preferredEntryStyle: "market",
+        preferMakerBoost: 0,
+        sizeMultiplier: 1,
+        aggressiveTakerAllowed: true,
+        confidence: 0,
+        preferredVenues: [],
+        degradedVenues: []
+      },
       notes: lead?.notes || ["Nog geen runtime venue-confirmatie beschikbaar."]
     };
   }

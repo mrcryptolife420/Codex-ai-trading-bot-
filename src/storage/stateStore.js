@@ -1,7 +1,7 @@
 import path from "node:path";
 import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
-const RUNTIME_SCHEMA_VERSION = 5;
+const RUNTIME_SCHEMA_VERSION = 6;
 const JOURNAL_SCHEMA_VERSION = 2;
 
 const DEFAULT_MODEL = {
@@ -57,6 +57,7 @@ const DEFAULT_RUNTIME = {
   executionCalibration: {},
   venueConfirmation: {},
   capitalLadder: {},
+  capitalGovernor: {},
   exchangeTruth: {
     status: "unknown",
     freezeEntries: false,
@@ -88,7 +89,36 @@ const DEFAULT_RUNTIME = {
     incidentTimeline: [],
     runbooks: [],
     performanceChange: null,
-    readiness: null
+    readiness: null,
+    alerts: {
+      count: 0,
+      criticalCount: 0,
+      activeCount: 0,
+      mutedCount: 0,
+      acknowledgedCount: 0,
+      status: "clear",
+      alerts: []
+    },
+    alertState: {
+      acknowledgedAtById: {},
+      silencedUntilById: {},
+      delivery: {
+        lastDeliveryAt: null,
+        lastError: null,
+        lastDeliveredAtById: {}
+      }
+    },
+    alertDelivery: {
+      status: "disabled",
+      endpointCount: 0,
+      eligibleCount: 0,
+      deliveredCount: 0,
+      failedCount: 0,
+      lastDeliveryAt: null,
+      lastError: null,
+      notes: []
+    },
+    replayChaos: null
   },
   service: {
     lastHeartbeatAt: null,

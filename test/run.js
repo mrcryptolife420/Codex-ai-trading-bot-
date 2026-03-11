@@ -53,8 +53,10 @@ import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js"
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
 import { buildExchangeSafetyAudit } from "../src/runtime/exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
+import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/runtime/operatorAlertDispatcher.js";
 import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
+import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
 import { TradingBot } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
@@ -243,6 +245,11 @@ function makeConfig(overrides = {}) {
     capitalLadderScaledMultiplier: 0.55,
     capitalLadderFullMultiplier: 1,
     capitalLadderMinApprovedCandidates: 1,
+    capitalGovernorWeeklyDrawdownPct: 0.08,
+    capitalGovernorBadDayStreak: 3,
+    capitalGovernorRecoveryTrades: 4,
+    capitalGovernorRecoveryMinWinRate: 0.55,
+    capitalGovernorMinSizeMultiplier: 0.25,
     dailyRiskBudgetFloor: 0.35,
     portfolioMaxCvarPct: 0.028,
     portfolioDrawdownBudgetPct: 0.05,
@@ -308,6 +315,11 @@ function makeConfig(overrides = {}) {
     serviceRestartMaxDelaySeconds: 180,
     serviceStatusFilename: "service-status.json",
     serviceMaxRestartsPerHour: 20,
+    operatorAlertMaxItems: 8,
+    operatorAlertWebhookUrls: [],
+    operatorAlertDispatchMinSeverity: "high",
+    operatorAlertDispatchCooldownMinutes: 30,
+    operatorAlertSilenceMinutes: 180,
     gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
     ...overrides
   };
@@ -1283,7 +1295,7 @@ await runCheck("execution engine folds strategy meta, ladder and governor into t
   });
   assert.equal(plan.entryStyle, "limit_maker");
   assert.equal(plan.strategyMeta.preferredExecutionStyle, "limit_maker");
-  assert.equal(plan.sizeMultiplier, 0.4);
+  assert.equal(plan.sizeMultiplier, 0.35);
   assert.ok(plan.rationale.some((item) => item.startsWith("gov_exec:0.840")));
 });
 
@@ -2130,6 +2142,58 @@ await runCheck("risk manager blocks retired strategies and hot execution cost sc
   assert.ok(decision.reasons.includes("execution_cost_budget_exceeded"));
 });
 
+await runCheck("risk manager respects capital governor recovery and blocking states", async () => {
+  const manager = new RiskManager(makeConfig());
+  const blocked = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: { probability: 0.67, calibrationConfidence: 0.42, disagreement: 0.04, shouldAbstain: false, transformer: { probability: 0.65, confidence: 0.2 } },
+    marketSnapshot: { book: { spreadBps: 4, bookPressure: 0.22, microPriceEdgeBps: 0.8 }, market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.14 } },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.1, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.66, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.62, confidence: 0.46, blockers: [], agreementGap: 0.04 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    capitalGovernorSummary: { status: "blocked", allowEntries: false, sizeMultiplier: 0, recoveryMode: true, notes: ["weekly drawdown"] },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(blocked.allow, false);
+  assert.ok(blocked.reasons.includes("capital_governor_blocked"));
+
+  const recovery = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: { probability: 0.69, calibrationConfidence: 0.42, disagreement: 0.04, shouldAbstain: false, transformer: { probability: 0.68, confidence: 0.2 } },
+    marketSnapshot: { book: { spreadBps: 4, bookPressure: 0.24, microPriceEdgeBps: 0.8 }, market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.14 } },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.1, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.66, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.62, confidence: 0.46, blockers: [], agreementGap: 0.04 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    capitalGovernorSummary: { status: "recovery", allowEntries: true, sizeMultiplier: 0.42, recoveryMode: true, notes: ["recovery sizing"] },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(recovery.allow, true);
+  assert.equal(recovery.capitalGovernorApplied.status, "recovery");
+  assert.ok(recovery.quoteAmount < 500);
+});
+
 await runCheck("risk manager rewards stronger portfolio allocator scores in rank ordering", async () => {
   const manager = new RiskManager(makeConfig());
   const commonInput = {
@@ -2633,11 +2697,13 @@ await runCheck("data recorder restores persisted summary across restarts", async
       decisionFrames: 12,
       tradeFrames: 2,
       learningFrames: 2,
-      researchFrames: 1
+      researchFrames: 1,
+      snapshotFrames: 4
     });
     const summary = recorder.getSummary();
     assert.equal(summary.filesWritten, 9);
     assert.equal(summary.learningFrames, 2);
+    assert.equal(summary.snapshotFrames, 4);
     assert.equal(summary.lastRecordAt, "2026-03-10T09:00:00.000Z");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -2688,7 +2754,7 @@ await runCheck("state store migrates runtime and journal schemas forward", async
     const store = new StateStore(tempDir);
     const runtime = await store.loadRuntime();
     const journal = await store.loadJournal();
-    assert.equal(runtime.schemaVersion, 5);
+    assert.equal(runtime.schemaVersion, 6);
     assert.deepEqual(runtime.qualityQuorum, {});
     assert.equal(runtime.exchangeTruth.status, "unknown");
     assert.deepEqual(runtime.orderLifecycle.positions, {});
@@ -2699,7 +2765,9 @@ await runCheck("state store migrates runtime and journal schemas forward", async
     assert.deepEqual(runtime.parameterGovernor, {});
     assert.deepEqual(runtime.venueConfirmation, {});
     assert.deepEqual(runtime.capitalLadder, {});
+    assert.deepEqual(runtime.capitalGovernor, {});
     assert.ok(Array.isArray(runtime.ops.incidentTimeline));
+    assert.deepEqual(runtime.ops.alertState.acknowledgedAtById, {});
     assert.equal(runtime.health.consecutiveFailures, 1);
     assert.equal(journal.schemaVersion, 2);
     assert.equal(journal.trades.length, 1);
@@ -2762,13 +2830,77 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     });
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
-    assert.equal(payload.schemaVersion, 2);
+    assert.equal(payload.schemaVersion, 3);
     assert.equal(payload.frameType, "learning");
     assert.equal(payload.symbol, "BTCUSDT");
     assert.equal(payload.model.calibrationObservations, 18);
     assert.equal(payload.rawFeatures.momentum_5, 1.2);
     assert.equal(payload.indicators.supertrendDirection, 1);
     assert.ok(payload.rationale.topSignals.length >= 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder stores deterministic snapshot manifests and trade replay frames", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-snapshot-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordSnapshotManifest({
+      at: "2026-03-10T11:00:00.000Z",
+      mode: "paper",
+      candidates: [{
+        symbol: "BTCUSDT",
+        marketSnapshot: { book: { mid: 68000, spreadBps: 2.4, bookPressure: 0.18, depthConfidence: 0.74 }, market: { realizedVolPct: 0.021 } },
+        score: { probability: 0.63 },
+        rawFeatures: { adx: 0.9, momentum_5: 1.2 },
+        regimeSummary: { regime: "trend" },
+        strategySummary: { activeStrategy: "ema_trend" },
+        metaSummary: { score: 0.61 },
+        qualityQuorumSummary: { status: "ready" },
+        venueConfirmationSummary: { status: "confirmed", divergenceBps: 3.2 },
+        decision: {
+          allow: true,
+          threshold: 0.55,
+          rankScore: 0.12,
+          quoteAmount: 250,
+          executionPlan: { entryStyle: "limit_maker" },
+          capitalGovernorApplied: { status: "recovery" }
+        }
+      }],
+      overview: { equity: 10050, quoteFree: 9800, openPositions: 1 },
+      ops: { readiness: { status: "ready" }, alerts: { status: "clear" }, exchangeSafety: { status: "ready" }, capitalGovernor: { status: "recovery" } },
+      report: { executionCostSummary: { status: "caution" } }
+    });
+    await recorder.recordTradeReplaySnapshot({
+      symbol: "BTCUSDT",
+      brokerMode: "paper",
+      exitAt: "2026-03-10T11:30:00.000Z",
+      pnlQuote: 18.4,
+      netPnlPct: 0.014,
+      entryPrice: 67850,
+      exitPrice: 68120,
+      strategyAtEntry: "ema_trend",
+      regimeAtEntry: "trend",
+      executionQualityScore: 0.76,
+      captureEfficiency: 0.71,
+      entryExecutionAttribution: { entryStyle: "limit_maker" },
+      exitExecutionAttribution: { entryStyle: "market" },
+      replayCheckpoints: [{ at: "2026-03-10T11:15:00.000Z", price: 67940 }],
+      rawFeatures: { momentum_5: 1.2 },
+      entryRationale: { probability: 0.63, threshold: 0.55, confidence: 0.41 }
+    });
+    const stored = await fs.readFile(path.join(tempDir, "feature-store", "snapshots", "2026-03-10.jsonl"), "utf8");
+    const lines = stored.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].frameType, "snapshot_manifest");
+    assert.equal(lines[1].frameType, "trade_replay");
+    assert.equal(recorder.getSummary().snapshotFrames, 2);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -3244,17 +3376,106 @@ await runCheck("operator alerts surface critical safety issues", async () => {
       health: { circuitOpen: true, reason: "too_many_failures" },
       orderLifecycle: { pendingActions: [{ state: "manual_review" }] },
       selfHeal: { mode: "paused", reason: "calibration_break" },
-      thresholdTuning: { appliedRecommendation: { status: "probation", id: "book_pressure" } }
+      thresholdTuning: { appliedRecommendation: { status: "probation", id: "book_pressure" } },
+      ops: {
+        alertState: {
+          acknowledgedAtById: { self_heal_paused: "2026-03-09T09:30:00.000Z" },
+          silencedUntilById: { readiness_degraded: "2026-03-09T12:30:00.000Z" },
+          delivery: { lastDeliveredAtById: { health_circuit_open: "2026-03-09T09:45:00.000Z" } }
+        }
+      }
     },
     readiness: { status: "blocked", reasons: ["exchange_safety_blocked"] },
     exchangeSafety: { status: "blocked", notes: ["reconcile needed"], actions: ["run reconcile"] },
     strategyRetirement: { retireCount: 1, policies: [{ id: "donchian_breakout", status: "retire" }] },
     executionCost: { status: "blocked", notes: ["execution costs too high"] },
+    capitalGovernor: { status: "blocked", notes: ["weekly drawdown exceeded"] },
+    config: makeConfig(),
     nowIso: "2026-03-09T10:00:00.000Z"
   });
-  assert.equal(alerts.criticalCount, 2);
+  assert.equal(alerts.criticalCount, 3);
+  assert.ok(alerts.alerts.some((item) => item.id === "capital_governor_blocked"));
   assert.ok(alerts.alerts.some((item) => item.id === "health_circuit_open"));
   assert.ok(alerts.alerts.some((item) => item.id === "execution_cost_budget_blocked"));
+  assert.ok(alerts.alerts.some((item) => item.id === "self_heal_paused" && item.acknowledgedAt));
+});
+
+await runCheck("capital governor blocks entries after weekly drawdown breach", async () => {
+  const summary = buildCapitalGovernor({
+    journal: {
+      trades: [
+        { exitAt: "2026-03-05T10:00:00.000Z", pnlQuote: -180 },
+        { exitAt: "2026-03-06T10:00:00.000Z", pnlQuote: -220 },
+        { exitAt: "2026-03-07T10:00:00.000Z", pnlQuote: -190 },
+        { exitAt: "2026-03-08T10:00:00.000Z", pnlQuote: -140 }
+      ],
+      scaleOuts: [],
+      equitySnapshots: [
+        { at: "2026-03-05T00:00:00.000Z", equity: 10000 },
+        { at: "2026-03-08T00:00:00.000Z", equity: 9200 }
+      ]
+    },
+    runtime: {},
+    config: makeConfig({ capitalGovernorWeeklyDrawdownPct: 0.05 }),
+    nowIso: "2026-03-08T12:00:00.000Z"
+  });
+  assert.equal(summary.status, "blocked");
+  assert.equal(summary.allowEntries, false);
+  assert.ok(summary.blockerReasons.includes("capital_governor_weekly_drawdown_limit"));
+});
+
+await runCheck("operator alert dispatcher builds and dispatches webhook plans safely", async () => {
+  const alerts = buildOperatorAlerts({
+    runtime: {
+      health: { circuitOpen: true },
+      ops: {
+        alertState: {
+          acknowledgedAtById: {},
+          silencedUntilById: {},
+          delivery: { lastDeliveredAtById: {} }
+        }
+      }
+    },
+    exchangeSafety: {},
+    config: makeConfig({ operatorAlertWebhookUrls: ["https://example.com/hook"] }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  const plan = buildOperatorAlertDispatchPlan({
+    alerts,
+    config: makeConfig({ operatorAlertWebhookUrls: ["https://example.com/hook"] }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(plan.status, "pending");
+  let sent = 0;
+  const summary = await dispatchOperatorAlerts({
+    alerts,
+    runtime: { ops: { alertState: { delivery: { lastDeliveredAtById: {} } } } },
+    config: makeConfig({ operatorAlertWebhookUrls: ["https://example.com/hook"] }),
+    nowIso: "2026-03-09T10:00:00.000Z",
+    fetchImpl: async () => {
+      sent += 1;
+      return { ok: true, status: 200 };
+    }
+  });
+  assert.equal(sent, 1);
+  assert.equal(summary.status, "delivered");
+  assert.ok(summary.lastDeliveredAtById.health_circuit_open);
+});
+
+await runCheck("reference venue service produces route advice and venue health", async () => {
+  const service = new ReferenceVenueService(makeConfig({ referenceVenueMinQuotes: 2, referenceVenueMaxDivergenceBps: 18 }));
+  const summary = await service.getSymbolSummary("BTCUSDT", {
+    book: { mid: 68000 }
+  }, {
+    referenceQuotes: [
+      { venue: "kraken", mid: 68005, bid: 68000, ask: 68010 },
+      { venue: "coinbase", mid: 68008, bid: 68002, ask: 68014 }
+    ]
+  });
+  assert.equal(summary.status, "confirmed");
+  assert.equal(summary.routeAdvice.aggressiveTakerAllowed, true);
+  assert.ok(summary.venueHealth.length >= 2);
+  assert.ok(summary.routeAdvice.preferredVenues.includes("kraken"));
 });
 
 await runCheck("replay chaos lab summarizes vulnerable strategies", async () => {

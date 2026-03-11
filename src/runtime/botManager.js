@@ -300,6 +300,11 @@ export class BotManager {
       readiness.status = "blocked";
       readiness.reasons.push("exchange_safety_blocked");
     }
+    if ((snapshot?.dashboard?.ops?.capitalGovernor?.status || "") === "blocked") {
+      readiness.ok = false;
+      readiness.status = "blocked";
+      readiness.reasons.push("capital_governor_blocked");
+    }
     if ((snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
       readiness.ok = false;
       readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
@@ -310,6 +315,26 @@ export class BotManager {
 
   async getOperationalReadiness() {
     return this.buildOperationalReadiness(await this.getSnapshot());
+  }
+
+  async acknowledgeAlert(id, acknowledged = true) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.acknowledgeAlert(id, { acknowledged });
+      return this.getSnapshot();
+    });
+  }
+
+  async silenceAlert(id, minutes = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.silenceAlert(id, { minutes: minutes ?? this.config?.operatorAlertSilenceMinutes });
+      return this.getSnapshot();
+    });
   }
 
   async getSnapshot() {

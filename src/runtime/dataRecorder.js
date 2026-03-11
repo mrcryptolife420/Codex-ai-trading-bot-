@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
-const FEATURE_STORE_SCHEMA_VERSION = 2;
+const FEATURE_STORE_SCHEMA_VERSION = 3;
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -41,6 +41,37 @@ function makeIndicatorFrame(source = {}) {
     cmf20: num(source.cmf20 || 0, 3),
     keltnerSqueezeScore: num(source.keltnerSqueezeScore || 0, 3),
     squeezeReleaseScore: num(source.squeezeReleaseScore || 0, 3)
+  };
+}
+
+function summarizeCandidateSnapshot(candidate = {}) {
+  return {
+    symbol: candidate.symbol || null,
+    allow: Boolean(candidate.decision?.allow),
+    probability: num(candidate.score?.probability || 0, 4),
+    threshold: num(candidate.decision?.threshold || 0, 4),
+    rankScore: num(candidate.decision?.rankScore || 0, 4),
+    regime: candidate.regimeSummary?.regime || null,
+    strategy: candidate.strategySummary?.activeStrategy || null,
+    entryStyle: candidate.decision?.executionPlan?.entryStyle || null,
+    quoteAmount: num(candidate.decision?.quoteAmount || 0, 2),
+    market: {
+      mid: num(candidate.marketSnapshot?.book?.mid || 0, 6),
+      spreadBps: num(candidate.marketSnapshot?.book?.spreadBps || 0, 2),
+      bookPressure: num(candidate.marketSnapshot?.book?.bookPressure || 0, 4),
+      depthConfidence: num(candidate.marketSnapshot?.book?.depthConfidence || 0, 4),
+      realizedVolPct: num(candidate.marketSnapshot?.market?.realizedVolPct || 0, 4)
+    },
+    venue: {
+      status: candidate.venueConfirmationSummary?.status || null,
+      divergenceBps: num(candidate.venueConfirmationSummary?.divergenceBps || 0, 2)
+    },
+    governance: {
+      metaScore: num(candidate.metaSummary?.score || 0, 4),
+      quorumStatus: candidate.qualityQuorumSummary?.status || null,
+      capitalGovernor: candidate.decision?.capitalGovernorApplied?.status || null
+    },
+    topRawFeatures: pickTopNumericMap(candidate.rawFeatures || {}, 8, 4)
   };
 }
 
@@ -115,6 +146,7 @@ export class DataRecorder {
       tradeFrames: 0,
       learningFrames: 0,
       researchFrames: 0,
+      snapshotFrames: 0,
       lastPruneAt: null
     };
   }
@@ -123,7 +155,7 @@ export class DataRecorder {
     if (!this.config.dataRecorderEnabled) {
       return;
     }
-    const buckets = ["cycles", "decisions", "trades", "learning", "research"];
+    const buckets = ["cycles", "decisions", "trades", "learning", "research", "snapshots"];
     await Promise.all(buckets.map((bucket) => ensureDir(path.join(this.rootDir, bucket))));
 
     const restored = previousState && typeof previousState === "object" ? previousState : {};
@@ -143,6 +175,7 @@ export class DataRecorder {
       tradeFrames: safeStateNumber(restored.tradeFrames, this.state.tradeFrames),
       learningFrames: safeStateNumber(restored.learningFrames, this.state.learningFrames),
       researchFrames: safeStateNumber(restored.researchFrames, this.state.researchFrames),
+      snapshotFrames: safeStateNumber(restored.snapshotFrames, this.state.snapshotFrames),
       lastPruneAt: restored.lastPruneAt || this.state.lastPruneAt
     };
 
@@ -332,12 +365,75 @@ export class DataRecorder {
     return payload;
   }
 
+  async recordSnapshotManifest({ at, mode, candidates = [], openedPosition = null, overview = {}, ops = {}, report = {} }) {
+    if (!this.config.dataRecorderEnabled) {
+      return null;
+    }
+    const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "snapshot_manifest",
+      at,
+      mode,
+      equity: num(overview.equity || 0, 2),
+      quoteFree: num(overview.quoteFree || 0, 2),
+      openPositions: overview.openPositions || 0,
+      openedSymbol: openedPosition?.symbol || null,
+      readiness: ops.readiness?.status || null,
+      alertStatus: ops.alerts?.status || null,
+      exchangeSafety: ops.exchangeSafety?.status || null,
+      capitalGovernor: ops.capitalGovernor?.status || null,
+      executionCost: report.executionCostSummary?.status || null,
+      topCandidates: candidates.slice(0, 5).map(summarizeCandidateSnapshot)
+    };
+    await this.write("snapshots", at, payload);
+    this.state.snapshotFrames += 1;
+    return payload;
+  }
+
+  async recordTradeReplaySnapshot(trade) {
+    if (!this.config.dataRecorderEnabled || !trade) {
+      return null;
+    }
+    const at = trade.exitAt || trade.entryAt || new Date().toISOString();
+    const rationale = trade.entryRationale || {};
+    const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "trade_replay",
+      at,
+      symbol: trade.symbol,
+      brokerMode: trade.brokerMode || null,
+      strategy: trade.strategyAtEntry || rationale.strategy?.activeStrategy || null,
+      regime: trade.regimeAtEntry || rationale.regimeSummary?.regime || null,
+      pnlQuote: num(trade.pnlQuote || 0, 2),
+      netPnlPct: num(trade.netPnlPct || 0, 4),
+      entryPrice: num(trade.entryPrice || 0, 6),
+      exitPrice: num(trade.exitPrice || 0, 6),
+      reason: trade.reason || null,
+      execution: {
+        entryStyle: trade.entryExecutionAttribution?.entryStyle || null,
+        exitStyle: trade.exitExecutionAttribution?.entryStyle || null,
+        executionQualityScore: num(trade.executionQualityScore || 0, 4),
+        captureEfficiency: num(trade.captureEfficiency || 0, 4)
+      },
+      gate: {
+        probability: num(rationale.probability || trade.probabilityAtEntry || 0, 4),
+        threshold: num(rationale.threshold || 0, 4),
+        confidence: num(rationale.confidence || 0, 4)
+      },
+      replayCheckpoints: (trade.replayCheckpoints || []).slice(-12),
+      topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 10, 4)
+    };
+    await this.write("snapshots", at, payload);
+    this.state.snapshotFrames += 1;
+    return payload;
+  }
+
   async prune() {
     if (!this.config.dataRecorderEnabled) {
       return;
     }
     const keepCount = Math.max(3, this.config.dataRecorderRetentionDays || 21);
-    for (const bucket of ["cycles", "decisions", "trades", "learning", "research"]) {
+    for (const bucket of ["cycles", "decisions", "trades", "learning", "research", "snapshots"]) {
       const files = await listFiles(path.join(this.rootDir, bucket));
       for (const file of pruneOldFiles(files, keepCount)) {
         await removeFile(file);

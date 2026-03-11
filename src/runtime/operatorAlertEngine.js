@@ -17,6 +17,24 @@ function makeAlert(id, severity, title, reason, action, extra = {}) {
   };
 }
 
+function resolveAlertState(id, alertState = {}, nowIso = new Date().toISOString()) {
+  const acknowledgedAt = alertState.acknowledgedAtById?.[id] || null;
+  const silencedUntil = alertState.silencedUntilById?.[id] || null;
+  const lastDeliveredAt = alertState.delivery?.lastDeliveredAtById?.[id] || null;
+  const muted = (() => {
+    const silenceMs = new Date(silencedUntil || 0).getTime();
+    const nowMs = new Date(nowIso).getTime();
+    return Boolean(silencedUntil) && Number.isFinite(silenceMs) && silenceMs > nowMs;
+  })();
+  return {
+    acknowledgedAt,
+    silencedUntil,
+    lastDeliveredAt,
+    muted,
+    active: !muted
+  };
+}
+
 export function buildOperatorAlerts({
   runtime = {},
   report = {},
@@ -24,16 +42,19 @@ export function buildOperatorAlerts({
   exchangeSafety = {},
   strategyRetirement = {},
   executionCost = {},
+  capitalGovernor = {},
+  config = {},
   nowIso = new Date().toISOString()
 } = {}) {
-  const alerts = [];
+  const rawAlerts = [];
   const lifecycle = runtime.orderLifecycle || {};
   const health = runtime.health || {};
   const selfHeal = runtime.selfHeal || {};
   const thresholdTuning = runtime.thresholdTuning || {};
+  const alertState = runtime.ops?.alertState || {};
 
   if (health.circuitOpen) {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "health_circuit_open",
       "critical",
       "Trading circuit open",
@@ -42,7 +63,7 @@ export function buildOperatorAlerts({
     ));
   }
   if ((exchangeSafety.status || "") === "blocked") {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "exchange_safety_blocked",
       "critical",
       "Exchange safety blokkeert entries",
@@ -51,7 +72,7 @@ export function buildOperatorAlerts({
     ));
   }
   if (arr(lifecycle.pendingActions).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "lifecycle_attention_required",
       "high",
       "Positie vraagt operator aandacht",
@@ -60,7 +81,7 @@ export function buildOperatorAlerts({
     ));
   }
   if ((strategyRetirement.retireCount || 0) > 0) {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "strategy_retired",
       "high",
       "Strategie is met pensioen gestuurd",
@@ -69,7 +90,7 @@ export function buildOperatorAlerts({
     ));
   }
   if ((executionCost.status || "") === "blocked") {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "execution_cost_budget_blocked",
       "high",
       "Execution cost budget te duur",
@@ -77,8 +98,25 @@ export function buildOperatorAlerts({
       "Verlaag aggressie, wacht op betere microstructuur of forceer shadow-only."
     ));
   }
+  if ((capitalGovernor.status || "") === "blocked") {
+    rawAlerts.push(makeAlert(
+      "capital_governor_blocked",
+      "critical",
+      "Capital governor houdt entries tegen",
+      (capitalGovernor.notes || [])[0] || "Dag- of weekverlies blijft boven het toegestane budget.",
+      "Laat eerst recovery trades slagen of verlaag het risicoprofiel verder."
+    ));
+  } else if ((capitalGovernor.status || "") === "recovery") {
+    rawAlerts.push(makeAlert(
+      "capital_governor_recovery",
+      "medium",
+      "Capital governor draait in recovery",
+      (capitalGovernor.notes || [])[0] || "Nieuwe entries worden kleiner gesized.",
+      "Houd de recovery-window en winrate in de gaten voordat sizing weer oploopt."
+    ));
+  }
   if ((selfHeal.mode || "") === "paused") {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "self_heal_paused",
       "medium",
       "Self-heal houdt entries tegen",
@@ -87,7 +125,7 @@ export function buildOperatorAlerts({
     ));
   }
   if ((readiness.status || "") === "degraded" && (readiness.reasons || []).length) {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "readiness_degraded",
       "medium",
       "Operationele readiness degraded",
@@ -96,7 +134,7 @@ export function buildOperatorAlerts({
     ));
   }
   if ((thresholdTuning.appliedRecommendation?.status || "") === "probation") {
-    alerts.push(makeAlert(
+    rawAlerts.push(makeAlert(
       "threshold_probation",
       "info",
       "Threshold probation actief",
@@ -105,16 +143,24 @@ export function buildOperatorAlerts({
     ));
   }
 
-  const maxItems = Math.max(4, safeNumber(runtime.configSummary?.operatorAlertMaxItems, 8) || 8);
+  const alerts = rawAlerts.map((item) => ({
+    ...item,
+    ...resolveAlertState(item.id, alertState, nowIso)
+  }));
+  const activeAlerts = alerts.filter((item) => item.active);
+  const maxItems = Math.max(4, safeNumber(config.operatorAlertMaxItems, 8) || 8);
   return {
     generatedAt: nowIso,
     count: alerts.length,
-    criticalCount: alerts.filter((item) => item.severity === "critical").length,
-    status: alerts.some((item) => item.severity === "critical")
+    activeCount: activeAlerts.length,
+    mutedCount: alerts.filter((item) => item.muted).length,
+    acknowledgedCount: alerts.filter((item) => item.acknowledgedAt).length,
+    criticalCount: activeAlerts.filter((item) => item.severity === "critical").length,
+    status: activeAlerts.some((item) => item.severity === "critical")
       ? "critical"
-      : alerts.some((item) => item.severity === "high")
+      : activeAlerts.some((item) => item.severity === "high")
         ? "high"
-        : alerts.length
+        : activeAlerts.length
           ? "watch"
           : "clear",
     alerts: alerts.slice(0, maxItems)
