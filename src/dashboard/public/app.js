@@ -176,10 +176,10 @@ function toneClass(value) {
 
 function healthTone(value) {
   const normalized = `${value || "neutral"}`.toLowerCase();
-  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready"].includes(normalized)) {
+  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready", "confirmed", "paper_candidate", "active", "full"].includes(normalized)) {
     return "positive";
   }
-  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown"].includes(normalized)) {
+  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown", "shadow"].includes(normalized)) {
     return "negative";
   }
   return "neutral";
@@ -1190,7 +1190,8 @@ function renderTradeReplays(snapshot) {
 }
 function renderResearch(snapshot) {
   const research = snapshot.dashboard.research;
-  if (!research?.generatedAt) {
+  const strategyResearch = snapshot.dashboard.strategyResearch || {};
+  if (!research?.generatedAt && !strategyResearch?.generatedAt) {
     elements.researchList.innerHTML = `<div class="empty">Nog geen research-run uitgevoerd.</div>`;
     return;
   }
@@ -1200,6 +1201,12 @@ function renderResearch(snapshot) {
     label: `${item.tradeCount || 0} trades`,
     at: item.testEndAt || research.generatedAt,
     detail: `${formatMoney(item.realizedPnl || 0)} | win ${formatPct(item.winRate || 0, 1)} | sharpe ${formatNumber(item.sharpe || 0, 2)}${item.strategyLeaders?.length ? ` | ${item.strategyLeaders.join(", ")}` : ""}`
+  }));
+  const leadCandidate = (strategyResearch.approvedCandidates || [])[0] || (strategyResearch.candidates || [])[0] || {};
+  const candidateRows = (strategyResearch.candidates || []).slice(0, 3).map((item) => ({
+    label: item.label || item.id || "candidate",
+    at: strategyResearch.generatedAt,
+    detail: `${item.status || "observe"} | score ${formatPct(item.score?.overall || 0, 1)} | stress ${formatPct(item.stress?.survivalScore || 0, 1)}`
   }));
 
   elements.researchList.innerHTML = `
@@ -1218,6 +1225,22 @@ function renderResearch(snapshot) {
       </div>
       <div class="note-line"><span class="kicker">Lead report</span><div class="tag-list">${renderTagList((leadReport.experiments || []).flatMap((item) => item.strategyLeaders || []).slice(0, BLOCKED_RENDER_LIMIT), "Nog geen strategy leaders")}</div></div>
       ${renderTimelineRows(leadExperiments, "Nog geen experiment-vensters beschikbaar.")}
+    </article>
+    <article class="research-card">
+      <div class="section-head compact">
+        <div>
+          <div class="kicker">Strategy research miner</div>
+          <h3>${escapeHtml(leadCandidate.label || strategyResearch.leader?.label || "Nog geen import-kandidaat")}</h3>
+        </div>
+        <div class="meta">${strategyResearch.generatedAt ? formatDate(strategyResearch.generatedAt) : "-"}</div>
+      </div>
+      <div class="driver-grid">
+        <div class="mini-stat"><span class="kicker">Approved</span><strong>${strategyResearch.approvedCandidateCount || 0}</strong><div class="meta">${strategyResearch.importedCandidateCount || 0} imports</div></div>
+        <div class="mini-stat"><span class="kicker">Genome</span><strong>${strategyResearch.genome?.candidateCount || 0}</strong><div class="meta">${strategyResearch.genome?.parentCount || 0} parents</div></div>
+        <div class="mini-stat"><span class="kicker">Lead score</span><strong>${formatPct(leadCandidate.score?.overall || 0, 1)}</strong><div class="meta">${escapeHtml(leadCandidate.status || "observe")}</div></div>
+      </div>
+      <div class="note-line"><span class="kicker">Veiligheid</span><div class="tag-list">${renderTagList(leadCandidate.blockedReasons || [], leadCandidate.safe === false ? "Unsafe import" : "Veilige DSL")}</div></div>
+      ${renderTimelineRows(candidateRows, "Nog geen import- of genome-kandidaten.")}
     </article>
   `;
 }
@@ -1349,16 +1372,20 @@ function renderOperations(snapshot) {
   const backups = snapshot.dashboard.safety?.backups || {};
   const recovery = snapshot.dashboard.safety?.recovery || {};
   const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
+  const parameterGovernor = snapshot.dashboard.ai?.parameterGovernor || {};
   const ops = snapshot.dashboard.ops || {};
   const exchangeTruth = snapshot.dashboard.safety?.exchangeTruth || {};
+  const venueConfirmation = snapshot.dashboard.safety?.venueConfirmation || {};
   const orderLifecycle = snapshot.dashboard.safety?.orderLifecycle || {};
   const service = ops.service || {};
   const readiness = ops.readiness || {};
   const executionCalibration = ops.executionCalibration || {};
   const thresholdTuning = ops.thresholdTuning || {};
+  const capitalLadder = ops.capitalLadder || {};
   const incidentLead = (ops.incidentTimeline || [])[0] || {};
   const leadRunbook = (ops.runbooks || [])[0] || {};
   const leadCalibration = Object.entries(executionCalibration.styles || {})[0] || [];
+  const leadGovernor = (parameterGovernor.strategyScopes || [])[0] || (parameterGovernor.regimeScopes || [])[0] || {};
   elements.opsSummary.innerHTML = [
     insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0}`),
     insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
@@ -1366,9 +1393,12 @@ function renderOperations(snapshot) {
     insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive"),
     insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is operationeel klaar", healthTone(readiness.status || "ready")),
     insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
+    insightCard("Venue check", `${venueConfirmation.venueCount || venueConfirmation.confirmedCount || 0} venues`, venueConfirmation.averageDivergenceBps != null ? `div ${formatNumber(venueConfirmation.averageDivergenceBps || 0, 2)} bps` : (venueConfirmation.notes || [])[0] || "Nog geen externe confirmatie", healthTone(venueConfirmation.status)),
     insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
     insightCard("Exec calib", `${executionCalibration.liveTradeCount || 0} live`, leadCalibration[0] ? `${leadCalibration[0]} ${formatNumber(leadCalibration[1]?.slippageBiasBps || 0, 2)} bps` : "Nog geen style-calibratie", healthTone(executionCalibration.status || "warmup")),
     insightCard("Threshold", thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable", thresholdTuning.appliedRecommendation?.id ? normalizeReasonLabel(thresholdTuning.appliedRecommendation.id) : "Geen actieve probation", healthTone(thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable")),
+    insightCard("Governor", leadGovernor.id || "-", leadGovernor.id ? `${leadGovernor.scopeType} | thr ${formatNumber(leadGovernor.thresholdShift || 0, 4)}` : "Nog geen scoped governor", healthTone(parameterGovernor.status || "warmup")),
+    insightCard("Capital ladder", capitalLadder.stage || "paper", capitalLadder.notes?.[0] || "Nog geen ladder-notitie", healthTone(capitalLadder.stage || "paper")),
     insightCard("Service", service.watchdogStatus || "idle", service.lastHeartbeatAt ? `heartbeat ${formatDate(service.lastHeartbeatAt)}` : "Nog geen heartbeat", healthTone(service.watchdogStatus || "idle")),
     insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
   ].join("");
@@ -1377,7 +1407,10 @@ function renderOperations(snapshot) {
     ...(ops.performanceChange?.notes || []),
     ...(ops.runbooks || []).map((item) => `${item.title}: ${item.action}`),
     ...(exchangeTruth.notes || []),
+    ...(venueConfirmation.notes || []),
     ...(ops.shadowTrading?.notes || []),
+    ...(capitalLadder.notes || []),
+    ...(parameterGovernor.notes || []),
     ...(executionCalibration.notes || []),
     ...(thresholdTuning.notes || []),
     ...(modelRegistry.notes || []),
@@ -1423,9 +1456,11 @@ function renderOperations(snapshot) {
 }
 function renderGovernance(snapshot) {
   const registry = snapshot.dashboard.researchRegistry || {};
+  const strategyResearch = snapshot.dashboard.strategyResearch || {};
   const governance = registry.governance || {};
   const leader = (registry.leaderboard || [])[0] || {};
   const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
+  const parameterGovernor = snapshot.dashboard.ai?.parameterGovernor || {};
   const promotionPolicy = modelRegistry.promotionPolicy || {};
   const offlineTrainer = snapshot.dashboard.offlineTrainer || {};
   const topBlocker = (offlineTrainer.blockerScorecards || [])[0] || {};
@@ -1435,16 +1470,20 @@ function renderGovernance(snapshot) {
   const exitLearning = offlineTrainer.exitLearning || {};
   const topExitReason = (offlineTrainer.exitScorecards || [])[0] || {};
   const featureDecay = offlineTrainer.featureDecay || {};
+  const topResearchCandidate = (strategyResearch.approvedCandidates || [])[0] || (strategyResearch.candidates || [])[0] || {};
+  const topGovernor = (parameterGovernor.strategyScopes || [])[0] || (parameterGovernor.regimeScopes || [])[0] || {};
   const opsThresholdTuning = snapshot.dashboard.ops?.thresholdTuning || {};
   const activeThreshold = opsThresholdTuning.appliedRecommendation || {};
   const topExitPolicy = (exitLearning.strategyPolicies || [])[0] || (exitLearning.regimePolicies || [])[0] || {};
   elements.governanceSummary.innerHTML = [
     insightCard("Research runs", `${registry.runCount || 0}`, registry.lastRunAt ? `laatst ${formatDate(registry.lastRunAt)}` : "Nog geen run"),
     insightCard("Promo kandidaten", `${(governance.promotionCandidates || []).length}`, leader.symbol ? `${leader.symbol} leidt` : "Nog geen kandidaat", (governance.promotionCandidates || []).length ? "positive" : "neutral"),
+    insightCard("Import candidates", `${strategyResearch.approvedCandidateCount || 0}/${strategyResearch.candidateCount || 0}`, topResearchCandidate.label ? `${topResearchCandidate.label} ${topResearchCandidate.status || "observe"}` : "Nog geen importleider", healthTone(topResearchCandidate.status || "observe")),
     insightCard("Regimes", `${promotionPolicy.strongRegimeScorecardCount || 0}/${promotionPolicy.regimeScorecardCount || 0}`, (promotionPolicy.readyRegimes || [])[0] ? `${promotionPolicy.readyRegimes[0]} klaar` : "Nog geen sterk regime"),
     insightCard("Veto feedback", `${offlineTrainer.vetoFeedback?.badVetoCount || 0}/${offlineTrainer.vetoFeedback?.goodVetoCount || 0}`, topBlocker.id ? `${normalizeReasonLabel(topBlocker.id)} ${topBlocker.status || "observe"}` : "Nog geen blocker-patroon"),
     insightCard("Threshold tuning", `${(thresholdPolicy.recommendations || []).length}`, activeThreshold.id ? `${normalizeReasonLabel(activeThreshold.id)} ${activeThreshold.status || "probation"}` : topThresholdRecommendation.id ? `${normalizeReasonLabel(topThresholdRecommendation.id)} ${topThresholdRecommendation.action || "observe"}` : "Geen threshold-aanpassing"),
     insightCard("Exit learning", `${exitLearning.lateExitCount || 0}/${exitLearning.prematureExitCount || 0}`, topExitPolicy.id ? `${normalizeReasonLabel(topExitPolicy.id)} ${topExitPolicy.status || "balanced"}` : topExitReason.id ? `${normalizeReasonLabel(topExitReason.id)} ${topExitReason.status || "observe"}` : "Nog geen exit-leider"),
+    insightCard("Parameter governor", `${topGovernor.id || "-"}`, topGovernor.id ? `${topGovernor.scopeType} | stop ${formatNumber(topGovernor.stopLossMultiplier || 1, 2)}` : "Nog geen governor-scope", healthTone(parameterGovernor.status || "warmup")),
     insightCard("Feature decay", `${featureDecay.degradedFeatureCount || 0}/${featureDecay.weakFeatureCount || 0}`, featureDecay.weakestFeature ? `${normalizeReasonLabel(featureDecay.weakestFeature)} zwakst` : "Nog geen decay-signaal", healthTone(featureDecay.status))
   ].join("");
 
@@ -1501,6 +1540,23 @@ function renderGovernance(snapshot) {
         </div>
       </article>
     ` : "",
+    topResearchCandidate.id ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">strategy import</div>
+            <h3>${escapeHtml(topResearchCandidate.label || topResearchCandidate.id || "candidate")}</h3>
+          </div>
+          <div class="pill ${healthTone(topResearchCandidate.status)}">${escapeHtml(topResearchCandidate.status || "observe")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Score</span><strong>${formatPct(topResearchCandidate.score?.overall || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Stress</span><strong>${formatPct(topResearchCandidate.stress?.survivalScore || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Stop diff</span><strong>${formatNumber(topResearchCandidate.parameterDiffs?.stopLossPct || 0, 4)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Execution</span><strong>${escapeHtml(topResearchCandidate.parameterDiffs?.entryStyle || "-")}</strong></div>
+        </div>
+      </article>
+    ` : "",
     (activeThreshold.id || topThresholdRecommendation.id) ? `
       <article class="registry-card">
         <div class="section-head compact">
@@ -1517,6 +1573,23 @@ function renderGovernance(snapshot) {
           <div class="mini-stat"><span class="kicker">Scope</span><strong>${((activeThreshold.affectedStrategies || topThresholdRecommendation.affectedStrategies || [])).length}</strong><div class="meta">${escapeHtml((((activeThreshold.affectedRegimes || topThresholdRecommendation.affectedRegimes || [])).slice(0, 2).join(", ")) || "regimes")}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList([topThresholdRecommendation.rationale].filter(Boolean), activeThreshold.appliedAt ? `actief sinds ${formatDate(activeThreshold.appliedAt)}` : "Geen extra context")}</div></div>
+      </article>
+    ` : "",
+    topGovernor.id ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">parameter governor</div>
+            <h3>${escapeHtml(normalizeReasonLabel(topGovernor.id))}</h3>
+          </div>
+          <div class="pill ${healthTone(topGovernor.status)}">${escapeHtml(topGovernor.status || "observe")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Thr shift</span><strong>${formatNumber(topGovernor.thresholdShift || 0, 4)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Stop</span><strong>${formatNumber(topGovernor.stopLossMultiplier || 1, 2)}</strong></div>
+          <div class="mini-stat"><span class="kicker">TP</span><strong>${formatNumber(topGovernor.takeProfitMultiplier || 1, 2)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Hold</span><strong>${formatNumber(topGovernor.maxHoldMinutesMultiplier || 1, 2)}</strong></div>
+        </div>
       </article>
     ` : "",
     topExitReason.id ? `

@@ -83,6 +83,8 @@ export function validateConfig(config) {
   assertRange("EXIT_NEURAL_L2", config.exitNeuralL2, 0, 0.1, errors);
   assertRange("EXECUTION_NEURAL_LEARNING_RATE", config.executionNeuralLearningRate, 0.0001, 0.5, errors);
   assertRange("EXECUTION_NEURAL_L2", config.executionNeuralL2, 0, 0.1, errors);
+  assertRange("STRATEGY_META_LEARNING_RATE", config.strategyMetaLearningRate, 0.0001, 0.5, errors);
+  assertRange("STRATEGY_META_L2", config.strategyMetaL2, 0, 0.1, errors);
   assertRange("COMMITTEE_MIN_CONFIDENCE", config.committeeMinConfidence, 0, 1, errors);
   assertRange("COMMITTEE_MIN_AGREEMENT", config.committeeMinAgreement, 0, 1, errors);
   assertRange("CALIBRATION_BINS", config.calibrationBins, 3, 50, errors);
@@ -182,6 +184,14 @@ export function validateConfig(config) {
   assertRange("EXECUTION_CALIBRATION_MIN_LIVE_TRADES", config.executionCalibrationMinLiveTrades, 1, 200, errors);
   assertRange("EXECUTION_CALIBRATION_LOOKBACK_TRADES", config.executionCalibrationLookbackTrades, 4, 500, errors);
   assertRange("EXECUTION_CALIBRATION_MAX_BPS_ADJUST", config.executionCalibrationMaxBpsAdjust, 0.5, 50, errors);
+  assertRange("PARAMETER_GOVERNOR_MIN_TRADES", config.parameterGovernorMinTrades, 2, 100, errors);
+  assertRange("PARAMETER_GOVERNOR_MAX_THRESHOLD_SHIFT", config.parameterGovernorMaxThresholdShift, 0.001, 0.08, errors);
+  assertRange("PARAMETER_GOVERNOR_MAX_STOP_LOSS_MULTIPLIER_DELTA", config.parameterGovernorMaxStopLossMultiplierDelta, 0.01, 0.4, errors);
+  assertRange("PARAMETER_GOVERNOR_MAX_TAKE_PROFIT_MULTIPLIER_DELTA", config.parameterGovernorMaxTakeProfitMultiplierDelta, 0.01, 0.5, errors);
+  assertRange("REFERENCE_VENUE_MIN_QUOTES", config.referenceVenueMinQuotes, 1, 10, errors);
+  assertRange("REFERENCE_VENUE_MAX_DIVERGENCE_BPS", config.referenceVenueMaxDivergenceBps, 0.5, 250, errors);
+  assertRange("STRATEGY_RESEARCH_PAPER_SCORE_FLOOR", config.strategyResearchPaperScoreFloor, 0.2, 1, errors);
+  assertRange("STRATEGY_GENOME_MAX_CHILDREN", config.strategyGenomeMaxChildren, 1, 20, errors);
   assertRange("COUNTERFACTUAL_LOOKAHEAD_MINUTES", config.counterfactualLookaheadMinutes, 5, 1440, errors);
   assertRange("COUNTERFACTUAL_QUEUE_LIMIT", config.counterfactualQueueLimit, 5, 500, errors);
   assertRange("MIN_BOOK_PRESSURE_FOR_ENTRY", config.minBookPressureForEntry, -1, 1, errors);
@@ -208,6 +218,10 @@ export function validateConfig(config) {
   assertRange("META_CAUTION_SCORE", config.metaCautionScore, 0, 1, errors);
   assertRange("CANARY_LIVE_TRADE_COUNT", config.canaryLiveTradeCount, 1, 100, errors);
   assertRange("CANARY_LIVE_SIZE_MULTIPLIER", config.canaryLiveSizeMultiplier, 0.05, 1, errors);
+  assertRange("CAPITAL_LADDER_SEED_MULTIPLIER", config.capitalLadderSeedMultiplier, 0.01, 1, errors);
+  assertRange("CAPITAL_LADDER_SCALED_MULTIPLIER", config.capitalLadderScaledMultiplier, 0.05, 1, errors);
+  assertRange("CAPITAL_LADDER_FULL_MULTIPLIER", config.capitalLadderFullMultiplier, 0.1, 1.5, errors);
+  assertRange("CAPITAL_LADDER_MIN_APPROVED_CANDIDATES", config.capitalLadderMinApprovedCandidates, 0, 20, errors);
   assertRange("DAILY_RISK_BUDGET_FLOOR", config.dailyRiskBudgetFloor, 0.05, 1, errors);
   assertRange("PORTFOLIO_MAX_CVAR_PCT", config.portfolioMaxCvarPct, 0.001, 0.2, errors);
   assertRange("PORTFOLIO_DRAWDOWN_BUDGET_PCT", config.portfolioDrawdownBudgetPct, 0.005, 0.5, errors);

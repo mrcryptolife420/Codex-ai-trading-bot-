@@ -184,6 +184,42 @@ export class RiskManager {
     };
   }
 
+  resolveParameterGovernor(parameterGovernorSummary = {}, strategySummary = {}, regimeSummary = {}) {
+    const strategyId = strategySummary.activeStrategy || null;
+    const regimeId = regimeSummary.regime || null;
+    const scopes = [
+      ...((parameterGovernorSummary.strategyScopes || []).filter((item) => item.id === strategyId)),
+      ...((parameterGovernorSummary.regimeScopes || []).filter((item) => item.id === regimeId))
+    ];
+    if (!scopes.length) {
+      return {
+        active: false,
+        thresholdShift: 0,
+        stopLossMultiplier: 1,
+        takeProfitMultiplier: 1,
+        trailingStopMultiplier: 1,
+        scaleOutTriggerMultiplier: 1,
+        scaleOutFractionMultiplier: 1,
+        maxHoldMinutesMultiplier: 1,
+        executionAggressivenessBias: 1,
+        sources: []
+      };
+    }
+    const avg = (key, fallback = 1) => average(scopes.map((item) => safeValue(item[key], fallback)), fallback);
+    return {
+      active: true,
+      thresholdShift: clamp(avg("thresholdShift", 0), -(this.config.parameterGovernorMaxThresholdShift || 0.03), this.config.parameterGovernorMaxThresholdShift || 0.03),
+      stopLossMultiplier: clamp(avg("stopLossMultiplier", 1), 1 - (this.config.parameterGovernorMaxStopLossMultiplierDelta || 0.14), 1 + (this.config.parameterGovernorMaxStopLossMultiplierDelta || 0.14)),
+      takeProfitMultiplier: clamp(avg("takeProfitMultiplier", 1), 1 - (this.config.parameterGovernorMaxTakeProfitMultiplierDelta || 0.18), 1 + (this.config.parameterGovernorMaxTakeProfitMultiplierDelta || 0.18)),
+      trailingStopMultiplier: clamp(avg("trailingStopMultiplier", 1), 0.82, 1.18),
+      scaleOutTriggerMultiplier: clamp(avg("scaleOutTriggerMultiplier", 1), 0.84, 1.18),
+      scaleOutFractionMultiplier: clamp(avg("scaleOutFractionMultiplier", 1), 0.84, 1.18),
+      maxHoldMinutesMultiplier: clamp(avg("maxHoldMinutesMultiplier", 1), 0.82, 1.18),
+      executionAggressivenessBias: clamp(avg("executionAggressivenessBias", 1), 0.82, 1.18),
+      sources: scopes.map((item) => `${item.scopeType}:${item.id}`)
+    };
+  }
+
   evaluateEntry({
     symbol,
     score,
@@ -213,13 +249,19 @@ export class RiskManager {
     portfolioSummary = {},
     regimeSummary = { regime: "range" },
     thresholdTuningSummary = {},
+    parameterGovernorSummary = {},
+    capitalLadderSummary = {},
     nowIso
+    ,
+    venueConfirmationSummary = {},
+    strategyMetaSummary = {}
   }) {
     const reasons = [];
     const openPositions = runtime.openPositions || [];
     const baseThreshold = Math.max(this.config.modelThreshold, this.config.minModelConfidence);
     const optimizerAdjustments = this.getOptimizerAdjustments(strategySummary);
     const thresholdTuningAdjustment = this.getThresholdTuningAdjustment(thresholdTuningSummary, strategySummary, regimeSummary);
+    const parameterGovernorAdjustment = this.resolveParameterGovernor(parameterGovernorSummary, strategySummary, regimeSummary);
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const selfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -230,7 +272,7 @@ export class RiskManager {
       ? Math.max(0.5, this.config.minModelConfidence - paperWarmupDiscount)
       : this.config.minModelConfidence;
     const threshold = clamp(
-      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty + thresholdTuningAdjustment.adjustment,
+      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty + thresholdTuningAdjustment.adjustment + parameterGovernorAdjustment.thresholdShift + safeValue(strategyMetaSummary.thresholdShift || 0),
       thresholdFloor,
       0.99
     );
@@ -250,6 +292,9 @@ export class RiskManager {
     const driftSizeMultiplier = clamp((safeValue(driftSummary.severity || 0) >= 0.82) ? 0.55 : (safeValue(driftSummary.severity || 0) >= 0.45 ? 0.78 : 1), 0.2, 1);
     const selfHealSizeMultiplier = clamp(safeValue(selfHealState.sizeMultiplier) || 1, 0, 1);
     const metaSizeMultiplier = clamp(safeValue(metaSummary.sizeMultiplier) || 1, 0.1, 1.15);
+    const strategyMetaSizeMultiplier = clamp(safeValue(strategyMetaSummary.sizeMultiplier) || 1, 0.75, 1.15);
+    const venueSizeMultiplier = clamp((venueConfirmationSummary.status || "") === "blocked" ? 0.45 : (venueConfirmationSummary.confirmed ? 1.04 : 0.9), 0.45, 1.05);
+    const capitalLadderSizeMultiplier = clamp(safeValue(capitalLadderSummary.sizeMultiplier) || 1, 0, 1.2);
     const lowRiskCandidate = ["trend_following", "mean_reversion", "orderflow"].includes(strategySummary.family || "") &&
       (marketSnapshot.book.spreadBps || 0) <= Math.max(this.config.maxSpreadBps * 0.4, 3) &&
       (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
@@ -262,6 +307,9 @@ export class RiskManager {
     if ((sessionSummary.blockerReasons || []).length) {
       reasons.push(...sessionSummary.blockerReasons);
     }
+    if (capitalLadderSummary.allowEntries === false) {
+      reasons.push("capital_ladder_shadow_only");
+    }
     if ((timeframeSummary.blockerReasons || []).length) {
       reasons.push(...timeframeSummary.blockerReasons);
     }
@@ -273,6 +321,9 @@ export class RiskManager {
     }
     if (pairHealthSummary.quarantined) {
       reasons.push("pair_health_quarantine");
+    }
+    if ((venueConfirmationSummary.status || "") === "blocked") {
+      reasons.push(...(venueConfirmationSummary.blockerReasons || ["reference_venue_divergence"]));
     }
     if (["paused", "paper_fallback"].includes(selfHealState.mode)) {
       reasons.push("self_heal_pause_entries");
@@ -420,6 +471,7 @@ export class RiskManager {
     const minutesSincePortfolioTrade = recentPortfolioTradeAt ? minutesBetween(recentPortfolioTradeAt, nowIso) : Number.POSITIVE_INFINITY;
 
     const stopLossPct = clamp(Math.max(this.config.stopLossPct, marketSnapshot.market.atrPct * 1.2), 0.008, 0.04);
+    const adjustedStopLossPct = clamp(stopLossPct * parameterGovernorAdjustment.stopLossMultiplier * clamp(safeValue(strategyMetaSummary.stopLossMultiplier || 1), 0.88, 1.12), 0.006, 0.05);
     const regimeTakeProfitMultiplier = {
       trend: 1.9,
       breakout: 2.1,
@@ -427,10 +479,10 @@ export class RiskManager {
       high_vol: 1.5,
       event_risk: 1.3
     }[regimeSummary.regime] || 1.6;
-    const takeProfitPct = Math.max(this.config.takeProfitPct, stopLossPct * regimeTakeProfitMultiplier);
+    const takeProfitPct = clamp(Math.max(this.config.takeProfitPct, adjustedStopLossPct * regimeTakeProfitMultiplier) * parameterGovernorAdjustment.takeProfitMultiplier, 0.008, 0.5);
     const quoteFree = balance.quoteFree || 0;
     const maxByPosition = quoteFree * this.config.maxPositionFraction;
-    const maxByRisk = stopLossPct > 0 ? (quoteFree * this.config.riskPerTrade) / stopLossPct : maxByPosition;
+    const maxByRisk = adjustedStopLossPct > 0 ? (quoteFree * this.config.riskPerTrade) / adjustedStopLossPct : maxByPosition;
     const remainingExposureBudget = Math.max(0, totalEquityProxy * this.config.maxTotalExposureFraction - currentExposure);
     const confidenceFactor = clamp(0.65 + Math.max(0, score.probability - threshold) * 3.5, 0.6, 1.25);
     const calibrationFactor = clamp(0.75 + (score.calibrationConfidence || 0) * 0.4, 0.75, 1.15);
@@ -492,7 +544,11 @@ export class RiskManager {
       sessionSizeMultiplier *
       driftSizeMultiplier *
       selfHealSizeMultiplier *
-      metaSizeMultiplier;
+      metaSizeMultiplier *
+      strategyMetaSizeMultiplier *
+      venueSizeMultiplier *
+      capitalLadderSizeMultiplier *
+      parameterGovernorAdjustment.executionAggressivenessBias;
 
     if (quoteAmount < this.config.minTradeUsdt) {
       reasons.push("trade_size_below_minimum");
@@ -557,6 +613,9 @@ export class RiskManager {
       threshold,
       thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
       thresholdTuningApplied: thresholdTuningAdjustment,
+      parameterGovernorApplied: parameterGovernorAdjustment,
+      strategyMetaApplied: strategyMetaSummary,
+      capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,
       strategyConfidenceAdjustment: optimizerAdjustments.strategyConfidenceAdjustment,
       optimizerApplied: {
@@ -566,6 +625,7 @@ export class RiskManager {
         effectiveThreshold: threshold,
         thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
         thresholdTuningAdjustment: thresholdTuningAdjustment.adjustment,
+        parameterGovernorThresholdShift: parameterGovernorAdjustment.thresholdShift,
         globalThresholdTilt: optimizerAdjustments.globalThresholdTilt,
         familyThresholdTilt: optimizerAdjustments.familyThresholdTilt,
         strategyThresholdTilt: optimizerAdjustments.strategyThresholdTilt,
@@ -576,12 +636,13 @@ export class RiskManager {
         strategyConfidenceTilt: optimizerAdjustments.strategyConfidenceTilt
       },
       quoteAmount: finalQuoteAmount,
-      stopLossPct,
+      stopLossPct: adjustedStopLossPct,
       takeProfitPct,
+      maxHoldMinutes: Math.max(1, Math.round((this.config.maxHoldMinutes || 1) * parameterGovernorAdjustment.maxHoldMinutesMultiplier * clamp(safeValue(strategyMetaSummary.holdMultiplier || 1), 0.84, 1.14))),
       scaleOutPlan: {
         enabled: this.config.scaleOutFraction > 0,
-        fraction: this.config.scaleOutFraction,
-        triggerPct: Math.max(this.config.scaleOutTriggerPct, stopLossPct * 0.9),
+        fraction: clamp(this.config.scaleOutFraction * parameterGovernorAdjustment.scaleOutFractionMultiplier, 0.05, 0.95),
+        triggerPct: Math.max(this.config.scaleOutTriggerPct, adjustedStopLossPct * 0.9) * parameterGovernorAdjustment.scaleOutTriggerMultiplier,
         minNotionalUsd: this.config.scaleOutMinNotionalUsd,
         trailOffsetPct: this.config.scaleOutTrailOffsetPct
       },
@@ -598,6 +659,7 @@ export class RiskManager {
       onChainLiteSummary,
       qualityQuorumSummary,
       divergenceSummary,
+      venueConfirmationSummary,
       rankScore:
         score.probability -
         threshold +
@@ -620,6 +682,7 @@ export class RiskManager {
         (qualityQuorumSummary.quorumScore || qualityQuorumSummary.averageScore || 0) * 0.04 +
         (onChainLiteSummary.marketBreadthScore || 0) * 0.025 +
         (onChainLiteSummary.majorsMomentumScore || 0) * 0.018 +
+        ((venueConfirmationSummary.confirmed ? 0.02 : (venueConfirmationSummary.status || "") === "blocked" ? -0.06 : 0)) +
         (marketSnapshot.book.bookPressure || 0) * 0.04 +
         (marketSnapshot.market.bullishPatternScore || 0) * 0.03 +
         (metaSummary.score || 0) * 0.05 -
@@ -639,16 +702,21 @@ export class RiskManager {
     };
   }
 
-  evaluateExit({ position, currentPrice, newsSummary, announcementSummary = {}, marketStructureSummary = {}, calendarSummary = {}, marketSnapshot = {}, exitIntelligenceSummary = {}, exitPolicySummary = {}, nowIso }) {
+  evaluateExit({ position, currentPrice, newsSummary, announcementSummary = {}, marketStructureSummary = {}, calendarSummary = {}, marketSnapshot = {}, exitIntelligenceSummary = {}, exitPolicySummary = {}, parameterGovernorSummary = {}, nowIso }) {
     const updatedHigh = Math.max(position.highestPrice || position.entryPrice, currentPrice);
     const updatedLow = Math.min(position.lowestPrice || position.entryPrice, currentPrice);
     const adaptiveExitPolicy = this.resolveAdaptiveExitPolicy(exitPolicySummary, position);
-    const trailingStopPct = clamp((position.trailingStopPct || this.config.trailingStopPct) * (adaptiveExitPolicy.trailingStopMultiplier || 1), 0.004, 0.04);
+    const parameterGovernorAdjustment = this.resolveParameterGovernor(parameterGovernorSummary, {
+      activeStrategy: position.strategyAtEntry || position.strategyDecision?.activeStrategy || position.entryRationale?.strategy?.activeStrategy || null
+    }, {
+      regime: position.regimeAtEntry || position.entryRationale?.regimeSummary?.regime || null
+    });
+    const trailingStopPct = clamp((position.trailingStopPct || this.config.trailingStopPct) * (adaptiveExitPolicy.trailingStopMultiplier || 1) * (parameterGovernorAdjustment.trailingStopMultiplier || 1), 0.004, 0.04);
     const trailingStopPrice = updatedHigh * (1 - trailingStopPct);
     const heldMinutes = minutesBetween(position.entryAt, nowIso);
-    const scaleOutTriggerPrice = (position.scaleOutTriggerPrice || position.entryPrice * (1 + this.config.scaleOutTriggerPct)) * (adaptiveExitPolicy.scaleOutTriggerMultiplier || 1);
+    const scaleOutTriggerPrice = (position.scaleOutTriggerPrice || position.entryPrice * (1 + this.config.scaleOutTriggerPct)) * (adaptiveExitPolicy.scaleOutTriggerMultiplier || 1) * (parameterGovernorAdjustment.scaleOutTriggerMultiplier || 1);
     const notional = position.lastMarkedPrice ? position.lastMarkedPrice * position.quantity : position.notional || position.totalCost || 0;
-    const effectiveMaxHoldMinutes = Math.max(1, Math.round((this.config.maxHoldMinutes || 1) * (adaptiveExitPolicy.maxHoldMinutesMultiplier || 1)));
+    const effectiveMaxHoldMinutes = Math.max(1, Math.round((position.maxHoldMinutes || this.config.maxHoldMinutes || 1) * (adaptiveExitPolicy.maxHoldMinutesMultiplier || 1) * (parameterGovernorAdjustment.maxHoldMinutesMultiplier || 1)));
     const canScaleOut =
       !position.scaleOutCompletedAt &&
       !position.scaleOutInProgress &&
@@ -661,7 +729,7 @@ export class RiskManager {
         shouldExit: false,
         shouldScaleOut: true,
         scaleOutFraction: clamp(
-          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1),
+          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1) * (parameterGovernorAdjustment.scaleOutFractionMultiplier || 1),
           0.05,
           0.95
         ),
@@ -714,7 +782,7 @@ export class RiskManager {
         shouldExit: false,
         shouldScaleOut: true,
         scaleOutFraction: clamp(
-          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1),
+          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1) * (parameterGovernorAdjustment.scaleOutFractionMultiplier || 1),
           0.05,
           0.95
         ),
@@ -742,4 +810,3 @@ export class RiskManager {
     };
   }
 }
-

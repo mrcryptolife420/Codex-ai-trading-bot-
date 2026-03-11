@@ -18,8 +18,10 @@ import { MarketStructureService } from "../market/marketStructureService.js";
 import { MarketSentimentService, EMPTY_MARKET_SENTIMENT } from "../market/marketSentimentService.js";
 import { VolatilityService, EMPTY_VOLATILITY_CONTEXT } from "../market/volatilityService.js";
 import { OnChainLiteService, EMPTY_ONCHAIN } from "../market/onChainLiteService.js";
+import { ReferenceVenueService } from "../market/referenceVenueService.js";
 import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
+import { ParameterGovernor } from "../ai/parameterGovernor.js";
 import { StateStore } from "../storage/stateStore.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { DataRecorder } from "./dataRecorder.js";
@@ -28,6 +30,7 @@ import { StateBackupManager } from "./stateBackupManager.js";
 import { runResearchLab } from "./researchLab.js";
 import { ResearchRegistry } from "./researchRegistry.js";
 import { UniverseSelector } from "./universeSelector.js";
+import { StrategyResearchMiner } from "./strategyResearchMiner.js";
 import { resolveDynamicWatchlist } from "./watchlistResolver.js";
 import { HealthMonitor } from "./healthMonitor.js";
 import { DriftMonitor } from "./driftMonitor.js";
@@ -37,11 +40,13 @@ import { OfflineTrainer } from "./offlineTrainer.js";
 import { SelfHealManager } from "./selfHealManager.js";
 import { StreamCoordinator } from "./streamCoordinator.js";
 import { buildDeepScanPlan, buildLightweightSnapshot } from "./scanPlanner.js";
+import { CapitalLadder } from "./capitalLadder.js";
 import { buildSessionSummary } from "./sessionManager.js";
 import { buildTimeframeConsensus } from "./timeframeConsensus.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
+import { summarizeStrategyDsl } from "../research/strategyDsl.js";
 import { minutesBetween, nowIso } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
 import { clamp } from "../utils/math.js";
@@ -1641,6 +1646,146 @@ function summarizeExecutionCalibration(summary = {}) {
   };
 }
 
+function summarizeStrategyMeta(summary = {}) {
+  return {
+    preferredFamily: summary.preferredFamily || null,
+    preferredExecutionStyle: summary.preferredExecutionStyle || null,
+    familyAlignment: num(summary.familyAlignment || 0, 4),
+    fitBoost: num(summary.fitBoost || 0, 4),
+    thresholdShift: num(summary.thresholdShift || 0, 4),
+    makerBias: num(summary.makerBias || 0, 4),
+    sizeMultiplier: num(summary.sizeMultiplier ?? 1, 4),
+    stopLossMultiplier: num(summary.stopLossMultiplier ?? 1, 4),
+    holdMultiplier: num(summary.holdMultiplier ?? 1, 4),
+    confidence: num(summary.confidence || 0, 4),
+    families: arr(summary.families || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      probability: num(item.probability || 0, 4),
+      confidence: num(item.confidence || 0, 4),
+      preferred: Boolean(item.preferred)
+    })),
+    executionStyles: arr(summary.executionStyles || []).slice(0, 3).map((item) => ({
+      id: item.id || null,
+      probability: num(item.probability || 0, 4),
+      confidence: num(item.confidence || 0, 4)
+    })),
+    drivers: arr(summary.drivers || []).slice(0, 4)
+  };
+}
+
+function summarizeStrategyResearch(summary = {}) {
+  const mapCandidate = (item) => ({
+    ...summarizeStrategyDsl(item),
+    status: item.status || "observe",
+    paperReady: Boolean(item.paperReady),
+    score: {
+      overall: num(item.score?.overall || 0, 4),
+      safetyScore: num(item.score?.safetyScore || 0, 4),
+      governanceSupport: num(item.score?.governanceSupport || 0, 4),
+      simplicityScore: num(item.score?.simplicityScore || 0, 4),
+      noveltyScore: num(item.score?.noveltyScore || 0, 4),
+      stressScore: num(item.score?.stressScore || 0, 4)
+    },
+    parameterDiffs: {
+      stopLossPct: num(item.parameterDiffs?.stopLossPct || 0, 4),
+      takeProfitPct: num(item.parameterDiffs?.takeProfitPct || 0, 4),
+      trailingStopPct: num(item.parameterDiffs?.trailingStopPct || 0, 4),
+      maxHoldMinutes: item.parameterDiffs?.maxHoldMinutes || 0,
+      entryStyle: item.parameterDiffs?.entryStyle || null
+    },
+    stress: {
+      status: item.stress?.status || "warmup",
+      survivalScore: num(item.stress?.survivalScore || 0, 4),
+      tailLossPct: num(item.stress?.tailLossPct || 0, 4),
+      worstScenario: item.stress?.worstScenario || null
+    },
+    notes: [...(item.notes || [])].slice(0, 4)
+  });
+  return {
+    generatedAt: summary.generatedAt || null,
+    candidateCount: summary.candidateCount || 0,
+    importedCandidateCount: summary.importedCandidateCount || 0,
+    approvedCandidateCount: summary.approvedCandidateCount || 0,
+    blockedCount: summary.blockedCount || 0,
+    leader: summary.leader || null,
+    genome: {
+      parentCount: summary.genome?.parentCount || 0,
+      candidateCount: summary.genome?.candidateCount || 0,
+      notes: [...(summary.genome?.notes || [])]
+    },
+    approvedCandidates: arr(summary.approvedCandidates || []).slice(0, 6).map(mapCandidate),
+    candidates: arr(summary.candidates || []).slice(0, 10).map(mapCandidate),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeParameterGovernor(summary = {}) {
+  const mapScope = (item) => ({
+    id: item.id || null,
+    scopeType: item.scopeType || "strategy",
+    tradeCount: item.tradeCount || 0,
+    winRate: num(item.winRate || 0, 4),
+    avgPnlPct: num(item.avgPnlPct || 0, 4),
+    avgCapture: num(item.avgCapture || 0, 4),
+    avgSlippageDeltaBps: num(item.avgSlippageDeltaBps || 0, 2),
+    avgHoldMinutes: num(item.avgHoldMinutes || 0, 1),
+    thresholdShift: num(item.thresholdShift || 0, 4),
+    stopLossMultiplier: num(item.stopLossMultiplier || 1, 4),
+    takeProfitMultiplier: num(item.takeProfitMultiplier || 1, 4),
+    trailingStopMultiplier: num(item.trailingStopMultiplier || 1, 4),
+    scaleOutTriggerMultiplier: num(item.scaleOutTriggerMultiplier || 1, 4),
+    scaleOutFractionMultiplier: num(item.scaleOutFractionMultiplier || 1, 4),
+    maxHoldMinutesMultiplier: num(item.maxHoldMinutesMultiplier || 1, 4),
+    executionAggressivenessBias: num(item.executionAggressivenessBias || 1, 4),
+    governanceScore: num(item.governanceScore || 0, 4),
+    status: item.status || "observe"
+  });
+  return {
+    generatedAt: summary.generatedAt || null,
+    tradeCount: summary.tradeCount || 0,
+    status: summary.status || "warmup",
+    strategyScopes: arr(summary.strategyScopes || []).slice(0, 6).map(mapScope),
+    regimeScopes: arr(summary.regimeScopes || []).slice(0, 6).map(mapScope),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeVenueConfirmation(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    symbol: summary.symbol || summary.leadSymbol || null,
+    status: summary.status || "warmup",
+    confirmed: Boolean(summary.confirmed),
+    venueCount: summary.venueCount || 0,
+    candidateCount: summary.candidateCount || 0,
+    confirmedCount: summary.confirmedCount || 0,
+    blockedCount: summary.blockedCount || 0,
+    divergenceBps: summary.divergenceBps == null ? null : num(summary.divergenceBps, 2),
+    averageDivergenceBps: summary.averageDivergenceBps == null ? null : num(summary.averageDivergenceBps, 2),
+    blockerReasons: [...(summary.blockerReasons || [])],
+    venues: arr(summary.venues || []).slice(0, 5).map((item) => ({
+      venue: item.venue || null,
+      mid: num(item.mid || 0, 8),
+      divergenceBps: item.divergenceBps == null ? null : num(item.divergenceBps || 0, 2)
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeCapitalLadder(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    stage: summary.stage || "paper",
+    allowEntries: Boolean(summary.allowEntries),
+    sizeMultiplier: num(summary.sizeMultiplier ?? 1, 4),
+    approvedResearchCount: summary.approvedResearchCount || 0,
+    liveTradeCount: summary.liveTradeCount || 0,
+    promotionReadyLevel: summary.promotionReadyLevel || null,
+    blockerReasons: [...(summary.blockerReasons || [])],
+    notes: [...(summary.notes || [])]
+  };
+}
+
 function buildCandidateQualityQuorum({
   symbol,
   marketSnapshot,
@@ -1651,6 +1796,7 @@ function buildCandidateQualityQuorum({
   timeframeSummary = {},
   sourceReliabilitySummary = {},
   divergenceSummary = {},
+  venueConfirmationSummary = {},
   config,
   nowIso: generatedAt = new Date().toISOString()
 } = {}) {
@@ -1721,6 +1867,15 @@ function buildCandidateQualityQuorum({
       critical: false,
       passed: (exchangeSummary?.riskScore || 0) < 0.72,
       detail: `${exchangeSummary?.highPriorityCount || 0} notices`
+    },
+    {
+      id: "reference_venues",
+      label: "Reference venues",
+      critical: false,
+      passed: (venueConfirmationSummary?.status || "warmup") !== "blocked",
+      detail: venueConfirmationSummary?.venueCount
+        ? `${venueConfirmationSummary.venueCount} venues | div ${num(venueConfirmationSummary?.divergenceBps || 0, 2)} bps`
+        : "geen externe venue-confirmatie"
     }
   ];
   const failedCritical = checks.filter((check) => check.critical && !check.passed);
@@ -1822,13 +1977,16 @@ export class TradingBot {
     this.selfHeal = new SelfHealManager(config, logger);
     this.portfolio = new PortfolioOptimizer(config);
     this.execution = new ExecutionEngine(config);
+    this.referenceVenue = new ReferenceVenueService(config, logger);
     this.committee = new MultiAgentCommittee(config);
     this.rlPolicy = new ReinforcementExecutionPolicy(undefined, config);
     this.strategyOptimizer = new StrategyOptimizer(config);
+    this.parameterGovernor = new ParameterGovernor(config);
     this.strategyAttribution = new StrategyAttribution(config);
     this.exitIntelligence = new ExitIntelligence(config);
     this.metaGate = new MetaDecisionGate(config);
     this.researchRegistry = new ResearchRegistry(config);
+    this.strategyResearchMiner = new StrategyResearchMiner(config, logger);
     this.modelRegistry = new ModelRegistry(config);
     this.dataRecorder = new DataRecorder({ runtimeDir: config.runtimeDir, config, logger });
     this.backupManager = new StateBackupManager({ runtimeDir: config.runtimeDir, config, logger });
@@ -1836,6 +1994,7 @@ export class TradingBot {
     this.divergenceMonitor = new DivergenceMonitor(config);
     this.offlineTrainer = new OfflineTrainer(config);
     this.universeSelector = new UniverseSelector(config);
+    this.capitalLadder = new CapitalLadder(config);
     this.stream = new StreamCoordinator({ client: this.client, config, logger });
     this.symbolRules = {};
     this.marketCache = {};
@@ -1868,8 +2027,12 @@ export class TradingBot {
     this.runtime.divergence = this.runtime.divergence || summarizeDivergenceSummary({});
     this.runtime.offlineTrainer = this.runtime.offlineTrainer || summarizeOfflineTrainer({});
     this.runtime.shadowTrading = this.runtime.shadowTrading || {};
+    this.runtime.strategyResearch = this.runtime.strategyResearch || {};
     this.runtime.thresholdTuning = this.runtime.thresholdTuning || {};
+    this.runtime.parameterGovernor = this.runtime.parameterGovernor || {};
     this.runtime.executionCalibration = this.runtime.executionCalibration || {};
+    this.runtime.venueConfirmation = this.runtime.venueConfirmation || {};
+    this.runtime.capitalLadder = this.runtime.capitalLadder || {};
     this.runtime.exchangeTruth = this.runtime.exchangeTruth || {};
     this.runtime.orderLifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
     this.runtime.ops = this.runtime.ops || { lastUpdatedAt: null, incidentTimeline: [], runbooks: [], performanceChange: null, readiness: null };
@@ -2327,20 +2490,38 @@ export class TradingBot {
     const rawResearchRegistry = this.researchRegistry.buildRegistry({ journal: this.journal, latestSummary: this.runtime.researchLab?.latestSummary || null, modelBackups: this.modelBackups || [], nowIso: referenceNow });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: referenceNow });
     const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: referenceNow });
+    const rawStrategyResearch = this.strategyResearchMiner.buildSummary({
+      journal: this.journal,
+      researchRegistry: rawResearchRegistry,
+      offlineTrainer: offlineTrainerSummary,
+      importedCandidates: this.runtime.strategyResearch?.importedCandidates || [],
+      nowIso: referenceNow
+    });
     const executionCalibration = this.execution.buildPaperCalibration({ journal: this.journal, nowIso: referenceNow });
+    const parameterGovernor = this.parameterGovernor.buildSnapshot({ journal: this.journal, nowIso: referenceNow });
     this.runtime.strategyAttribution = summarizeAttributionSnapshot(this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: referenceNow }));
     this.runtime.researchRegistry = summarizeResearchRegistry(rawResearchRegistry);
     this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
     this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
     this.runtime.modelRegistry = summarizeModelRegistry(this.modelRegistry.buildRegistry({ snapshots: this.modelBackups || [], report, researchRegistry: rawResearchRegistry, calibration: this.model.getCalibrationSummary(), deployment: this.model.getDeploymentSummary(), divergenceSummary, offlineTrainer: offlineTrainerSummary, nowIso: referenceNow }));
+    this.runtime.strategyResearch = rawStrategyResearch;
+    this.runtime.parameterGovernor = summarizeParameterGovernor(parameterGovernor);
     this.runtime.executionCalibration = summarizeExecutionCalibration(executionCalibration);
+    this.runtime.capitalLadder = summarizeCapitalLadder(this.capitalLadder.buildSnapshot({
+      botMode: this.config.botMode,
+      modelRegistry: this.runtime.modelRegistry || {},
+      strategyResearch: summarizeStrategyResearch(this.runtime.strategyResearch || {}),
+      deployment: this.model.getDeploymentSummary(),
+      report,
+      nowIso: referenceNow
+    }));
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
     this.updateThresholdTuningState(offlineTrainerSummary, referenceNow);
     this.syncOrderLifecycleState("governance_refresh");
     this.refreshOperationalViews({ report, nowIso: referenceNow });
-    return { report, rawResearchRegistry, divergenceSummary, offlineTrainerSummary, executionCalibration };
+    return { report, rawResearchRegistry, rawStrategyResearch, divergenceSummary, offlineTrainerSummary, executionCalibration, parameterGovernor };
   }
 
   syncOrderLifecycleState(reason = "runtime_sync") {
@@ -2503,6 +2684,9 @@ export class TradingBot {
     const selfHeal = this.runtime.selfHeal || {};
     const qualityQuorum = this.runtime.qualityQuorum || {};
     const drift = this.runtime.drift || {};
+    const venueConfirmation = this.runtime.venueConfirmation || {};
+    const capitalLadder = this.runtime.capitalLadder || {};
+    const strategyResearch = this.runtime.strategyResearch || {};
 
     if (exchangeTruth.freezeEntries) {
       runbooks.push({
@@ -2565,6 +2749,33 @@ export class TradingBot {
         title: "Observe-only data modus",
         reason: (qualityQuorum.blockerReasons || [])[0] || "Kwaliteitsquorum blokkeert nieuwe entries.",
         action: "Wacht op lokale book, provider of pair-health herstel voordat nieuwe trades worden geopend."
+      });
+    }
+    if ((venueConfirmation.status || "") === "blocked") {
+      runbooks.push({
+        id: "reference_venue_divergence",
+        severity: "negative",
+        title: "Venue-confirmatie wijkt af",
+        reason: venueConfirmation.notes?.[0] || "Reference venues bevestigen Binance niet.",
+        action: "Controleer of Binance tape, spread of marktstructuur tijdelijk afwijkt voordat entries opnieuw live mogen."
+      });
+    }
+    if (capitalLadder.allowEntries === false) {
+      runbooks.push({
+        id: "capital_ladder_shadow",
+        severity: "neutral",
+        title: "Capital ladder houdt live shadow-only",
+        reason: capitalLadder.notes?.[0] || "Governance laat nog geen live capital deployment toe.",
+        action: "Werk eerst promotion-policy, research-kandidaten en probation af voordat live sizing omhoog mag."
+      });
+    }
+    if ((strategyResearch.approvedCandidateCount || 0) > 0) {
+      runbooks.push({
+        id: "strategy_research_candidates",
+        severity: "positive",
+        title: "Nieuwe research-kandidaten klaar",
+        reason: strategyResearch.notes?.[0] || "Er zijn nieuwe paper-kandidaten uit importer/genome research.",
+        action: "Gebruik research/status om de nieuwe kandidaten te reviewen en neem ze alleen via paper probation op."
       });
     }
     if (arr(drift.blockerReasons || []).length) {
@@ -2635,7 +2846,13 @@ export class TradingBot {
           : "Geen actieve threshold probation.",
         this.runtime.executionCalibration?.status === "calibrated"
           ? "Paper execution gebruikt live fill-calibratie."
-          : "Execution-calibratie warmt nog op."
+          : "Execution-calibratie warmt nog op.",
+        this.runtime.capitalLadder?.stage
+          ? `Capital ladder: ${this.runtime.capitalLadder.stage}.`
+          : "Capital ladder warmt nog op.",
+        (this.runtime.strategyResearch?.approvedCandidateCount || 0)
+          ? `${this.runtime.strategyResearch.approvedCandidateCount} research-kandidaten klaar voor paper probation.`
+          : "Nog geen nieuwe strategy research-kandidaten klaar."
       ]
     };
   }
@@ -2653,6 +2870,9 @@ export class TradingBot {
     }
     if (arr(this.runtime.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
       reasons.push("lifecycle_attention_required");
+    }
+    if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
+      reasons.push("capital_ladder_shadow_only");
     }
     return {
       checkedAt: referenceNow,
@@ -3044,6 +3264,11 @@ export class TradingBot {
         detail: `bias ${num((candidate.strategySummary?.optimizerBoost || 0) * 100, 1)}% | thr ${num((candidate.decision.thresholdAdjustment || 0) * 100, 1)}% | strat floor ${num((candidate.decision.strategyConfidenceFloor || this.config.strategyMinConfidence) * 100, 1)}%`
       },
       {
+        label: "Strategy meta",
+        passed: (candidate.strategyMetaSummary?.confidence || 0) < 0.28 || (candidate.strategyMetaSummary?.familyAlignment || 0) >= -0.12,
+        detail: `${candidate.strategyMetaSummary?.preferredFamily || candidate.strategySummary?.family || "-"} | maker ${num(candidate.strategyMetaSummary?.makerBias || 0, 2)} | fit ${num((candidate.strategyMetaSummary?.fitBoost || 0) * 100, 1)}%`
+      },
+      {
         label: "Universe selector",
         passed: candidate.universeSummary?.selected !== false,
         detail: `score ${num((candidate.universeSummary?.score || 0) * 100, 1)}% | ${candidate.universeSummary?.health || "watch"} | ${num(candidate.universeSummary?.spreadBps || 0, 2)} bps`
@@ -3121,6 +3346,13 @@ export class TradingBot {
         detail: `${candidate.qualityQuorumSummary?.status || "ready"} | score ${num((candidate.qualityQuorumSummary?.quorumScore || 0) * 100, 1)}% | ${(candidate.qualityQuorumSummary?.blockerReasons || [])[0] || "geen blocker"}`
       },
       {
+        label: "Reference venues",
+        passed: (candidate.venueConfirmationSummary?.status || "warmup") !== "blocked",
+        detail: candidate.venueConfirmationSummary?.venueCount
+          ? `${candidate.venueConfirmationSummary.venueCount} venues | div ${num(candidate.venueConfirmationSummary?.divergenceBps || 0, 2)} bps`
+          : "Geen venue-confirmatie"
+      },
+      {
         label: "Stablecoin flow",
         passed: (candidate.onChainLiteSummary?.riskOffScore || 0) < 0.82 && (candidate.onChainLiteSummary?.stressScore || 0) < 0.78,
         detail: `liq ${num((candidate.onChainLiteSummary?.liquidityScore || 0) * 100, 1)}% | breadth ${num((candidate.onChainLiteSummary?.marketBreadthScore || 0) * 100, 1)}% | stress ${num((candidate.onChainLiteSummary?.stressScore || 0) * 100, 1)}%`
@@ -3159,6 +3391,11 @@ export class TradingBot {
         label: "Portfolio overlap",
         passed: !(candidate.portfolioSummary.reasons || []).length,
         detail: `Corr ${num(candidate.portfolioSummary.maxCorrelation || 0, 2)} | cluster ${candidate.portfolioSummary.sameClusterCount || 0} | alloc ${num((candidate.portfolioSummary.allocatorScore || 0) * 100, 1)}%`
+      },
+      {
+        label: "Capital ladder",
+        passed: candidate.decision.capitalLadderApplied?.allowEntries !== false,
+        detail: `${candidate.decision.capitalLadderApplied?.stage || "paper"} | size ${num((candidate.decision.capitalLadderApplied?.sizeMultiplier || 1) * 100, 1)}%`
       }
     ];
   }
@@ -3303,8 +3540,12 @@ export class TradingBot {
       expertMix: summarizeExpertMix(candidate.score.expertMix),
       metaNeural: summarizeMetaNeural(candidate.score.metaNeural),
       executionNeural: summarizeExecutionNeural(candidate.score.executionNeural),
+      strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
+      parameterGovernor: candidate.decision.parameterGovernorApplied || null,
+      capitalLadder: summarizeCapitalLadder(candidate.decision.capitalLadderApplied || this.runtime.capitalLadder || {}),
+      venueConfirmation: summarizeVenueConfirmation(candidate.venueConfirmationSummary || {}),
       stopLossPct: num(candidate.decision.stopLossPct, 4),
       takeProfitPct: num(candidate.decision.takeProfitPct, 4),
       blockerReasons: [...(candidate.decision.reasons || [])],
@@ -3387,7 +3628,7 @@ export class TradingBot {
       calendarSummary
     });
     const optimizerSummary = context.optimizerSummary || this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
-    const strategySummary = evaluateStrategySet({
+    let strategySummary = evaluateStrategySet({
       symbol,
       marketSnapshot,
       newsSummary,
@@ -3406,6 +3647,29 @@ export class TradingBot {
     const pairHealthSummary = context.pairHealthSummary || this.pairHealthMonitor.evaluateSymbol(context.pairHealthSnapshot || {}, { symbol, marketSnapshot, newsSummary, timeframeSummary });
     const divergenceSummary = context.divergenceSummary || this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
     const sourceReliabilitySummary = context.sourceReliabilitySummary || summarizeSourceReliability(this.runtime.sourceReliability || {});
+    const strategyMetaSummary = this.model.scoreStrategyMeta({
+      score: {
+        probability: strategySummary.fitScore || 0.5,
+        confidence: strategySummary.confidence || 0
+      },
+      marketSnapshot,
+      newsSummary,
+      marketStructureSummary,
+      strategySummary,
+      timeframeSummary,
+      pairHealthSummary,
+      regimeSummary
+    });
+    strategySummary = {
+      ...strategySummary,
+      fitScore: clamp((strategySummary.fitScore || 0) + (strategyMetaSummary.fitBoost || 0), 0, 1),
+      confidence: clamp((strategySummary.confidence || 0) + Math.max(-0.04, Math.min(0.04, strategyMetaSummary.familyAlignment || 0)), 0, 1),
+      metaSelector: summarizeStrategyMeta(strategyMetaSummary),
+      preferredExecutionStyle: strategyMetaSummary.preferredExecutionStyle || null
+    };
+    const venueConfirmationSummary = context.venueConfirmationSummary || await this.referenceVenue.getSymbolSummary(symbol, marketSnapshot, {
+      referenceQuotes: context.referenceQuotes || null
+    });
     const qualityQuorumSummary = buildCandidateQualityQuorum({
       symbol,
       marketSnapshot,
@@ -3416,6 +3680,7 @@ export class TradingBot {
       timeframeSummary,
       sourceReliabilitySummary,
       divergenceSummary,
+      venueConfirmationSummary,
       config: this.config,
       nowIso: now.toISOString()
     });
@@ -3613,11 +3878,15 @@ export class TradingBot {
       portfolioSummary,
       regimeSummary,
       thresholdTuningSummary: this.runtime.thresholdTuning || {},
+      parameterGovernorSummary: this.runtime.parameterGovernor || {},
+      capitalLadderSummary: this.runtime.capitalLadder || {},
       timeframeSummary,
       pairHealthSummary,
       qualityQuorumSummary,
       onChainLiteSummary,
       divergenceSummary,
+      venueConfirmationSummary,
+      strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
       nowIso: now.toISOString()
     });
     decision.rankScore = num((decision.rankScore || 0) + (attributionSummary.rankBoost || 0), 4);
@@ -3633,7 +3902,9 @@ export class TradingBot {
       portfolioSummary,
       committeeSummary,
       rlAdvice,
-      executionNeuralSummary: score.executionNeural
+      executionNeuralSummary: score.executionNeural,
+      strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
+      capitalLadderSummary: this.runtime.capitalLadder || {}
     });
     decision.committeeSummary = committeeSummary;
     decision.rlAdvice = rlAdvice;
@@ -3650,6 +3921,7 @@ export class TradingBot {
       calendarSummary,
       timeframeSummary,
       pairHealthSummary,
+      venueConfirmationSummary,
       qualityQuorumSummary,
       divergenceSummary,
       streamFeatures,
@@ -3657,6 +3929,7 @@ export class TradingBot {
       score,
       regimeSummary,
       strategySummary,
+      strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
       optimizerSummary,
       portfolioSummary,
       attributionSummary,
@@ -3669,6 +3942,7 @@ export class TradingBot {
       metaSummary,
       sourceReliabilitySummary,
       qualityQuorumSummary,
+      venueConfirmationSummary,
       decision
     };
   }
@@ -3766,6 +4040,7 @@ export class TradingBot {
           marketSnapshot,
           exitIntelligenceSummary,
           exitPolicySummary: this.runtime.offlineTrainer?.exitLearning || {},
+          parameterGovernorSummary: this.runtime.parameterGovernor || {},
           nowIso: nowIso()
         });
         position.highestPrice = exitDecision.updatedHigh;
@@ -3962,11 +4237,13 @@ export class TradingBot {
     candidates.sort((left, right) => right.decision.rankScore - left.decision.rankScore);
     this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
     this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(candidates, now.toISOString()));
+    this.runtime.venueConfirmation = summarizeVenueConfirmation(this.referenceVenue.summarizeRuntime(candidates, now.toISOString()));
     this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
       symbol: candidate.symbol,
       summary: this.buildCandidateSummary(candidate),
       setupStyle: buildSetupStyle(candidate),
       strategy: summarizeStrategy(candidate.strategySummary),
+      strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
       probability: num(candidate.score.probability, 4),
       rawProbability: num(candidate.score.rawProbability || 0, 4),
       confidence: num(candidate.score.confidence || 0, 4),
@@ -3997,6 +4274,9 @@ export class TradingBot {
       sourceQualityScore: num(candidate.newsSummary.sourceQualityScore || 0, 3),
       reliabilityScore: num(candidate.newsSummary.reliabilityScore || 0, 3),
       whitelistCoverage: num(candidate.newsSummary.whitelistCoverage || 0, 3),
+      venueConfirmation: summarizeVenueConfirmation(candidate.venueConfirmationSummary || {}),
+      capitalLadder: summarizeCapitalLadder(candidate.decision.capitalLadderApplied || {}),
+      parameterGovernor: candidate.decision.parameterGovernorApplied || null,
       regime: candidate.regimeSummary.regime,
       regimeConfidence: num(candidate.regimeSummary.confidence || 0, 3),
       baseThreshold: num(candidate.decision.baseThreshold || candidate.decision.threshold, 4),
@@ -4313,10 +4593,23 @@ export class TradingBot {
   async runResearch(options = {}) {
     const symbols = (options.symbols || []).map((symbol) => `${symbol}`.trim().toUpperCase()).filter(Boolean);
     const result = await runResearchLab({ config: this.config, logger: this.logger, symbols });
+    const fetchedCandidates = await this.strategyResearchMiner.fetchWhitelistedCandidates();
     this.runtime.researchLab = {
       lastRunAt: result.generatedAt,
       latestSummary: result
     };
+    if (fetchedCandidates.length) {
+      this.runtime.strategyResearch = this.strategyResearchMiner.buildSummary({
+        journal: this.journal,
+        researchRegistry: this.runtime.researchRegistry || {},
+        offlineTrainer: this.runtime.offlineTrainer || {},
+        importedCandidates: fetchedCandidates,
+        nowIso: result.generatedAt
+      });
+      this.recordEvent("strategy_research_imported", {
+        candidateCount: fetchedCandidates.length
+      });
+    }
     this.journal.researchRuns.push(result);
     await this.dataRecorder.recordResearch(result);
     this.refreshGovernanceViews(nowIso());
@@ -5005,6 +5298,8 @@ export class TradingBot {
         calibration: this.model.getCalibrationSummary(),
         deployment: this.model.getDeploymentSummary(),
         transformer: this.model.getTransformerSummary(),
+        strategyMeta: topDecision.strategyMeta || leadPosition?.entryRationale?.strategyMeta || summarizeStrategyMeta({}),
+        parameterGovernor: summarizeParameterGovernor(this.runtime.parameterGovernor || {}),
         rlPolicy: this.rlPolicy.getSummary(),
         committee: topDecision.committee || leadPosition?.entryRationale?.committee || summarizeCommittee({}),
         strategy: topDecision.strategy || topDecision.strategySummary || leadPosition?.entryRationale?.strategy || summarizeStrategy({}),
@@ -5015,6 +5310,7 @@ export class TradingBot {
         session: topDecision.session || this.runtime.session || leadPosition?.entryRationale?.session || summarizeSession({}),
         drift: summarizeDrift(this.runtime.drift || {}),
         selfHeal: summarizeSelfHeal(this.runtime.selfHeal || {}),
+        venueConfirmation: summarizeVenueConfirmation(this.runtime.venueConfirmation || {}),
         exchangeTruth: summarizeExchangeTruth(this.runtime.exchangeTruth || {}),
         orderLifecycle: summarizeOrderLifecycle(this.runtime.orderLifecycle || {}),
         stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
@@ -5029,7 +5325,8 @@ export class TradingBot {
         shadowTrading: summarizeShadowTrading(this.runtime.shadowTrading || {}),
         service: summarizeServiceState(this.runtime.service || {}),
         thresholdTuning: summarizeThresholdTuningState(this.runtime.thresholdTuning || {}),
-        executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {})
+        executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {}),
+        capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {})
       },
       portfolio: this.buildPortfolioView(),
       exchange: exchangeOverview,
@@ -5053,6 +5350,7 @@ export class TradingBot {
       universe: summarizeUniverseSelection(this.runtime.universe || {}),
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
       research: this.buildResearchView(),
+      strategyResearch: summarizeStrategyResearch(this.runtime.strategyResearch || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
       dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
       report: {
@@ -5129,6 +5427,7 @@ export class TradingBot {
       marketStructure: dashboard.marketStructure,
       qualityQuorum: dashboard.qualityQuorum,
       offlineTrainer: dashboard.offlineTrainer,
+      strategyResearch: dashboard.strategyResearch,
       calendar: dashboard.calendar,
       safety: dashboard.safety,
       ops: dashboard.ops,
@@ -5137,25 +5436,6 @@ export class TradingBot {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

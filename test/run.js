@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AdaptiveTradingModel } from "../src/ai/adaptiveModel.js";
+import { ParameterGovernor } from "../src/ai/parameterGovernor.js";
+import { StrategyMetaSelector } from "../src/ai/strategyMetaSelector.js";
 import { ExecutionEngine } from "../src/execution/executionEngine.js";
 import { BinanceClient } from "../src/binance/client.js";
 import { buildSymbolRules, resolveMarketBuyQuantity } from "../src/binance/symbolFilters.js";
@@ -11,9 +13,11 @@ import { parseProviderItems } from "../src/news/rssFeed.js";
 import { normalizeCmsArticles } from "../src/events/binanceAnnouncementService.js";
 import { summarizeMarketStructure } from "../src/market/marketStructureService.js";
 import { summarizeMarketSentiment } from "../src/market/marketSentimentService.js";
+import { ReferenceVenueService } from "../src/market/referenceVenueService.js";
 import { summarizeVolatilityContext } from "../src/market/volatilityService.js";
 import { LocalOrderBookEngine } from "../src/market/localOrderBook.js";
 import { parseIcsEvents, summarizeCalendarEvents } from "../src/events/calendarService.js";
+import { normalizeStrategyDsl } from "../src/research/strategyDsl.js";
 import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
 import { loadConfig } from "../src/config/index.js";
@@ -41,7 +45,9 @@ import { StateBackupManager } from "../src/runtime/stateBackupManager.js";
 import { StateStore } from "../src/storage/stateStore.js";
 import { PairHealthMonitor } from "../src/runtime/pairHealthMonitor.js";
 import { DivergenceMonitor } from "../src/runtime/divergenceMonitor.js";
+import { CapitalLadder } from "../src/runtime/capitalLadder.js";
 import { OfflineTrainer } from "../src/runtime/offlineTrainer.js";
+import { StrategyResearchMiner } from "../src/runtime/strategyResearchMiner.js";
 import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
@@ -125,6 +131,8 @@ function makeConfig(overrides = {}) {
     transformerLookbackCandles: 24,
     transformerLearningRate: 0.03,
     transformerMinConfidence: 0.12,
+    strategyMetaLearningRate: 0.022,
+    strategyMetaL2: 0.00055,
     enableMultiAgentCommittee: true,
     committeeMinConfidence: 0.44,
     committeeMinAgreement: 0.32,
@@ -227,6 +235,10 @@ function makeConfig(overrides = {}) {
     enableCanaryLiveMode: true,
     canaryLiveTradeCount: 5,
     canaryLiveSizeMultiplier: 0.35,
+    capitalLadderSeedMultiplier: 0.18,
+    capitalLadderScaledMultiplier: 0.55,
+    capitalLadderFullMultiplier: 1,
+    capitalLadderMinApprovedCandidates: 1,
     dailyRiskBudgetFloor: 0.35,
     portfolioMaxCvarPct: 0.028,
     portfolioDrawdownBudgetPct: 0.05,
@@ -262,6 +274,18 @@ function makeConfig(overrides = {}) {
     executionCalibrationMinLiveTrades: 6,
     executionCalibrationLookbackTrades: 48,
     executionCalibrationMaxBpsAdjust: 6,
+    parameterGovernorMinTrades: 4,
+    parameterGovernorMaxThresholdShift: 0.03,
+    parameterGovernorMaxStopLossMultiplierDelta: 0.14,
+    parameterGovernorMaxTakeProfitMultiplierDelta: 0.18,
+    referenceVenueFetchEnabled: false,
+    referenceVenueQuoteUrls: [],
+    referenceVenueMinQuotes: 2,
+    referenceVenueMaxDivergenceBps: 18,
+    strategyResearchFetchEnabled: false,
+    strategyResearchFeedUrls: [],
+    strategyResearchPaperScoreFloor: 0.64,
+    strategyGenomeMaxChildren: 4,
     paperLatencyMs: 220,
     paperMakerFillFloor: 0.22,
     paperPartialFillMinRatio: 0.35,
@@ -362,6 +386,123 @@ await runCheck("adaptive model exposes transformer challenger outputs", async ()
   assert.ok(score.transformer);
   assert.equal(score.transformer.horizons.length, 3);
   assert.ok(score.transformer.confidence >= 0);
+});
+
+await runCheck("adaptive model exposes strategy meta guidance", async () => {
+  const config = makeConfig();
+  const model = new AdaptiveTradingModel(undefined, config);
+  const score = model.score(
+    { momentum_20: 1.05, ema_gap: 0.55, breakout_pct: 0.22, book_pressure: 0.34, news_sentiment: 0.12 },
+    {
+      regimeSummary: { regime: "trend", confidence: 0.76, bias: 0.2, reasons: ["persistent_trend"] },
+      marketFeatures: { momentum20: 0.021, emaGap: 0.008, realizedVolPct: 0.018, breakoutPct: 0.004 },
+      marketSnapshot: {
+        market: { momentum20: 0.021, emaGap: 0.008, realizedVolPct: 0.018, trendStrength: 0.42, breakoutPct: 0.004, rsi14: 58, priceZScore: -0.18 },
+        book: { bookPressure: 0.34, spreadBps: 4.2, depthConfidence: 0.76, queueImbalance: 0.18 }
+      },
+      newsSummary: { sentimentScore: 0.12, riskScore: 0.06 },
+      streamFeatures: { tradeFlowImbalance: 0.16, microTrend: 0.0012 },
+      strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.66, agreementGap: 0.04 },
+      timeframeSummary: { alignmentScore: 0.58 },
+      marketStructureSummary: { riskScore: 0.08 },
+      pairHealthSummary: { score: 0.84 }
+    }
+  );
+  assert.ok(score.strategyMeta);
+  assert.equal(score.strategyMeta.families.length, 4);
+  assert.equal(score.strategyMeta.executionStyles.length, 3);
+  assert.equal(typeof score.strategyMeta.preferredFamily, "string");
+});
+
+await runCheck("strategy meta selector learns family and execution preferences", async () => {
+  const selector = new StrategyMetaSelector(undefined, makeConfig());
+  const context = {
+    score: { probability: 0.61, confidence: 0.46 },
+    marketSnapshot: {
+      market: { realizedVolPct: 0.019, trendStrength: 0.48, breakoutPct: 0.004, rsi14: 57, priceZScore: -0.12 },
+      book: { bookPressure: 0.28, spreadBps: 4.1, depthConfidence: 0.78, queueImbalance: 0.16 }
+    },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.68, agreementGap: 0.03 },
+    timeframeSummary: { alignmentScore: 0.6 },
+    regimeSummary: { regime: "trend", confidence: 0.78 },
+    newsSummary: { riskScore: 0.05 },
+    marketStructureSummary: { riskScore: 0.08 },
+    pairHealthSummary: { score: 0.86 }
+  };
+  const before = selector.score(context);
+  for (let index = 0; index < 14; index += 1) {
+    selector.updateFromTrade({
+      strategyDecision: { family: "trend_following" },
+      regimeAtEntry: "trend",
+      executionQualityScore: 0.84,
+      entryExecutionAttribution: { entryStyle: "limit_maker" },
+      entryRationale: {
+        probability: 0.61,
+        confidence: 0.46,
+        indicators: { trendStrength: 0.48, rsi14: 57 },
+        orderBook: { bookPressure: 0.28, spreadBps: 4.1, depthConfidence: 0.78, queueImbalance: 0.16 },
+        strategy: { family: "trend_following", activeStrategy: "ema_trend" },
+        timeframe: { alignmentScore: 0.6 },
+        regimeSummary: { regime: "trend", confidence: 0.78 },
+        newsRisk: 0.05,
+        marketStructure: { riskScore: 0.08 },
+        pairHealth: { score: 0.86 }
+      },
+      rawFeatures: { breakout_pct: 0.004, price_zscore: -0.12 },
+      exitAt: `2026-03-08T10:${String(index).padStart(2, "0")}:00.000Z`
+    }, { labelScore: 0.82 });
+  }
+  const after = selector.score(context);
+  assert.equal(after.preferredFamily, "trend_following");
+  assert.ok(["limit_maker", "pegged_limit_maker"].includes(after.preferredExecutionStyle));
+  assert.ok(after.confidence > before.confidence);
+});
+
+await runCheck("strategy DSL blocks unsafe imports and keeps safe research candidates scorable", async () => {
+  const unsafe = normalizeStrategyDsl({
+    label: "Unsafe martingale",
+    family: "trend_following",
+    indicators: ["ema_gap", "book_pressure"],
+    entryRules: [{ indicator: "ema_gap", operator: "gt", threshold: 0.001 }],
+    riskProfile: { stopLossPct: 0.02, takeProfitPct: 0.03, allowMartingale: true },
+    executionHints: { entryStyle: "market" },
+    tags: ["martingale"]
+  });
+  assert.equal(unsafe.safety.safe, false);
+  assert.ok(unsafe.safety.blockedReasons.includes("martingale"));
+
+  const imported = normalizeStrategyDsl({
+    id: "feed_trend_alpha",
+    label: "Feed trend alpha",
+    family: "trend_following",
+    indicators: ["ema_gap", "breakout_pct", "adx14", "book_pressure"],
+    entryRules: [
+      { indicator: "ema_gap", operator: "gt", threshold: 0.0014 },
+      { indicator: "breakout_pct", operator: "gt", threshold: 0.0016 }
+    ],
+    exitRules: [{ indicator: "book_pressure", operator: "lt", threshold: -0.34 }],
+    riskProfile: { stopLossPct: 0.014, takeProfitPct: 0.028, trailingStopPct: 0.009, maxHoldMinutes: 240 },
+    executionHints: { entryStyle: "limit_maker", preferMaker: true },
+    referenceStrategies: ["ema_trend"],
+    sourceType: "whitelisted_feed",
+    source: "https://feed.example/alpha"
+  });
+  const miner = new StrategyResearchMiner(makeConfig({ strategyGenomeMaxChildren: 2, strategyResearchPaperScoreFloor: 0.6 }));
+  const summary = miner.buildSummary({
+    journal: {
+      trades: [
+        { strategyAtEntry: "ema_trend", netPnlPct: 0.018, pnlQuote: 16, mfePct: 0.026, maePct: -0.008, entryAt: "2026-03-07T10:00:00.000Z", exitAt: "2026-03-07T11:30:00.000Z" },
+        { strategyAtEntry: "ema_trend", netPnlPct: 0.012, pnlQuote: 9, mfePct: 0.021, maePct: -0.006, entryAt: "2026-03-06T10:00:00.000Z", exitAt: "2026-03-06T11:10:00.000Z" }
+      ]
+    },
+    researchRegistry: { strategyScorecards: [{ id: "ema_trend", governanceScore: 0.74 }] },
+    offlineTrainer: { strategyScorecards: [{ id: "ema_trend", governanceScore: 0.72 }] },
+    importedCandidates: [imported],
+    nowIso: "2026-03-11T09:00:00.000Z"
+  });
+  assert.equal(summary.importedCandidates.length, 1);
+  assert.ok(summary.candidates.some((item) => item.id === "feed_trend_alpha"));
+  assert.ok(summary.genome.candidateCount > 0);
 });
 
 await runCheck("symbol filters enforce minimum notional", async () => {
@@ -1095,6 +1236,53 @@ await runCheck("execution engine upgrades to pegged maker on strong local book",
   assert.equal(plan.pegPriceType, "PRIMARY_PEG");
 });
 
+await runCheck("execution engine folds strategy meta, ladder and governor into the entry plan", async () => {
+  const engine = new ExecutionEngine(makeConfig({ botMode: "live" }));
+  const plan = engine.buildEntryPlan({
+    symbol: "BTCUSDT",
+    marketSnapshot: {
+      book: {
+        spreadBps: 7,
+        tradeFlowImbalance: 0.08,
+        localBook: {
+          synced: false,
+          depthConfidence: 0.62,
+          queueImbalance: 0.14,
+          queueRefreshScore: 0.18,
+          resilienceScore: 0.11
+        },
+        entryEstimate: {
+          touchSlippageBps: 0.8,
+          midSlippageBps: 0.5,
+          completionRatio: 1
+        }
+      }
+    },
+    score: { probability: 0.63 },
+    decision: {
+      quoteAmount: 500,
+      parameterGovernorApplied: { executionAggressivenessBias: 0.84 }
+    },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.72 },
+    portfolioSummary: { sizeMultiplier: 1 },
+    strategyMetaSummary: {
+      preferredFamily: "trend_following",
+      preferredExecutionStyle: "limit_maker",
+      familyAlignment: 0.18,
+      makerBias: 0.12,
+      sizeMultiplier: 1.08,
+      holdMultiplier: 1.04,
+      confidence: 0.66
+    },
+    capitalLadderSummary: { stage: "seed", sizeMultiplier: 0.18 }
+  });
+  assert.equal(plan.entryStyle, "limit_maker");
+  assert.equal(plan.strategyMeta.preferredExecutionStyle, "limit_maker");
+  assert.equal(plan.sizeMultiplier, 0.4);
+  assert.ok(plan.rationale.some((item) => item.startsWith("gov_exec:0.840")));
+});
+
 await runCheck("execution engine simulates queue decay and spread shock in paper fills", async () => {
   const engine = new ExecutionEngine(makeConfig());
   const fill = engine.simulatePaperFill({
@@ -1576,6 +1764,77 @@ await runCheck("strategy optimizer builds recency-weighted priors", async () => 
   assert.ok(snapshot.familyThresholdTilts.trend_following > 0);
 });
 
+await runCheck("reference venue service blocks large cross-venue divergence", async () => {
+  const service = new ReferenceVenueService(makeConfig({ referenceVenueMinQuotes: 2, referenceVenueMaxDivergenceBps: 15 }));
+  const summary = await service.getSymbolSummary("BTCUSDT", { book: { mid: 100 } }, {
+    referenceQuotes: [
+      { venue: "OKX", bid: 100.8, ask: 101.0 },
+      { venue: "Bybit", bid: 100.9, ask: 101.1 }
+    ]
+  });
+  assert.equal(summary.status, "blocked");
+  assert.ok(summary.blockerReasons.includes("reference_venue_divergence"));
+  const runtime = service.summarizeRuntime([{ venueConfirmationSummary: summary }], "2026-03-11T10:00:00.000Z");
+  assert.equal(runtime.blockedCount, 1);
+});
+
+await runCheck("parameter governor builds scoped adjustments from closed trades", async () => {
+  const governor = new ParameterGovernor(makeConfig({ parameterGovernorMinTrades: 2 }));
+  const snapshot = governor.buildSnapshot({
+    journal: {
+      trades: [
+        {
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryAt: "2026-03-08T10:00:00.000Z",
+          exitAt: "2026-03-08T12:00:00.000Z",
+          pnlQuote: 18,
+          netPnlPct: 0.018,
+          mfePct: 0.028,
+          maePct: -0.007,
+          entryExecutionAttribution: { slippageDeltaBps: 1.2 }
+        },
+        {
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryAt: "2026-03-07T10:00:00.000Z",
+          exitAt: "2026-03-07T12:30:00.000Z",
+          pnlQuote: 11,
+          netPnlPct: 0.011,
+          mfePct: 0.022,
+          maePct: -0.006,
+          entryExecutionAttribution: { slippageDeltaBps: 0.9 }
+        }
+      ]
+    },
+    nowIso: "2026-03-11T10:00:00.000Z"
+  });
+  assert.equal(snapshot.status, "active");
+  assert.ok(snapshot.strategyScopes.some((item) => item.id === "ema_trend"));
+  const resolved = governor.resolve(snapshot, { strategyId: "ema_trend", regimeId: "trend" });
+  assert.equal(resolved.active, true);
+  assert.ok(resolved.maxHoldMinutesMultiplier > 0);
+});
+
+await runCheck("capital ladder enforces shadow gating before live promotion is ready", async () => {
+  const ladder = new CapitalLadder(makeConfig());
+  const snapshot = ladder.buildSnapshot({
+    botMode: "live",
+    modelRegistry: {
+      promotionPolicy: {
+        allowPromotion: false,
+        blockerReasons: ["model_probation"]
+      }
+    },
+    strategyResearch: { approvedCandidateCount: 0 },
+    report: { modes: { live: { tradeCount: 0 } }, windows: { today: { tradeCount: 0 } } },
+    nowIso: "2026-03-11T10:00:00.000Z"
+  });
+  assert.equal(snapshot.stage, "shadow");
+  assert.equal(snapshot.allowEntries, false);
+  assert.ok(snapshot.blockerReasons.includes("model_probation"));
+});
+
 await runCheck("risk manager adapts thresholds from optimizer priors", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -1627,6 +1886,75 @@ await runCheck("risk manager adapts thresholds from optimizer priors", async () 
   assert.ok(decision.threshold < decision.baseThreshold);
   assert.ok(decision.strategyConfidenceFloor < makeConfig().strategyMinConfidence);
   assert.ok(decision.optimizerApplied.strategyThresholdTilt > 0);
+});
+
+await runCheck("risk manager applies parameter governor, venue confirmation and capital ladder controls", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.63,
+      calibrationConfidence: 0.48,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      transformer: { probability: 0.64, confidence: 0.22 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.21, microPriceEdgeBps: 1.1, mid: 100 },
+      market: { realizedVolPct: 0.019, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.16 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.08, eventBullishScore: 0.03, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0.01 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.12, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.6, probability: 0.65, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.64,
+      confidence: 0.48,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 12, sampleConfidence: 0.74 }
+    },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 10000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, allocatorScore: 0.64, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.76 },
+    parameterGovernorSummary: {
+      strategyScopes: [{
+        id: "ema_trend",
+        scopeType: "strategy",
+        thresholdShift: -0.02,
+        stopLossMultiplier: 1.08,
+        takeProfitMultiplier: 0.96,
+        trailingStopMultiplier: 1.02,
+        scaleOutTriggerMultiplier: 1.03,
+        scaleOutFractionMultiplier: 0.94,
+        maxHoldMinutesMultiplier: 1.12,
+        executionAggressivenessBias: 0.9
+      }],
+      regimeScopes: []
+    },
+    capitalLadderSummary: { stage: "seed", allowEntries: true, sizeMultiplier: 0.18 },
+    venueConfirmationSummary: { status: "confirmed", confirmed: true, venueCount: 2, divergenceBps: 3.2 },
+    strategyMetaSummary: {
+      thresholdShift: -0.01,
+      sizeMultiplier: 1.08,
+      stopLossMultiplier: 0.98,
+      holdMultiplier: 1.06
+    },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.capitalLadderApplied.stage, "seed");
+  assert.ok(decision.parameterGovernorApplied.active);
+  assert.ok(decision.venueConfirmationSummary.confirmed);
+  assert.ok(decision.maxHoldMinutes > makeConfig().maxHoldMinutes);
+  assert.ok(decision.quoteAmount < 250);
 });
 
 await runCheck("risk manager blocks entries when the data quorum falls to observe-only", async () => {
@@ -2222,13 +2550,17 @@ await runCheck("state store migrates runtime and journal schemas forward", async
     const store = new StateStore(tempDir);
     const runtime = await store.loadRuntime();
     const journal = await store.loadJournal();
-    assert.equal(runtime.schemaVersion, 4);
+    assert.equal(runtime.schemaVersion, 5);
     assert.deepEqual(runtime.qualityQuorum, {});
     assert.equal(runtime.exchangeTruth.status, "unknown");
     assert.deepEqual(runtime.orderLifecycle.positions, {});
     assert.deepEqual(runtime.orderLifecycle.activeActions, {});
     assert.ok(Array.isArray(runtime.orderLifecycle.actionJournal));
     assert.deepEqual(runtime.executionCalibration, {});
+    assert.deepEqual(runtime.strategyResearch, {});
+    assert.deepEqual(runtime.parameterGovernor, {});
+    assert.deepEqual(runtime.venueConfirmation, {});
+    assert.deepEqual(runtime.capitalLadder, {});
     assert.ok(Array.isArray(runtime.ops.incidentTimeline));
     assert.equal(runtime.health.consecutiveFailures, 1);
     assert.equal(journal.schemaVersion, 2);

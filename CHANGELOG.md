@@ -14,6 +14,11 @@
 - Execution-calibration feedback that derives paper slippage, maker fill bias, latency, and queue-decay adjustments from recent live fill telemetry.
 - Auto-applied threshold probation with scoped rollback rules, so high-confidence threshold recommendations can be trialed and reverted without manual intervention.
 - CVaR, drawdown-budget, and regime kill-switch controls in the portfolio allocator alongside the existing exposure and factor budgeting.
+- Safe strategy-DSL normalization and validation for imported strategy ideas, with hard blocks on unsafe patterns such as martingale, average-down, unlimited pyramiding, and unsupported execution styles.
+- Automated strategy-research mining that combines whitelisted imports, native seed strategies, deterministic genome mutations, and Monte Carlo stress scoring into paper-ready candidate lists.
+- A neural strategy meta-selector that learns preferred strategy families and execution styles per market context and feeds that guidance into entry sizing, threshold bias, and execution planning.
+- Reference-venue confirmation summaries and capital-ladder staging that can downgrade sizing, keep live in shadow, or block entries when external price confirmation or deployment readiness falls behind.
+- Parameter-governor scopes that learn bounded threshold, stop, take-profit, scale-out, hold-time, and execution-aggressiveness adjustments from closed-trade outcomes.
 
 ### Improved
 - Deepened model-promotion governance so regime readiness now sits beside threshold, exit, calibration, and feature-health feedback instead of only paper/live scorecards.
@@ -23,6 +28,9 @@
 - Tightened exchange-truth reconciliation so open orders, order lists, stale protective state, and recent fills all participate in live freeze decisions and recovery guidance.
 - Expanded operator dashboards with readiness summaries, active lifecycle actions, lifecycle journals, threshold probation context, and execution-calibration status.
 - Deepened exit learning with strategy- and regime-scoped exit policies that tune scale-outs, trailing behavior, and hold windows per context.
+- Expanded dashboard governance, research, and operations panels with imported-strategy scorecards, parameter-governor summaries, venue-confirmation status, and capital-ladder state.
+- Kept imported strategy candidates as raw DSL records in runtime state instead of recycling scored seed/genome output, preventing governance refreshes from inflating or corrupting follow-up research inputs.
+- Extended the execution planner so strategy-meta and governor signals can nudge maker preference and sizing without bypassing the existing safety clamps.
 
 ### Fixed
 - Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.
@@ -31,6 +39,7 @@
 - Fixed scale-out protection recovery so failed protective rebuilds now leave a clear reconcile state instead of silently falling back to a generic open position.
 - Stopped per-position exchange sync failures from aborting the broader reconcile pass; failed symbols now degrade into `reconcile_required` while the rest of the book still updates.
 - Cleared stale protective-order assumptions when exchange order-list truth disagrees, so later rebuilds can recover instead of believing a dead protective order still exists.
+- Fixed strategy-research persistence so imported candidates no longer get replaced by summarized scorecards, which previously risked lossy rescoring and self-referential research growth across governance refreshes.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`
@@ -41,6 +50,7 @@
 - `node --check test/run.js`
 - `node test/run.js`
 - `node src/cli.js status`
+- Added regression coverage for the strategy DSL, strategy research miner, neural strategy meta selector, reference-venue confirmation, parameter governor, capital ladder, runtime state migration, and the new execution/risk integrations.
 
 ## Unreleased - 2026-03-10
 

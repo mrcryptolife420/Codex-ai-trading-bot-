@@ -1,7 +1,7 @@
 import path from "node:path";
 import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
-const RUNTIME_SCHEMA_VERSION = 4;
+const RUNTIME_SCHEMA_VERSION = 5;
 const JOURNAL_SCHEMA_VERSION = 2;
 
 const DEFAULT_MODEL = {
@@ -51,8 +51,12 @@ const DEFAULT_RUNTIME = {
   modelRegistry: {},
   dataRecorder: {},
   shadowTrading: {},
+  strategyResearch: {},
   thresholdTuning: {},
+  parameterGovernor: {},
   executionCalibration: {},
+  venueConfirmation: {},
+  capitalLadder: {},
   exchangeTruth: {
     status: "unknown",
     freezeEntries: false,
@@ -161,8 +165,12 @@ function migrateRuntime(runtime) {
   merged.counterfactualQueue = Array.isArray(merged.counterfactualQueue) ? merged.counterfactualQueue : [];
   merged.qualityQuorum = merged.qualityQuorum && typeof merged.qualityQuorum === "object" ? merged.qualityQuorum : {};
   merged.shadowTrading = mergeDefaultShape(clone(DEFAULT_RUNTIME.shadowTrading), merged.shadowTrading);
+  merged.strategyResearch = mergeDefaultShape(clone(DEFAULT_RUNTIME.strategyResearch), merged.strategyResearch);
   merged.thresholdTuning = mergeDefaultShape(clone(DEFAULT_RUNTIME.thresholdTuning), merged.thresholdTuning);
+  merged.parameterGovernor = mergeDefaultShape(clone(DEFAULT_RUNTIME.parameterGovernor), merged.parameterGovernor);
   merged.executionCalibration = mergeDefaultShape(clone(DEFAULT_RUNTIME.executionCalibration), merged.executionCalibration);
+  merged.venueConfirmation = mergeDefaultShape(clone(DEFAULT_RUNTIME.venueConfirmation), merged.venueConfirmation);
+  merged.capitalLadder = mergeDefaultShape(clone(DEFAULT_RUNTIME.capitalLadder), merged.capitalLadder);
   merged.exchangeTruth = mergeDefaultShape(clone(DEFAULT_RUNTIME.exchangeTruth), merged.exchangeTruth);
   merged.orderLifecycle = mergeDefaultShape(clone(DEFAULT_RUNTIME.orderLifecycle), merged.orderLifecycle);
   merged.ops = mergeDefaultShape(clone(DEFAULT_RUNTIME.ops), merged.ops);
