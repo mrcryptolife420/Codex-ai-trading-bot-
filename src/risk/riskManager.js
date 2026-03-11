@@ -805,10 +805,12 @@ export class RiskManager {
       reasons.push("trade_size_below_minimum");
     }
 
+    const cappedQuoteAmount = Math.min(adjustedQuoteAmount, maxByPosition, maxByRisk, remainingExposureBudget);
+
     let allow = reasons.length === 0;
     let entryMode = "standard";
     let suppressedReasons = [];
-    let finalQuoteAmount = adjustedQuoteAmount;
+    let finalQuoteAmount = cappedQuoteAmount;
     let paperExploration = null;
     let paperGuardrailRelief = [];
 

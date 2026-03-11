@@ -81,7 +81,7 @@ export function macd(values) {
 }
 
 function volumeWeightedAveragePrice(candles, length = 30, offset = 0) {
-  const end = offset > 0 ? candles.length - offset : candles.length;
+  const end = offset > 0 ? Math.max(0, candles.length - offset) : candles.length;
   const start = Math.max(0, end - length);
   const recent = candles.slice(start, end);
   const cumulative = recent.reduce(

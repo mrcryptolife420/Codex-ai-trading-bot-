@@ -1923,6 +1923,19 @@ await runCheck("market feature computation surfaces non-duplicate trend-state in
   assert.ok(Number.isFinite(features.anchoredVwapGapPct));
 });
 
+await runCheck("market feature computation keeps anchored VWAP finite on short histories", async () => {
+  const candles = Array.from({ length: 6 }, (_, index) => ({
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100.4 + index,
+    volume: 1000 + index * 10
+  }));
+  const features = computeMarketFeatures(candles);
+  assert.ok(Number.isFinite(features.anchoredVwapGapPct));
+  assert.ok(Number.isFinite(features.anchoredVwapSlopePct));
+});
+
 await runCheck("regime model uses trend-state features to classify persistent trends", async () => {
   const regime = classifyRegime({
     marketFeatures: {
@@ -2274,6 +2287,56 @@ await runCheck("risk manager applies parameter governor, venue confirmation and 
   assert.ok(decision.maxHoldMinutes > makeConfig().maxHoldMinutes);
   assert.ok(decision.quoteAmount < 250);
 });
+
+await runCheck("risk manager keeps trend-state size tuning inside hard capital caps", async () => {
+  const manager = new RiskManager(makeConfig({
+    maxPositionFraction: 0.1,
+    riskPerTrade: 0.1,
+    maxTotalExposureFraction: 0.1
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.8,
+      calibrationConfidence: 0.9,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      transformer: { probability: 0.78, confidence: 0.4 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.28, microPriceEdgeBps: 1.2 },
+      market: {
+        realizedVolPct: 0.015,
+        atrPct: 0.008,
+        bullishPatternScore: 0.16,
+        bearishPatternScore: 0.02,
+        trendMaturityScore: 0.72,
+        trendExhaustionScore: 0.18,
+        swingStructureScore: 0.54,
+        upsideAccelerationScore: 0.18,
+        downsideAccelerationScore: 0.04
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.06 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0.01 },
+    marketStructureSummary: { riskScore: 0.04, signalScore: 0.12, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.7, probability: 0.79, netScore: 0.18, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.5, expectedReward: 0.04 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.72, confidence: 0.62, blockers: [], agreementGap: 0.08, optimizer: { sampleSize: 20, sampleConfidence: 0.8 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.02 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.82 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.ok(decision.allow);
+  assert.ok(decision.trendStateTuningApplied.active);
+  assert.equal(decision.quoteAmount <= 100, true);
+});
+
 
 await runCheck("risk manager only applies scoped threshold tuning when both strategy and regime scope match", async () => {
   const manager = new RiskManager(makeConfig());
