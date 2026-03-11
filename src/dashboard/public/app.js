@@ -176,10 +176,10 @@ function toneClass(value) {
 
 function healthTone(value) {
   const normalized = `${value || "neutral"}`.toLowerCase();
-  if (["hot", "healthy", "positive", "promotion_candidate", "promote"].includes(normalized)) {
+  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready"].includes(normalized)) {
     return "positive";
   }
-  if (["cold", "blocked", "negative", "hold", "paused"].includes(normalized)) {
+  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown"].includes(normalized)) {
     return "negative";
   }
   return "neutral";
@@ -842,6 +842,8 @@ function renderDecisions(snapshot) {
       const leadExecutionBlocker = normalizeReasonLabel(decision.executionBlockers?.[0] || "niet uitgevoerd");
       const qualityScore = decision.meta?.qualityScore ?? decision.meta?.score ?? 0;
       const qualityBand = decision.meta?.qualityBand || (qualityScore >= 0.62 ? "sterk" : qualityScore >= 0.5 ? "ok" : "zwak");
+      const quorumStatus = decision.qualityQuorum?.status || "ready";
+      const quorumScore = decision.qualityQuorum?.quorumScore || 0;
       const entryStatus = decision.entryStatus || (decision.allow ? "eligible" : "blocked");
       const statusMeta = statusMap[entryStatus] || statusMap.blocked;
       let summary = `${strategyLabel} is overgeslagen. Hoofdreden: ${leadBear}.`;
@@ -868,8 +870,10 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">${escapeHtml(familyLabel)}</div></div>
           <div class="mini-stat"><span class="kicker">Status</span><strong>${escapeHtml(statusMeta.label)}</strong><div class="meta">${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</div></div>
           <div class="mini-stat"><span class="kicker">Quality</span><strong>${formatPct(qualityScore || 0, 1)}</strong><div class="meta">${escapeHtml(qualityBand)}</div></div>
+          <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${formatPct(quorumScore || 0, 1)}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
+        ${decision.qualityQuorum?.blockerReasons?.length || decision.qualityQuorum?.cautionReasons?.length ? `<div class="note-line"><span class="kicker">Data quorum</span><div class="tag-list">${renderTagList([...(decision.qualityQuorum?.blockerReasons || []), ...(decision.qualityQuorum?.cautionReasons || [])].slice(0, 3).map(normalizeReasonLabel), "Quorum ready")}</div></div>` : ""}
         ${decision.allow && decision.executionBlockers?.length ? `<div class="note-line"><span class="kicker">Niet uitgevoerd door</span><div class="tag-list">${renderTagList((decision.executionBlockers || []).slice(0, 3).map(normalizeReasonLabel), "Geen runtime blocker")}</div></div>` : ""}
       `;
       const contextView = `
@@ -878,6 +882,8 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Funding</span><strong>${formatNumber(decision.marketStructure?.fundingRate || 0, 6)}</strong></div>
           <div class="mini-stat"><span class="kicker">Session</span><strong>${escapeHtml(decision.session?.sessionLabel || decision.session?.session || "-")}</strong></div>
           <div class="mini-stat"><span class="kicker">Nieuws</span><strong>${decision.providerDiversity || 0} bronnen</strong><div class="meta">rel ${formatPct(decision.reliabilityScore || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Pair health</span><strong>${escapeHtml(decision.pairHealth?.health || "-")}</strong><div class="meta">${formatPct(decision.pairHealth?.score || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${(decision.qualityQuorum?.observeOnly) ? "observe-only" : "entry ok"}</div></div>
         </div>
       `;
       return `
@@ -1128,6 +1134,7 @@ function renderBlockedSetups(snapshot) {
                 </summary>
                 <div class="fold-body compact-body">
                   <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList((item.blockerReasons || item.reasons || []).slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen blockers")}</div></div>
+                  <div class="note-line"><span class="kicker">Data quorum</span><div class="tag-list">${renderTagList([...(item.qualityQuorum?.blockerReasons || []), ...(item.qualityQuorum?.cautionReasons || [])].slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), item.qualityQuorum?.status || "Quorum ready")}</div></div>
                   <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])].slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen extra safety-flags")}</div></div>
                 </div>
               </details>
@@ -1358,17 +1365,80 @@ function renderGovernance(snapshot) {
   const registry = snapshot.dashboard.researchRegistry || {};
   const governance = registry.governance || {};
   const leader = (registry.leaderboard || [])[0] || {};
+  const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
+  const promotionPolicy = modelRegistry.promotionPolicy || {};
+  const offlineTrainer = snapshot.dashboard.offlineTrainer || {};
+  const topBlocker = (offlineTrainer.blockerScorecards || [])[0] || {};
+  const topRegime = (offlineTrainer.regimeScorecards || [])[0] || {};
   elements.governanceSummary.innerHTML = [
     insightCard("Research runs", `${registry.runCount || 0}`, registry.lastRunAt ? `laatst ${formatDate(registry.lastRunAt)}` : "Nog geen run"),
     insightCard("Promo kandidaten", `${(governance.promotionCandidates || []).length}`, leader.symbol ? `${leader.symbol} leidt` : "Nog geen kandidaat", (governance.promotionCandidates || []).length ? "positive" : "neutral"),
-    insightCard("Snapshots", `${governance.stableSnapshotCount || 0}`, governance.notes?.[0] || "Geen governance-notitie")
+    insightCard("Regimes", `${promotionPolicy.strongRegimeScorecardCount || 0}/${promotionPolicy.regimeScorecardCount || 0}`, (promotionPolicy.readyRegimes || [])[0] ? `${promotionPolicy.readyRegimes[0]} klaar` : "Nog geen sterk regime"),
+    insightCard("Veto feedback", `${offlineTrainer.vetoFeedback?.badVetoCount || 0}/${offlineTrainer.vetoFeedback?.goodVetoCount || 0}`, topBlocker.id ? `${normalizeReasonLabel(topBlocker.id)} ${topBlocker.status || "observe"}` : "Nog geen blocker-patroon")
   ].join("");
 
-  elements.registryList.innerHTML = (registry.leaderboard || []).length
-    ? (registry.leaderboard || [])
-        .slice(0, REGISTRY_RENDER_LIMIT)
-        .map(
-          (item) => `
+  const advisoryCards = [
+    promotionPolicy.readyLevel ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">promotiebeleid</div>
+            <h3>${escapeHtml((promotionPolicy.readyLevel || "observe").replaceAll("_", " "))}</h3>
+          </div>
+          <div class="pill ${promotionPolicy.allowPromotion ? "positive" : "neutral"}">${promotionPolicy.shadowTradeCount || 0} shadow</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Edge</span><strong>${formatNumber(promotionPolicy.challengerEdge || 0, 3)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Paper</span><strong>${promotionPolicy.paperTradeCount || 0}</strong><div class="meta">${formatPct(promotionPolicy.paperWinRate || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Live</span><strong>${promotionPolicy.liveTradeCount || 0}</strong><div class="meta">${promotionPolicy.liveQualityScore == null ? "-" : formatPct(promotionPolicy.liveQualityScore || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Regimes</span><strong>${promotionPolicy.strongRegimeScorecardCount || 0}/${promotionPolicy.regimeScorecardCount || 0}</strong><div class="meta">${escapeHtml(((promotionPolicy.readyRegimes || []).slice(0, 2).join(", ")) || "geen ready")}</div></div>
+        </div>
+        <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList((promotionPolicy.blockerReasons || []).slice(0, 4).map(normalizeReasonLabel), promotionPolicy.allowPromotion ? "Promotie is groen" : "Nog geen blocker")}</div></div>
+      </article>
+    ` : "",
+    topBlocker.id ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">veto learning</div>
+            <h3>${escapeHtml(normalizeReasonLabel(topBlocker.id))}</h3>
+          </div>
+          <div class="pill ${healthTone(topBlocker.status)}">${escapeHtml(topBlocker.status || "observe")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Bad veto</span><strong>${topBlocker.badVetoCount || 0}</strong><div class="meta">${formatPct(topBlocker.badVetoRate || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Good veto</span><strong>${topBlocker.goodVetoCount || 0}</strong><div class="meta">${formatPct(topBlocker.goodVetoRate || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Gem. move</span><strong>${formatPct(topBlocker.averageMovePct || 0, 2)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Scope</span><strong>${(topBlocker.affectedStrategies || []).length}</strong><div class="meta">${escapeHtml(((topBlocker.affectedRegimes || []).slice(0, 2).join(", ")) || "regimes")}</div></div>
+        </div>
+      </article>
+    ` : "",
+    topRegime.id ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">regime scorecard</div>
+            <h3>${escapeHtml(topRegime.id)}</h3>
+          </div>
+          <div class="pill ${healthTone(topRegime.status)}">${escapeHtml(topRegime.status || "observe")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Trades</span><strong>${topRegime.tradeCount || 0}</strong></div>
+          <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(topRegime.winRate || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">PnL</span><strong class="${toneClass(topRegime.realizedPnl || 0)}">${formatMoney(topRegime.realizedPnl || 0)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Gov</span><strong>${formatPct(topRegime.governanceScore || 0, 1)}</strong></div>
+        </div>
+      </article>
+    ` : ""
+  ].filter(Boolean);
+
+  elements.registryList.innerHTML = (registry.leaderboard || []).length || advisoryCards.length
+    ? [
+        ...advisoryCards,
+        ...(registry.leaderboard || [])
+          .slice(0, REGISTRY_RENDER_LIMIT)
+          .map(
+            (item) => `
             <article class="registry-card">
               <div class="section-head compact">
                 <div>
@@ -1386,8 +1456,8 @@ function renderGovernance(snapshot) {
               <div class="note-line"><span class="kicker">Leidende strategieen</span><div class="tag-list">${renderTagList(item.leaders || [], "Nog geen leaders")}</div></div>
             </article>
           `
-        )
-        .join("")
+          )
+      ].join("")
     : `<div class="empty">Nog geen research-registry beschikbaar.</div>`;
 }
 

@@ -42,39 +42,111 @@ function average(values = []) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : 0;
 }
 
-function buildBudgetState(journal = {}, nowIso = new Date().toISOString()) {
+function sameUtcDay(left, right) {
+  return `${left || ""}`.slice(0, 10) === `${right || ""}`.slice(0, 10);
+}
+
+function resolveStrategy(trade) {
+  return trade.strategyAtEntry || trade.strategyDecision?.activeStrategy || trade.entryRationale?.strategy?.activeStrategy || "unknown";
+}
+
+function resolveFactorSet({ family = "", regime = "", marketStructureSummary = {}, calendarSummary = {} } = {}) {
+  const factors = new Set();
+  if (["trend_following", "orderflow", "market_structure"].includes(family) || regime === "trend") {
+    factors.add("momentum");
+  }
+  if (family === "mean_reversion" || regime === "range") {
+    factors.add("mean_reversion");
+  }
+  if (["breakout", "market_structure"].includes(family) || regime === "breakout") {
+    factors.add("breakout");
+  }
+  if (family === "derivatives" || Math.abs(marketStructureSummary?.crowdingBias || 0) >= 0.35) {
+    factors.add("crowding");
+  }
+  if (regime === "event_risk" || (calendarSummary?.riskScore || 0) >= 0.58) {
+    factors.add("event_risk");
+  }
+  if (!factors.size) {
+    factors.add("hybrid");
+  }
+  return [...factors];
+}
+
+function buildBudgetState(journal = {}, config = {}, nowIso = new Date().toISOString()) {
   const nowMs = new Date(nowIso).getTime();
   const minMs = nowMs - 21 * 86_400_000;
+  const strategyBuckets = new Map();
   const familyBuckets = new Map();
   const regimeBuckets = new Map();
+  const clusterBuckets = new Map();
+  const sectorBuckets = new Map();
+  const factorBuckets = new Map();
 
   for (const trade of journal.trades || []) {
     const atMs = new Date(trade.exitAt || trade.entryAt || 0).getTime();
     if (!Number.isFinite(atMs) || atMs < minMs) {
       continue;
     }
+    const strategy = resolveStrategy(trade);
     const family = trade.strategyDecision?.family || trade.entryRationale?.strategy?.family || "unknown";
     const regime = trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown";
-    if (!familyBuckets.has(family)) {
-      familyBuckets.set(family, []);
+    const profile = config.symbolProfiles?.[trade.symbol] || { cluster: "other", sector: "other" };
+    const cluster = profile.cluster || "other";
+    const sector = profile.sector || "other";
+    const factors = resolveFactorSet({
+      family,
+      regime,
+      marketStructureSummary: trade.entryRationale?.marketStructure || trade.latestMarketStructureSummary || {},
+      calendarSummary: trade.entryRationale?.calendar || trade.latestCalendarSummary || {}
+    });
+    const buckets = [
+      [strategyBuckets, strategy],
+      [familyBuckets, family],
+      [regimeBuckets, regime],
+      [clusterBuckets, cluster],
+      [sectorBuckets, sector]
+    ];
+    for (const [bucketMap, key] of buckets) {
+      if (!bucketMap.has(key)) {
+        bucketMap.set(key, []);
+      }
+      bucketMap.get(key).push(trade.netPnlPct || 0);
     }
-    if (!regimeBuckets.has(regime)) {
-      regimeBuckets.set(regime, []);
+    for (const factor of factors) {
+      if (!factorBuckets.has(factor)) {
+        factorBuckets.set(factor, []);
+      }
+      factorBuckets.get(factor).push(trade.netPnlPct || 0);
     }
-    familyBuckets.get(family).push(trade.netPnlPct || 0);
-    regimeBuckets.get(regime).push(trade.netPnlPct || 0);
   }
 
   const scoreBucketMap = (map) => Object.fromEntries(
     [...map.entries()].map(([id, values]) => {
       const edge = average(values);
-      return [id, clamp(1 + edge * 12, 0.72, 1.18)];
+      const factor = clamp(1 + edge * 12, 0.72, 1.18);
+      return [id, Number(factor.toFixed(4))];
     })
   );
 
+  const dailyRealized = (journal.trades || [])
+    .filter((trade) => trade.exitAt && sameUtcDay(trade.exitAt, nowIso))
+    .reduce((total, trade) => total + (trade.pnlQuote || 0), 0) +
+    (journal.scaleOuts || [])
+      .filter((event) => event.at && sameUtcDay(event.at, nowIso))
+      .reduce((total, event) => total + (event.realizedPnl || 0), 0);
+  const dailyLossFraction = dailyRealized < 0 ? Math.abs(dailyRealized) / Math.max(config.startingCash || 1, 1) : 0;
+  const dailyBudgetFactor = clamp(1 - dailyLossFraction * 7.5, config.dailyRiskBudgetFloor || 0.35, 1.08);
+
   return {
+    strategyBudgetMap: scoreBucketMap(strategyBuckets),
     familyBudgetMap: scoreBucketMap(familyBuckets),
-    regimeBudgetMap: scoreBucketMap(regimeBuckets)
+    regimeBudgetMap: scoreBucketMap(regimeBuckets),
+    clusterBudgetMap: scoreBucketMap(clusterBuckets),
+    sectorBudgetMap: scoreBucketMap(sectorBuckets),
+    factorBudgetMap: scoreBucketMap(factorBuckets),
+    dailyBudgetFactor: Number(dailyBudgetFactor.toFixed(4)),
+    dailyLossFraction: Number(dailyLossFraction.toFixed(4))
   };
 }
 
@@ -83,18 +155,41 @@ export class PortfolioOptimizer {
     this.config = config;
   }
 
-  evaluateCandidate({ symbol, runtime, journal = {}, marketSnapshot, candidateProfile, openPositionContexts, regimeSummary, strategySummary = {} }) {
+  evaluateCandidate({ symbol, runtime, journal = {}, marketSnapshot, candidateProfile, openPositionContexts, regimeSummary, strategySummary = {}, marketStructureSummary = {}, calendarSummary = {} }) {
     const sameClusterPositions = openPositionContexts.filter(
       (context) => context.profile.cluster === candidateProfile.cluster
     );
     const sameSectorPositions = openPositionContexts.filter(
       (context) => context.profile.sector === candidateProfile.sector
     );
-    const candidateReturns = toReturns(marketSnapshot.candles || []);
-    const budgetState = buildBudgetState(journal, new Date().toISOString());
     const activeFamily = strategySummary.family || "unknown";
     const activeRegime = regimeSummary.regime || "unknown";
+    const activeStrategy = strategySummary.activeStrategy || "unknown";
+    const sameFamilyPositions = openPositionContexts.filter((context) => {
+      const family = context.position?.strategyDecision?.family || context.position?.entryRationale?.strategy?.family || "unknown";
+      return family === activeFamily;
+    });
+    const sameRegimePositions = openPositionContexts.filter((context) => {
+      const regime = context.position?.regimeAtEntry || context.position?.entryRationale?.regimeSummary?.regime || "unknown";
+      return regime === activeRegime;
+    });
+    const sameStrategyPositions = openPositionContexts.filter((context) => {
+      const strategy = context.position?.strategyAtEntry || context.position?.entryRationale?.strategy?.activeStrategy || "unknown";
+      return strategy === activeStrategy;
+    });
+    const candidateFactors = resolveFactorSet({ family: activeFamily, regime: activeRegime, marketStructureSummary, calendarSummary });
+    const sameFactorPositions = openPositionContexts.filter((context) => {
+      const factors = resolveFactorSet({
+        family: context.position?.strategyDecision?.family || context.position?.entryRationale?.strategy?.family || "unknown",
+        regime: context.position?.regimeAtEntry || context.position?.entryRationale?.regimeSummary?.regime || "unknown",
+        marketStructureSummary: context.position?.latestMarketStructureSummary || context.position?.entryRationale?.marketStructure || {},
+        calendarSummary: context.position?.latestCalendarSummary || context.position?.entryRationale?.calendar || {}
+      });
+      return factors.some((factor) => candidateFactors.includes(factor));
+    });
 
+    const candidateReturns = toReturns(marketSnapshot.candles || []);
+    const budgetState = buildBudgetState(journal, this.config, new Date().toISOString());
     const correlations = openPositionContexts.map((context) => ({
       symbol: context.symbol,
       correlation: rollingCorrelation(candidateReturns, toReturns(context.marketSnapshot.candles || []))
@@ -103,6 +198,27 @@ export class PortfolioOptimizer {
       (maxValue, item) => Math.max(maxValue, Math.abs(item.correlation || 0)),
       0
     );
+
+    const totalEquityProxy = Math.max(
+      runtime?.lastKnownEquity ||
+        ((runtime?.lastKnownBalance || 0) + openPositionContexts.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0)) ||
+        this.config.startingCash,
+      1
+    );
+    const openExposure = openPositionContexts.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const clusterExposure = sameClusterPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const sectorExposure = sameSectorPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const familyExposure = sameFamilyPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const regimeExposure = sameRegimePositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const strategyExposure = sameStrategyPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const factorExposure = sameFactorPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const clusterHeat = clusterExposure / totalEquityProxy;
+    const sectorHeat = sectorExposure / totalEquityProxy;
+    const familyHeat = familyExposure / totalEquityProxy;
+    const regimeHeat = regimeExposure / totalEquityProxy;
+    const strategyHeat = strategyExposure / totalEquityProxy;
+    const factorHeat = factorExposure / totalEquityProxy;
+    const portfolioHeat = openExposure / totalEquityProxy;
 
     const volatilityTargetFraction = clamp(
       this.config.targetAnnualizedVolatility / Math.max((marketSnapshot.market.realizedVolPct || 0) * 16, 0.05),
@@ -118,26 +234,65 @@ export class PortfolioOptimizer {
       event_risk: 0.45
     }[regimeSummary.regime] || 0.8;
 
-    const sameFamilyPositions = openPositionContexts.filter((context) => {
-      const family = context.position?.strategyDecision?.family || context.position?.entryRationale?.strategy?.family || "unknown";
-      return family === activeFamily;
-    });
-    const sameRegimePositions = openPositionContexts.filter((context) => {
-      const regime = context.position?.regimeAtEntry || context.position?.entryRationale?.regimeSummary?.regime || "unknown";
-      return regime === activeRegime;
-    });
-
     const sameClusterPenalty = sameClusterPositions.length >= this.config.maxClusterPositions ? 0.4 : 1;
     const sameSectorPenalty = sameSectorPositions.length >= this.config.maxSectorPositions ? 0.7 : 1;
     const correlationPenalty = maxCorrelation > this.config.maxPairCorrelation ? 0.35 : 1;
+    const strategyBudgetFactor = budgetState.strategyBudgetMap[activeStrategy] || 1;
     const familyBudgetFactor = budgetState.familyBudgetMap[activeFamily] || 1;
     const regimeBudgetFactor = budgetState.regimeBudgetMap[activeRegime] || 1;
+    const clusterBudgetFactor = budgetState.clusterBudgetMap[candidateProfile.cluster] || 1;
+    const sectorBudgetFactor = budgetState.sectorBudgetMap[candidateProfile.sector] || 1;
+    const factorBudgetFactor = candidateFactors.length
+      ? average(candidateFactors.map((factor) => budgetState.factorBudgetMap[factor] || 1))
+      : 1;
+    const dailyBudgetFactor = budgetState.dailyBudgetFactor || 1;
     const familyExposurePenalty = sameFamilyPositions.length >= this.config.maxFamilyPositions ? 0.58 : 1;
     const regimeExposurePenalty = sameRegimePositions.length >= this.config.maxRegimePositions ? 0.7 : 1;
+    const strategyExposurePenalty = sameStrategyPositions.length >= Math.max(1, Math.min(2, this.config.maxFamilyPositions || 2)) ? 0.78 : 1;
+    const clusterHeatPenalty = clamp(1 - Math.max(0, clusterHeat - 0.18) * 1.8, 0.58, 1);
+    const sectorHeatPenalty = clamp(1 - Math.max(0, sectorHeat - 0.28) * 1.4, 0.62, 1);
+    const factorHeatPenalty = clamp(1 - Math.max(0, factorHeat - 0.22) * 1.6, 0.58, 1);
+    const portfolioHeatPenalty = clamp(1 - portfolioHeat * 0.42, 0.55, 1);
+
     const sizeMultiplier = clamp(
-      volatilityTargetFraction * regimeExposureMultiplier * sameClusterPenalty * sameSectorPenalty * correlationPenalty * familyBudgetFactor * regimeBudgetFactor * familyExposurePenalty * regimeExposurePenalty,
-      0.2,
-      1.1
+      volatilityTargetFraction *
+        regimeExposureMultiplier *
+        sameClusterPenalty *
+        sameSectorPenalty *
+        correlationPenalty *
+        strategyBudgetFactor *
+        familyBudgetFactor *
+        regimeBudgetFactor *
+        clusterBudgetFactor *
+        sectorBudgetFactor *
+        factorBudgetFactor *
+        dailyBudgetFactor *
+        familyExposurePenalty *
+        regimeExposurePenalty *
+        strategyExposurePenalty *
+        clusterHeatPenalty *
+        sectorHeatPenalty *
+        factorHeatPenalty *
+        portfolioHeatPenalty,
+      0.18,
+      1.12
+    );
+
+    const allocatorScore = clamp(
+      0.56 +
+        volatilityTargetFraction * 0.08 +
+        dailyBudgetFactor * 0.08 +
+        strategyBudgetFactor * 0.07 +
+        familyBudgetFactor * 0.05 +
+        clusterBudgetFactor * 0.05 +
+        (factorBudgetFactor - 1) * 0.06 -
+        maxCorrelation * 0.16 -
+        clusterHeat * 0.18 -
+        sectorHeat * 0.12 -
+        factorHeat * 0.1 -
+        portfolioHeat * 0.14,
+      0,
+      1
     );
 
     const reasons = [];
@@ -156,11 +311,38 @@ export class PortfolioOptimizer {
     if (sameRegimePositions.length >= this.config.maxRegimePositions) {
       reasons.push("regime_exposure_limit_hit");
     }
+    if (sameStrategyPositions.length >= Math.max(1, Math.min(2, this.config.maxFamilyPositions || 2))) {
+      reasons.push("strategy_exposure_limit_hit");
+    }
     if (familyBudgetFactor < 0.9) {
       reasons.push("family_budget_cooled");
     }
     if (regimeBudgetFactor < 0.9) {
       reasons.push("regime_budget_cooled");
+    }
+    if (strategyBudgetFactor < 0.9) {
+      reasons.push("strategy_budget_cooled");
+    }
+    if (clusterBudgetFactor < 0.9) {
+      reasons.push("cluster_budget_cooled");
+    }
+    if (dailyBudgetFactor < 0.9) {
+      reasons.push("daily_risk_budget_cooled");
+    }
+    if (factorBudgetFactor < 0.9) {
+      reasons.push("factor_budget_cooled");
+    }
+    if (clusterHeat >= 0.24) {
+      reasons.push("cluster_heat_elevated");
+    }
+    if (sectorHeat >= 0.34) {
+      reasons.push("sector_heat_elevated");
+    }
+    if (factorHeat >= 0.28) {
+      reasons.push("factor_heat_elevated");
+    }
+    if (allocatorScore < 0.42) {
+      reasons.push("portfolio_allocator_score_low");
     }
 
     return {
@@ -168,15 +350,31 @@ export class PortfolioOptimizer {
       sameSectorCount: sameSectorPositions.length,
       sameFamilyCount: sameFamilyPositions.length,
       sameRegimeCount: sameRegimePositions.length,
+      sameStrategyCount: sameStrategyPositions.length,
       maxCorrelation,
       volatilityTargetFraction,
       regimeExposureMultiplier,
+      strategyBudgetFactor,
       familyBudgetFactor,
       regimeBudgetFactor,
+      clusterBudgetFactor,
+      sectorBudgetFactor,
+      factorBudgetFactor,
+      dailyBudgetFactor,
+      dailyLossFraction: budgetState.dailyLossFraction,
+      clusterHeat,
+      sectorHeat,
+      familyHeat,
+      regimeHeat,
+      strategyHeat,
+      factorHeat,
+      portfolioHeat,
+      candidateFactors,
+      sameFactorCount: sameFactorPositions.length,
+      allocatorScore,
       sizeMultiplier,
       reasons,
       correlations
     };
   }
 }
-

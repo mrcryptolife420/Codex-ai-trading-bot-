@@ -141,6 +141,7 @@ export class RiskManager {
     pairHealthSummary = {},
     onChainLiteSummary = {},
     divergenceSummary = {},
+    qualityQuorumSummary = {},
     runtime,
     journal,
     balance,
@@ -267,6 +268,12 @@ export class RiskManager {
     if ((onChainLiteSummary.riskOffScore || 0) > 0.82 || (onChainLiteSummary.stressScore || 0) > 0.78) {
       reasons.push("stablecoin_flow_risk_off");
     }
+    if ((onChainLiteSummary.marketBreadthScore || 0) < 0.24 && (onChainLiteSummary.stressScore || 0) > 0.5) {
+      reasons.push("onchain_breadth_weak");
+    }
+    if ((onChainLiteSummary.trendingScore || 0) > 0.82 && (onChainLiteSummary.riskOffScore || 0) > 0.62) {
+      reasons.push("onchain_hype_extreme");
+    }
     if ((volatilitySummary.riskScore || 0) > 0.86 && (marketSnapshot.market.realizedVolPct || 0) > this.config.maxRealizedVolPct * 0.55) {
       reasons.push("options_volatility_stress");
     }
@@ -311,6 +318,11 @@ export class RiskManager {
     }
     if (selfHealState.lowRiskOnly && !lowRiskCandidate && this.config.botMode !== "paper") {
       reasons.push("self_heal_low_risk_only");
+    }
+    if (qualityQuorumSummary.observeOnly) {
+      reasons.push("quality_quorum_observe_only");
+    } else if ((qualityQuorumSummary.status || "") === "degraded" && score.probability < threshold + 0.03) {
+      reasons.push("quality_quorum_degraded");
     }
     if ((divergenceSummary?.leadBlocker?.status || "") === "blocked" && this.config.botMode === "live") {
       reasons.push("live_paper_divergence_guard");
@@ -370,10 +382,17 @@ export class RiskManager {
     const strategyFactor = clamp(0.76 + (strategySummary.fitScore || 0) * 0.28 + (strategySummary.agreementGap || 0) * 0.12 + (strategySummary.optimizerBoost || 0) * 0.5 - (strategySummary.blockers || []).length * 0.06, 0.56, 1.16);
     const rlFactor = clamp(rlAdvice.sizeMultiplier || 1, 0.78, 1.14);
     const memoryFactor = clamp(0.9 + (symbolStats.avgPnlPct || 0) * 4, 0.75, 1.15);
-    const portfolioFactor = clamp(portfolioSummary.sizeMultiplier || 1, 0.25, 1.05);
+    const portfolioFactor = clamp((portfolioSummary.sizeMultiplier || 1) * (portfolioSummary.dailyBudgetFactor || 1) * (0.88 + (portfolioSummary.allocatorScore || 0) * 0.24), 0.22, 1.08);
     const pairHealthFactor = clamp(0.78 + (pairHealthSummary.score || 0.5) * 0.34 - (pairHealthSummary.quarantined ? 0.24 : 0), 0.45, 1.08);
     const timeframeFactor = clamp(0.76 + (timeframeSummary.alignmentScore || 0.5) * 0.36 - ((timeframeSummary.blockerReasons || []).length ? 0.16 : 0), 0.46, 1.08);
-    const onChainFactor = clamp(1 + (onChainLiteSummary.liquidityScore || 0) * 0.08 - (onChainLiteSummary.riskOffScore || 0) * 0.14 - (onChainLiteSummary.stressScore || 0) * 0.12, 0.58, 1.08);
+    const onChainFactor = clamp(1 + (onChainLiteSummary.liquidityScore || 0) * 0.08 + (onChainLiteSummary.marketBreadthScore || 0) * 0.06 + (onChainLiteSummary.majorsMomentumScore || 0) * 0.05 - (onChainLiteSummary.riskOffScore || 0) * 0.14 - (onChainLiteSummary.stressScore || 0) * 0.12 - (onChainLiteSummary.trendingScore || 0) * ((onChainLiteSummary.riskOffScore || 0) > 0.6 ? 0.06 : 0.02), 0.56, 1.1);
+    const qualityQuorumFactor = clamp(
+      0.72 +
+        (qualityQuorumSummary.quorumScore || qualityQuorumSummary.averageScore || 0) * 0.34 -
+        (qualityQuorumSummary.observeOnly ? 0.26 : (qualityQuorumSummary.status || "") === "degraded" ? 0.12 : 0),
+      0.38,
+      1.04
+    );
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
     const streakPenalty = clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
@@ -400,6 +419,7 @@ export class RiskManager {
       pairHealthFactor *
       timeframeFactor *
       onChainFactor *
+      qualityQuorumFactor *
       divergenceFactor *
       heatPenalty *
       streakPenalty *
@@ -508,6 +528,7 @@ export class RiskManager {
       timeframeSummary,
       pairHealthSummary,
       onChainLiteSummary,
+      qualityQuorumSummary,
       divergenceSummary,
       rankScore:
         score.probability -
@@ -528,10 +549,14 @@ export class RiskManager {
         (pairHealthSummary.score || 0.5) * 0.04 +
         (timeframeSummary.alignmentScore || 0) * 0.05 +
         (onChainLiteSummary.liquidityScore || 0) * 0.03 +
+        (qualityQuorumSummary.quorumScore || qualityQuorumSummary.averageScore || 0) * 0.04 +
+        (onChainLiteSummary.marketBreadthScore || 0) * 0.025 +
+        (onChainLiteSummary.majorsMomentumScore || 0) * 0.018 +
         (marketSnapshot.book.bookPressure || 0) * 0.04 +
         (marketSnapshot.market.bullishPatternScore || 0) * 0.03 +
         (metaSummary.score || 0) * 0.05 -
         (onChainLiteSummary.stressScore || 0) * 0.03 -
+        (qualityQuorumSummary.observeOnly ? 0.06 : (qualityQuorumSummary.status || "") === "degraded" ? 0.025 : 0) -
         (divergenceSummary.averageScore || 0) * 0.04 -
         ((strategySummary.blockers || []).length ? 0.03 : 0) -
         (volatilitySummary.riskScore || 0) * 0.04 -
@@ -539,7 +564,8 @@ export class RiskManager {
         (announcementSummary.riskScore || 0) * 0.03 -
         (calendarSummary.riskScore || 0) * 0.04 -
         (rlAdvice.expectedReward || 0) * 0.02 -
-        marketSnapshot.book.spreadBps / 20_000 -
+        marketSnapshot.book.spreadBps / 20_000 +
+        (portfolioSummary.allocatorScore || 0) * 0.03 -
         (portfolioSummary.maxCorrelation || 0) * 0.03 +
         (score.calibrationConfidence || 0) * 0.02
     };
@@ -634,8 +660,6 @@ export class RiskManager {
     };
   }
 }
-
-
 
 
 

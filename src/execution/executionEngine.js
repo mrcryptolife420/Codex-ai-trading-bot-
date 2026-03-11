@@ -223,6 +223,28 @@ export class ExecutionEngine {
     const fallbackMode = fallbackStyle || plan.fallbackStyle || "none";
     const workingTimeMs = isMaker ? Math.round((plan.makerPatienceMs || 0) * clamp(0.72 + depthConfidence * 0.45 - queueImbalance * 0.14, 0.45, 1.2)) : Math.round(latencyMs || 0);
     const latencyBps = clamp((latencyMs / 1000) * (volatility * 520 + spreadBps * 0.05 + Math.abs(tradeFlow) * 1.6), 0, 18);
+    const queueDecayBps = isMaker
+      ? clamp(
+          (workingTimeMs / 1000) *
+            (Math.max(0, 0.46 - queueRefreshScore) * 0.34 + Math.max(0, -queueImbalance) * 0.28 + volatility * 7.5),
+          0,
+          8
+        )
+      : 0;
+    const spreadShockBps = clamp(
+      Math.max(0, spreadBps - Math.max(plan.expectedSlippageBps || expectedImpactBps, spreadBps * 0.35)) * 0.14 +
+        Math.max(0, volatility - 0.018) * 160 +
+        Math.max(0, 0.5 - depthConfidence) * 2.2,
+      0,
+      10
+    );
+    const liquidityShockBps = clamp(
+      (1 - depthConfidence) * 1.6 +
+        Math.max(0, 0.28 - queueRefreshScore) * 3.2 +
+        Math.max(0, Math.abs(tradeFlow) - 0.12) * 2.4,
+      0,
+      6.5
+    );
     const makerCompletion = isMaker
       ? clamp(
           safeNumber(plan.expectedMakerFillPct, 0.32) +
@@ -231,6 +253,8 @@ export class ExecutionEngine {
             queueImbalance * 0.08 -
             volatility * 2.4 -
             spreadBps / 180 +
+            queueDecayBps / -18 -
+            spreadShockBps / 28 -
             (isPegged ? 0.08 : 0),
           resolvedMakerFillFloor,
           0.98
@@ -248,7 +272,16 @@ export class ExecutionEngine {
     const takerFillRatio = clamp(safeCompletionRatio - makerFillRatio, 0, 1);
     const styleImpact = !isMaker ? 1 : isPegged ? 0.22 : 0.38;
     const queuePenaltyBps = isMaker ? clamp((1 - depthConfidence) * 1.4 + Math.max(0, -queueImbalance) * 1.2, 0, 4.5) : 0;
-    const executionBps = Math.max(0.01, expectedImpactBps * styleImpact + expectedMidSlippageBps * 0.25 + latencyBps * (isMaker ? 0.55 : 1) + queuePenaltyBps);
+    const executionBps = Math.max(
+      0.01,
+      expectedImpactBps * styleImpact +
+        expectedMidSlippageBps * 0.25 +
+        latencyBps * (isMaker ? 0.55 : 1) +
+        queuePenaltyBps +
+        queueDecayBps * 0.35 +
+        spreadShockBps * 0.55 +
+        liquidityShockBps * 0.45
+    );
     const fillPrice = referencePrice
       ? side === "BUY"
         ? referencePrice * (1 + executionBps / 10_000)
@@ -267,12 +300,17 @@ export class ExecutionEngine {
       expectedMidSlippageBps,
       workingTimeMs,
       latencyBps,
+      queueDecayBps,
+      spreadShockBps,
+      liquidityShockBps,
       executedQuote,
       executedQuantity,
       notes: [
         `completion:${safeCompletionRatio.toFixed(2)}`,
         `maker:${makerFillRatio.toFixed(2)}`,
         `latency_bps:${latencyBps.toFixed(2)}`,
+        `queue_decay_bps:${queueDecayBps.toFixed(2)}`,
+        `spread_shock_bps:${spreadShockBps.toFixed(2)}`,
         `working_ms:${workingTimeMs}`
       ]
     };
@@ -328,6 +366,10 @@ export class ExecutionEngine {
       realizedTouchSlippageBps: safeNumber(touchSlippageBps, 0),
       realizedMidSlippageBps: safeNumber(midSlippageBps, 0),
       slippageDeltaBps: safeNumber(touchSlippageBps - safeNumber(plan.expectedImpactBps, 0), 0),
+      latencyBps: safeNumber(fillEstimate?.latencyBps ?? orderTelemetry.latencyBps, 0),
+      queueDecayBps: safeNumber(fillEstimate?.queueDecayBps ?? orderTelemetry.queueDecayBps, 0),
+      spreadShockBps: safeNumber(fillEstimate?.spreadShockBps ?? orderTelemetry.spreadShockBps, 0),
+      liquidityShockBps: safeNumber(fillEstimate?.liquidityShockBps ?? orderTelemetry.liquidityShockBps, 0),
       makerFillRatio: clamp(makerRatio, 0, 1),
       takerFillRatio: clamp(takerRatio, 0, 1),
       depthConfidence: safeNumber(plan.depthConfidence, 0),

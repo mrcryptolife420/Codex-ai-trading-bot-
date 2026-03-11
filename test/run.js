@@ -45,6 +45,7 @@ import { OfflineTrainer } from "../src/runtime/offlineTrainer.js";
 import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
+import { TradingBot } from "../src/runtime/tradingBot.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -927,6 +928,44 @@ await runCheck("execution engine upgrades to pegged maker on strong local book",
   assert.equal(plan.pegPriceType, "PRIMARY_PEG");
 });
 
+await runCheck("execution engine simulates queue decay and spread shock in paper fills", async () => {
+  const engine = new ExecutionEngine(makeConfig());
+  const fill = engine.simulatePaperFill({
+    marketSnapshot: {
+      book: {
+        ask: 100.2,
+        bid: 100,
+        mid: 100.1,
+        spreadBps: 14,
+        tradeFlowImbalance: -0.22,
+        localBook: { depthConfidence: 0.28, queueImbalance: -0.24, queueRefreshScore: 0.08, resilienceScore: 0.06 },
+        entryEstimate: { touchSlippageBps: 1.4, midSlippageBps: 0.9 }
+      },
+      market: { realizedVolPct: 0.031 }
+    },
+    side: "BUY",
+    requestedQuoteAmount: 400,
+    latencyMs: 320,
+    plan: {
+      entryStyle: "limit_maker",
+      fallbackStyle: "cancel_replace_market",
+      makerPatienceMs: 4200,
+      expectedMakerFillPct: 0.52,
+      expectedImpactBps: 1.1,
+      expectedSlippageBps: 0.9,
+      depthConfidence: 0.28,
+      queueImbalance: -0.24,
+      queueRefreshScore: 0.08,
+      tradeFlow: -0.22,
+      preferMaker: true
+    }
+  });
+  assert.ok(fill.queueDecayBps > 0);
+  assert.ok(fill.spreadShockBps > 0);
+  assert.ok(fill.liquidityShockBps > 0);
+  assert.ok(fill.expectedImpactBps >= 1.1);
+});
+
 await runCheck("live broker places protective OCO after a buy", async () => {
   const clientCalls = [];
   const client = {
@@ -1271,6 +1310,82 @@ await runCheck("risk manager adapts thresholds from optimizer priors", async () 
   assert.ok(decision.threshold < decision.baseThreshold);
   assert.ok(decision.strategyConfidenceFloor < makeConfig().strategyMinConfidence);
   assert.ok(decision.optimizerApplied.strategyThresholdTilt > 0);
+});
+
+await runCheck("risk manager blocks entries when the data quorum falls to observe-only", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.64,
+      calibrationConfidence: 0.42,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.65, confidence: 0.2 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.2, microPriceEdgeBps: 0.8 },
+      market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.14 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.1, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.66, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.62, confidence: 0.46, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "observe_only", observeOnly: true, quorumScore: 0.38, blockerReasons: ["local_book", "provider_ops"] },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("quality_quorum_observe_only"));
+});
+
+await runCheck("risk manager rewards stronger portfolio allocator scores in rank ordering", async () => {
+  const manager = new RiskManager(makeConfig());
+  const commonInput = {
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.68,
+      calibrationConfidence: 0.42,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.65, confidence: 0.2 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.2, microPriceEdgeBps: 0.8 },
+      market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.14 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.1, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.66, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.62, confidence: 0.46, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  };
+  const lowAllocator = manager.evaluateEntry({
+    ...commonInput,
+    portfolioSummary: { sizeMultiplier: 1, allocatorScore: 0.18, maxCorrelation: 0, reasons: [] }
+  });
+  const highAllocator = manager.evaluateEntry({
+    ...commonInput,
+    portfolioSummary: { sizeMultiplier: 1, allocatorScore: 0.82, maxCorrelation: 0, reasons: [] }
+  });
+  assert.ok(highAllocator.rankScore > lowAllocator.rankScore);
 });
 
 await runCheck("risk manager can allow small paper warm-up entries near threshold", async () => {
@@ -1720,6 +1835,31 @@ await runCheck("state store removes stale temp files during init", async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+await runCheck("state store migrates runtime and journal schemas forward", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-state-store-migrate-"));
+  try {
+    await fs.writeFile(path.join(tempDir, "runtime.json"), JSON.stringify({
+      openPositions: [{ symbol: "BTCUSDT" }],
+      health: { consecutiveFailures: 1 }
+    }));
+    await fs.writeFile(path.join(tempDir, "journal.json"), JSON.stringify({
+      trades: [{ symbol: "BTCUSDT", exitAt: "2026-03-10T10:00:00.000Z" }]
+    }));
+    const store = new StateStore(tempDir);
+    const runtime = await store.loadRuntime();
+    const journal = await store.loadJournal();
+    assert.equal(runtime.schemaVersion, 2);
+    assert.deepEqual(runtime.qualityQuorum, {});
+    assert.equal(runtime.health.consecutiveFailures, 1);
+    assert.equal(journal.schemaVersion, 2);
+    assert.equal(journal.trades.length, 1);
+    assert.ok(Array.isArray(journal.counterfactuals));
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 await runCheck("data recorder stores rich learning events for paper retraining", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-"));
   try {
@@ -1773,6 +1913,8 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     });
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
+    assert.equal(payload.schemaVersion, 2);
+    assert.equal(payload.frameType, "learning");
     assert.equal(payload.symbol, "BTCUSDT");
     assert.equal(payload.model.calibrationObservations, 18);
     assert.equal(payload.rawFeatures.momentum_5, 1.2);
@@ -2154,6 +2296,30 @@ await runCheck("model registry picks a healthy rollback candidate", async () => 
   assert.ok(snapshot.currentQualityScore > 0.5);
 });
 
+await runCheck("model registry surfaces regime-ready promotion hints", async () => {
+  const registry = new ModelRegistry(makeConfig());
+  const snapshot = registry.buildRegistry({
+    snapshots: [],
+    report: {
+      windows: { allTime: { tradeCount: 18, winRate: 0.61, realizedPnl: 210 } },
+      modes: { paper: { tradeCount: 18, winRate: 0.61, realizedPnl: 210 }, live: { tradeCount: 4, winRate: 0.5, realizedPnl: 22 } },
+      maxDrawdownPct: 0.05
+    },
+    researchRegistry: { governance: { promotionCandidates: [{ symbol: "BTCUSDT", governanceScore: 0.74, status: "promote" }] }, leaderboard: [{ averageSharpe: 0.72 }] },
+    calibration: { expectedCalibrationError: 0.07 },
+    deployment: { active: "champion", shadowTradeCount: 28, championError: 0.12, challengerError: 0.09 },
+    divergenceSummary: { averageScore: 0.14 },
+    offlineTrainer: {
+      readinessScore: 0.62,
+      strategyScorecards: [{ id: "ema_trend", tradeCount: 8, governanceScore: 0.66 }, { id: "vwap_reversion", tradeCount: 6, governanceScore: 0.54 }],
+      regimeScorecards: [{ id: "trend", tradeCount: 7, governanceScore: 0.64 }, { id: "range", tradeCount: 5, governanceScore: 0.57 }]
+    },
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.ok(snapshot.promotionPolicy.readyRegimes.includes("trend"));
+  assert.ok(snapshot.notes.some((note) => note.includes("regimes")));
+});
+
 await runCheck("research registry surfaces promotion candidates from walk-forward results", async () => {
   const registry = new ResearchRegistry(makeConfig({ researchPromotionMinTrades: 5 }));
   const snapshot = registry.buildRegistry({
@@ -2196,6 +2362,26 @@ await runCheck("research registry surfaces promotion candidates from walk-forwar
   });
   assert.equal(snapshot.runCount, 1);
   assert.ok(snapshot.governance.promotionCandidates.some((item) => item.symbol === "BTCUSDT"));
+});
+
+await runCheck("dashboard decision view preserves blocked-setup safety context", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const view = bot.buildDashboardDecisionView({
+    symbol: "BTCUSDT",
+    allow: false,
+    probability: 0.58,
+    threshold: 0.6,
+    sessionBlockers: ["session_liquidity_guard"],
+    driftBlockers: ["drift_confidence_guard"],
+    selfHealIssues: ["loss_streak_warning"],
+    session: { session: "asia", sessionLabel: "Asia", blockerReasons: ["session_liquidity_guard"] },
+    drift: { blockerReasons: ["drift_confidence_guard"] },
+    selfHeal: { issues: ["loss_streak_warning"] },
+    qualityQuorum: { status: "degraded", quorumScore: 0.75, blockerReasons: [], cautionReasons: ["calendar"] }
+  });
+  assert.deepEqual(view.sessionBlockers, ["session_liquidity_guard"]);
+  assert.deepEqual(view.driftBlockers, ["drift_confidence_guard"]);
+  assert.deepEqual(view.selfHealIssues, ["loss_streak_warning"]);
 });
 
 await runCheck("pair health monitor quarantines noisy symbols", async () => {
@@ -2280,6 +2466,28 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   });
   assert.equal(summary.counterfactuals.total, 2);
   assert.ok(summary.readinessScore > 0.24);
+});
+
+await runCheck("offline trainer builds blocker and regime veto scorecards", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 18, netPnlPct: 0.014, executionQualityScore: 0.7, labelScore: 0.78, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -7, netPnlPct: -0.006, executionQualityScore: 0.52, labelScore: 0.4, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" }
+      ]
+    },
+    dataRecorder: { learningFrames: 10, decisionFrames: 18 },
+    counterfactuals: [
+      { outcome: "missed_winner", realizedMovePct: 0.022, blockerReasons: ["provider_ops"], regime: "trend", strategy: "ema_trend" },
+      { outcome: "missed_winner", realizedMovePct: 0.016, blockerReasons: ["provider_ops"], regime: "trend", strategy: "ema_trend" },
+      { outcome: "blocked_correctly", realizedMovePct: -0.01, blockerReasons: ["exchange_notice_risk"], regime: "event_risk", strategy: "donchian_breakout" }
+    ],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.equal(summary.vetoFeedback.badVetoCount, 2);
+  assert.ok(summary.blockerScorecards.some((item) => item.id === "provider_ops" && item.status === "relax"));
+  assert.ok(summary.regimeScorecards.some((item) => item.id === "trend"));
 });
 
 await runCheck("adaptive model exposes expert mix and neural overlays", async () => {
@@ -2455,6 +2663,119 @@ await runCheck("on-chain lite summary captures stablecoin liquidity context", as
   assert.ok(summary.liquidityScore > 0.4);
   assert.ok(summary.stablecoinDominancePct > 0);
 });
+await runCheck("strategy optimizer exposes bayesian scorecards", async () => {
+  const optimizer = new StrategyOptimizer(makeConfig());
+  const snapshot = optimizer.buildSnapshot({
+    journal: {
+      trades: [
+        { strategyAtEntry: "ema_trend", pnlQuote: 18, netPnlPct: 0.015, labelScore: 0.74, exitAt: "2026-03-05T10:00:00.000Z", brokerMode: "paper" },
+        { strategyAtEntry: "ema_trend", pnlQuote: 12, netPnlPct: 0.01, labelScore: 0.68, exitAt: "2026-03-06T10:00:00.000Z", brokerMode: "paper" },
+        { strategyAtEntry: "vwap_reversion", pnlQuote: -6, netPnlPct: -0.005, labelScore: 0.42, exitAt: "2026-03-07T10:00:00.000Z", brokerMode: "paper" },
+        { strategyAtEntry: "ema_trend", pnlQuote: 9, netPnlPct: 0.008, labelScore: 0.63, exitAt: "2026-03-08T10:00:00.000Z", brokerMode: "live" }
+      ]
+    },
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.ok(snapshot.strategyScorecards.length >= 2);
+  assert.ok(snapshot.topStrategies[0].thompsonScore >= snapshot.topStrategies[0].rewardScore);
+  assert.ok(Object.prototype.hasOwnProperty.call(snapshot.strategyThresholdTilts, "ema_trend"));
+});
+
+await runCheck("portfolio optimizer v2 returns allocator score and budgets", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({ maxFamilyPositions: 2, maxRegimePositions: 2 }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "ETHUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: 0.012, exitAt: "2026-03-08T10:00:00.000Z", pnlQuote: 22 },
+        { symbol: "ETHUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.006, exitAt: "2026-03-09T11:00:00.000Z", pnlQuote: -8 }
+      ],
+      scaleOuts: []
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.02 } },
+    candidateProfile: { cluster: "layer1", sector: "layer1" },
+    openPositionContexts: [
+      { symbol: "BTCUSDT", profile: { cluster: "layer1", sector: "layer1" }, marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 200 + index, high: 201 + index, low: 199 + index })) }, position: { notional: 1200, entryPrice: 200, quantity: 6, strategyDecision: { family: "trend_following" }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", entryRationale: { strategy: { family: "trend_following", activeStrategy: "ema_trend" }, regimeSummary: { regime: "trend" } } } }
+    ],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.ok(summary.allocatorScore > 0);
+  assert.ok(summary.strategyBudgetFactor > 0);
+  assert.ok(summary.dailyBudgetFactor > 0);
+  assert.ok(summary.clusterHeat > 0);
+});
+
+await runCheck("portfolio optimizer tracks factor budgets and factor heat", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({ maxFamilyPositions: 2, maxRegimePositions: 2 }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "SOLUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: 0.015, exitAt: "2026-03-08T10:00:00.000Z", pnlQuote: 24 },
+        { symbol: "ETHUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: 0.009, exitAt: "2026-03-09T11:00:00.000Z", pnlQuote: 10 }
+      ],
+      scaleOuts: []
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 90 + index, high: 91 + index, low: 89 + index })), market: { realizedVolPct: 0.018 } },
+    candidateProfile: { cluster: "layer1", sector: "layer1" },
+    openPositionContexts: [
+      { symbol: "BTCUSDT", profile: { cluster: "layer1", sector: "layer1" }, marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 200 + index, high: 201 + index, low: 199 + index })) }, position: { notional: 1800, entryPrice: 200, quantity: 9, strategyDecision: { family: "trend_following" }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", entryRationale: { strategy: { family: "trend_following", activeStrategy: "ema_trend" }, regimeSummary: { regime: "trend" } } } }
+    ],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" },
+    marketStructureSummary: { crowdingBias: 0.12 },
+    calendarSummary: { riskScore: 0.12 }
+  });
+  assert.ok(summary.candidateFactors.includes("momentum"));
+  assert.ok(summary.factorBudgetFactor > 0);
+  assert.ok(summary.factorHeat > 0);
+});
+
+await runCheck("on-chain lite v2 summary captures majors and trending proxies", async () => {
+  const service = new OnChainLiteService({ config: makeConfig(), runtime: {}, logger: null, fetchImpl: async () => ({ ok: true, json: async () => [] }) });
+  const summary = service.summarize({
+    stablecoins: [
+      { market_cap: 110000000000, total_volume: 54000000000, price_change_percentage_24h: 1.1 },
+      { market_cap: 62000000000, total_volume: 16000000000, price_change_percentage_24h: 0.4 }
+    ],
+    majors: [
+      { market_cap: 1000000000000, price_change_percentage_24h: 2.4 },
+      { market_cap: 400000000000, price_change_percentage_24h: 1.6 },
+      { market_cap: 120000000000, price_change_percentage_24h: -0.8 }
+    ],
+    trending: [{ symbol: "BTC" }, { symbol: "ETH" }, { symbol: "SOL" }]
+  }, { totalMarketCapUsd: 2500000000000 });
+  assert.ok(summary.marketBreadthScore > 0);
+  assert.ok(summary.majorsMomentumScore > 0);
+  assert.ok(summary.trendingSymbols.length === 3);
+});
+
+await runCheck("performance report exposes trade quality review and scorecards", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        { id: "1", symbol: "BTCUSDT", strategyAtEntry: "ema_trend", entryAt: "2026-03-09T10:00:00.000Z", exitAt: "2026-03-09T12:00:00.000Z", pnlQuote: 14, netPnlPct: 0.012, mfePct: 0.02, maePct: -0.004, labelScore: 0.72, executionQualityScore: 0.68, captureEfficiency: 0.62, entryExecutionAttribution: { entryStyle: "limit_maker", slippageDeltaBps: 0.8, realizedTouchSlippageBps: 1.4, makerFillRatio: 0.66 }, entryRationale: { probability: 0.62, threshold: 0.54, strategy: { fitScore: 0.7 }, meta: { qualityScore: 0.66 }, timeframe: { alignmentScore: 0.64 } } },
+        { id: "2", symbol: "ETHUSDT", strategyAtEntry: "vwap_reversion", entryAt: "2026-03-09T13:00:00.000Z", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -9, netPnlPct: -0.008, mfePct: 0.004, maePct: -0.01, labelScore: 0.4, executionQualityScore: 0.46, captureEfficiency: 0.18, entryExecutionAttribution: { entryStyle: "market", slippageDeltaBps: 3.2, realizedTouchSlippageBps: 4.8, makerFillRatio: 0.1 }, entryRationale: { probability: 0.55, threshold: 0.53, strategy: { fitScore: 0.48 }, meta: { qualityScore: 0.44 }, timeframe: { alignmentScore: 0.42 } } }
+      ],
+      scaleOuts: [],
+      blockedSetups: [],
+      researchRuns: [],
+      equitySnapshots: [{ equity: 10000 }, { equity: 10020 }, { equity: 10005 }],
+      counterfactuals: [{ outcome: "missed_winner", strategy: "ema_trend", realizedMovePct: 0.018 }],
+      events: []
+    },
+    runtime: { openPositions: [] },
+    config: makeConfig(),
+    now: new Date("2026-03-10T12:00:00.000Z")
+  });
+  assert.ok(report.tradeQualityReview.averageCompositeScore > 0);
+  assert.ok(report.tradeQualityReview.strategyScorecards.length >= 2);
+  assert.ok(report.recentReviews.length >= 2);
+});
+
 console.log("All checks passed.");
 
 

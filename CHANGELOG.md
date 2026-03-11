@@ -7,6 +7,9 @@
 - Exit intelligence v2 with stronger hold, trim, trail, and close decisions wired into runtime and trade replay.
 - Trade quality scoring, universe rotation, model promotion rules, and execution quality monitoring in the AI control loop.
 - Richer feature-store learning frames so closed paper/live trades persist model, signal, rationale, and indicator context for retraining.
+- Feature-store and persisted runtime schema versioning so recorder frames, runtime state, and journals can migrate forward without silent contract drift.
+- Data quorum summaries that classify candidates as `ready`, `watch`, `degraded`, or `observe_only` based on local book, provider ops, pair health, divergence, and event quality checks.
+- Offline trainer veto-feedback scorecards per blocker plus regime scorecards so counterfactual misses can directly inform governance and promotion readiness.
 - Symbol-level risk guards for per-pair daily entry caps and cooldowns after recent losing exits.
 - Clock sync quality telemetry with midpoint-sampled Binance time checks and fresher doctor output.
 - Local order book bootstrap wait and warm-up tracking so startup depth confidence ramps in more cleanly.
@@ -20,8 +23,11 @@
 - Restored recorder and backup manager state on restart so dashboard counts reflect files already on disk.
 - Repaired light and dark theme application so both `html` and `body` switch together and persist correctly.
 - Cleaned stale runtime `.tmp` files during boot to avoid orphaned state artifacts after interrupted saves.
+- Migrated older runtime and journal files forward to the latest persisted shape so new quorum/governance fields do not disappear on pre-existing state.
+- Fixed portfolio ranking so stronger allocator scores now improve setup ordering instead of accidentally penalizing the best-shaped candidates.
 - Synced dashboard/runtime summaries with the new indicator payloads and persisted learning telemetry.
 - Fixed dashboard fold cards and nested detail panels so user collapse state survives polling refreshes instead of reopening every few seconds.
+- Restored blocked-setup dashboard cards so self-heal, session, and drift safety flags survive the decision-view serialization layer.
 - Fixed the trade-open pipeline so dashboard `Go` states no longer imply an order was sent; decisions now expose `opened`, `eligible`, `runtime_blocked`, `entry_failed`, and `standby` explicitly.
 - Stopped paper mode from being unnecessarily blocked by live-only clock drift, funding settlement, self-heal low-risk, and symbol repeat guards so the bot can keep learning during paper runs.
 - Reworked market snapshot prefetching to honor cache freshness, scan budgets, and concurrency limits, reducing timeout-driven fallback snapshots.
@@ -33,6 +39,9 @@
 - Reworked the dashboard into a simpler operator layout with a smaller top section, cleaner navigation, and one collapsed advanced analysis layer.
 - Simplified top setup and open position cards so the AI explains why a trade is allowed or blocked with fewer, clearer signals.
 - Reduced visible density by showing fewer setups, blocked trades, replay cards, and recent trades at once.
+- Extended governance and blocked/setup views with veto-learning, regime-readiness, and data-quorum context instead of only aggregate promotion stats.
+- Improved paper execution realism with queue-decay, spread-shock, and liquidity-shock penalties flowing into execution attribution.
+- Expanded portfolio allocation with factor budget and factor heat controls on top of the existing cluster/sector/family/regime exposure checks.
 - Added persistent detail memory for dynamic setup, position, and replay cards so manual open-close choices stick across refreshes.
 - Tightened universe, attribution, replay, and blocked-trade lists into a more compact operator view.
 - Lowered the default live drift threshold to a meaningful sync-quality guard now that clock health uses RTT-aware sampling rather than raw offset magnitude.
@@ -50,6 +59,7 @@
 - `node --check src/config/validate.js`
 - `node --check test/run.js`
 - `npm.cmd test`
+- `node test/run.js`
 - `node src/cli.js once`
 - `node src/cli.js status`
 - `node src/cli.js doctor`

@@ -21,7 +21,7 @@ import { OnChainLiteService, EMPTY_ONCHAIN } from "../market/onChainLiteService.
 import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
 import { StateStore } from "../storage/stateStore.js";
-import { buildPerformanceReport } from "./reportBuilder.js";
+import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { DataRecorder } from "./dataRecorder.js";
 import { ModelRegistry } from "./modelRegistry.js";
 import { StateBackupManager } from "./stateBackupManager.js";
@@ -496,6 +496,14 @@ function summarizeResearchRegistry(registry = {}) {
       realizedPnl: num(item.realizedPnl || 0, 2),
       averageSharpe: num(item.averageSharpe || 0, 3)
     })),
+    strategyScorecards: arr(registry.strategyScorecards || []).slice(0, 8).map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount || 0,
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      governanceScore: num(item.governanceScore || 0, 4),
+      averageReviewScore: num(item.averageReviewScore || 0, 4),
+      averageWinRate: num(item.averageWinRate || 0, 4)
+    })),
     governance: {
       promotionCandidates: arr(registry.governance?.promotionCandidates || []).slice(0, 5).map(mapLeader),
       observeList: arr(registry.governance?.observeList || []).slice(0, 5).map(mapLeader),
@@ -537,6 +545,10 @@ function summarizeModelRegistry(registry = {}) {
           paperQualityScore: num(registry.promotionPolicy.paperQualityScore || 0, 4),
           liveTradeCount: registry.promotionPolicy.liveTradeCount || 0,
           liveQualityScore: registry.promotionPolicy.liveQualityScore == null ? null : num(registry.promotionPolicy.liveQualityScore || 0, 4),
+          regimeScorecardCount: registry.promotionPolicy.regimeScorecardCount || 0,
+          strongRegimeScorecardCount: registry.promotionPolicy.strongRegimeScorecardCount || 0,
+          readyRegimes: [...(registry.promotionPolicy.readyRegimes || [])],
+          observeRegimes: [...(registry.promotionPolicy.observeRegimes || [])],
           blockerReasons: [...(registry.promotionPolicy.blockerReasons || [])]
         }
       : null,
@@ -607,6 +619,23 @@ function summarizeStrategy(strategySummary = {}) {
 }
 
 function summarizeOptimizer(optimizer = {}) {
+  const mapScorecard = (item) => ({
+    id: item.id,
+    label: item.label,
+    tradeCount: item.tradeCount || 0,
+    weightedTrades: num(item.weightedTrades || 0, 2),
+    winRate: num(item.winRate || 0, 4),
+    avgPnlPct: num(item.avgPnlPct || 0, 4),
+    avgPnlQuote: num(item.avgPnlQuote || 0, 2),
+    rewardScore: num(item.rewardScore || 0, 4),
+    multiplier: num(item.multiplier || 1, 4),
+    confidence: num(item.confidence || 0, 4),
+    governanceScore: num(item.governanceScore || 0, 4),
+    thompsonScore: num(item.thompsonScore || 0, 4),
+    posteriorUncertainty: num(item.posteriorUncertainty || 0, 4),
+    sizeBias: num(item.sizeBias || 1, 4),
+    status: item.status || "warmup"
+  });
   return {
     generatedAt: optimizer.generatedAt || null,
     sampleSize: optimizer.sampleSize || 0,
@@ -614,33 +643,18 @@ function summarizeOptimizer(optimizer = {}) {
     thresholdTilt: num(optimizer.thresholdTilt || 0, 4),
     confidenceTilt: num(optimizer.confidenceTilt || 0, 4),
     suggestions: [...(optimizer.suggestions || [])],
-    topStrategies: arr(optimizer.topStrategies || []).slice(0, 5).map((item) => ({
-      id: item.id,
-      label: item.label,
-      tradeCount: item.tradeCount || 0,
-      weightedTrades: num(item.weightedTrades || 0, 2),
-      winRate: num(item.winRate || 0, 4),
-      avgPnlPct: num(item.avgPnlPct || 0, 4),
-      avgPnlQuote: num(item.avgPnlQuote || 0, 2),
-      rewardScore: num(item.rewardScore || 0, 4),
-      multiplier: num(item.multiplier || 1, 4),
-      confidence: num(item.confidence || 0, 4)
-    })),
-    topFamilies: arr(optimizer.topFamilies || []).slice(0, 4).map((item) => ({
-      id: item.id,
-      label: item.label,
-      tradeCount: item.tradeCount || 0,
-      weightedTrades: num(item.weightedTrades || 0, 2),
-      winRate: num(item.winRate || 0, 4),
-      avgPnlPct: num(item.avgPnlPct || 0, 4),
-      rewardScore: num(item.rewardScore || 0, 4),
-      multiplier: num(item.multiplier || 1, 4),
-      confidence: num(item.confidence || 0, 4)
-    })),
+    topStrategies: arr(optimizer.topStrategies || []).slice(0, 5).map(mapScorecard),
+    topFamilies: arr(optimizer.topFamilies || []).slice(0, 4).map(mapScorecard),
+    topRegimes: arr(optimizer.topRegimes || []).slice(0, 4).map(mapScorecard),
+    strategyScorecards: arr(optimizer.strategyScorecards || []).slice(0, 8).map(mapScorecard),
+    familyScorecards: arr(optimizer.familyScorecards || []).slice(0, 6).map(mapScorecard),
+    regimeScorecards: arr(optimizer.regimeScorecards || []).slice(0, 6).map(mapScorecard),
     strategyThresholdTilts: Object.fromEntries(Object.entries(optimizer.strategyThresholdTilts || {}).slice(0, 8).map(([key, value]) => [key, num(value || 0, 4)])),
     familyThresholdTilts: Object.fromEntries(Object.entries(optimizer.familyThresholdTilts || {}).slice(0, 6).map(([key, value]) => [key, num(value || 0, 4)])),
+    regimeThresholdTilts: Object.fromEntries(Object.entries(optimizer.regimeThresholdTilts || {}).slice(0, 6).map(([key, value]) => [key, num(value || 0, 4)])),
     strategyConfidenceTilts: Object.fromEntries(Object.entries(optimizer.strategyConfidenceTilts || {}).slice(0, 8).map(([key, value]) => [key, num(value || 0, 4)])),
-    familyConfidenceTilts: Object.fromEntries(Object.entries(optimizer.familyConfidenceTilts || {}).slice(0, 6).map(([key, value]) => [key, num(value || 0, 4)]))
+    familyConfidenceTilts: Object.fromEntries(Object.entries(optimizer.familyConfidenceTilts || {}).slice(0, 6).map(([key, value]) => [key, num(value || 0, 4)])),
+    regimeConfidenceTilts: Object.fromEntries(Object.entries(optimizer.regimeConfidenceTilts || {}).slice(0, 6).map(([key, value]) => [key, num(value || 0, 4)]))
   };
 }
 
@@ -821,8 +835,28 @@ function summarizePortfolio(portfolioSummary = {}) {
   return {
     sameClusterCount: portfolioSummary.sameClusterCount || 0,
     sameSectorCount: portfolioSummary.sameSectorCount || 0,
+    sameFamilyCount: portfolioSummary.sameFamilyCount || 0,
+    sameRegimeCount: portfolioSummary.sameRegimeCount || 0,
+    sameStrategyCount: portfolioSummary.sameStrategyCount || 0,
     maxCorrelation: num(portfolioSummary.maxCorrelation || 0, 3),
     sizeMultiplier: num(portfolioSummary.sizeMultiplier || 1, 3),
+    allocatorScore: num(portfolioSummary.allocatorScore || 0, 4),
+    strategyBudgetFactor: num(portfolioSummary.strategyBudgetFactor || 1, 4),
+    familyBudgetFactor: num(portfolioSummary.familyBudgetFactor || 1, 4),
+    regimeBudgetFactor: num(portfolioSummary.regimeBudgetFactor || 1, 4),
+    clusterBudgetFactor: num(portfolioSummary.clusterBudgetFactor || 1, 4),
+    sectorBudgetFactor: num(portfolioSummary.sectorBudgetFactor || 1, 4),
+    factorBudgetFactor: num(portfolioSummary.factorBudgetFactor || 1, 4),
+    dailyBudgetFactor: num(portfolioSummary.dailyBudgetFactor || 1, 4),
+    clusterHeat: num(portfolioSummary.clusterHeat || 0, 4),
+    sectorHeat: num(portfolioSummary.sectorHeat || 0, 4),
+    familyHeat: num(portfolioSummary.familyHeat || 0, 4),
+    regimeHeat: num(portfolioSummary.regimeHeat || 0, 4),
+    strategyHeat: num(portfolioSummary.strategyHeat || 0, 4),
+    factorHeat: num(portfolioSummary.factorHeat || 0, 4),
+    portfolioHeat: num(portfolioSummary.portfolioHeat || 0, 4),
+    sameFactorCount: portfolioSummary.sameFactorCount || 0,
+    candidateFactors: [...(portfolioSummary.candidateFactors || [])],
     reasons: [...(portfolioSummary.reasons || [])],
     correlations: (portfolioSummary.correlations || []).map((item) => ({
       symbol: item.symbol,
@@ -876,6 +910,10 @@ function summarizeExecutionAttribution(attribution = {}) {
     realizedTouchSlippageBps: num(attribution.realizedTouchSlippageBps || 0, 2),
     realizedMidSlippageBps: num(attribution.realizedMidSlippageBps || 0, 2),
     slippageDeltaBps: num(attribution.slippageDeltaBps || 0, 2),
+    latencyBps: num(attribution.latencyBps || 0, 2),
+    queueDecayBps: num(attribution.queueDecayBps || 0, 2),
+    spreadShockBps: num(attribution.spreadShockBps || 0, 2),
+    liquidityShockBps: num(attribution.liquidityShockBps || 0, 2),
     makerFillRatio: num(attribution.makerFillRatio || 0, 3),
     takerFillRatio: num(attribution.takerFillRatio || 0, 3),
     depthConfidence: num(attribution.depthConfidence || 0, 3),
@@ -1173,9 +1211,17 @@ function summarizeOnChainLite(summary = {}) {
     stablecoinVolumeUsd: num(summary.stablecoinVolumeUsd || 0, 2),
     stablecoinChangePct24h: num(summary.stablecoinChangePct24h || 0, 2),
     stablecoinDominancePct: num(summary.stablecoinDominancePct || 0, 2),
+    stablecoinConcentrationPct: num(summary.stablecoinConcentrationPct || 0, 2),
     liquidityScore: num(summary.liquidityScore || 0, 4),
     riskOffScore: num(summary.riskOffScore || 0, 4),
     stressScore: num(summary.stressScore || 0, 4),
+    marketBreadthScore: num(summary.marketBreadthScore || 0, 4),
+    majorsPositiveRatio: num(summary.majorsPositiveRatio || 0, 4),
+    majorsMomentumScore: num(summary.majorsMomentumScore || 0, 4),
+    altLiquidityScore: num(summary.altLiquidityScore || 0, 4),
+    trendingScore: num(summary.trendingScore || 0, 4),
+    trendingSymbols: [...(summary.trendingSymbols || [])],
+    proxyConfidence: num(summary.proxyConfidence || 0, 4),
     reasons: [...(summary.reasons || [])],
     lastUpdatedAt: summary.lastUpdatedAt || null
   };
@@ -1199,6 +1245,32 @@ function summarizeSourceReliability(summary = {}) {
   };
 }
 
+function summarizeQualityQuorum(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    candidateCount: summary.candidateCount || 0,
+    readyCount: summary.readyCount || 0,
+    degradedCount: summary.degradedCount || 0,
+    observeOnlyCount: summary.observeOnlyCount || 0,
+    averageScore: num(summary.averageScore || 0, 4),
+    status: summary.status || "ready",
+    leadSymbol: summary.leadSymbol || null,
+    leadStatus: summary.leadStatus || null,
+    quorumScore: num(summary.quorumScore || summary.averageScore || 0, 4),
+    observeOnly: Boolean(summary.observeOnly),
+    blockerReasons: [...(summary.blockerReasons || [])],
+    cautionReasons: [...(summary.cautionReasons || [])],
+    checks: arr(summary.checks || []).slice(0, 8).map((item) => ({
+      id: item.id || null,
+      label: item.label || item.id || null,
+      passed: Boolean(item.passed),
+      critical: Boolean(item.critical),
+      detail: item.detail || null
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
 function summarizeOfflineTrainer(summary = {}) {
   return {
     generatedAt: summary.generatedAt || null,
@@ -1216,13 +1288,214 @@ function summarizeOfflineTrainer(summary = {}) {
       falseNegatives: summary.counterfactuals?.falseNegatives || 0,
       averageMissedMovePct: num(summary.counterfactuals?.averageMissedMovePct || 0, 4)
     },
+    vetoFeedback: {
+      total: summary.vetoFeedback?.total || 0,
+      blockerCount: summary.vetoFeedback?.blockerCount || 0,
+      goodVetoCount: summary.vetoFeedback?.goodVetoCount || 0,
+      badVetoCount: summary.vetoFeedback?.badVetoCount || 0,
+      topBlocker: summary.vetoFeedback?.topBlocker || null
+    },
     falsePositiveTrades: summary.falsePositiveTrades || 0,
     falseNegativeTrades: summary.falseNegativeTrades || 0,
     strategies: arr(summary.strategies || []).slice(0, 6),
     regimes: arr(summary.regimes || []).slice(0, 5),
+    strategyScorecards: arr(summary.strategyScorecards || []).slice(0, 8).map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount || 0,
+      paperTradeCount: item.paperTradeCount || 0,
+      liveTradeCount: item.liveTradeCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+      avgLabelScore: num(item.avgLabelScore || 0, 4),
+      avgMovePct: num(item.avgMovePct || 0, 4),
+      falsePositiveCount: item.falsePositiveCount || 0,
+      falseNegativeCount: item.falseNegativeCount || 0,
+      falsePositiveRate: num(item.falsePositiveRate || 0, 4),
+      falseNegativeRate: num(item.falseNegativeRate || 0, 4),
+      governanceScore: num(item.governanceScore || 0, 4),
+      dominantError: item.dominantError || "balanced",
+      status: item.status || "warmup"
+    })),
+    regimeScorecards: arr(summary.regimeScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount || 0,
+      paperTradeCount: item.paperTradeCount || 0,
+      liveTradeCount: item.liveTradeCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+      avgLabelScore: num(item.avgLabelScore || 0, 4),
+      avgMovePct: num(item.avgMovePct || 0, 4),
+      falsePositiveCount: item.falsePositiveCount || 0,
+      falseNegativeCount: item.falseNegativeCount || 0,
+      governanceScore: num(item.governanceScore || 0, 4),
+      status: item.status || "warmup"
+    })),
+    blockerScorecards: arr(summary.blockerScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id,
+      total: item.total || 0,
+      goodVetoCount: item.goodVetoCount || 0,
+      badVetoCount: item.badVetoCount || 0,
+      goodVetoRate: num(item.goodVetoRate || 0, 4),
+      badVetoRate: num(item.badVetoRate || 0, 4),
+      averageMovePct: num(item.averageMovePct || 0, 4),
+      governanceScore: num(item.governanceScore || 0, 4),
+      affectedStrategies: [...(item.affectedStrategies || [])],
+      affectedRegimes: [...(item.affectedRegimes || [])],
+      status: item.status || "observe"
+    })),
     falsePositiveByStrategy: arr(summary.falsePositiveByStrategy || []).slice(0, 5),
     falseNegativeByStrategy: arr(summary.falseNegativeByStrategy || []).slice(0, 5),
     notes: [...(summary.notes || [])]
+  };
+}
+
+function buildCandidateQualityQuorum({
+  symbol,
+  marketSnapshot,
+  newsSummary,
+  exchangeSummary = {},
+  calendarSummary = {},
+  pairHealthSummary = {},
+  timeframeSummary = {},
+  sourceReliabilitySummary = {},
+  divergenceSummary = {},
+  config,
+  nowIso: generatedAt = new Date().toISOString()
+} = {}) {
+  const checks = [
+    {
+      id: "local_book",
+      label: "Local book",
+      critical: true,
+      passed: !config.enableLocalOrderBook || (
+        Boolean(marketSnapshot?.book?.localBookSynced) &&
+        (marketSnapshot?.book?.depthConfidence || 0) >= 0.22
+      ),
+      detail: !config.enableLocalOrderBook
+        ? "disabled"
+        : `sync ${marketSnapshot?.book?.localBookSynced ? "ok" : "missing"} | depth ${num(marketSnapshot?.book?.depthConfidence || 0, 2)}`
+    },
+    {
+      id: "news_reliability",
+      label: "News reliability",
+      critical: false,
+      passed: (newsSummary?.coverage || 0) === 0 || (newsSummary?.reliabilityScore || 0) >= config.newsMinReliabilityScore,
+      detail: `${newsSummary?.coverage || 0} items | rel ${num(newsSummary?.reliabilityScore || 0, 2)}`
+    },
+    {
+      id: "provider_ops",
+      label: "Provider ops",
+      critical: true,
+      passed: (sourceReliabilitySummary?.providerCount || 0) === 0 || (
+        (sourceReliabilitySummary?.averageScore || 0) >= config.sourceReliabilityMinOperationalScore &&
+        (sourceReliabilitySummary?.degradedCount || 0) <= 1 &&
+        (sourceReliabilitySummary?.coolingDownCount || 0) <= Math.max(1, Math.floor((sourceReliabilitySummary?.providerCount || 0) / 2))
+      ),
+      detail: `${sourceReliabilitySummary?.degradedCount || 0} degraded | avg ${num(sourceReliabilitySummary?.averageScore || 0, 2)}`
+    },
+    {
+      id: "pair_health",
+      label: "Pair health",
+      critical: true,
+      passed: !pairHealthSummary?.quarantined,
+      detail: `${pairHealthSummary?.health || "watch"} | ${num(pairHealthSummary?.score || 0, 2)}`
+    },
+    {
+      id: "timeframe",
+      label: "Timeframe",
+      critical: false,
+      passed: !(timeframeSummary?.blockerReasons || []).length,
+      detail: `align ${num(timeframeSummary?.alignmentScore || 0, 2)}`
+    },
+    {
+      id: "divergence",
+      label: "Divergence",
+      critical: true,
+      passed: (divergenceSummary?.leadBlocker?.status || "") !== "blocked",
+      detail: `avg ${num(divergenceSummary?.averageScore || 0, 2)}`
+    },
+    {
+      id: "calendar",
+      label: "Calendar",
+      critical: false,
+      passed: (calendarSummary?.riskScore || 0) < 0.76 || (calendarSummary?.proximityHours || 999) > 12,
+      detail: calendarSummary?.nextEventTitle
+        ? `${calendarSummary.nextEventType || "event"} in ${num(calendarSummary?.proximityHours || 0, 1)}u`
+        : "geen direct event"
+    },
+    {
+      id: "exchange",
+      label: "Exchange",
+      critical: false,
+      passed: (exchangeSummary?.riskScore || 0) < 0.72,
+      detail: `${exchangeSummary?.highPriorityCount || 0} notices`
+    }
+  ];
+  const failedCritical = checks.filter((check) => check.critical && !check.passed);
+  const cautionReasons = checks.filter((check) => !check.passed && !check.critical).map((check) => check.id);
+  const passedCount = checks.filter((check) => check.passed).length;
+  const quorumScore = checks.length ? passedCount / checks.length : 1;
+  const observeOnly = failedCritical.length >= 2 || (!checks.find((check) => check.id === "local_book")?.passed && !checks.find((check) => check.id === "provider_ops")?.passed);
+  const status = observeOnly
+    ? "observe_only"
+    : failedCritical.length || cautionReasons.length >= 2
+      ? "degraded"
+      : cautionReasons.length
+        ? "watch"
+        : "ready";
+  return {
+    generatedAt,
+    symbol: symbol || null,
+    candidateCount: 1,
+    readyCount: status === "ready" ? 1 : 0,
+    degradedCount: status === "degraded" ? 1 : 0,
+    observeOnlyCount: observeOnly ? 1 : 0,
+    averageScore: num(quorumScore, 4),
+    quorumScore: num(quorumScore, 4),
+    status,
+    leadSymbol: symbol || null,
+    leadStatus: status,
+    observeOnly,
+    blockerReasons: failedCritical.map((check) => check.id),
+    cautionReasons,
+    checks,
+    notes: [
+      observeOnly
+        ? `${symbol || "candidate"} draait in observe-only door ${failedCritical.map((check) => check.id).join(", ") || "meerdere quorum-fouten"}.`
+        : status === "degraded"
+          ? `${symbol || "candidate"} heeft degraded data quorum; risicovollere entries beter vermijden.`
+          : `${symbol || "candidate"} voldoet aan de data quorum-checks.`
+    ]
+  };
+}
+
+function buildRuntimeQualityQuorum(candidates = [], nowIso = new Date().toISOString()) {
+  const summaries = candidates.map((candidate) => candidate.qualityQuorumSummary).filter(Boolean);
+  if (!summaries.length) {
+    return summarizeQualityQuorum({ generatedAt: nowIso });
+  }
+  const lead = summaries[0];
+  return {
+    generatedAt: nowIso,
+    candidateCount: summaries.length,
+    readyCount: summaries.filter((item) => item.status === "ready").length,
+    degradedCount: summaries.filter((item) => item.status === "degraded").length,
+    observeOnlyCount: summaries.filter((item) => item.observeOnly).length,
+    averageScore: num(summaries.reduce((total, item) => total + (item.quorumScore || item.averageScore || 0), 0) / summaries.length, 4),
+    quorumScore: num(lead.quorumScore || lead.averageScore || 0, 4),
+    status: lead.status || "ready",
+    leadSymbol: lead.symbol || null,
+    leadStatus: lead.status || "ready",
+    observeOnly: Boolean(lead.observeOnly),
+    blockerReasons: [...(lead.blockerReasons || [])],
+    cautionReasons: [...(lead.cautionReasons || [])],
+    checks: arr(lead.checks || []),
+    notes: [
+      `Quorum ready ${summaries.filter((item) => item.status === "ready").length}/${summaries.length}.`,
+      ...(lead.notes || [])
+    ]
   };
 }
 
@@ -1989,9 +2262,14 @@ export class TradingBot {
         detail: `${candidate.pairHealthSummary?.health || "watch"} | score ${num((candidate.pairHealthSummary?.score || 0) * 100, 1)}%`
       },
       {
+        label: "Data quorum",
+        passed: !candidate.qualityQuorumSummary?.observeOnly && (candidate.qualityQuorumSummary?.status || "ready") !== "degraded",
+        detail: `${candidate.qualityQuorumSummary?.status || "ready"} | score ${num((candidate.qualityQuorumSummary?.quorumScore || 0) * 100, 1)}% | ${(candidate.qualityQuorumSummary?.blockerReasons || [])[0] || "geen blocker"}`
+      },
+      {
         label: "Stablecoin flow",
         passed: (candidate.onChainLiteSummary?.riskOffScore || 0) < 0.82 && (candidate.onChainLiteSummary?.stressScore || 0) < 0.78,
-        detail: `liq ${num((candidate.onChainLiteSummary?.liquidityScore || 0) * 100, 1)}% | stress ${num((candidate.onChainLiteSummary?.stressScore || 0) * 100, 1)}%`
+        detail: `liq ${num((candidate.onChainLiteSummary?.liquidityScore || 0) * 100, 1)}% | breadth ${num((candidate.onChainLiteSummary?.marketBreadthScore || 0) * 100, 1)}% | stress ${num((candidate.onChainLiteSummary?.stressScore || 0) * 100, 1)}%`
       },
       {
         label: "Options volatility",
@@ -2026,7 +2304,7 @@ export class TradingBot {
       {
         label: "Portfolio overlap",
         passed: !(candidate.portfolioSummary.reasons || []).length,
-        detail: `Corr ${num(candidate.portfolioSummary.maxCorrelation || 0, 2)} | cluster ${candidate.portfolioSummary.sameClusterCount || 0}`
+        detail: `Corr ${num(candidate.portfolioSummary.maxCorrelation || 0, 2)} | cluster ${candidate.portfolioSummary.sameClusterCount || 0} | alloc ${num((candidate.portfolioSummary.allocatorScore || 0) * 100, 1)}%`
       }
     ];
   }
@@ -2094,10 +2372,15 @@ export class TradingBot {
     const attributionText = candidate.attributionSummary
       ? `strategy-attribution ${candidate.attributionSummary.reasons?.join(", ") || "neutraal"} met boost ${num((candidate.attributionSummary.rankBoost || 0) * 100, 1)}%`
       : "neutrale strategy-history";
+    const quorumText = candidate.qualityQuorumSummary?.status === "observe_only"
+      ? `data quorum observe-only door ${candidate.qualityQuorumSummary.blockerReasons.join(", ") || "meerdere kritieke checks"}`
+      : candidate.qualityQuorumSummary?.status === "degraded"
+        ? `data quorum degraded (${candidate.qualityQuorumSummary.cautionReasons?.[0] || candidate.qualityQuorumSummary.blockerReasons?.[0] || "extra voorzichtigheid"})`
+        : `data quorum ${candidate.qualityQuorumSummary?.status || "ready"} op ${num((candidate.qualityQuorumSummary?.quorumScore || 0) * 100, 1)}%`;
     if (candidate.decision.allow) {
-      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText} en ${explorationText} als execution-plan.`;
+      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText}, ${quorumText} en ${explorationText} als execution-plan.`;
     }
-    return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText} en ${optimizerText}.`;
+    return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText}, ${quorumText} en ${optimizerText}.`;
   }
 
   buildEntryRationale(candidate) {
@@ -2151,6 +2434,7 @@ export class TradingBot {
       drift: summarizeDrift(candidate.driftSummary),
       selfHeal: summarizeSelfHeal(candidate.selfHealState),
       meta: summarizeMeta(candidate.metaSummary),
+      qualityQuorum: summarizeQualityQuorum(candidate.qualityQuorumSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
       indicators: summarizeIndicators(candidate.marketSnapshot.market),
@@ -2266,6 +2550,20 @@ export class TradingBot {
       : summarizeTimeframeConsensus({ enabled: false });
     const pairHealthSummary = context.pairHealthSummary || this.pairHealthMonitor.evaluateSymbol(context.pairHealthSnapshot || {}, { symbol, marketSnapshot, newsSummary, timeframeSummary });
     const divergenceSummary = context.divergenceSummary || this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
+    const sourceReliabilitySummary = context.sourceReliabilitySummary || summarizeSourceReliability(this.runtime.sourceReliability || {});
+    const qualityQuorumSummary = buildCandidateQualityQuorum({
+      symbol,
+      marketSnapshot,
+      newsSummary,
+      exchangeSummary,
+      calendarSummary,
+      pairHealthSummary,
+      timeframeSummary,
+      sourceReliabilitySummary,
+      divergenceSummary,
+      config: this.config,
+      nowIso: now.toISOString()
+    });
     const attributionSummary = this.strategyAttribution.getAdjustment(context.attributionSnapshot || {}, {
       symbol,
       strategyId: strategySummary.activeStrategy || null,
@@ -2281,7 +2579,9 @@ export class TradingBot {
       candidateProfile: this.config.symbolProfiles[symbol] || defaultProfile(symbol),
       openPositionContexts,
       regimeSummary,
-      strategySummary
+      strategySummary,
+      marketStructureSummary,
+      calendarSummary
     });
     const currentExposure = this.risk.getCurrentExposure(this.runtime);
     const totalEquityProxy = Math.max(balance.quoteFree + currentExposure, 1);
@@ -2300,7 +2600,11 @@ export class TradingBot {
         heat: currentExposure / totalEquityProxy,
         maxCorrelation: portfolioSummary.maxCorrelation || 0,
         familyBudgetFactor: portfolioSummary.familyBudgetFactor || 1,
-        regimeBudgetFactor: portfolioSummary.regimeBudgetFactor || 1
+        regimeBudgetFactor: portfolioSummary.regimeBudgetFactor || 1,
+        strategyBudgetFactor: portfolioSummary.strategyBudgetFactor || 1,
+        dailyBudgetFactor: portfolioSummary.dailyBudgetFactor || 1,
+        clusterHeat: portfolioSummary.clusterHeat || 0,
+        allocatorScore: portfolioSummary.allocatorScore || 0.5
       },
       streamFeatures,
       regimeSummary,
@@ -2455,6 +2759,7 @@ export class TradingBot {
       regimeSummary,
       timeframeSummary,
       pairHealthSummary,
+      qualityQuorumSummary,
       onChainLiteSummary,
       divergenceSummary,
       nowIso: now.toISOString()
@@ -2489,6 +2794,7 @@ export class TradingBot {
       calendarSummary,
       timeframeSummary,
       pairHealthSummary,
+      qualityQuorumSummary,
       divergenceSummary,
       streamFeatures,
       rawFeatures,
@@ -2505,6 +2811,8 @@ export class TradingBot {
       driftSummary,
       selfHealState: this.runtime.selfHeal || this.selfHeal.buildDefaultState(),
       metaSummary,
+      sourceReliabilitySummary,
+      qualityQuorumSummary,
       decision
     };
   }
@@ -2698,6 +3006,7 @@ export class TradingBot {
     const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: this.config.watchlist, nowIso: now.toISOString() });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
     const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: now.toISOString() });
+    const sourceReliabilitySummary = summarizeSourceReliability(this.runtime.sourceReliability || {});
     this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
     this.runtime.strategyAttribution = summarizeAttributionSnapshot(attributionSnapshot);
     this.runtime.marketSentiment = summarizeMarketSentiment(sharedMarketSentimentSummary);
@@ -2705,7 +3014,7 @@ export class TradingBot {
     this.runtime.onChainLite = summarizeOnChainLite(sharedOnChainLiteSummary);
     this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
     this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
-    this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
+    this.runtime.sourceReliability = sourceReliabilitySummary;
     const universeSnapshot = scanPlan.universeSnapshot;
     this.runtime.universe = summarizeUniverseSelection(universeSnapshot);
     this.journal.universeRuns.push({
@@ -2737,7 +3046,8 @@ export class TradingBot {
           volatilitySummary: sharedVolatilitySummary,
           onChainLiteSummary: sharedOnChainLiteSummary,
           pairHealthSnapshot,
-          divergenceSummary
+          divergenceSummary,
+          sourceReliabilitySummary
         });
         candidates.push(candidate);
         if (!candidate.decision.allow) {
@@ -2751,6 +3061,7 @@ export class TradingBot {
 
     candidates.sort((left, right) => right.decision.rankScore - left.decision.rankScore);
     this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
+    this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(candidates, now.toISOString()));
     this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
       symbol: candidate.symbol,
       summary: this.buildCandidateSummary(candidate),
@@ -2811,6 +3122,7 @@ export class TradingBot {
       calendar: summarizeCalendarSummary(candidate.calendarSummary),
       timeframe: summarizeTimeframeConsensus(candidate.timeframeSummary),
       pairHealth: { symbol: candidate.pairHealthSummary?.symbol || candidate.symbol, score: num(candidate.pairHealthSummary?.score || 0, 4), health: candidate.pairHealthSummary?.health || "watch", quarantined: Boolean(candidate.pairHealthSummary?.quarantined), reasons: [...(candidate.pairHealthSummary?.reasons || [])].slice(0, 4) },
+      qualityQuorum: summarizeQualityQuorum(candidate.qualityQuorumSummary),
       onChainLite: summarizeOnChainLite(candidate.onChainLiteSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
@@ -3408,6 +3720,16 @@ export class TradingBot {
         health: decision.pairHealth?.health || null,
         quarantined: Boolean(decision.pairHealth?.quarantined)
       },
+      qualityQuorum: {
+        status: decision.qualityQuorum?.status || null,
+        quorumScore: num(decision.qualityQuorum?.quorumScore || decision.qualityQuorum?.averageScore || 0, 4),
+        observeOnly: Boolean(decision.qualityQuorum?.observeOnly),
+        blockerReasons: arr(decision.qualityQuorum?.blockerReasons || []).slice(0, 3),
+        cautionReasons: arr(decision.qualityQuorum?.cautionReasons || []).slice(0, 3)
+      },
+      selfHealIssues: arr(decision.selfHealIssues || decision.selfHeal?.issues || []).slice(0, 2),
+      sessionBlockers: arr(decision.sessionBlockers || decision.session?.blockerReasons || []).slice(0, 2),
+      driftBlockers: arr(decision.driftBlockers || decision.drift?.blockerReasons || []).slice(0, 2),
       session: {
         session: decision.session?.session || null,
         sessionLabel: decision.session?.sessionLabel || decision.session?.session || null,
@@ -3483,6 +3805,7 @@ export class TradingBot {
       reason: trade.reason,
       exitSource: trade.exitSource || null,
       exitIntelligence: summarizeExitIntelligence(trade.exitIntelligenceSummary || {}),
+      review: buildTradeQualityReview(trade),
       entryRationale: trade.entryRationale || null
     };
   }
@@ -3516,6 +3839,9 @@ export class TradingBot {
       symbol: trade.symbol,
       entryAt: trade.entryAt,
       exitAt: trade.exitAt,
+      durationMinutes: trade.exitAt && trade.entryAt ? num(minutesBetween(trade.entryAt, trade.exitAt), 1) : null,
+      entryPrice: num(trade.entryPrice || 0, 6),
+      exitPrice: num(trade.exitPrice || 0, 6),
       pnlQuote: num(trade.pnlQuote || 0, 2),
       netPnlPct: num(trade.netPnlPct || 0, 4),
       strategy: trade.strategyAtEntry || rationale.strategy?.strategyLabel || rationale.strategy?.activeStrategy || null,
@@ -3538,6 +3864,7 @@ export class TradingBot {
         provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
         captureEfficiency: num(trade.captureEfficiency || 0, 4)
       },
+      review: buildTradeQualityReview(trade),
       replayCheckpoints: arr(trade.replayCheckpoints || []).slice(-12),
       timeline: [
         { at: trade.entryAt, type: "analysis", label: "Gate", detail: gateDetail },
@@ -3568,6 +3895,7 @@ export class TradingBot {
       averageWinRate: num(summary.averageWinRate || 0, 4),
       topFamilies: arr(summary.topFamilies || []).slice(0, 6),
       topRegimes: arr(summary.topRegimes || []).slice(0, 6),
+      strategyScorecards: arr(summary.strategyScorecards || []).slice(0, 8),
       reports: arr(summary.reports || []).slice(0, 6).map((report) => ({
         symbol: report.symbol,
         experimentCount: report.experimentCount || 0,
@@ -3579,6 +3907,7 @@ export class TradingBot {
         strategyLeaders: [...(report.strategyLeaders || [])],
         familyLeaders: arr(report.familyLeaders || []).slice(0, 4),
         regimeLeaders: arr(report.regimeLeaders || []).slice(0, 4),
+        strategyScorecards: arr(report.strategyScorecards || []).slice(0, 6),
         experiments: arr(report.experiments || []).slice(0, 4).map((item) => ({
           testStartAt: item.testStartAt,
           testEndAt: item.testEndAt,
@@ -3588,6 +3917,7 @@ export class TradingBot {
           sharpe: num(item.sharpe || 0, 3),
           expectancy: num(item.expectancy || 0, 2),
           strategyLeaders: [...(item.strategyLeaders || [])],
+          strategyScorecards: arr(item.strategyScorecards || []).slice(0, 4),
           familyLeaders: arr(item.familyLeaders || []).slice(0, 4),
           regimeLeaders: arr(item.regimeLeaders || []).slice(0, 4)
         }))
@@ -3634,6 +3964,7 @@ export class TradingBot {
       drift: summarizeDrift(this.runtime.drift || {}),
       selfHeal: summarizeSelfHeal(this.runtime.selfHeal || {}),
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
+      qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
       sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
@@ -3721,6 +4052,7 @@ export class TradingBot {
       calendar: calendarOverview,
       sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
+      qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
       upcomingEvents: arr(topDecision.calendarEvents || leadPosition?.entryRationale?.calendarEvents || []).slice(0, 4),
@@ -3736,6 +4068,8 @@ export class TradingBot {
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
       dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
       report: {
+        tradeQualityReview: report.tradeQualityReview || null,
+        recentReviews: arr(report.recentReviews || []).slice(0, 12),
         equitySeries: arr(report.equitySeries || []).slice(-(this.config.dashboardEquityPointLimit || 1440)).map((item) => ({
           at: item.at,
           equity: num(item.equity || 0, 2)
@@ -3805,6 +4139,7 @@ export class TradingBot {
       portfolio: dashboard.portfolio,
       exchange: dashboard.exchange,
       marketStructure: dashboard.marketStructure,
+      qualityQuorum: dashboard.qualityQuorum,
       calendar: dashboard.calendar,
       safety: dashboard.safety,
       report: dashboard.report,
@@ -3812,16 +4147,6 @@ export class TradingBot {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
 
 
 

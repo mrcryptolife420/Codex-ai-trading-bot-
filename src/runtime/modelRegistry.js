@@ -94,6 +94,17 @@ export class ModelRegistry {
     const challengerEdge = deployment?.championError != null && deployment?.challengerError != null
       ? deployment.championError - deployment.challengerError
       : 0;
+    const strategyScorecards = [...(offlineTrainer?.strategyScorecards || [])];
+    const matureStrategyScorecards = strategyScorecards.filter((item) => (item.tradeCount || 0) >= Math.max(3, (this.config.strategyAttributionMinTrades || 6) - 2));
+    const strongStrategyScorecards = matureStrategyScorecards.filter((item) => (item.governanceScore || 0) >= 0.52);
+    const regimeScorecards = [...(offlineTrainer?.regimeScorecards || [])];
+    const matureRegimeScorecards = regimeScorecards.filter((item) => (item.tradeCount || 0) >= Math.max(2, (this.config.strategyAttributionMinTrades || 6) - 3));
+    const strongRegimeScorecards = matureRegimeScorecards.filter((item) => (item.governanceScore || 0) >= 0.52);
+    const readyRegimes = strongRegimeScorecards.map((item) => item.id).slice(0, 4);
+    const observeRegimes = matureRegimeScorecards
+      .filter((item) => !readyRegimes.includes(item.id))
+      .map((item) => item.id)
+      .slice(0, 4);
     const blockerReasons = [];
 
     if ((deployment?.shadowTradeCount || 0) < this.config.modelPromotionMinShadowTrades) {
@@ -129,6 +140,14 @@ export class ModelRegistry {
     if ((offlineTrainer?.readinessScore || 0) < this.config.offlineTrainerMinReadiness) {
       blockerReasons.push("offline_trainer_not_ready");
     }
+    if (!matureStrategyScorecards.length) {
+      blockerReasons.push("strategy_scorecards_not_ready");
+    } else if (strongStrategyScorecards.length / Math.max(matureStrategyScorecards.length, 1) < 0.34) {
+      blockerReasons.push("strategy_scorecards_too_weak");
+    }
+    if (matureRegimeScorecards.length && !strongRegimeScorecards.length) {
+      blockerReasons.push("regime_scorecards_too_weak");
+    }
 
     const probationRequired = (liveStats.tradeCount || 0) < this.config.modelPromotionProbationLiveTrades;
     const allowPromotion = blockerReasons.length === 0;
@@ -154,6 +173,12 @@ export class ModelRegistry {
       liveQualityScore: liveQualityScore == null ? null : num(liveQualityScore, 4),
       divergenceScore: num(divergenceSummary?.averageScore || 0, 4),
       offlineTrainerReadiness: num(offlineTrainer?.readinessScore || 0, 4),
+      strategyScorecardCount: matureStrategyScorecards.length,
+      strongStrategyScorecardCount: strongStrategyScorecards.length,
+      regimeScorecardCount: matureRegimeScorecards.length,
+      strongRegimeScorecardCount: strongRegimeScorecards.length,
+      readyRegimes,
+      observeRegimes,
       blockerReasons
     };
   }
@@ -204,6 +229,12 @@ export class ModelRegistry {
             ? `Promotie kan, maar eerst ${promotionPolicy.probationTradesRemaining} live probation trades afronden.`
             : "Promotiebeleid staat op groen voor een challenger-promotie."
           : `Promotie wacht op: ${promotionPolicy.blockerReasons[0] || "meer data"}.`,
+        promotionPolicy.strategyScorecardCount
+          ? `${promotionPolicy.strongStrategyScorecardCount}/${promotionPolicy.strategyScorecardCount} strategy scorecards staan op groen.`
+          : "Nog geen volwassen strategy scorecards beschikbaar.",
+        promotionPolicy.regimeScorecardCount
+          ? `${promotionPolicy.strongRegimeScorecardCount}/${promotionPolicy.regimeScorecardCount} regimes staan op groen (${(promotionPolicy.readyRegimes || []).join(", ") || "geen"}).`
+          : "Nog geen volwassen regime scorecards beschikbaar.",
         promotionHint
           ? `${promotionHint.symbol} scoort als research-promotiekandidaat.`
           : "Nog geen research-promotiekandidaat in de registry."

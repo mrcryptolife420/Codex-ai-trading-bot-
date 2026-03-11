@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
+const FEATURE_STORE_SCHEMA_VERSION = 2;
+
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
 }
@@ -104,6 +106,7 @@ export class DataRecorder {
     this.logger = logger;
     this.rootDir = path.join(runtimeDir, "feature-store");
     this.state = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
       enabled: Boolean(config.dataRecorderEnabled),
       lastRecordAt: null,
       filesWritten: 0,
@@ -131,6 +134,7 @@ export class DataRecorder {
 
     this.state = {
       ...this.state,
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
       enabled: true,
       lastRecordAt: restored.lastRecordAt || this.state.lastRecordAt,
       filesWritten: safeStateNumber(restored.filesWritten, this.state.filesWritten),
@@ -153,6 +157,8 @@ export class DataRecorder {
       return null;
     }
     const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "cycle",
       at,
       mode,
       openPositions: overview.openPositions || 0,
@@ -183,6 +189,8 @@ export class DataRecorder {
       return 0;
     }
     const frames = candidates.slice(0, 12).map((candidate) => ({
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "decision",
       at,
       ...makeDecisionFrame(candidate),
       rawFeatureCount: Object.keys(candidate.rawFeatures || {}).length,
@@ -204,6 +212,8 @@ export class DataRecorder {
     const at = trade.exitAt || trade.entryAt || new Date().toISOString();
     const entryRationale = trade.entryRationale || {};
     const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "trade",
       at,
       symbol: trade.symbol,
       pnlQuote: num(trade.pnlQuote || 0, 2),
@@ -235,6 +245,8 @@ export class DataRecorder {
     const at = trade.exitAt || trade.entryAt || new Date().toISOString();
     const rationale = trade.entryRationale || {};
     const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "learning",
       at,
       symbol: trade.symbol,
       brokerMode: trade.brokerMode || null,
@@ -303,6 +315,8 @@ export class DataRecorder {
       return null;
     }
     const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "research",
       at: summary.generatedAt,
       symbolCount: summary.symbolCount || 0,
       bestSymbol: summary.bestSymbol || null,
@@ -335,6 +349,7 @@ export class DataRecorder {
   getSummary() {
     return {
       ...this.state,
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
       rootDir: this.rootDir
     };
   }
