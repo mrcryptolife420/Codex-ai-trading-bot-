@@ -93,6 +93,8 @@ Het installscript:
 - draait `npm.cmd test`
 - draait `node src/cli.js doctor`
 
+Op Windows zijn de `.cmd` bestanden de bedoelde entrypoints. De PowerShell-bestanden zoals [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) en [Install-Windows11.ps1](/C:/Users/highlife/Documents/Playground/Install-Windows11.ps1) bevatten alleen de onderliggende implementatie waar de `.cmd` wrappers naartoe doorsturen.
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example) als die nog niet bestaat.
@@ -203,7 +205,7 @@ Nieuwe productie-hardened lagen:
 - model registry: quality scoring per modelsnapshot met rollback-kandidaat in dashboard en doctor-output
 - counterfactual replay: bewaart geblokkeerde setups en vergelijkt ze later met de echte marktbeweging
 - divergence monitor: vergelijkt paper en live gedrag per strategie en kan promotie blokkeren als het gat te groot wordt
-- Windows watchdog: [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) herstart de bot-loop automatisch als die crasht, met restart-limiet per uur
+- Windows watchdog: [Start-BotService.cmd](/C:/Users/highlife/Documents/Playground/Start-BotService.cmd) start de watchdog; de onderliggende logica zit in [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) en herstart de bot-loop automatisch als die crasht, met restart-limiet per uur
 
 Start de watchdog lokaal met:
 
