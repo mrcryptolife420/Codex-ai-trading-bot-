@@ -4580,6 +4580,7 @@ await runCheck("replay chaos lab summarizes vulnerable strategies", async () => 
   assert.ok(summary.activeScenarios.some((item) => item.id === "stale_book"));
   assert.ok(summary.activeScenarios.some((item) => item.id === "venue_divergence"));
   assert.ok(summary.activeScenarios.some((item) => item.id === "partial_fill"));
+  assert.ok(summary.recommendedActions.some((item) => item.id === "partial_fill"));
 });
 
 await runCheck("execution cost and pnl decomposition stay finite on randomized trade samples", async () => {
@@ -4780,6 +4781,8 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
   assert.equal(view.confidenceBreakdown.executionConfidence, 0.41);
   assert.equal(view.marketState.phase, "range_acceptance");
   assert.equal(view.executionBudget.status, "watch");
+  assert.ok(view.operatorAction);
+  assert.ok(view.dataQuality.degradedSourceLabels.includes("news"));
 });
 
 await runCheck("doctor preview scan uses explicit read-only candidate scan mode", async () => {
@@ -4899,6 +4902,120 @@ await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local
   assert.equal(localBookCalls, 0);
   assert.equal(JSON.stringify(bot.runtime), beforeRuntime);
   assert.equal(JSON.stringify(bot.journal), beforeJournal);
+});
+
+await runCheck("scanCandidatesForResearch does not mutate runtime journals or local-book universe", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  let localBookCalls = 0;
+  bot.config = makeConfig({
+    watchlist: ["BTCUSDT"],
+    enableUniverseSelector: false,
+    candidateEvaluationConcurrency: 1,
+    marketSnapshotConcurrency: 1
+  });
+  bot.logger = { warn() {}, info() {} };
+  bot.marketCache = {};
+  bot.symbolRules = { BTCUSDT: { minNotional: 5 } };
+  bot.runtime = {
+    openPositions: [],
+    latestDecisions: [],
+    aiTelemetry: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    venueConfirmation: {},
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    divergence: {},
+    offlineTrainer: {},
+    sourceReliability: {},
+    universe: {},
+    session: {}
+  };
+  bot.journal = { universeRuns: [], blockedSetups: [], counterfactuals: [], trades: [], scaleOuts: [] };
+  bot.stream = {
+    getSymbolStreamFeatures() { return {}; },
+    getOrderBookSnapshot() { return null; },
+    setLocalBookUniverse() { localBookCalls += 1; }
+  };
+  bot.buildOpenPositionContexts = () => ({});
+  bot.getMarketSnapshot = async () => ({ symbol: "BTCUSDT", market: { realizedVolPct: 0.01, atrPct: 0.008 }, book: { spreadBps: 3, bookPressure: 0.1 } });
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.strategyAttribution = { buildSnapshot: () => ({}) };
+  bot.marketSentiment = { getSummary: async () => ({}) };
+  bot.volatility = { getSummary: async () => ({}) };
+  bot.onChainLite = { getSummary: async () => ({}) };
+  bot.pairHealthMonitor = { buildSnapshot: () => ({}) };
+  bot.divergenceMonitor = { buildSummary: () => ({}) };
+  bot.offlineTrainer = { buildSummary: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.evaluateCandidate = async () => ({ symbol: "BTCUSDT", decision: { allow: false, rankScore: 0.5 } });
+  const beforeRuntime = JSON.stringify(bot.runtime);
+  const beforeJournal = JSON.stringify(bot.journal);
+  const candidates = await bot.scanCandidatesForResearch({ quoteFree: 1000 });
+  assert.equal(candidates.length, 1);
+  assert.equal(localBookCalls, 0);
+  assert.equal(JSON.stringify(bot.runtime), beforeRuntime);
+  assert.equal(JSON.stringify(bot.journal), beforeJournal);
+});
+
+await runCheck("dashboard snapshot exposes lifecycle invariants and tuning governance", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.model = {
+    getCalibrationSummary: () => ({}),
+    getDeploymentSummary: () => ({}),
+    getTransformerSummary: () => ({})
+  };
+  bot.rlPolicy = { getSummary: () => ({}) };
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.backupManager = { getSummary: () => ({ backupCount: 0 }) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.health = { getStatus: () => ({}) };
+  bot.stream = { getStatus: () => ({}) };
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  bot.buildPositionView = (position) => position;
+  bot.buildDashboardPositionView = (position) => position;
+  bot.buildTradeReplayView = (trade) => trade;
+  bot.buildTradeView = (trade) => trade;
+  bot.buildModelWeightsView = () => [];
+  bot.runtime = {
+    mode: "paper",
+    lastKnownBalance: 1000,
+    lastKnownEquity: 1000,
+    lastCycleAt: null,
+    lastAnalysisAt: null,
+    lastPortfolioUpdateAt: null,
+    openPositions: [],
+    latestDecisions: [],
+    latestBlockedSetups: [],
+    ops: { incidentTimeline: [], runbooks: [], alerts: {}, replayChaos: {}, service: {}, thresholdTuning: {}, executionCalibration: {}, capitalLadder: {}, capitalGovernor: {}, alertDelivery: {} },
+    thresholdTuning: { appliedRecommendation: { id: "trend_relax", status: "probation" } },
+    parameterGovernor: { status: "active", strategyScopes: [{ scopeType: "strategy", id: "ema_trend", thresholdShift: -0.01 }], regimeScopes: [], notes: [] },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: ["sample_size_low"] } },
+    offlineTrainer: { thresholdPolicy: { status: "observe" } },
+    exchangeTruth: { freezeEntries: true, mismatchCount: 2 },
+    orderLifecycle: { pendingActions: [{ state: "manual_review" }], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    exchangeSafety: {},
+    marketSentiment: {},
+    onChainLite: {},
+    volatilityContext: {},
+    sourceReliability: {},
+    session: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    service: {}
+  };
+  bot.journal = { trades: [], scaleOuts: [], events: [] };
+  bot.config = makeConfig();
+  bot.buildPortfolioView = () => ({});
+  bot.buildResearchView = () => null;
+  bot.buildDashboardDecisionView = TradingBot.prototype.buildDashboardDecisionView;
+  const snapshot = await bot.getDashboardSnapshot();
+  assert.equal(snapshot.safety.lifecycleInvariants.status, "blocked");
+  assert.equal(snapshot.ops.tuningGovernance.thresholdRecommendationId, "trend_relax");
+  assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {

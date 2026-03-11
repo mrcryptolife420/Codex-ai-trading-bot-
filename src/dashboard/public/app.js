@@ -881,6 +881,8 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Trend state</span><strong>${escapeHtml(trendDirection.replaceAll("_", " "))}</strong><div class="meta">${escapeHtml(trendPhase.replaceAll("_", " "))}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
+        ${decision.operatorAction ? `<div class="note-line"><span class="kicker">Actie</span><div class="tag-list">${renderTagList([decision.operatorAction].map(normalizeReasonLabel), "Geen operator-actie")}</div></div>` : ""}
+        ${decision.autoRecovery ? `<div class="note-line"><span class="kicker">Auto recovery</span><div class="tag-list">${renderTagList([decision.autoRecovery], "Geen automatisch herstel")}</div></div>` : ""}
         <div class="note-line"><span class="kicker">Trend signalen</span><div class="tag-list">${renderTagList([`${formatPct(decision.trendState?.uptrendScore || 0, 1)} up`, `${formatPct(decision.trendState?.downtrendScore || 0, 1)} down`, `${formatPct(decision.trendState?.rangeAcceptanceScore || decision.trendState?.rangeScore || 0, 1)} range`, ...((decision.trendState?.reasons || []).slice(0, 2).map(normalizeReasonLabel))], "Geen trend-context")}</div></div>
         <div class="note-line"><span class="kicker">Confidence</span><div class="tag-list">${renderTagList([`market ${formatPct(decision.confidenceBreakdown?.marketConfidence || 0, 1)}`, `data ${formatPct(decision.confidenceBreakdown?.dataConfidence || 0, 1)}`, `exec ${formatPct(decision.confidenceBreakdown?.executionConfidence || 0, 1)}`, `model ${formatPct(decision.confidenceBreakdown?.modelConfidence || 0, 1)}`], "Geen confidence breakdown")}</div></div>
         <div class="note-line"><span class="kicker">Signal quality</span><div class="tag-list">${renderTagList([`setup ${formatPct(decision.signalQuality?.setupFit || 0, 1)}`, `structure ${formatPct(decision.signalQuality?.structureQuality || 0, 1)}`, `execution ${formatPct(decision.signalQuality?.executionViability || 0, 1)}`, `news ${formatPct(decision.signalQuality?.newsCleanliness || 0, 1)}`], "Geen signal-quality score")}</div></div>
@@ -902,6 +904,7 @@ function renderDecisions(snapshot) {
         </div>
         <div class="note-line"><span class="kicker">Risk layer</span><div class="tag-list">${renderTagList((decision.blockerReasons || decision.reasons || []).slice(0, 4).map(normalizeReasonLabel), "Geen blokkerende risk layer")}</div></div>
         <div class="note-line"><span class="kicker">Data sources</span><div class="tag-list">${renderTagList((decision.dataQuality?.sources || []).slice(0, 5).map((source) => `${source.label}:${source.status}`), "Geen datasource-status")}</div></div>
+        ${decision.dataQuality?.degradedSourceLabels?.length ? `<div class="note-line"><span class="kicker">Degraded</span><div class="tag-list">${renderTagList((decision.dataQuality?.degradedSourceLabels || []).map(normalizeReasonLabel), "Geen degraded sources")}</div></div>` : ""}
       `;
       return `
         <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}"${detailAttrs(`decision:${decision.symbol}:${entryStatus}`, false)}>
@@ -1418,6 +1421,7 @@ function renderOperations(snapshot) {
   const ops = snapshot.dashboard.ops || {};
   const exchangeTruth = snapshot.dashboard.safety?.exchangeTruth || {};
   const exchangeSafety = snapshot.dashboard.safety?.exchangeSafety || {};
+  const lifecycleInvariants = snapshot.dashboard.safety?.lifecycleInvariants || {};
   const venueConfirmation = snapshot.dashboard.safety?.venueConfirmation || {};
   const orderLifecycle = snapshot.dashboard.safety?.orderLifecycle || {};
   const alerts = ops.alerts || {};
@@ -1429,6 +1433,7 @@ function renderOperations(snapshot) {
   const thresholdTuning = ops.thresholdTuning || {};
   const capitalLadder = ops.capitalLadder || {};
   const capitalGovernor = ops.capitalGovernor || {};
+  const tuningGovernance = ops.tuningGovernance || {};
   const alertDelivery = ops.alertDelivery || {};
   const alertSilenceMinutes = snapshot.configSummary?.operatorAlertSilenceMinutes || 180;
   const incidentLead = (ops.incidentTimeline || [])[0] || {};
@@ -1443,12 +1448,14 @@ function renderOperations(snapshot) {
     insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is operationeel klaar", healthTone(readiness.status || "ready")),
     insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
     insightCard("Safety audit", exchangeSafety.status || "ready", exchangeSafety.notes?.[0] || "Geen extra exchange-safety waarschuwing", healthTone(exchangeSafety.status || "ready")),
+    insightCard("Lifecycle invariants", lifecycleInvariants.status || "ready", lifecycleInvariants.notes?.[0] || `${lifecycleInvariants.blockerCount || 0} blocker(s)`, healthTone(lifecycleInvariants.status || "ready")),
     insightCard("Venue check", `${venueConfirmation.venueCount || venueConfirmation.confirmedCount || 0} venues`, venueConfirmation.routeAdvice?.preferredEntryStyle ? `${venueConfirmation.routeAdvice.preferredEntryStyle} | div ${formatNumber(venueConfirmation.averageDivergenceBps || 0, 2)} bps` : (venueConfirmation.notes || [])[0] || "Nog geen externe confirmatie", healthTone(venueConfirmation.status)),
     insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
     insightCard("Exec calib", `${executionCalibration.liveTradeCount || 0} live`, leadCalibration[0] ? `${leadCalibration[0]} ${formatNumber(leadCalibration[1]?.slippageBiasBps || 0, 2)} bps` : "Nog geen style-calibratie", healthTone(executionCalibration.status || "warmup")),
     insightCard("Exec budget", executionCost.status || "warmup", executionCost.worstStyle ? `${executionCost.worstStyle} | ${formatNumber(executionCost.averageTotalCostBps || 0, 2)} bps` : "Nog geen execution-cost budget", healthTone(executionCost.status || "warmup")),
     insightCard("Threshold", thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable", thresholdTuning.appliedRecommendation?.id ? normalizeReasonLabel(thresholdTuning.appliedRecommendation.id) : "Geen actieve probation", healthTone(thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable")),
     insightCard("Governor", leadGovernor.id || "-", leadGovernor.id ? `${leadGovernor.scopeType} | thr ${formatNumber(leadGovernor.thresholdShift || 0, 4)}` : "Nog geen scoped governor", healthTone(parameterGovernor.status || "warmup")),
+    insightCard("Tuning gov", tuningGovernance.status || "stable", tuningGovernance.thresholdRecommendationId ? normalizeReasonLabel(tuningGovernance.thresholdRecommendationId) : tuningGovernance.governorScope || "Geen actieve tuning-governance", healthTone(tuningGovernance.allowPromotion ? "positive" : tuningGovernance.status || "stable")),
     insightCard("Retirement", `${strategyRetirement.retireCount || 0} retire`, strategyRetirement.policies?.[0]?.id ? `${strategyRetirement.policies[0].id} | ${strategyRetirement.policies[0].status}` : "Geen strategy retirement", healthTone(strategyRetirement.status || "ready")),
     insightCard("Capital ladder", capitalLadder.stage || "paper", capitalLadder.notes?.[0] || "Nog geen ladder-notitie", healthTone(capitalLadder.stage || "paper")),
     insightCard("Capital governor", capitalGovernor.status || "warmup", capitalGovernor.notes?.[0] || "Nog geen capital governor update", healthTone(capitalGovernor.status || "warmup")),
@@ -1465,6 +1472,7 @@ function renderOperations(snapshot) {
     ...(ops.runbooks || []).map((item) => `${item.title}: ${item.action}`),
     ...(exchangeTruth.notes || []),
     ...(exchangeSafety.notes || []),
+    ...(lifecycleInvariants.notes || []),
     ...(venueConfirmation.notes || []),
     ...(strategyRetirement.notes || []),
     ...(executionCost.notes || []),
@@ -1476,6 +1484,7 @@ function renderOperations(snapshot) {
     ...(parameterGovernor.notes || []),
     ...(executionCalibration.notes || []),
     ...(thresholdTuning.notes || []),
+    ...(tuningGovernance.notes || []),
     ...(modelRegistry.notes || []),
     backups.lastReason ? `Laatste backup reden: ${backups.lastReason}` : "",
     recorder.rootDir ? `Feature store: ${recorder.rootDir}` : "",

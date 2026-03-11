@@ -54,10 +54,13 @@
 - Added close-location quality, breakout follow-through, volume acceptance, and replenishment-quality signals to the shared feature stack and regression coverage.
 - Added explicit read-only scan isolation for preview/research paths so candidate scans no longer retarget the local-book universe while observing runtime state.
 - Added replay/chaos scenario tagging for stale book, venue divergence, missing news, protection rebuild issues, and partial fills so failure patterns surface earlier in operator review.
+- Added lifecycle invariant summaries and tuning-governance summaries to the dashboard snapshot so operators can see hard-stop lifecycle states and active threshold/governor promotion context in one place.
+- Added richer operator-cockpit explanations on decision cards with explicit operator action, auto-recovery context, and degraded datasource labels.
 - Improved dashboard decision visibility with explicit trend phase, confidence breakdown, signal-quality, data-quality, dominant source states, and clearer risk-layer blocker context.
 - Applied the shared trend-state semantics to backtest and research contexts as well, reducing live-vs-offline feature drift without a broad refactor.
 - Made doctor preview scans read-only and bounded candidate evaluation with concurrency limits, reducing accidental runtime/journal mutation and improving scan latency on larger universes.
 - Tightened risk de-risking around crowded trends, fragile breakout follow-through, and healthy downtrend mean-reversion traps while keeping the new confidence layer bounded enough for paper warm-up entries.
+- Expanded replay chaos output with recommended actions per active scenario, so stale book, divergence, protection, and partial-fill risks now surface as concrete operator follow-ups instead of only counts.
 
 ### Fixed
 - Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
@@ -74,6 +77,7 @@
 - Fixed doctor preview behavior so observability scans no longer mutate blocked-setup journals, universe runs, or latest-decision runtime state.
 - Fixed the relative-strength candidate-scan path so runtime smoke runs no longer fail on a missing shared `average()` helper import while building peer-strength summaries.
 - Fixed paper exploration regressions so `trade_size_below_minimum` can still be treated as a paper-only soft blocker during tiny warm-up probes instead of shutting exploration off entirely.
+- Fixed dashboard/operator decision context so session, drift, and self-heal blockers also generate concrete operator guidance instead of silently missing the action layer.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`

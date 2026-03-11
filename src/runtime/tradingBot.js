@@ -1634,9 +1634,23 @@ function summarizeOrderLifecycle(summary = {}) {
     manualReviewRequired: Boolean(item.manualReviewRequired),
     reconcileRequired: Boolean(item.reconcileRequired)
   }));
+  const pendingActions = arr(summary.pendingActions || []).slice(0, 12).map((item) => ({
+    id: item.id || null,
+    symbol: item.symbol || null,
+    action: item.action || null,
+    state: item.state || null,
+    reason: item.reason || null,
+    severity: item.severity || "neutral"
+  }));
   return {
     lastUpdatedAt: summary.lastUpdatedAt || null,
     positions,
+    counts: {
+      manualReview: positions.filter((item) => item.state === "manual_review").length,
+      reconcileRequired: positions.filter((item) => item.state === "reconcile_required").length,
+      protectOnly: positions.filter((item) => item.state === "protect_only").length,
+      protectionPending: positions.filter((item) => item.state === "protection_pending").length
+    },
     activeActions: Object.values(summary.activeActions || {}).slice(0, 10).map((item) => ({
       id: item.id || null,
       type: item.type || null,
@@ -1649,14 +1663,7 @@ function summarizeOrderLifecycle(summary = {}) {
       updatedAt: item.updatedAt || null,
       detail: item.detail || null
     })),
-    pendingActions: arr(summary.pendingActions || []).slice(0, 12).map((item) => ({
-      id: item.id || null,
-      symbol: item.symbol || null,
-      action: item.action || null,
-      state: item.state || null,
-      reason: item.reason || null,
-      severity: item.severity || "neutral"
-    })),
+    pendingActions,
     recentTransitions: arr(summary.recentTransitions || []).slice(0, 20).map((item) => ({
       at: item.at || null,
       symbol: item.symbol || null,
@@ -1677,6 +1684,31 @@ function summarizeOrderLifecycle(summary = {}) {
       detail: item.detail || null,
       error: item.error || null
     }))
+  };
+}
+
+function summarizeLifecycleInvariants({ exchangeTruth = {}, orderLifecycle = {} } = {}) {
+  const pendingActions = arr(orderLifecycle.pendingActions || []);
+  const hardStopCount = pendingActions.filter((item) => ["manual_review", "reconcile_required"].includes(item.state)).length
+    + (exchangeTruth.freezeEntries ? 1 : 0);
+  const autoRecoverableCount = pendingActions.filter((item) => ["protection_pending", "protect_only"].includes(item.state)).length;
+  const blockerReasons = [
+    ...(exchangeTruth.freezeEntries ? ["exchange_truth_freeze"] : []),
+    ...pendingActions
+      .filter((item) => ["manual_review", "reconcile_required", "protect_only", "protection_pending"].includes(item.state))
+      .map((item) => item.state)
+  ];
+  return {
+    status: hardStopCount > 0 ? "blocked" : autoRecoverableCount > 0 ? "degraded" : "ready",
+    hardStopCount,
+    autoRecoverableCount,
+    blockerCount: blockerReasons.length,
+    blockerReasons: [...new Set(blockerReasons)].slice(0, 8),
+    notes: [
+      exchangeTruth.freezeEntries ? "Nieuwe entries staan bevroren tot exchange truth weer schoon is." : null,
+      hardStopCount > 0 ? `${hardStopCount} lifecycle state(s) vereisen operator-confirmatie of reconcile.` : null,
+      autoRecoverableCount > 0 ? `${autoRecoverableCount} lifecycle state(s) zijn nog auto-recoverable maar vragen monitoring.` : null
+    ].filter(Boolean)
   };
 }
 
@@ -1994,6 +2026,15 @@ function summarizeReplayChaos(summary = {}) {
     missedWinnerCount: summary.missedWinnerCount || 0,
     worstStrategy: summary.worstStrategy || null,
     worstScenario: summary.worstScenario || null,
+    activeScenarios: arr(summary.activeScenarios || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    recommendedActions: arr(summary.recommendedActions || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0,
+      action: item.action || null
+    })),
     scenarioLeaders: arr(summary.scenarioLeaders || []).slice(0, 6).map((item) => ({
       id: item.id || null,
       tradeCount: item.tradeCount || 0,
@@ -2035,6 +2076,30 @@ function summarizeOperatorAlerts(summary = {}) {
       muted: Boolean(item.muted),
       lastDeliveredAt: item.lastDeliveredAt || null
     }))
+  };
+}
+
+function summarizeTuningGovernance({ thresholdTuning = {}, parameterGovernor = {}, modelRegistry = {}, offlineTrainer = {} } = {}) {
+  const appliedRecommendation = thresholdTuning.appliedRecommendation || null;
+  const leadGovernor = (parameterGovernor.strategyScopes || [])[0] || (parameterGovernor.regimeScopes || [])[0] || null;
+  const promotionPolicy = modelRegistry.promotionPolicy || {};
+  return {
+    status: appliedRecommendation?.status || parameterGovernor.status || promotionPolicy.readyLevel || "stable",
+    thresholdRecommendationId: appliedRecommendation?.id || null,
+    thresholdRecommendationStatus: appliedRecommendation?.status || thresholdTuning.status || "stable",
+    governorScope: leadGovernor ? `${leadGovernor.scopeType}:${leadGovernor.id}` : null,
+    governorThresholdShift: num(leadGovernor?.thresholdShift || 0, 4),
+    promotionReadyLevel: promotionPolicy.readyLevel || null,
+    allowPromotion: Boolean(promotionPolicy.allowPromotion),
+    blockerReasons: [...new Set([
+      ...(promotionPolicy.blockerReasons || []),
+      ...(offlineTrainer.thresholdPolicy?.status === "blocked" ? ["threshold_policy_blocked"] : [])
+    ])].slice(0, 8),
+    notes: [
+      appliedRecommendation?.id ? `Actieve threshold probation: ${appliedRecommendation.id}.` : null,
+      leadGovernor?.id ? `Lead governor scope ${leadGovernor.scopeType}:${leadGovernor.id}.` : null,
+      promotionPolicy.readyLevel ? `Promotion level ${promotionPolicy.readyLevel}.` : null
+    ].filter(Boolean)
   };
 }
 
@@ -5730,6 +5795,32 @@ export class TradingBot {
 
   buildDashboardDecisionView(decision = {}) {
     const strategy = decision.strategy || decision.strategySummary || {};
+    const blockerReasons = [
+      ...arr(decision.blockerReasons || decision.reasons || []),
+      ...arr(decision.sessionBlockers || decision.session?.blockerReasons || []),
+      ...arr(decision.driftBlockers || decision.drift?.blockerReasons || []),
+      ...arr(decision.selfHealIssues || decision.selfHeal?.issues || [])
+    ];
+    const dataSources = arr(decision.dataQuality?.sources || decision.dataQualitySummary?.sources || []).slice(0, 5);
+    const degradedSources = dataSources.filter((item) => ["degraded", "missing"].includes(item.status)).map((item) => item.label);
+    const operatorAction = blockerReasons.includes("exchange_truth_freeze")
+      ? "Wacht op reconcile en bevestig exchange truth voordat entries terug mogen."
+      : blockerReasons.includes("reconcile_required")
+        ? "Controleer protective state en runtime/exchange inventory."
+        : blockerReasons.includes("local_book_quality_too_low")
+          ? "Wacht op gezonde local-book depth of schakel over op observe-only."
+          : blockerReasons.includes("quality_quorum_degraded")
+            ? "Review degraded datasources voordat je deze setup vertrouwt."
+            : blockerReasons.includes("committee_veto")
+              ? "Controleer veto-feedback en counterfactual scorecards voor deze setup."
+              : blockerReasons[0] || null;
+    const autoRecovery = blockerReasons.some((item) => ["protection_pending", "protect_only"].includes(item))
+      ? "Protective herstel of protect-only monitoring kan dit automatisch herstellen."
+      : blockerReasons.includes("paper_calibration_probe")
+        ? "Paper probe kan blijven leren tot calibration weer gezond is."
+        : degradedSources.length
+          ? `Datasources in herstel: ${degradedSources.join(", ")}.`
+          : null;
     return {
       symbol: decision.symbol,
       summary: decision.summary || null,
@@ -5749,7 +5840,9 @@ export class TradingBot {
       reliabilityScore: num(decision.reliabilityScore || 0, 3),
       dominantEventType: decision.dominantEventType || "general",
       reasons: arr(decision.reasons || []).slice(0, 4),
-      blockerReasons: arr(decision.blockerReasons || []).slice(0, 4),
+      blockerReasons: blockerReasons.slice(0, 4),
+      operatorAction,
+      autoRecovery,
       bullishSignals: arr(decision.bullishSignals || []).slice(0, 2).map(summarizeSignal),
       bearishSignals: arr(decision.bearishSignals || []).slice(0, 2).map(summarizeSignal),
       bullishDrivers: arr(decision.bullishDrivers || []).slice(0, 2).map(summarizeDriver),
@@ -5809,6 +5902,7 @@ export class TradingBot {
         trustScore: num(decision.dataQuality?.trustScore || decision.dataQualitySummary?.trustScore || 0, 4),
         coverageScore: num(decision.dataQuality?.coverageScore || decision.dataQualitySummary?.coverageScore || 0, 4),
         degradedButAllowed: Boolean(decision.dataQuality?.degradedButAllowed || decision.dataQualitySummary?.degradedButAllowed),
+        degradedSourceLabels: degradedSources.slice(0, 4),
         sources: arr(decision.dataQuality?.sources || decision.dataQualitySummary?.sources || []).slice(0, 5)
       },
       signalQuality: {
@@ -6178,6 +6272,10 @@ export class TradingBot {
         exchangeTruth: summarizeExchangeTruth(this.runtime.exchangeTruth || {}),
         exchangeSafety: summarizeExchangeSafety(this.runtime.exchangeSafety || {}),
         orderLifecycle: summarizeOrderLifecycle(this.runtime.orderLifecycle || {}),
+        lifecycleInvariants: summarizeLifecycleInvariants({
+          exchangeTruth: this.runtime.exchangeTruth || {},
+          orderLifecycle: this.runtime.orderLifecycle || {}
+        }),
         stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
         backups: this.runtime.stateBackups || this.backupManager.getSummary(),
         recovery: this.runtime.recovery || {}
@@ -6198,6 +6296,12 @@ export class TradingBot {
         capitalPolicy: summarizeCapitalPolicy({
           capitalLadder: this.runtime.capitalLadder || {},
           capitalGovernor: this.runtime.capitalGovernor || {}
+        }),
+        tuningGovernance: summarizeTuningGovernance({
+          thresholdTuning: this.runtime.thresholdTuning || {},
+          parameterGovernor: this.runtime.parameterGovernor || {},
+          modelRegistry: this.runtime.modelRegistry || {},
+          offlineTrainer: this.runtime.offlineTrainer || {}
         }),
         alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {})
       },

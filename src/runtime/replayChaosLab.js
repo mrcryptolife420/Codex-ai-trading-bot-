@@ -121,6 +121,21 @@ export function buildReplayChaosSummary({
     .sort((left, right) => right[1] - left[1])
     .slice(0, 6)
     .map(([id, count]) => ({ id, count }));
+  const recommendedActions = activeScenarios.map((item) => ({
+    id: item.id,
+    count: item.count,
+    action: item.id === "stale_book"
+      ? "Controleer local-book warmup, freshness en stream gaps voordat agressieve entries terug aan mogen."
+      : item.id === "venue_divergence"
+        ? "Gebruik reference venues en execution budget als harde gate tot de divergente feed weer samenvalt."
+        : item.id === "missing_news"
+          ? "Markeer news coverage als degraded-but-allowed of observe-only afhankelijk van setup type."
+          : item.id === "protection_rebuild_failure"
+            ? "Forceer reconcile/protect-only tot protective rebuilds weer schoon doorlopen."
+            : item.id === "partial_fill"
+              ? "Replay partial-fill recovery en exit-protectie voordat size of maker-bias omhoog mag."
+              : "Review dit chaos-scenario expliciet in replay voordat promotie doorgaat."
+  }));
   const status = worstScenario?.status === "blocked"
     ? "blocked"
     : worstScenario?.status === "observe"
@@ -139,6 +154,7 @@ export function buildReplayChaosSummary({
     worstStrategy: worstScenario?.id || null,
     worstScenario: worstScenario?.worstScenario || null,
     activeScenarios,
+    recommendedActions,
     scenarioCounts,
     scenarioLeaders,
     notes: [
