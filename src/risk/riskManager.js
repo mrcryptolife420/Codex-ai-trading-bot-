@@ -32,8 +32,24 @@ function isSoftPaperReason(reason) {
     "committee_low_agreement",
     "strategy_fit_too_low",
     "orderbook_sell_pressure",
-    "meta_gate_caution"
+    "meta_gate_caution",
+    "execution_cost_budget_exceeded",
+    "strategy_cooldown",
+    "capital_governor_blocked",
+    "capital_governor_recovery"
   ].includes(reason);
+}
+
+function canRelaxPaperSelfHeal(selfHealState = {}) {
+  const issues = new Set(selfHealState.issues || []);
+  return !issues.has("health_circuit_open");
+}
+
+function isPaperLeniencyReason(reason, selfHealState = {}) {
+  if (reason === "self_heal_pause_entries") {
+    return canRelaxPaperSelfHeal(selfHealState);
+  }
+  return isSoftPaperReason(reason);
 }
 
 function average(values = [], fallback = 0) {
@@ -333,7 +349,10 @@ export class RiskManager {
     const capitalGovernor = this.resolveCapitalGovernor(capitalGovernorSummary);
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
-    const selfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
+    const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
+    const selfHealThresholdPenalty = this.config.botMode === "paper" && canRelaxPaperSelfHeal(selfHealState)
+      ? Math.min(rawSelfHealThresholdPenalty, 0.02)
+      : rawSelfHealThresholdPenalty;
     const metaThresholdPenalty = safeValue(metaSummary.thresholdPenalty || 0);
     const calibrationWarmup = clamp(safeValue(score.calibrator?.warmupProgress ?? score.calibrator?.globalConfidence ?? 0), 0, 1);
     const paperWarmupDiscount = this.config.botMode === "paper" ? (1 - calibrationWarmup) * 0.06 : 0;
@@ -648,6 +667,18 @@ export class RiskManager {
     let suppressedReasons = [];
     let finalQuoteAmount = quoteAmount;
     let paperExploration = null;
+    let paperGuardrailRelief = [];
+
+    const eligiblePaperSuppressedReasons = reasons.filter((reason) => isPaperLeniencyReason(reason, selfHealState));
+    const paperGuardrailReasons = eligiblePaperSuppressedReasons.filter((reason) =>
+      [
+        "self_heal_pause_entries",
+        "execution_cost_budget_exceeded",
+        "capital_governor_blocked",
+        "capital_governor_recovery",
+        "strategy_cooldown"
+      ].includes(reason)
+    );
 
     if (
       !allow &&
@@ -656,7 +687,7 @@ export class RiskManager {
       openPositions.length === 0 &&
       minutesSincePortfolioTrade >= this.config.paperExplorationCooldownMinutes &&
       reasons.length > 0 &&
-      reasons.every(isSoftPaperReason) &&
+      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState)) &&
       score.probability >= threshold - this.config.paperExplorationThresholdBuffer &&
       (marketSnapshot.book.bookPressure || 0) >= this.config.paperExplorationMinBookPressure &&
       (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.4, 8) &&
@@ -668,7 +699,7 @@ export class RiskManager {
       (volatilitySummary.riskScore || 0) <= 0.72 &&
       !(sessionSummary.blockerReasons || []).length &&
       !(driftSummary.blockerReasons || []).length &&
-      !["paused", "paper_fallback"].includes(selfHealState.mode)
+      canRelaxPaperSelfHeal(selfHealState)
     ) {
       const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
       const explorationQuoteAmount = Math.min(
@@ -679,6 +710,7 @@ export class RiskManager {
         allow = true;
         entryMode = "paper_exploration";
         suppressedReasons = [...reasons];
+        paperGuardrailRelief = paperGuardrailReasons;
         finalQuoteAmount = explorationQuoteAmount;
         paperExploration = {
           mode: "paper_exploration",
@@ -687,7 +719,10 @@ export class RiskManager {
           minBookPressure: this.config.paperExplorationMinBookPressure,
           minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
           warmupProgress: calibrationWarmup,
-          suppressedReasons
+          suppressedReasons,
+          guardrailReliefReasons: paperGuardrailRelief,
+          selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
+          selfHealIssues: [...(selfHealState.issues || [])]
         };
       }
     }
@@ -698,6 +733,7 @@ export class RiskManager {
       suppressedReasons,
       entryMode,
       paperExploration,
+      paperGuardrailRelief,
       baseThreshold,
       threshold,
       thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,

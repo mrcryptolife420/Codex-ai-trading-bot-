@@ -3647,6 +3647,7 @@ export class TradingBot {
 
   buildCandidateChecks(candidate) {
     const explorationMode = candidate.decision.entryMode === "paper_exploration";
+    const suppressedReasons = new Set(candidate.decision.suppressedReasons || []);
     return [
       {
         label: "Model confidence",
@@ -3801,8 +3802,8 @@ export class TradingBot {
       },
       {
         label: "Self-heal",
-        passed: !["paused", "paper_fallback"].includes(candidate.selfHealState?.mode),
-        detail: `${candidate.selfHealState?.mode || "normal"} | size ${num(candidate.selfHealState?.sizeMultiplier ?? 1, 2)} | thr ${num(candidate.selfHealState?.thresholdPenalty || 0, 2)}`
+        passed: !["paused", "paper_fallback"].includes(candidate.selfHealState?.mode) || (explorationMode && suppressedReasons.has("self_heal_pause_entries")),
+        detail: `${candidate.selfHealState?.mode || "normal"} | size ${num(candidate.selfHealState?.sizeMultiplier ?? 1, 2)} | thr ${num(candidate.selfHealState?.thresholdPenalty || 0, 2)}${explorationMode && suppressedReasons.has("self_heal_pause_entries") ? " | paper leniency" : ""}`
       },
       {
         label: "Meta gate",
@@ -3821,8 +3822,13 @@ export class TradingBot {
       },
       {
         label: "Capital governor",
-        passed: candidate.decision.capitalGovernorApplied?.allowEntries !== false,
-        detail: `${candidate.decision.capitalGovernorApplied?.status || "ready"} | size ${num((candidate.decision.capitalGovernorApplied?.sizeMultiplier || 1) * 100, 1)}%`
+        passed: candidate.decision.capitalGovernorApplied?.blocked !== true || (explorationMode && (suppressedReasons.has("capital_governor_blocked") || suppressedReasons.has("capital_governor_recovery"))),
+        detail: `${candidate.decision.capitalGovernorApplied?.status || "ready"} | size ${num((candidate.decision.capitalGovernorApplied?.sizeMultiplier || 1) * 100, 1)}%${explorationMode && (suppressedReasons.has("capital_governor_blocked") || suppressedReasons.has("capital_governor_recovery")) ? " | paper leniency" : ""}`
+      },
+      {
+        label: "Execution cost budget",
+        passed: (candidate.decision.executionCostBudgetApplied?.status || "ready") !== "blocked" || (explorationMode && suppressedReasons.has("execution_cost_budget_exceeded")),
+        detail: `${candidate.decision.executionCostBudgetApplied?.status || "ready"} | avg ${num(candidate.decision.executionCostBudgetApplied?.averageTotalCostBps || 0, 2)} bps${explorationMode && suppressedReasons.has("execution_cost_budget_exceeded") ? " | paper leniency" : ""}`
       }
     ];
   }
@@ -3864,6 +3870,9 @@ export class TradingBot {
     const explorationText = candidate.decision.entryMode === "paper_exploration"
       ? `paper warm-up mode met kleinere testpositie (${num((candidate.decision.paperExploration?.sizeMultiplier || 0) * 100, 1)}%)`
       : executionText;
+    const paperGuardrailText = (candidate.decision.paperGuardrailRelief || []).length
+      ? `paper leniency versoepelde ${candidate.decision.paperGuardrailRelief.join(", ")}`
+      : null;
     const setupStyle = buildSetupStyle(candidate);
     const strategyText = candidate.strategySummary?.strategyLabel ? `${candidate.strategySummary.strategyLabel} (${num((candidate.strategySummary.fitScore || 0) * 100, 1)}%)` : setupStyle;
     const adaptiveThresholdText = (candidate.decision?.thresholdAdjustment || 0) !== 0
@@ -3896,7 +3905,7 @@ export class TradingBot {
         ? `data quorum degraded (${candidate.qualityQuorumSummary.cautionReasons?.[0] || candidate.qualityQuorumSummary.blockerReasons?.[0] || "extra voorzichtigheid"})`
         : `data quorum ${candidate.qualityQuorumSummary?.status || "ready"} op ${num((candidate.qualityQuorumSummary?.quorumScore || 0) * 100, 1)}%`;
     if (candidate.decision.allow) {
-      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText}, ${quorumText} en ${explorationText} als execution-plan.`;
+      return `${candidate.symbol} kreeg groen licht voor ${setupStyle} via ${strategyText} in regime ${candidate.regimeSummary.regime}: score ${num(candidate.score.probability * 100, 1)}%, ${eventText}, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${signalText} als sterkste driver, ${optimizerText}, ${universeText}, ${attributionText}, ${quorumText}${paperGuardrailText ? `, ${paperGuardrailText}` : ""} en ${explorationText} als execution-plan.`;
     }
     return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText}, ${quorumText} en ${optimizerText}.`;
   }
@@ -3920,6 +3929,7 @@ export class TradingBot {
       entryMode: candidate.decision.entryMode || "standard",
       suppressedReasons: candidate.decision.suppressedReasons || [],
       paperExploration: candidate.decision.paperExploration || null,
+      paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
       spreadBps: num(candidate.marketSnapshot.book.spreadBps, 2),
       realizedVolPct: num(candidate.marketSnapshot.market.realizedVolPct, 4),
       atrPct: num(candidate.marketSnapshot.market.atrPct, 4),
@@ -4785,6 +4795,7 @@ export class TradingBot {
       session: summarizeSession(candidate.sessionSummary),
       drift: summarizeDrift(candidate.driftSummary),
       selfHeal: summarizeSelfHeal(candidate.selfHealState),
+      paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
       meta: summarizeMeta(candidate.metaSummary),
       sessionReasons: [...(candidate.sessionSummary?.reasons || [])],
       sessionBlockers: [...(candidate.sessionSummary?.blockerReasons || [])],
@@ -5910,8 +5921,6 @@ export class TradingBot {
     };
   }
 }
-
-
 
 
 
