@@ -525,6 +525,42 @@ export class LiveBroker {
     };
   }
 
+  async settleTerminalOrder({ symbol, order, defaultTrades = [], attempts = 4, delayMs = 160 }) {
+    let latestOrder = order;
+    const pendingStatuses = new Set(["NEW", "PARTIALLY_FILLED", "PENDING_NEW"]);
+    if (this.client.getOrder && latestOrder?.orderId) {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const status = `${latestOrder?.status || ""}`.toUpperCase();
+        if (status && !pendingStatuses.has(status)) {
+          break;
+        }
+        if (attempt > 0 || !status) {
+          await sleep(delayMs * attempt || delayMs);
+        }
+        try {
+          latestOrder = await this.client.getOrder(symbol, { orderId: latestOrder.orderId });
+        } catch (error) {
+          this.logger?.warn?.("Terminal order settle failed", { symbol, orderId: latestOrder.orderId, error: error.message });
+          break;
+        }
+      }
+    }
+
+    let trades = Array.isArray(defaultTrades) ? defaultTrades : [];
+    if (this.client.getMyTrades && latestOrder?.orderId) {
+      try {
+        trades = await this.client.getMyTrades(symbol, { orderId: latestOrder.orderId, limit: 50 });
+      } catch (error) {
+        this.logger?.warn?.("Terminal order trade fetch failed", { symbol, orderId: latestOrder.orderId, error: error.message });
+      }
+    }
+    return { order: latestOrder, trades };
+  }
+
+  isDustRemainder({ quantity, notional, rules }) {
+    return quantity < Math.max(rules.minQty || 0, 1e-9) || notional < Math.max(rules.minNotional || 0, this.config.minTradeUsdt || 0);
+  }
+
   buildEntryFromExecutions({ symbol, executions, rules, marketSnapshot, decision, score, rawFeatures, newsSummary, entryRationale, plan, orderResponses = [], orderTelemetry = {}, amendmentCount = 0, cancelReplaceCount = 0, keepPriorityCount = 0, requestedQuoteAmount = 0 }) {
     const normalized = executions.map(normalizeExecution);
     const quantity = normalized.reduce((total, item) => total + Number(item.order.executedQty || 0), 0);
@@ -1213,18 +1249,25 @@ export class LiveBroker {
 
     await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
 
-    const order = await this.client.placeOrder({
+    const submittedOrder = await this.client.placeOrder({
       symbol: position.symbol,
       side: "SELL",
       type: "MARKET",
       quantity: formatQuantity(requestedQuantity, rules, true),
       ...this.buildOrderRequestMeta(position.executionPlan || {}, rules, "FULL")
     });
+    const settled = await this.settleTerminalOrder({
+      symbol: position.symbol,
+      order: submittedOrder,
+      defaultTrades: submittedOrder.fills || []
+    });
+    const order = settled.order;
+    const trades = settled.trades;
     const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
     const executedQty = Number(order.executedQty || requestedQuantity);
     const quoteReceived = Number(order.cummulativeQuoteQty || 0);
     const averagePrice = executedQty ? quoteReceived / executedQty : marketSnapshot.book.bid;
-    const fee = sumTradeCommissionsToQuote(order.fills || [], rules.baseAsset, rules.quoteAsset);
+    const fee = sumTradeCommissionsToQuote(trades, rules.baseAsset, rules.quoteAsset);
     const netProceeds = quoteReceived - fee;
     const proportion = executedQty / Math.max(originalQuantity, 1e-9);
     const allocatedCost = position.totalCost * proportion;
@@ -1301,14 +1344,53 @@ export class LiveBroker {
       throw new Error(`Unable to normalize sell quantity for ${position.symbol}.`);
     }
     await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
-    const order = await this.client.placeOrder({
+    const submittedOrder = await this.client.placeOrder({
       symbol: position.symbol,
       side: "SELL",
       type: "MARKET",
       quantity: formatQuantity(quantity, rules, true),
       ...this.buildOrderRequestMeta(position.executionPlan || {}, rules, "FULL")
     });
+    const settled = await this.settleTerminalOrder({
+      symbol: position.symbol,
+      order: submittedOrder,
+      defaultTrades: submittedOrder.fills || []
+    });
+    const order = settled.order;
+    const trades = settled.trades;
     const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
+    const executedQty = Math.max(0, Math.min(Number(order.executedQty || 0), position.quantity));
+    const remainingQuantity = Math.max(0, position.quantity - executedQty);
+    const remainingNotional = remainingQuantity * (marketSnapshot.book.mid || position.entryPrice || 0);
+    if (remainingQuantity > 0 && !this.isDustRemainder({ quantity: remainingQuantity, notional: remainingNotional, rules })) {
+      const proportion = executedQty / Math.max(position.quantity, 1e-9);
+      const allocatedCost = position.totalCost * proportion;
+      position.quantity = remainingQuantity;
+      position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+      position.notional = position.entryPrice * position.quantity;
+      position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
+      position.lastMarkedPrice = marketSnapshot.book.mid || position.lastMarkedPrice;
+      let protectionWarning = null;
+      try {
+        await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
+      } catch (error) {
+        protectionWarning = error.message;
+        position.reconcileRequired = true;
+        position.lifecycleState = "reconcile_required";
+      }
+      finishLifecycleAction(runtime, exitActionId, {
+        status: "warning",
+        stage: protectionWarning ? "reconcile_required" : "partial_fill_protected",
+        severity: "negative",
+        detail: `${reason || "bot_market_exit"}:${remainingQuantity}`
+      });
+      const partialExitError = new Error(`Exit order for ${position.symbol} partially filled; ${remainingQuantity} remains open.`);
+      partialExitError.positionSafeguarded = true;
+      partialExitError.remainingQuantity = remainingQuantity;
+      partialExitError.executedQuantity = executedQty;
+      partialExitError.protectionWarning = protectionWarning;
+      throw partialExitError;
+    }
     runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
     finishLifecycleAction(runtime, exitActionId, {
       status: "completed",
@@ -1316,6 +1398,6 @@ export class LiveBroker {
       severity: "positive",
       detail: reason || "bot_market_exit"
     });
-    return this.buildTradeFromOrder(position, order, order.fills || [], reason, "bot_market_exit", marketSnapshot, orderTelemetry);
+    return this.buildTradeFromOrder(position, order, trades, reason, "bot_market_exit", marketSnapshot, orderTelemetry);
   }
 }

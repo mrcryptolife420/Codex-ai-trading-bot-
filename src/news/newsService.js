@@ -7,6 +7,7 @@ import { DecryptProvider } from "./decryptProvider.js";
 import { GoogleNewsProvider } from "./googleNewsProvider.js";
 import { RedditProvider } from "./redditProvider.js";
 import { summarizeNews } from "./sentiment.js";
+import { mapWithConcurrency } from "../utils/async.js";
 
 const EMPTY_SUMMARY = {
   coverage: 0,
@@ -82,7 +83,7 @@ export class NewsService {
     try {
       const items = [];
       const usedProviders = [];
-      for (const provider of this.providers) {
+      const providerResults = await mapWithConcurrency(this.providers, 3, async (provider) => {
         const gate = this.reliability.shouldUseProvider(this.runtime, provider.id, now);
         if (!gate.allow) {
           this.recordEvent?.("source_provider_cooldown", {
@@ -92,7 +93,7 @@ export class NewsService {
             score: gate.score,
             cooldownUntil: gate.cooldownUntil
           });
-          continue;
+          return { providerId: provider.id, skipped: true };
         }
         try {
           const result = await provider.client.fetchNews({
@@ -101,9 +102,12 @@ export class NewsService {
             lookbackHours: this.config.newsLookbackHours,
             limit: this.config.newsHeadlineLimit
           });
-          items.push(...result);
-          usedProviders.push(provider.id);
           this.reliability.noteSuccess(this.runtime, provider.id, nowIso());
+          return {
+            providerId: provider.id,
+            items: Array.isArray(result) ? result : [],
+            skipped: false
+          };
         } catch (error) {
           this.reliability.noteFailure(this.runtime, provider.id, error.message, nowIso());
           this.logger.warn("News provider failed", {
@@ -116,7 +120,19 @@ export class NewsService {
             provider: provider.id,
             error: error.message
           });
+          return {
+            providerId: provider.id,
+            skipped: false,
+            error
+          };
         }
+      });
+      for (const result of providerResults) {
+        if (!result || result.skipped || result.error) {
+          continue;
+        }
+        items.push(...(result.items || []));
+        usedProviders.push(result.providerId);
       }
       const summary = summarizeNews(items, this.config.newsLookbackHours, nowIso(), {
         minSourceQuality: this.config.newsMinSourceQuality,

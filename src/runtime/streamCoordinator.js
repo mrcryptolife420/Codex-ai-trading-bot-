@@ -243,7 +243,7 @@ export class StreamCoordinator {
       lastFuturesMessageAt: this.state.lastFuturesMessageAt,
       lastUserMessageAt: this.state.lastUserMessageAt,
       lastError: this.state.lastError,
-      listenKey: this.state.listenKey,
+      userStreamSessionActive: Boolean(this.state.listenKey),
       localBook: this.state.localBook
     };
   }

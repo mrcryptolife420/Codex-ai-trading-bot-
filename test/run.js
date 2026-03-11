@@ -1580,6 +1580,96 @@ await runCheck("live broker auto-flattens filled entries when protection setup f
   assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "entry_open" && item.status === "recovered"));
 });
 
+await runCheck("live broker keeps the remainder managed after a partial exit fill", async () => {
+  let rebuiltProtection = 0;
+  const client = {
+    async cancelOrderList() {
+      return { orderListId: 77, listStatusType: "ALL_DONE" };
+    },
+    async placeOrder() {
+      return {
+        orderId: 88,
+        status: "PARTIALLY_FILLED",
+        executedQty: "0.00400000",
+        cummulativeQuoteQty: "288.00",
+        fills: []
+      };
+    },
+    async getOrder() {
+      return {
+        orderId: 88,
+        status: "PARTIALLY_FILLED",
+        executedQty: "0.00400000",
+        cummulativeQuoteQty: "288.00"
+      };
+    },
+    async getMyTrades() {
+      return [{ price: "72000", qty: "0.004", commission: "0.20", commissionAsset: "USDT" }];
+    },
+    async placeOrderListOco() {
+      rebuiltProtection += 1;
+      return {
+        orderListId: 501,
+        listClientOrderId: "rebuild-protect",
+        orders: [{ orderId: 91 }, { orderId: 92 }],
+        listStatusType: "EXEC_STARTED"
+      };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        trailingStopPct: 0.01,
+        highestPrice: 71000,
+        lowestPrice: 69500,
+        lastMarkedPrice: 70500,
+        latestSpreadBps: 2,
+        protectiveOrderListId: 123,
+        protectiveOrders: [{ orderId: 11 }, { orderId: 12 }],
+        protectiveOrderStatus: "NEW",
+        executionPlan: { strategyId: "ema_trend", strategyType: "trend_following" },
+        brokerMode: "live"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  let error = null;
+  try {
+    await broker.exitPosition({
+      position: runtime.openPositions[0],
+      rules,
+      marketSnapshot: { book: { bid: 71990, ask: 72010, mid: 72000, spreadBps: 2 } },
+      reason: "risk_exit",
+      runtime
+    });
+  } catch (caught) {
+    error = caught;
+  }
+
+  assert.ok(error);
+  assert.equal(error.positionSafeguarded, true);
+  assert.equal(runtime.openPositions.length, 1);
+  assert.ok(runtime.openPositions[0].quantity < 0.01);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, 501);
+  assert.equal(rebuiltProtection, 1);
+});
+
 await runCheck("strategy router selects a mean reversion setup in range conditions", async () => {
   const summary = evaluateStrategySet({
     symbol: "BTCUSDT",
@@ -3134,6 +3224,25 @@ await runCheck("stream coordinator ignores stale book tickers and falls back to 
   assert.equal(features.latestBookTicker.mid, 102);
   assert.equal(features.latestBookTicker.bid, 101);
   assert.equal(features.latestBookTicker.ask, 103);
+});
+
+await runCheck("stream coordinator status does not expose the raw listen key", async () => {
+  const coordinator = new StreamCoordinator({
+    client: {
+      getStreamBaseUrl() {
+        return "wss://stream.binance.com:9443";
+      },
+      getFuturesStreamBaseUrl() {
+        return "wss://fstream.binance.com";
+      }
+    },
+    config: makeConfig({ watchlist: ["BTCUSDT"] }),
+    logger: { warn() {}, info() {} }
+  });
+  coordinator.state.listenKey = "super-secret-listen-key";
+  const status = coordinator.getStatus();
+  assert.equal(Object.prototype.hasOwnProperty.call(status, "listenKey"), false);
+  assert.equal(status.userStreamSessionActive, true);
 });
 
 await runCheck("trading bot blocks further entries after recovering a failed live exposure", async () => {

@@ -71,6 +71,7 @@ let busy = false;
 let transientMessage = "";
 let decisionSearchQuery = "";
 let decisionAllowedOnly = false;
+let snapshotEpoch = 0;
 
 function readDetailState() {
   try {
@@ -538,7 +539,8 @@ async function api(path, method = "GET", body) {
   const response = await fetch(path, {
     method,
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "X-Dashboard-Request": "1"
     },
     body: body ? JSON.stringify(body) : undefined
   });
@@ -1245,6 +1247,15 @@ function renderResearch(snapshot) {
   `;
 }
 
+function beginSnapshotEpoch() {
+  snapshotEpoch += 1;
+  return snapshotEpoch;
+}
+
+function isActiveSnapshotEpoch(epoch) {
+  return epoch === snapshotEpoch;
+}
+
 function renderUniverse(snapshot) {
   const universe = snapshot.dashboard.universe || {};
   const selected = universe.selected || [];
@@ -1706,7 +1717,14 @@ function pickSnapshot(payload) {
 }
 
 async function refreshSnapshot() {
+  if (busy) {
+    return;
+  }
+  const epoch = snapshotEpoch;
   const snapshot = await api("/api/snapshot");
+  if (!isActiveSnapshotEpoch(epoch)) {
+    return;
+  }
   render(snapshot);
 }
 
@@ -1715,6 +1733,7 @@ async function runAction(label, action) {
     return;
   }
   busy = true;
+  const actionEpoch = beginSnapshotEpoch();
   transientMessage = `${label}...`;
   if (latestSnapshot) {
     renderStatus(latestSnapshot);
@@ -1722,7 +1741,9 @@ async function runAction(label, action) {
   try {
     const payload = await action();
     transientMessage = `${label} voltooid`;
-    render(pickSnapshot(payload));
+    if (isActiveSnapshotEpoch(actionEpoch)) {
+      render(pickSnapshot(payload));
+    }
     window.setTimeout(() => {
       transientMessage = "";
       if (latestSnapshot) {

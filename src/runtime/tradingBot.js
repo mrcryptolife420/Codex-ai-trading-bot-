@@ -4113,23 +4113,27 @@ export class TradingBot {
         this.journal.trades.push(trade);
         await this.learnFromTrade(trade, "Closed position");
       } catch (error) {
-        position.managementFailureCount = (position.managementFailureCount || 0) + 1;
+        const safeguardedStateChange = Boolean(error.positionSafeguarded);
+        if (!safeguardedStateChange) {
+          position.managementFailureCount = (position.managementFailureCount || 0) + 1;
+          if ((position.managementFailureCount || 0) >= (this.config.positionFailureManualReviewCount || 4)) {
+            position.operatorMode = "manual_review";
+            position.manualReviewRequired = true;
+            position.lifecycleState = "manual_review";
+          } else if ((position.managementFailureCount || 0) >= (this.config.positionFailureProtectOnlyCount || 2)) {
+            position.operatorMode = "protect_only";
+            position.lifecycleState = "protect_only";
+          }
+        }
         position.lastManagementError = error.message;
         position.lastManagementErrorAt = nowIso();
-        if ((position.managementFailureCount || 0) >= (this.config.positionFailureManualReviewCount || 4)) {
-          position.operatorMode = "manual_review";
-          position.manualReviewRequired = true;
-          position.lifecycleState = "manual_review";
-        } else if ((position.managementFailureCount || 0) >= (this.config.positionFailureProtectOnlyCount || 2)) {
-          position.operatorMode = "protect_only";
-          position.lifecycleState = "protect_only";
-        }
         this.logger.warn("Position management failed", { symbol: position.symbol, error: error.message });
         this.recordEvent("position_management_failed", {
           symbol: position.symbol,
           error: error.message,
           failureCount: position.managementFailureCount || 0,
-          operatorMode: position.operatorMode || "normal"
+          operatorMode: position.operatorMode || "normal",
+          safeguardedStateChange
         });
       }
     }
@@ -5436,7 +5440,6 @@ export class TradingBot {
     };
   }
 }
-
 
 
 

@@ -28,7 +28,37 @@ async function readRequestBody(request) {
     return {};
   }
   const text = Buffer.concat(chunks).toString("utf8").trim();
-  return text ? JSON.parse(text) : {};
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    error.statusCode = 400;
+    error.publicMessage = "Invalid JSON body";
+    throw error;
+  }
+}
+
+function isTrustedMutationRequest(request) {
+  const marker = `${request.headers["x-dashboard-request"] || ""}`.trim();
+  if (marker !== "1") {
+    return false;
+  }
+  const contentType = `${request.headers["content-type"] || ""}`.toLowerCase();
+  if (contentType && !contentType.includes("application/json")) {
+    return false;
+  }
+  const origin = `${request.headers.origin || ""}`.trim();
+  if (!origin) {
+    return true;
+  }
+  try {
+    const url = new URL(origin);
+    return ["127.0.0.1", "localhost"].includes(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 async function serveStatic(publicDir, requestPath, response) {
@@ -82,6 +112,10 @@ async function handleApi(request, response, manager) {
     return sendJson(response, 405, { error: "Method not allowed" });
   }
 
+  if (!isTrustedMutationRequest(request)) {
+    return sendJson(response, 403, { error: "Forbidden" });
+  }
+
   const body = await readRequestBody(request);
 
   if (url.pathname === "/api/start") {
@@ -129,8 +163,8 @@ export async function startDashboardServer({
         error: error.message,
         url: request.url
       });
-      sendJson(response, 500, {
-        error: error.message || "Unexpected server error"
+      sendJson(response, error.statusCode || 500, {
+        error: error.publicMessage || error.message || "Unexpected server error"
       });
     }
   });
