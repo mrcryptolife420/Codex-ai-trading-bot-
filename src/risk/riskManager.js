@@ -1,5 +1,6 @@
 import { clamp } from "../utils/math.js";
 import { minutesBetween, sameUtcDay } from "../utils/time.js";
+import { buildTrendStateSummary } from "../strategy/trendState.js";
 
 function safeValue(value) {
   return Number.isFinite(value) ? value : 0;
@@ -93,9 +94,9 @@ function summarizeExchangeCapabilities(capabilities = {}) {
   };
 }
 
-function buildDowntrendPolicy({ marketSnapshot = {}, marketStructureSummary = {}, regimeSummary = {}, exchangeCapabilities = {} } = {}) {
+function buildDowntrendPolicy({ marketSnapshot = {}, marketStructureSummary = {}, regimeSummary = {}, exchangeCapabilities = {}, trendStateSummary = null } = {}) {
   const market = marketSnapshot.market || {};
-  const downtrendScore = clamp(
+  const baseDowntrendScore = clamp(
     Math.max(0, -safeValue(market.momentum20)) * 18 * 0.24 +
     Math.max(0, -safeValue(market.emaGap)) * 38 * 0.18 +
     Math.max(0, -safeValue(market.dmiSpread)) * 2.5 * 0.12 +
@@ -106,6 +107,13 @@ function buildDowntrendPolicy({ marketSnapshot = {}, marketStructureSummary = {}
     safeValue(market.bearishPatternScore) * 0.11 +
     safeValue(marketStructureSummary.longSqueezeScore) * 0.08 +
     (regimeSummary.regime === "trend" ? 0.06 : regimeSummary.regime === "high_vol" ? 0.04 : 0),
+    0,
+    1
+  );
+  const downtrendScore = clamp(
+    trendStateSummary
+      ? baseDowntrendScore * 0.52 + safeValue(trendStateSummary.downtrendScore) * 0.48
+      : baseDowntrendScore,
     0,
     1
   );
@@ -126,18 +134,19 @@ function matchesScopedAdjustment(entry = {}, strategyId = null, regimeId = null)
   return strategyMatch && regimeMatch;
 }
 
-function resolveTrendStateTuning({ marketSnapshot = {}, strategySummary = {}, regimeSummary = {} } = {}) {
+function resolveTrendStateTuning({ marketSnapshot = {}, strategySummary = {}, regimeSummary = {}, trendStateSummary = null } = {}) {
   const market = marketSnapshot.market || {};
   const family = strategySummary.family || "";
   const strategyId = strategySummary.activeStrategy || "";
   const trendFamily = ["trend_following", "breakout"].includes(family);
   const meanReversionFamily = family === "mean_reversion";
-  const matureTrend = safeValue(market.trendMaturityScore) >= 0.6;
-  const exhaustedTrend = safeValue(market.trendExhaustionScore) >= 0.68;
-  const strongDownsideAcceleration = safeValue(market.downsideAccelerationScore) >= 0.6;
-  const strongUpsideAcceleration = safeValue(market.upsideAccelerationScore) >= 0.6;
-  const strongNegativeStructure = safeValue(market.swingStructureScore) <= -0.32;
-  const strongPositiveStructure = safeValue(market.swingStructureScore) >= 0.32;
+  const matureTrend = safeValue(trendStateSummary?.maturityScore, safeValue(market.trendMaturityScore)) >= 0.6;
+  const exhaustedTrend = safeValue(trendStateSummary?.exhaustionScore, safeValue(market.trendExhaustionScore)) >= 0.68;
+  const strongDownsideAcceleration = safeValue(market.downsideAccelerationScore) >= 0.6 || safeValue(trendStateSummary?.downtrendScore) >= 0.68;
+  const strongUpsideAcceleration = safeValue(market.upsideAccelerationScore) >= 0.6 || safeValue(trendStateSummary?.uptrendScore) >= 0.68;
+  const strongNegativeStructure = (trendStateSummary?.direction || "") === "downtrend" || safeValue(market.swingStructureScore) <= -0.32;
+  const strongPositiveStructure = (trendStateSummary?.direction || "") === "uptrend" || safeValue(market.swingStructureScore) >= 0.32;
+  const lowDataConfidence = safeValue(trendStateSummary?.dataConfidenceScore, 0.7) < 0.55;
   let thresholdShift = 0;
   let sizeMultiplier = 1;
   const notes = [];
@@ -171,6 +180,11 @@ function resolveTrendStateTuning({ marketSnapshot = {}, strategySummary = {}, re
     thresholdShift += 0.004;
     sizeMultiplier *= 0.96;
     notes.push("late_trend_extension");
+  }
+  if (lowDataConfidence) {
+    thresholdShift += 0.006;
+    sizeMultiplier *= 0.9;
+    notes.push("soft_data_confidence");
   }
 
   return {
@@ -466,13 +480,23 @@ export class RiskManager {
     const executionCostBudget = this.resolveExecutionCostBudget(executionCostSummary, strategySummary, regimeSummary);
     const capitalGovernor = this.resolveCapitalGovernor(capitalGovernorSummary);
     const exchangeCapabilities = summarizeExchangeCapabilities(exchangeCapabilitiesSummary);
+    const trendStateSummary = buildTrendStateSummary({
+      marketFeatures: marketSnapshot.market || {},
+      bookFeatures: marketSnapshot.book || {},
+      newsSummary,
+      announcementSummary,
+      qualityQuorumSummary,
+      venueConfirmationSummary,
+      timeframeSummary
+    });
     const downtrendPolicy = buildDowntrendPolicy({
       marketSnapshot,
       marketStructureSummary,
       regimeSummary,
-      exchangeCapabilities
+      exchangeCapabilities,
+      trendStateSummary
     });
-    const trendStateTuning = resolveTrendStateTuning({ marketSnapshot, strategySummary, regimeSummary });
+    const trendStateTuning = resolveTrendStateTuning({ marketSnapshot, strategySummary, regimeSummary, trendStateSummary });
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -757,6 +781,7 @@ export class RiskManager {
       0.38,
       1.04
     );
+    const dataConfidenceFactor = clamp(0.72 + safeValue(trendStateSummary.dataConfidenceScore, 0.6) * 0.36, 0.48, 1.05);
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
     const streakPenalty = clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
@@ -784,6 +809,7 @@ export class RiskManager {
       timeframeFactor *
       onChainFactor *
       qualityQuorumFactor *
+      dataConfidenceFactor *
       divergenceFactor *
       heatPenalty *
       streakPenalty *
@@ -952,6 +978,7 @@ export class RiskManager {
       capitalGovernorApplied: capitalGovernor,
       exchangeCapabilitiesApplied: exchangeCapabilities,
       downtrendPolicy,
+      trendStateSummary,
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,

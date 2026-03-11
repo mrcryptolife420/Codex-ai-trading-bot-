@@ -1,4 +1,5 @@
 import { clamp } from "../utils/math.js";
+import { buildTrendStateSummary } from "../strategy/trendState.js";
 
 export function classifyRegime({
   marketFeatures,
@@ -14,6 +15,13 @@ export function classifyRegime({
   const reasons = [];
   let regime = "range";
   let confidence = 0.55;
+  const trendState = buildTrendStateSummary({
+    marketFeatures,
+    bookFeatures,
+    newsSummary,
+    announcementSummary,
+    timeframeSummary: {}
+  });
 
   const freshHighPriorityNotice = (announcementSummary.highPriorityCount || 0) > 0 && (announcementSummary.noticeFreshnessHours || 999) <= 12;
   const eventRisk = Math.max(
@@ -74,10 +82,11 @@ export function classifyRegime({
   } else if (
     persistentTrendSignal > 0.42 &&
     trendStructure > 0.14 &&
+    trendState.direction !== "sideways" &&
     Math.abs(marketStructureSummary.crowdingBias || 0) < 0.75
   ) {
     regime = "trend";
-    confidence = clamp(0.72 + Math.min(0.16, persistentTrendSignal * 0.18) - exhaustionPressure * 0.06, 0.6, 0.9);
+    confidence = clamp(0.72 + Math.min(0.16, persistentTrendSignal * 0.18) - exhaustionPressure * 0.06 + (trendState.dataConfidenceScore - 0.6) * 0.08, 0.6, 0.9);
     reasons.push("persistent_trend");
   } else {
     reasons.push("mean_reversion_profile");
@@ -118,6 +127,9 @@ export function classifyRegime({
   if ((marketFeatures.trendExhaustionScore || 0) > 0.7) {
     reasons.push("trend_exhaustion");
   }
+  if (trendState.dataConfidenceScore < 0.55) {
+    reasons.push("soft_data_confidence");
+  }
 
   const bias = clamp(
     (marketFeatures.momentum5 || 0) * 10 +
@@ -146,7 +158,8 @@ export function classifyRegime({
     regime,
     confidence,
     bias,
-    reasons
+    reasons,
+    trendState
   };
 }
 

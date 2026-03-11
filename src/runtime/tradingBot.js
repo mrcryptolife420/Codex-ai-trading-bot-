@@ -52,6 +52,7 @@ import { buildCapitalGovernor } from "./capitalGovernor.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
+import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { summarizeStrategyDsl } from "../research/strategyDsl.js";
 import { minutesBetween, nowIso } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
@@ -4174,6 +4175,15 @@ export class TradingBot {
       config: this.config,
       nowIso: now.toISOString()
     });
+    const trendStateSummary = buildTrendStateSummary({
+      marketFeatures: marketSnapshot.market,
+      bookFeatures: marketSnapshot.book,
+      newsSummary,
+      announcementSummary: exchangeSummary,
+      qualityQuorumSummary,
+      venueConfirmationSummary,
+      timeframeSummary
+    });
     const attributionSummary = this.strategyAttribution.getAdjustment(context.attributionSnapshot || {}, {
       symbol,
       strategyId: strategySummary.activeStrategy || null,
@@ -4200,6 +4210,7 @@ export class TradingBot {
       symbolStats,
       marketFeatures: marketSnapshot.market,
       bookFeatures: marketSnapshot.book,
+      trendStateSummary,
       venueConfirmationSummary,
       newsSummary,
       announcementSummary: exchangeSummary,
@@ -4380,6 +4391,7 @@ export class TradingBot {
       qualityQuorumSummary,
       onChainLiteSummary,
       divergenceSummary,
+      trendStateSummary,
       venueConfirmationSummary,
       exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
       strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
@@ -4418,6 +4430,7 @@ export class TradingBot {
       calendarSummary,
       timeframeSummary,
       pairHealthSummary,
+      trendStateSummary,
       venueConfirmationSummary,
       qualityQuorumSummary,
       divergenceSummary,
@@ -4440,6 +4453,7 @@ export class TradingBot {
       sourceReliabilitySummary,
       qualityQuorumSummary,
       venueConfirmationSummary,
+      trendStateSummary,
       decision
     };
   }
@@ -4805,6 +4819,15 @@ export class TradingBot {
       timeframe: summarizeTimeframeConsensus(candidate.timeframeSummary),
       pairHealth: { symbol: candidate.pairHealthSummary?.symbol || candidate.symbol, score: num(candidate.pairHealthSummary?.score || 0, 4), health: candidate.pairHealthSummary?.health || "watch", quarantined: Boolean(candidate.pairHealthSummary?.quarantined), reasons: [...(candidate.pairHealthSummary?.reasons || [])].slice(0, 4) },
       qualityQuorum: summarizeQualityQuorum(candidate.qualityQuorumSummary),
+      trendState: candidate.trendStateSummary ? {
+        direction: candidate.trendStateSummary.direction || "mixed",
+        uptrendScore: num(candidate.trendStateSummary.uptrendScore || 0, 4),
+        downtrendScore: num(candidate.trendStateSummary.downtrendScore || 0, 4),
+        rangeScore: num(candidate.trendStateSummary.rangeScore || 0, 4),
+        dataConfidenceScore: num(candidate.trendStateSummary.dataConfidenceScore || 0, 4),
+        completenessScore: num(candidate.trendStateSummary.completenessScore || 0, 4),
+        reasons: [...(candidate.trendStateSummary.reasons || [])].slice(0, 4)
+      } : null,
       onChainLite: summarizeOnChainLite(candidate.onChainLiteSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
@@ -5503,6 +5526,15 @@ export class TradingBot {
         blockerReasons: arr(decision.qualityQuorum?.blockerReasons || []).slice(0, 3),
         cautionReasons: arr(decision.qualityQuorum?.cautionReasons || []).slice(0, 3)
       },
+      trendState: {
+        direction: decision.trendState?.direction || decision.trendStateSummary?.direction || null,
+        uptrendScore: num(decision.trendState?.uptrendScore || decision.trendStateSummary?.uptrendScore || 0, 4),
+        downtrendScore: num(decision.trendState?.downtrendScore || decision.trendStateSummary?.downtrendScore || 0, 4),
+        rangeScore: num(decision.trendState?.rangeScore || decision.trendStateSummary?.rangeScore || 0, 4),
+        dataConfidenceScore: num(decision.trendState?.dataConfidenceScore || decision.trendStateSummary?.dataConfidenceScore || 0, 4),
+        completenessScore: num(decision.trendState?.completenessScore || decision.trendStateSummary?.completenessScore || 0, 4),
+        reasons: arr(decision.trendState?.reasons || decision.trendStateSummary?.reasons || []).slice(0, 3)
+      },
       selfHealIssues: arr(decision.selfHealIssues || decision.selfHeal?.issues || []).slice(0, 2),
       sessionBlockers: arr(decision.sessionBlockers || decision.session?.blockerReasons || []).slice(0, 2),
       driftBlockers: arr(decision.driftBlockers || decision.drift?.blockerReasons || []).slice(0, 2),
@@ -5984,8 +6016,6 @@ export class TradingBot {
     };
   }
 }
-
-
 
 
 

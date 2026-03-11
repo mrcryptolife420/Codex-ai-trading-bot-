@@ -30,6 +30,7 @@ import { computeMarketFeatures, computeOrderBookFeatures } from "../src/strategy
 import { classifyRegime } from "../src/ai/regimeModel.js";
 import { buildFeatureVector } from "../src/strategy/features.js";
 import { evaluateStrategySet } from "../src/strategy/strategyRouter.js";
+import { buildTrendStateSummary } from "../src/strategy/trendState.js";
 import { StrategyOptimizer } from "../src/ai/strategyOptimizer.js";
 import { StrategyAttribution } from "../src/ai/strategyAttribution.js";
 import { ExitIntelligence } from "../src/ai/exitIntelligence.js";
@@ -1832,9 +1833,13 @@ await runCheck("risk manager normalizes persisted string capability flags before
         momentum20: -0.03,
         emaGap: -0.015,
         dmiSpread: -0.18,
+        swingStructureScore: -0.46,
+        downsideAccelerationScore: 0.34,
+        anchoredVwapGapPct: -0.012,
         supertrendDirection: -1,
         bearishPatternScore: 0.44,
-        realizedVolPct: 0.01
+        realizedVolPct: 0.01,
+        trendMaturityScore: 0.62
       },
       book: { spreadBps: 4, bookPressure: 0.12 }
     },
@@ -1941,19 +1946,23 @@ await runCheck("regime model uses trend-state features to classify persistent tr
     marketFeatures: {
       breakoutPct: 0.003,
       donchianBreakoutPct: 0.004,
-      emaGap: 0.008,
-      momentum20: 0.016,
+      emaGap: 0.011,
+      momentum20: 0.021,
+      dmiSpread: 0.24,
       swingStructureScore: 0.58,
       higherHighRate: 0.88,
       lowerLowRate: 0.1,
       trendMaturityScore: 0.72,
       trendExhaustionScore: 0.24,
       trendQualityScore: 0.48,
+      trendPersistence: 0.82,
       upsideAccelerationScore: 0.34,
       downsideAccelerationScore: 0.08,
       bullishPatternScore: 0.14,
       bearishPatternScore: 0.04,
-      anchoredVwapGapPct: 0.011
+      anchoredVwapGapPct: 0.011,
+      supertrendDirection: 1,
+      realizedVolPct: 0.018
     },
     newsSummary: { eventRiskScore: 0.04, sentimentScore: 0.06, socialCoverage: 1 },
     streamFeatures: { tradeFlowImbalance: 0.12, microTrend: 0.0011 },
@@ -1966,6 +1975,35 @@ await runCheck("regime model uses trend-state features to classify persistent tr
   });
   assert.equal(regime.regime, "trend");
   assert.ok(regime.reasons.includes("trend_maturity"));
+  assert.equal(regime.trendState.direction, "uptrend");
+});
+
+await runCheck("trend state summary detects sideways tapes and soft data confidence", async () => {
+  const summary = buildTrendStateSummary({
+    marketFeatures: {
+      momentum20: 0.0004,
+      emaGap: 0.0002,
+      dmiSpread: 0.01,
+      trendQualityScore: 0.08,
+      trendPersistence: 0.52,
+      swingStructureScore: 0.02,
+      trendMaturityScore: 0.14,
+      trendExhaustionScore: 0.12,
+      realizedVolPct: 0.011,
+      vwapGapPct: 0.0006,
+      bollingerPosition: 0.51
+    },
+    bookFeatures: { spreadBps: 4, bookPressure: 0.01, depthConfidence: 0.44 },
+    newsSummary: { confidence: 0.28, providerDiversity: 1, freshnessScore: 0.2 },
+    announcementSummary: { freshnessScore: 0.22 },
+    qualityQuorumSummary: { status: "degraded", quorumScore: 0.42 },
+    venueConfirmationSummary: { status: "blocked", confirmed: false, averageHealthScore: 0.2 },
+    timeframeSummary: { blockerReasons: ["higher_tf_conflict"] }
+  });
+  assert.equal(summary.direction, "sideways");
+  assert.ok(summary.rangeScore > summary.uptrendScore);
+  assert.ok(summary.dataConfidenceScore < 0.55);
+  assert.ok(summary.reasons.includes("data_confidence_soft"));
 });
 
 
@@ -2383,6 +2421,30 @@ await runCheck("risk manager only applies scoped threshold tuning when both stra
 });
 
 await runCheck("feature vector includes venue confirmation and trend-state signals", async () => {
+  const trendStateSummary = buildTrendStateSummary({
+    marketFeatures: {
+      momentum20: 0.012,
+      emaGap: 0.006,
+      dmiSpread: 0.22,
+      trendQualityScore: 0.44,
+      trendPersistence: 0.78,
+      swingStructureScore: 0.58,
+      trendMaturityScore: 0.68,
+      trendExhaustionScore: 0.22,
+      realizedVolPct: 0.019,
+      vwapGapPct: 0.008,
+      bollingerPosition: 0.76,
+      upsideAccelerationScore: 0.34,
+      downsideAccelerationScore: 0.06,
+      supertrendDirection: 1
+    },
+    bookFeatures: { spreadBps: 4, bookPressure: 0.22, depthConfidence: 0.72 },
+    newsSummary: { confidence: 0.7, providerDiversity: 2, freshnessScore: 0.6 },
+    announcementSummary: { freshnessScore: 0.5 },
+    qualityQuorumSummary: { status: "ready", quorumScore: 0.82 },
+    venueConfirmationSummary: { confirmed: true, status: "confirmed", averageHealthScore: 0.82 },
+    timeframeSummary: { blockerReasons: [] }
+  });
   const rawFeatures = buildFeatureVector({
     symbolStats: { avgPnlPct: 0.01, winRate: 0.56 },
     marketFeatures: {
@@ -2439,6 +2501,7 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
       bearishPatternScore: 0.04,
       insideBar: 0
     },
+    trendStateSummary,
     bookFeatures: { spreadBps: 4, depthImbalance: 0.18, weightedDepthImbalance: 0.16, microPriceEdgeBps: 0.9, bookPressure: 0.22, wallImbalance: 0.08, orderbookImbalanceSignal: 0.14, queueImbalance: 0.1, queueRefreshScore: 0.12, resilienceScore: 0.18, depthConfidence: 0.72, bidConcentration: 0.58, askConcentration: 0.42 },
     venueConfirmationSummary: { confirmed: true, status: "confirmed", divergenceBps: 2.8, averageHealthScore: 0.82 },
     newsSummary: { sentimentScore: 0.08, confidence: 0.7, riskScore: 0.08, freshnessScore: 0.6, providerDiversity: 2, sourceDiversity: 1.2, socialSentiment: 0.04, socialRisk: 0.02, socialCoverage: 1.5, operationalReliability: 0.8, eventBullishScore: 0.02, eventBearishScore: 0, eventRiskScore: 0.04 },
@@ -2460,6 +2523,65 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
   assert.ok(rawFeatures.swing_structure > 0);
   assert.ok(rawFeatures.trend_maturity > 0);
   assert.ok(rawFeatures.venue_confirmation > 0);
+  assert.ok(rawFeatures.trend_state_up > 0);
+  assert.ok(rawFeatures.data_confidence > 0);
+  assert.ok(rawFeatures.feature_completeness > 0);
+});
+
+await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.66,
+      calibrationConfidence: 0.44,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.65, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.18, microPriceEdgeBps: 0.8, depthConfidence: 0.3 },
+      market: {
+        realizedVolPct: 0.018,
+        atrPct: 0.009,
+        bullishPatternScore: 0.12,
+        bearishPatternScore: 0.03,
+        momentum20: 0.011,
+        emaGap: 0.005,
+        dmiSpread: 0.18,
+        swingStructureScore: 0.42,
+        trendMaturityScore: 0.61,
+        trendExhaustionScore: 0.24,
+        upsideAccelerationScore: 0.22,
+        downsideAccelerationScore: 0.04,
+        supertrendDirection: 1,
+        trendQualityScore: 0.38,
+        trendPersistence: 0.7,
+        vwapGapPct: 0.007,
+        bollingerPosition: 0.72
+      }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, confidence: 0.25, providerDiversity: 1, freshnessScore: 0.2 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0, freshnessScore: 0.18 },
+    marketStructureSummary: { riskScore: 0.06, signalScore: 0.1, crowdingBias: 0.05, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.67, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.64, confidence: 0.46, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "degraded", quorumScore: 0.46, averageScore: 0.46 },
+    venueConfirmationSummary: { status: "blocked", confirmed: false, averageHealthScore: 0.18, blockerReasons: ["reference_venue_divergence"] },
+    timeframeSummary: { alignmentScore: 0.62, blockerReasons: ["higher_tf_conflict"] },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.ok(["uptrend", "mixed"].includes(decision.trendStateSummary.direction));
+  assert.ok(decision.trendStateSummary.dataConfidenceScore < 0.55);
+  assert.ok(decision.trendStateTuningApplied.notes.includes("soft_data_confidence"));
 });
 
 await runCheck("risk manager blocks entries when the data quorum falls to observe-only", async () => {
@@ -2614,6 +2736,10 @@ await runCheck("risk manager blocks aggressive spot longs during strong downtren
         momentum20: -0.032,
         emaGap: -0.018,
         dmiSpread: -0.22,
+        swingStructureScore: -0.52,
+        downsideAccelerationScore: 0.38,
+        anchoredVwapGapPct: -0.015,
+        trendMaturityScore: 0.64,
         supertrendDirection: -1
       }
     },
