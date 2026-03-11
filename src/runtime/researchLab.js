@@ -4,7 +4,7 @@ import { ExecutionEngine } from "../execution/executionEngine.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
-import { buildPerformanceReport } from "./reportBuilder.js";
+import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
 
 function num(value, decimals = 4, fallback = 0) {
@@ -35,6 +35,34 @@ function bucketStats(trades = [], key) {
       winRate: num(item.tradeCount ? item.winCount / item.tradeCount : 0, 4)
     }))
     .sort((left, right) => right.realizedPnl - left.realizedPnl);
+}
+
+function buildScorecards(trades = [], keyFn) {
+  const map = new Map();
+  for (const trade of trades) {
+    const id = keyFn(trade) || "unknown";
+    if (!map.has(id)) {
+      map.set(id, { id, tradeCount: 0, realizedPnl: 0, review: 0, sharpe: [], winCount: 0 });
+    }
+    const bucket = map.get(id);
+    const review = buildTradeQualityReview(trade);
+    bucket.tradeCount += 1;
+    bucket.realizedPnl += trade.pnlQuote || 0;
+    bucket.review += review.compositeScore || 0;
+    bucket.sharpe.push(trade.netPnlPct || 0);
+    bucket.winCount += (trade.pnlQuote || 0) > 0 ? 1 : 0;
+  }
+  return [...map.values()]
+    .map((bucket) => ({
+      id: bucket.id,
+      tradeCount: bucket.tradeCount,
+      realizedPnl: num(bucket.realizedPnl, 2),
+      averageReviewScore: num(bucket.tradeCount ? bucket.review / bucket.tradeCount : 0, 4),
+      winRate: num(bucket.tradeCount ? bucket.winCount / bucket.tradeCount : 0, 4),
+      governanceScore: num(Math.max(0, Math.min(1, 0.42 + (bucket.tradeCount ? bucket.review / bucket.tradeCount : 0) * 0.42 + (bucket.tradeCount ? bucket.winCount / bucket.tradeCount - 0.5 : 0) * 0.18 + Math.max(-0.12, Math.min(0.12, bucket.realizedPnl / Math.max(bucket.tradeCount * 70, 70))))), 4)
+    }))
+    .sort((left, right) => right.governanceScore - left.governanceScore)
+    .slice(0, 8);
 }
 
 function buildSyntheticBook(candle, market, config) {
@@ -387,10 +415,13 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
     }
 
     const report = buildPerformanceReport({
-      journal: { trades, equitySnapshots, scaleOuts: [], blockedSetups: [], researchRuns: [] },
+      journal: { trades, equitySnapshots, scaleOuts: [], blockedSetups: [], researchRuns: [], counterfactuals: [] },
       runtime: { openPositions: position ? [position] : [] },
       config
     });
+    const strategyScorecards = buildScorecards(trades, (trade) => trade.strategyAtEntry || "unknown");
+    const familyScorecards = buildScorecards(trades, (trade) => (trade.strategyAtEntry || "").split("_")[0] || trade.strategyAtEntry || "unknown");
+    const regimeScorecards = buildScorecards(trades, (trade) => trade.regimeAtEntry || "unknown");
     experiments.push({
       symbol,
       generatedAt: nowIso(),
@@ -406,11 +437,15 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
       strategyLeaders: bucketStats(trades, (trade) => trade.strategyAtEntry).slice(0, 4).map((item) => item.id),
       familyLeaders: bucketStats(trades, (trade) => (trade.strategyAtEntry || "").split("_")[0] || trade.strategyAtEntry).slice(0, 4),
       regimeLeaders: bucketStats(trades, (trade) => trade.regimeAtEntry).slice(0, 4),
+      strategyScorecards,
+      familyScorecards,
+      regimeScorecards,
       bestTrade: report.bestTrade || null,
       worstTrade: report.worstTrade || null
     });
   }
 
+  const flatExperiments = experiments.flatMap((item) => item.strategyScorecards || []);
   const strategyBuckets = bucketStats(experiments.flatMap((item) => (item.strategyLeaders || []).map((id) => ({ strategyAtEntry: id, pnlQuote: 1 }))), (trade) => trade.strategyAtEntry);
   const familyBuckets = experiments.flatMap((item) => item.familyLeaders || []);
   const regimeBuckets = experiments.flatMap((item) => item.regimeLeaders || []);
@@ -428,6 +463,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
     strategyLeaders: strategyBuckets.slice(0, 5).map((item) => item.id),
     familyLeaders: familyBuckets.slice(0, 5),
     regimeLeaders: regimeBuckets.slice(0, 5),
+    strategyScorecards: buildScorecards(flatExperiments.map((item) => ({ strategyAtEntry: item.id, pnlQuote: item.realizedPnl, netPnlPct: item.realizedPnl / 100, executionQualityScore: item.averageReviewScore, labelScore: item.averageReviewScore })), (trade) => trade.strategyAtEntry),
     experiments
   };
 }
@@ -458,6 +494,16 @@ export async function runResearchLab({ config, logger, symbols = [] }) {
     reports.flatMap((report) => (report.regimeLeaders || []).map((item) => ({ regime: item.id, pnlQuote: item.realizedPnl || 0 }))),
     (item) => item.regime
   );
+  const strategyScorecards = buildScorecards(
+    reports.flatMap((report) => (report.strategyScorecards || []).map((item) => ({
+      strategyAtEntry: item.id,
+      pnlQuote: item.realizedPnl || 0,
+      netPnlPct: (item.realizedPnl || 0) / 100,
+      executionQualityScore: item.averageReviewScore || 0,
+      labelScore: item.averageReviewScore || 0
+    }))),
+    (trade) => trade.strategyAtEntry
+  );
   return {
     generatedAt: nowIso(),
     symbolCount: reports.length,
@@ -468,6 +514,7 @@ export async function runResearchLab({ config, logger, symbols = [] }) {
     averageWinRate: num(average(reports.map((item) => item.averageWinRate || 0)), 4),
     topFamilies: topFamilies.slice(0, 6),
     topRegimes: topRegimes.slice(0, 6),
+    strategyScorecards,
     reports
   };
 }

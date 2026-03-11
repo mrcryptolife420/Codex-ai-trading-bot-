@@ -84,6 +84,34 @@ function mapLeaderBucket(items = []) {
   }));
 }
 
+function buildStrategyScorecards(runs = []) {
+  const map = new Map();
+  for (const run of runs) {
+    for (const report of run.reports || []) {
+      for (const item of report.strategyScorecards || []) {
+        if (!map.has(item.id)) {
+          map.set(item.id, { id: item.id, tradeCount: 0, realizedPnl: 0, governanceScore: 0, reviewScore: 0, winRate: 0, count: 0 });
+        }
+        const bucket = map.get(item.id);
+        bucket.tradeCount += item.tradeCount || 0;
+        bucket.realizedPnl += safeNumber(item.realizedPnl);
+        bucket.governanceScore += safeNumber(item.governanceScore);
+        bucket.reviewScore += safeNumber(item.averageReviewScore);
+        bucket.winRate += safeNumber(item.winRate);
+        bucket.count += 1;
+      }
+    }
+  }
+  return [...map.values()].map((bucket) => ({
+    id: bucket.id,
+    tradeCount: bucket.tradeCount,
+    realizedPnl: num(bucket.realizedPnl, 2),
+    governanceScore: num(bucket.count ? bucket.governanceScore / bucket.count : 0, 4),
+    averageReviewScore: num(bucket.count ? bucket.reviewScore / bucket.count : 0, 4),
+    averageWinRate: num(bucket.count ? bucket.winRate / bucket.count : 0, 4)
+  })).sort((left, right) => right.governanceScore - left.governanceScore).slice(0, 8);
+}
+
 export class ResearchRegistry {
   constructor(config) {
     this.config = config;
@@ -125,6 +153,7 @@ export class ResearchRegistry {
 
     const promotionCandidates = leaderboard.filter((item) => item.status === "promotion_candidate");
     const observeList = leaderboard.filter((item) => item.status === "observe");
+    const strategyScorecards = buildStrategyScorecards(runs);
     const notes = [
       promotionCandidates[0]
         ? `${promotionCandidates[0].symbol} voldoet aan de walk-forward drempels voor paper-promotie.`
@@ -143,6 +172,7 @@ export class ResearchRegistry {
       lastRunAt: latestSummary?.generatedAt || runs.at(-1)?.generatedAt || null,
       bestSymbol: latestSummary?.bestSymbol || leaderboard[0]?.symbol || null,
       leaderboard,
+      strategyScorecards,
       recentRuns: runs
         .slice(-5)
         .reverse()

@@ -28,6 +28,9 @@ export function validateConfig(config) {
   assertRange("RISK_PER_TRADE", config.riskPerTrade, 0.0001, 0.2, errors);
   assertRange("MAX_DAILY_DRAWDOWN", config.maxDailyDrawdown, 0.001, 0.5, errors);
   assertRange("MODEL_THRESHOLD", config.modelThreshold, 0.5, 0.99, errors);
+  assertRange("OPTIMIZER_BAYES_PRIOR_ALPHA", config.optimizerBayesPriorAlpha, 0.1, 10, errors);
+  assertRange("OPTIMIZER_BAYES_PRIOR_BETA", config.optimizerBayesPriorBeta, 0.1, 10, errors);
+  assertRange("OPTIMIZER_BAYES_EXPLORATION", config.optimizerBayesExploration, 0, 1, errors);
   assertRange("MIN_MODEL_CONFIDENCE", config.minModelConfidence, 0.5, 0.99, errors);
   assertRange("STOP_LOSS_PCT", config.stopLossPct, 0.001, 0.2, errors);
   assertRange("TAKE_PROFIT_PCT", config.takeProfitPct, 0.001, 0.5, errors);
@@ -168,6 +171,7 @@ export function validateConfig(config) {
   assertRange("PAPER_EXPLORATION_COOLDOWN_MINUTES", config.paperExplorationCooldownMinutes, 0, 1440, errors);
   assertRange("PAPER_EXPLORATION_MIN_BOOK_PRESSURE", config.paperExplorationMinBookPressure, -1, 1, errors);
   assertRange("ANNOUNCEMENT_LOOKBACK_HOURS", config.announcementLookbackHours, 1, 168, errors);
+  assertRange("ONCHAIN_LITE_TRENDING_LIMIT", config.onChainLiteTrendingLimit, 1, 20, errors);
   assertRange("ANNOUNCEMENT_CACHE_MINUTES", config.announcementCacheMinutes, 1, 240, errors);
   assertRange("MARKET_STRUCTURE_CACHE_MINUTES", config.marketStructureCacheMinutes, 1, 120, errors);
   assertRange("MARKET_STRUCTURE_LOOKBACK_POINTS", config.marketStructureLookbackPoints, 2, 100, errors);

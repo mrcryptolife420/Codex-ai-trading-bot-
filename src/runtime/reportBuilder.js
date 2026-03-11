@@ -76,6 +76,10 @@ function parseTimestampMs(value) {
   return Number.isFinite(timestamp) ? timestamp : Number.NaN;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function buildRecentEvents(events = [], runtime = {}, now = new Date()) {
   const referenceMs = Math.max(
     parseTimestampMs(runtime.lastCycleAt),
@@ -271,6 +275,165 @@ function buildAttributionSummary(trades = []) {
   };
 }
 
+export function buildTradeQualityReview(trade = {}) {
+  const entry = trade.entryExecutionAttribution || {};
+  const rationale = trade.entryRationale || {};
+  const signalEdge = (rationale.probability || trade.probabilityAtEntry || 0) - (rationale.threshold || 0);
+  const setupScore = clamp(
+    0.34 +
+      (trade.labelScore || 0.5) * 0.22 +
+      Math.max(0, signalEdge) * 1.2 * 0.18 +
+      (rationale.strategy?.fitScore || 0) * 0.14 +
+      (rationale.meta?.qualityScore || rationale.meta?.score || 0) * 0.12 +
+      (rationale.timeframe?.alignmentScore || 0) * 0.08 -
+      (rationale.newsRisk || 0) * 0.08 -
+      ((rationale.blockerReasons || []).length ? 0.04 : 0),
+    0,
+    1
+  );
+  const executionScore = clamp(
+    0.34 +
+      (trade.executionQualityScore || 0) * 0.32 +
+      Math.max(0, 1 - Math.min(Math.abs(entry.slippageDeltaBps || 0) / 8, 1)) * 0.18 +
+      Math.max(0, 1 - Math.min((entry.realizedTouchSlippageBps || 0) / 12, 1)) * 0.08 +
+      (entry.makerFillRatio || 0) * 0.08,
+    0,
+    1
+  );
+  const outcomeScore = clamp(
+    0.32 +
+      clamp(0.5 + (trade.netPnlPct || 0) * 10, 0, 1) * 0.34 +
+      clamp(0.5 + (trade.captureEfficiency || 0) * 0.35, 0, 1) * 0.16 +
+      clamp(0.5 + ((trade.mfePct || 0) - Math.abs(trade.maePct || 0)) * 6, 0, 1) * 0.18,
+    0,
+    1
+  );
+  const compositeScore = clamp(setupScore * 0.38 + executionScore * 0.28 + outcomeScore * 0.34, 0, 1);
+  let verdict = "acceptable";
+  if (compositeScore >= 0.74 && (trade.pnlQuote || 0) >= 0) {
+    verdict = "great_trade";
+  } else if (executionScore < 0.45 && setupScore >= 0.56) {
+    verdict = "execution_drag";
+  } else if (setupScore < 0.45 && (trade.pnlQuote || 0) <= 0) {
+    verdict = "weak_setup";
+  } else if (outcomeScore < 0.4 && setupScore >= 0.56) {
+    verdict = "follow_through_failed";
+  } else if (compositeScore < 0.45) {
+    verdict = "needs_review";
+  }
+  const notes = [];
+  if (setupScore >= 0.62) {
+    notes.push("setup_quality_strong");
+  }
+  if (setupScore < 0.45) {
+    notes.push("setup_quality_weak");
+  }
+  if (executionScore < 0.46) {
+    notes.push("execution_quality_soft");
+  }
+  if ((entry.slippageDeltaBps || 0) > 2.5) {
+    notes.push("slippage_above_expectation");
+  }
+  if (outcomeScore < 0.42) {
+    notes.push("outcome_capture_soft");
+  }
+  if ((trade.captureEfficiency || 0) > 0.75) {
+    notes.push("capture_efficiency_strong");
+  }
+  return {
+    setupScore: Number(setupScore.toFixed(4)),
+    executionScore: Number(executionScore.toFixed(4)),
+    outcomeScore: Number(outcomeScore.toFixed(4)),
+    compositeScore: Number(compositeScore.toFixed(4)),
+    verdict,
+    notes: notes.slice(0, 4)
+  };
+}
+
+function buildTradeQualitySummary(trades = [], counterfactuals = []) {
+  const reviews = trades.map((trade) => ({ trade, review: buildTradeQualityReview(trade) }));
+  const verdictCounts = {};
+  const strategyBuckets = new Map();
+  for (const item of reviews) {
+    verdictCounts[item.review.verdict] = (verdictCounts[item.review.verdict] || 0) + 1;
+    const id = item.trade.strategyAtEntry || item.trade.entryRationale?.strategy?.activeStrategy || "unknown";
+    if (!strategyBuckets.has(id)) {
+      strategyBuckets.set(id, {
+        id,
+        tradeCount: 0,
+        reviewScore: 0,
+        setupScore: 0,
+        executionScore: 0,
+        outcomeScore: 0,
+        winCount: 0,
+        realizedPnl: 0,
+        falseNegativeCount: 0
+      });
+    }
+    const bucket = strategyBuckets.get(id);
+    bucket.tradeCount += 1;
+    bucket.reviewScore += item.review.compositeScore;
+    bucket.setupScore += item.review.setupScore;
+    bucket.executionScore += item.review.executionScore;
+    bucket.outcomeScore += item.review.outcomeScore;
+    bucket.winCount += (item.trade.pnlQuote || 0) > 0 ? 1 : 0;
+    bucket.realizedPnl += item.trade.pnlQuote || 0;
+  }
+  for (const item of counterfactuals.filter((entry) => entry.outcome === "missed_winner")) {
+    const id = item.strategy || item.strategyAtEntry || "blocked_setup";
+    if (!strategyBuckets.has(id)) {
+      strategyBuckets.set(id, {
+        id,
+        tradeCount: 0,
+        reviewScore: 0,
+        setupScore: 0,
+        executionScore: 0,
+        outcomeScore: 0,
+        winCount: 0,
+        realizedPnl: 0,
+        falseNegativeCount: 0
+      });
+    }
+    strategyBuckets.get(id).falseNegativeCount += 1;
+  }
+  const strategyScorecards = [...strategyBuckets.values()]
+    .map((bucket) => ({
+      id: bucket.id,
+      tradeCount: bucket.tradeCount,
+      winRate: Number(safeDivide(bucket.winCount, bucket.tradeCount).toFixed(4)),
+      realizedPnl: Number(bucket.realizedPnl.toFixed(2)),
+      avgReviewScore: Number(safeDivide(bucket.reviewScore, bucket.tradeCount).toFixed(4)),
+      avgSetupScore: Number(safeDivide(bucket.setupScore, bucket.tradeCount).toFixed(4)),
+      avgExecutionScore: Number(safeDivide(bucket.executionScore, bucket.tradeCount).toFixed(4)),
+      avgOutcomeScore: Number(safeDivide(bucket.outcomeScore, bucket.tradeCount).toFixed(4)),
+      falseNegativeCount: bucket.falseNegativeCount,
+      governanceScore: Number(clamp(safeDivide(bucket.reviewScore, bucket.tradeCount, 0.42) * 0.66 + safeDivide(bucket.winCount, bucket.tradeCount, 0.5) * 0.2 + clamp(0.5 + bucket.realizedPnl / Math.max(bucket.tradeCount * 60, 60), 0, 1) * 0.14 - Math.min(bucket.falseNegativeCount, 3) * 0.03, 0, 1).toFixed(4))
+    }))
+    .sort((left, right) => right.governanceScore - left.governanceScore)
+    .slice(0, 8);
+  return {
+    averageCompositeScore: average(reviews.map((item) => item.review.compositeScore)),
+    averageSetupScore: average(reviews.map((item) => item.review.setupScore)),
+    averageExecutionScore: average(reviews.map((item) => item.review.executionScore)),
+    averageOutcomeScore: average(reviews.map((item) => item.review.outcomeScore)),
+    verdictCounts,
+    bestTrade: reviews.sort((left, right) => right.review.compositeScore - left.review.compositeScore)[0] || null,
+    worstTrade: reviews.sort((left, right) => left.review.compositeScore - right.review.compositeScore)[0] || null,
+    strategyScorecards,
+    notes: [
+      strategyScorecards[0]
+        ? `${strategyScorecards[0].id} leidt momenteel in trade quality review.`
+        : "Nog geen trade quality review data beschikbaar.",
+      verdictCounts.execution_drag
+        ? `${verdictCounts.execution_drag} trades verloren kwaliteit door execution.`
+        : "Geen duidelijke execution drag in de recente trades.",
+      verdictCounts.follow_through_failed
+        ? `${verdictCounts.follow_through_failed} trades hadden goede setup maar zwakke follow-through.`
+        : "Follow-through ziet er voorlopig stabiel uit."
+    ]
+  };
+}
+
 export function buildPerformanceReport({ journal, runtime, config, now = new Date() }) {
   const trades = [...(journal.trades || [])];
   const scaleOuts = [...(journal.scaleOuts || [])];
@@ -284,6 +447,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   );
   const nowMs = now.getTime();
   const localDayStartMs = startOfLocalDay(now);
+  const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
 
   return {
     ...buildTradeStats(lookbackTrades),
@@ -293,6 +457,15 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     recentTrades: lookbackTrades.slice(-25).reverse(),
     executionSummary: buildExecutionSummary(lookbackTrades),
     attribution: buildAttributionSummary(trades),
+    tradeQualityReview,
+    recentReviews: lookbackTrades.slice(-20).reverse().map((trade) => ({
+      id: trade.id,
+      symbol: trade.symbol,
+      strategy: trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null,
+      pnlQuote: trade.pnlQuote || 0,
+      netPnlPct: trade.netPnlPct || 0,
+      ...buildTradeQualityReview(trade)
+    })),
     scaleOutSummary: buildScaleOutSummary(scaleOuts),
     windows: {
       today: buildWindowStats(trades, localDayStartMs),

@@ -97,12 +97,17 @@ const DEFAULTS = {
   enableOnChainLiteContext: true,
   onChainLiteCacheMinutes: 30,
   onChainLiteStablecoinIds: ["tether", "usd-coin", "dai", "first-digital-usd", "ethena-usde"],
+  onChainLiteMajorIds: ["bitcoin", "ethereum", "binancecoin", "solana", "ripple", "dogecoin"],
+  onChainLiteTrendingLimit: 7,
   enableVolatilityContext: true,
   volatilityCacheMinutes: 20,
   deribitApiBaseUrl: "https://www.deribit.com/api/v2",
   modelLearningRate: 0.06,
   modelL2: 0.0005,
   modelThreshold: 0.52,
+  optimizerBayesPriorAlpha: 2,
+  optimizerBayesPriorBeta: 2,
+  optimizerBayesExploration: 0.12,
   challengerLearningRate: 0.08,
   challengerL2: 0.00035,
   challengerWindowTrades: 40,
@@ -447,12 +452,17 @@ export async function loadConfig(projectRoot = process.cwd()) {
     enableOnChainLiteContext: parseBoolean(env.ENABLE_ONCHAIN_LITE_CONTEXT, DEFAULTS.enableOnChainLiteContext),
     onChainLiteCacheMinutes: parseNumber(env.ONCHAIN_LITE_CACHE_MINUTES, DEFAULTS.onChainLiteCacheMinutes),
     onChainLiteStablecoinIds: parseTextCsv(env.ONCHAIN_LITE_STABLECOIN_IDS, DEFAULTS.onChainLiteStablecoinIds),
+    onChainLiteMajorIds: parseTextCsv(env.ONCHAIN_LITE_MAJOR_IDS, DEFAULTS.onChainLiteMajorIds),
+    onChainLiteTrendingLimit: parseNumber(env.ONCHAIN_LITE_TRENDING_LIMIT, DEFAULTS.onChainLiteTrendingLimit),
     enableVolatilityContext: parseBoolean(env.ENABLE_VOLATILITY_CONTEXT, DEFAULTS.enableVolatilityContext),
     volatilityCacheMinutes: parseNumber(env.VOLATILITY_CACHE_MINUTES, DEFAULTS.volatilityCacheMinutes),
     deribitApiBaseUrl: env.DERIBIT_API_BASE_URL || DEFAULTS.deribitApiBaseUrl,
     modelLearningRate: parseNumber(env.MODEL_LEARNING_RATE, DEFAULTS.modelLearningRate),
     modelL2: parseNumber(env.MODEL_L2, DEFAULTS.modelL2),
     modelThreshold: parseNumber(env.MODEL_THRESHOLD, DEFAULTS.modelThreshold),
+    optimizerBayesPriorAlpha: parseNumber(env.OPTIMIZER_BAYES_PRIOR_ALPHA, DEFAULTS.optimizerBayesPriorAlpha),
+    optimizerBayesPriorBeta: parseNumber(env.OPTIMIZER_BAYES_PRIOR_BETA, DEFAULTS.optimizerBayesPriorBeta),
+    optimizerBayesExploration: parseNumber(env.OPTIMIZER_BAYES_EXPLORATION, DEFAULTS.optimizerBayesExploration),
     challengerLearningRate: parseNumber(env.CHALLENGER_LEARNING_RATE, DEFAULTS.challengerLearningRate),
     challengerL2: parseNumber(env.CHALLENGER_L2, DEFAULTS.challengerL2),
     challengerWindowTrades: parseNumber(env.CHALLENGER_WINDOW_TRADES, DEFAULTS.challengerWindowTrades),
@@ -662,7 +672,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 
