@@ -223,6 +223,175 @@ function buildExecutionSummary(trades) {
   };
 }
 
+function estimateEntryFee(trade = {}) {
+  if (Number.isFinite(trade.entryFee)) {
+    return Math.max(0, trade.entryFee);
+  }
+  const grossEntry = (trade.entryPrice || 0) * (trade.quantity || 0);
+  return Math.max(0, (trade.totalCost || 0) - grossEntry);
+}
+
+function estimateExitFee(trade = {}) {
+  const grossExit = (trade.exitPrice || 0) * (trade.quantity || 0);
+  const realizedProceeds = Number.isFinite(trade.proceeds) ? trade.proceeds : grossExit;
+  return Math.max(0, grossExit - realizedProceeds);
+}
+
+function buildExecutionCostBreakdown(trade = {}) {
+  const entry = trade.entryExecutionAttribution || {};
+  const exit = trade.exitExecutionAttribution || {};
+  const notional = Math.max(trade.totalCost || trade.quantity * trade.entryPrice || 0, 1);
+  const entryFee = estimateEntryFee(trade);
+  const exitFee = estimateExitFee(trade);
+  const feeBps = safeDivide(entryFee + exitFee, notional) * 10_000;
+  const touchSlippageBps = Math.max(0, entry.realizedTouchSlippageBps || 0) + Math.max(0, exit.realizedTouchSlippageBps || 0);
+  const slippageDeltaBps = Math.max(0, entry.slippageDeltaBps || 0) + Math.max(0, exit.slippageDeltaBps || 0);
+  const latencyBps = Math.max(0, entry.latencyBps || 0) + Math.max(0, exit.latencyBps || 0);
+  const queueBps = Math.max(0, entry.queueDecayBps || 0) + Math.max(0, exit.queueDecayBps || 0);
+  const spreadShockBps = Math.max(0, entry.spreadShockBps || 0) + Math.max(0, exit.spreadShockBps || 0);
+  const liquidityShockBps = Math.max(0, entry.liquidityShockBps || 0) + Math.max(0, exit.liquidityShockBps || 0);
+  return {
+    entryFee,
+    exitFee,
+    totalFees: entryFee + exitFee,
+    feeBps,
+    touchSlippageBps,
+    slippageDeltaBps,
+    latencyBps,
+    queueBps,
+    spreadShockBps,
+    liquidityShockBps,
+    totalCostBps: feeBps + touchSlippageBps
+  };
+}
+
+function buildExecutionCostBuckets(trades = [], keyFn, config = {}) {
+  const buckets = new Map();
+  const warnBps = config.executionCostBudgetWarnBps || 12;
+  const blockBps = config.executionCostBudgetBlockBps || 18;
+  for (const trade of trades) {
+    const id = keyFn(trade) || "unknown";
+    if (!buckets.has(id)) {
+      buckets.set(id, {
+        id,
+        tradeCount: 0,
+        realizedPnl: 0,
+        totalCostBps: 0,
+        totalFeeBps: 0,
+        totalTouchSlippageBps: 0,
+        totalSlippageDeltaBps: 0
+      });
+    }
+    const bucket = buckets.get(id);
+    const cost = buildExecutionCostBreakdown(trade);
+    bucket.tradeCount += 1;
+    bucket.realizedPnl += trade.pnlQuote || 0;
+    bucket.totalCostBps += cost.totalCostBps;
+    bucket.totalFeeBps += cost.feeBps;
+    bucket.totalTouchSlippageBps += cost.touchSlippageBps;
+    bucket.totalSlippageDeltaBps += cost.slippageDeltaBps;
+  }
+  return [...buckets.values()]
+    .map((bucket) => {
+      const averageTotalCostBps = safeDivide(bucket.totalCostBps, bucket.tradeCount);
+      const averageFeeBps = safeDivide(bucket.totalFeeBps, bucket.tradeCount);
+      const averageTouchSlippageBps = safeDivide(bucket.totalTouchSlippageBps, bucket.tradeCount);
+      const averageSlippageDeltaBps = safeDivide(bucket.totalSlippageDeltaBps, bucket.tradeCount);
+      return {
+        id: bucket.id,
+        tradeCount: bucket.tradeCount,
+        realizedPnl: bucket.realizedPnl,
+        averageTotalCostBps,
+        averageFeeBps,
+        averageTouchSlippageBps,
+        averageSlippageDeltaBps,
+        status: averageTotalCostBps >= blockBps
+          ? "blocked"
+          : averageTotalCostBps >= warnBps || averageSlippageDeltaBps >= warnBps * 0.35
+            ? "caution"
+            : "ready"
+      };
+    })
+    .sort((left, right) => (right.averageTotalCostBps || 0) - (left.averageTotalCostBps || 0))
+    .slice(0, 8);
+}
+
+function buildExecutionCostSummary(trades = [], config = {}) {
+  const costs = trades.map((trade) => buildExecutionCostBreakdown(trade));
+  const styles = buildExecutionCostBuckets(trades, (trade) => trade.entryExecutionAttribution?.entryStyle || "unknown", config);
+  const strategies = buildExecutionCostBuckets(trades, (trade) => trade.strategyAtEntry || "unknown", config);
+  const regimes = buildExecutionCostBuckets(trades, (trade) => trade.regimeAtEntry || "unknown", config);
+  const averageTotalCostBps = average(costs.map((item) => item.totalCostBps || 0));
+  const averageFeeBps = average(costs.map((item) => item.feeBps || 0));
+  const averageTouchSlippageBps = average(costs.map((item) => item.touchSlippageBps || 0));
+  const averageSlippageDeltaBps = average(costs.map((item) => item.slippageDeltaBps || 0));
+  const worstStyle = styles[0] || null;
+  const worstStrategy = strategies[0] || null;
+  const status = worstStyle?.status === "blocked" || worstStrategy?.status === "blocked"
+    ? "blocked"
+    : worstStyle?.status === "caution" || worstStrategy?.status === "caution"
+      ? "caution"
+      : trades.length
+        ? "ready"
+        : "warmup";
+  return {
+    status,
+    averageTotalCostBps,
+    averageFeeBps,
+    averageTouchSlippageBps,
+    averageSlippageDeltaBps,
+    worstStyle: worstStyle?.id || null,
+    worstStrategy: worstStrategy?.id || null,
+    styles,
+    strategies,
+    regimes,
+    notes: [
+      worstStyle
+        ? `${worstStyle.id} heeft momenteel de duurste execution-cost profile.`
+        : "Nog geen execution-cost budget data beschikbaar.",
+      averageFeeBps
+        ? `Gemiddelde fee-impact: ${averageFeeBps.toFixed(2)} bps.`
+        : "Fee-impact is nog niet zichtbaar in de huidige sample.",
+      averageTouchSlippageBps
+        ? `Gemiddelde touch slippage: ${averageTouchSlippageBps.toFixed(2)} bps.`
+        : "Touch slippage is nog niet zichtbaar in de huidige sample."
+    ]
+  };
+}
+
+function buildPnlDecomposition(trades = []) {
+  const breakdowns = trades.map((trade) => {
+    const grossMovePnl = ((trade.exitPrice || 0) - (trade.entryPrice || 0)) * (trade.quantity || 0);
+    const cost = buildExecutionCostBreakdown(trade);
+    return {
+      netRealizedPnl: trade.pnlQuote || 0,
+      grossMovePnl,
+      totalFees: cost.totalFees,
+      executionDragEstimate: ((trade.totalCost || 0) * (cost.touchSlippageBps || 0)) / 10_000,
+      latencyDragEstimate: ((trade.totalCost || 0) * (cost.latencyBps || 0)) / 10_000,
+      queueDragEstimate: ((trade.totalCost || 0) * (cost.queueBps || 0)) / 10_000,
+      captureEfficiency: trade.captureEfficiency || 0
+    };
+  });
+  return {
+    netRealizedPnl: breakdowns.reduce((total, item) => total + item.netRealizedPnl, 0),
+    grossMovePnl: breakdowns.reduce((total, item) => total + item.grossMovePnl, 0),
+    totalFees: breakdowns.reduce((total, item) => total + item.totalFees, 0),
+    executionDragEstimate: breakdowns.reduce((total, item) => total + item.executionDragEstimate, 0),
+    latencyDragEstimate: breakdowns.reduce((total, item) => total + item.latencyDragEstimate, 0),
+    queueDragEstimate: breakdowns.reduce((total, item) => total + item.queueDragEstimate, 0),
+    averageCaptureEfficiency: average(breakdowns.map((item) => item.captureEfficiency || 0)),
+    notes: [
+      breakdowns.length
+        ? `${breakdowns.length} trades voeden de PnL-decomposition.`
+        : "Nog geen trades beschikbaar voor PnL-decomposition.",
+      breakdowns.length
+        ? "Execution drag is een schatting op basis van slippage- en latency-attributie."
+        : "Execution drag schattingen volgen zodra er trades beschikbaar zijn."
+    ]
+  };
+}
+
 function buildModeStats(trades = [], brokerMode = "paper") {
   const filtered = trades.filter((trade) => (trade.brokerMode || "paper") === brokerMode);
   const stats = buildTradeStats(filtered);
@@ -448,6 +617,8 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   const nowMs = now.getTime();
   const localDayStartMs = startOfLocalDay(now);
   const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
+  const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config);
+  const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
 
   return {
     ...buildTradeStats(lookbackTrades),
@@ -456,6 +627,8 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     openPositions: (runtime.openPositions || []).length,
     recentTrades: lookbackTrades.slice(-25).reverse(),
     executionSummary: buildExecutionSummary(lookbackTrades),
+    executionCostSummary,
+    pnlDecomposition,
     attribution: buildAttributionSummary(trades),
     tradeQualityReview,
     recentReviews: lookbackTrades.slice(-20).reverse().map((trade) => ({

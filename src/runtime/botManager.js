@@ -277,12 +277,12 @@ export class BotManager {
     };
     if (!snapshot?.dashboard?.overview?.lastAnalysisAt) {
       readiness.ok = false;
-      readiness.status = "warming";
+      readiness.status = readiness.status === "blocked" ? "blocked" : "warming";
       readiness.reasons.push("analysis_not_ready");
     }
     if (snapshot?.manager?.lastError?.message || this.lastError?.message) {
       readiness.ok = false;
-      readiness.status = "degraded";
+      readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
       readiness.reasons.push("manager_error");
     }
     if (snapshot?.dashboard?.health?.circuitOpen) {
@@ -295,9 +295,14 @@ export class BotManager {
       readiness.status = "blocked";
       readiness.reasons.push("exchange_truth_freeze");
     }
+    if ((snapshot?.dashboard?.safety?.exchangeSafety?.status || "") === "blocked") {
+      readiness.ok = false;
+      readiness.status = "blocked";
+      readiness.reasons.push("exchange_safety_blocked");
+    }
     if ((snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
       readiness.ok = false;
-      readiness.status = "degraded";
+      readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
       readiness.reasons.push("lifecycle_attention_required");
     }
     return readiness;

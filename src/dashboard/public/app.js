@@ -177,10 +177,10 @@ function toneClass(value) {
 
 function healthTone(value) {
   const normalized = `${value || "neutral"}`.toLowerCase();
-  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready", "confirmed", "paper_candidate", "active", "full"].includes(normalized)) {
+  if (["hot", "healthy", "positive", "promotion_candidate", "promote", "keep", "prime", "ready", "confirmed", "paper_candidate", "active", "full", "clear"].includes(normalized)) {
     return "positive";
   }
-  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown", "shadow"].includes(normalized)) {
+  if (["cold", "blocked", "negative", "hold", "paused", "relax", "cooldown", "shadow", "critical", "high"].includes(normalized)) {
     return "negative";
   }
   return "neutral";
@@ -1335,6 +1335,8 @@ function renderAttribution(snapshot) {
 
 function renderPnlAttribution(snapshot) {
   const attribution = snapshot.dashboard.report?.attribution || {};
+  const decomposition = snapshot.dashboard.report?.pnlDecomposition || {};
+  const executionCost = snapshot.dashboard.report?.executionCostSummary || {};
   const topStrategy = (attribution.strategies || [])[0] || {};
   const topRegime = (attribution.regimes || [])[0] || {};
   const topStyle = (attribution.executionStyles || [])[0] || {};
@@ -1342,11 +1344,20 @@ function renderPnlAttribution(snapshot) {
   elements.pnlAttributionSummary.innerHTML = [
     insightCard("Top strategie", topStrategy.id || "-", topStrategy.tradeCount ? `${topStrategy.tradeCount} trades | ${formatMoney(topStrategy.realizedPnl || 0)}` : "Nog geen attributie"),
     insightCard("Top regime", topRegime.id || "-", topRegime.tradeCount ? `${formatPct(topRegime.winRate || 0, 1)} win | ${formatMoney(topRegime.realizedPnl || 0)}` : "Nog geen regime-attributie"),
-    insightCard("Top exec-style", topStyle.id || "-", topStyle.tradeCount ? `${formatPct(topStyle.winRate || 0, 1)} win | ${formatMoney(topStyle.realizedPnl || 0)}` : "Nog geen execution-attributie"),
-    insightCard("Top newsbron", topProvider.id || "-", topProvider.tradeCount ? `${topProvider.tradeCount} trades | ${formatMoney(topProvider.realizedPnl || 0)}` : "Nog geen bron-attributie")
+    insightCard("Exec budget", executionCost.status || "warmup", executionCost.worstStrategy ? `${executionCost.worstStrategy} | ${formatNumber(executionCost.averageTotalCostBps || 0, 2)} bps` : "Nog geen execution-cost budget", healthTone(executionCost.status || "warmup")),
+    insightCard("PnL netto", formatMoney(decomposition.netRealizedPnl || 0), decomposition.totalFees ? `fees ${formatMoney(-(decomposition.totalFees || 0))}` : (topProvider.tradeCount ? `${topProvider.tradeCount} trades | ${formatMoney(topProvider.realizedPnl || 0)}` : "Nog geen bron-attributie"), toneClass(decomposition.netRealizedPnl || 0))
   ].join("");
 
   const cards = [
+    {
+      id: "decomposition",
+      bucketLabel: "decomposition",
+      realizedPnl: decomposition.netRealizedPnl || 0,
+      tradeCount: (attribution.strategies || []).reduce((total, item) => total + (item.tradeCount || 0), 0),
+      winRate: decomposition.averageCaptureEfficiency || 0,
+      averagePnlPct: -(executionCost.averageTotalCostBps || 0) / 10_000,
+      averageDurationMinutes: executionCost.averageTouchSlippageBps || 0
+    },
     ...(attribution.strategies || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "strategie" })),
     ...(attribution.regimes || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "regime" })),
     ...(attribution.executionStyles || []).slice(0, 2).map((item) => ({ ...item, bucketLabel: "execution" })),
@@ -1366,10 +1377,10 @@ function renderPnlAttribution(snapshot) {
                 <div class="pill ${toneClass(item.realizedPnl || 0)}">${formatMoney(item.realizedPnl || 0)}</div>
               </div>
               <div class="mini-grid">
-                <div class="mini-stat"><span class="kicker">Trades</span><strong>${item.tradeCount || 0}</strong></div>
-                <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(item.winRate || 0, 1)}</strong></div>
-                <div class="mini-stat"><span class="kicker">Gem. PnL</span><strong class="${toneClass(item.averagePnlPct || 0)}">${formatPct(item.averagePnlPct || 0, 2)}</strong></div>
-                <div class="mini-stat"><span class="kicker">Duur</span><strong>${formatNumber(item.averageDurationMinutes || 0, 1)} min</strong></div>
+                <div class="mini-stat"><span class="kicker">${item.bucketLabel === "decomposition" ? "Trades" : "Trades"}</span><strong>${item.tradeCount || 0}</strong></div>
+                <div class="mini-stat"><span class="kicker">${item.bucketLabel === "decomposition" ? "Capture" : "Winrate"}</span><strong>${item.bucketLabel === "decomposition" ? formatPct(item.winRate || 0, 1) : formatPct(item.winRate || 0, 1)}</strong></div>
+                <div class="mini-stat"><span class="kicker">${item.bucketLabel === "decomposition" ? "Cost" : "Gem. PnL"}</span><strong class="${toneClass(item.averagePnlPct || 0)}">${item.bucketLabel === "decomposition" ? `${formatNumber(Math.abs(item.averagePnlPct || 0) * 10_000, 2)} bps` : formatPct(item.averagePnlPct || 0, 2)}</strong></div>
+                <div class="mini-stat"><span class="kicker">${item.bucketLabel === "decomposition" ? "Slip" : "Duur"}</span><strong>${item.bucketLabel === "decomposition" ? `${formatNumber(item.averageDurationMinutes || 0, 2)} bps` : `${formatNumber(item.averageDurationMinutes || 0, 1)} min`}</strong></div>
               </div>
             </article>
           `
@@ -1384,10 +1395,15 @@ function renderOperations(snapshot) {
   const recovery = snapshot.dashboard.safety?.recovery || {};
   const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
   const parameterGovernor = snapshot.dashboard.ai?.parameterGovernor || {};
+  const strategyRetirement = snapshot.dashboard.ai?.strategyRetirement || {};
   const ops = snapshot.dashboard.ops || {};
   const exchangeTruth = snapshot.dashboard.safety?.exchangeTruth || {};
+  const exchangeSafety = snapshot.dashboard.safety?.exchangeSafety || {};
   const venueConfirmation = snapshot.dashboard.safety?.venueConfirmation || {};
   const orderLifecycle = snapshot.dashboard.safety?.orderLifecycle || {};
+  const alerts = ops.alerts || {};
+  const replayChaos = ops.replayChaos || {};
+  const executionCost = snapshot.dashboard.report?.executionCostSummary || {};
   const service = ops.service || {};
   const readiness = ops.readiness || {};
   const executionCalibration = ops.executionCalibration || {};
@@ -1404,21 +1420,31 @@ function renderOperations(snapshot) {
     insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive"),
     insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is operationeel klaar", healthTone(readiness.status || "ready")),
     insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
+    insightCard("Safety audit", exchangeSafety.status || "ready", exchangeSafety.notes?.[0] || "Geen extra exchange-safety waarschuwing", healthTone(exchangeSafety.status || "ready")),
     insightCard("Venue check", `${venueConfirmation.venueCount || venueConfirmation.confirmedCount || 0} venues`, venueConfirmation.averageDivergenceBps != null ? `div ${formatNumber(venueConfirmation.averageDivergenceBps || 0, 2)} bps` : (venueConfirmation.notes || [])[0] || "Nog geen externe confirmatie", healthTone(venueConfirmation.status)),
     insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
     insightCard("Exec calib", `${executionCalibration.liveTradeCount || 0} live`, leadCalibration[0] ? `${leadCalibration[0]} ${formatNumber(leadCalibration[1]?.slippageBiasBps || 0, 2)} bps` : "Nog geen style-calibratie", healthTone(executionCalibration.status || "warmup")),
+    insightCard("Exec budget", executionCost.status || "warmup", executionCost.worstStyle ? `${executionCost.worstStyle} | ${formatNumber(executionCost.averageTotalCostBps || 0, 2)} bps` : "Nog geen execution-cost budget", healthTone(executionCost.status || "warmup")),
     insightCard("Threshold", thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable", thresholdTuning.appliedRecommendation?.id ? normalizeReasonLabel(thresholdTuning.appliedRecommendation.id) : "Geen actieve probation", healthTone(thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable")),
     insightCard("Governor", leadGovernor.id || "-", leadGovernor.id ? `${leadGovernor.scopeType} | thr ${formatNumber(leadGovernor.thresholdShift || 0, 4)}` : "Nog geen scoped governor", healthTone(parameterGovernor.status || "warmup")),
+    insightCard("Retirement", `${strategyRetirement.retireCount || 0} retire`, strategyRetirement.policies?.[0]?.id ? `${strategyRetirement.policies[0].id} | ${strategyRetirement.policies[0].status}` : "Geen strategy retirement", healthTone(strategyRetirement.status || "ready")),
     insightCard("Capital ladder", capitalLadder.stage || "paper", capitalLadder.notes?.[0] || "Nog geen ladder-notitie", healthTone(capitalLadder.stage || "paper")),
+    insightCard("Alerts", `${alerts.count || 0}`, alerts.alerts?.[0]?.title || "Geen operator alerts", healthTone(alerts.status || "clear")),
+    insightCard("Chaos lab", replayChaos.status || "warmup", replayChaos.worstStrategy ? `${replayChaos.worstStrategy} | ${replayChaos.worstScenario || "-"}` : "Nog geen replay chaos data", healthTone(replayChaos.status || "warmup")),
     insightCard("Service", service.watchdogStatus || "idle", service.lastHeartbeatAt ? `heartbeat ${formatDate(service.lastHeartbeatAt)}` : "Nog geen heartbeat", healthTone(service.watchdogStatus || "idle")),
     insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
   ].join("");
 
   const notes = [
     ...(ops.performanceChange?.notes || []),
+    ...(alerts.alerts || []).map((item) => `${item.title}: ${item.action}`),
     ...(ops.runbooks || []).map((item) => `${item.title}: ${item.action}`),
     ...(exchangeTruth.notes || []),
+    ...(exchangeSafety.notes || []),
     ...(venueConfirmation.notes || []),
+    ...(strategyRetirement.notes || []),
+    ...(executionCost.notes || []),
+    ...(replayChaos.notes || []),
     ...(ops.shadowTrading?.notes || []),
     ...(capitalLadder.notes || []),
     ...(parameterGovernor.notes || []),

@@ -51,6 +51,10 @@ import { StrategyResearchMiner } from "../src/runtime/strategyResearchMiner.js";
 import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
+import { buildExchangeSafetyAudit } from "../src/runtime/exchangeSafetyReconciler.js";
+import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
+import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetirementEngine.js";
+import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
 import { TradingBot } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
@@ -2082,6 +2086,50 @@ await runCheck("risk manager blocks entries when the data quorum falls to observ
   assert.ok(decision.reasons.includes("quality_quorum_observe_only"));
 });
 
+await runCheck("risk manager blocks retired strategies and hot execution cost scopes", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.66,
+      calibrationConfidence: 0.42,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.65, confidence: 0.2 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 4, bookPressure: 0.22, microPriceEdgeBps: 0.8 },
+      market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.14 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.1, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.66, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "donchian_breakout", family: "breakout", fitScore: 0.62, confidence: 0.46, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    strategyRetirementSummary: {
+      policies: [{ id: "donchian_breakout", status: "retire", sizeMultiplier: 0, confidence: 0.8, note: "governance retired" }]
+    },
+    executionCostSummary: {
+      status: "blocked",
+      strategies: [{ id: "donchian_breakout", status: "blocked", averageTotalCostBps: 19, averageSlippageDeltaBps: 5 }],
+      regimes: [{ id: "breakout", status: "blocked", averageTotalCostBps: 17, averageSlippageDeltaBps: 4.8 }]
+    },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("strategy_retired"));
+  assert.ok(decision.reasons.includes("execution_cost_budget_exceeded"));
+});
+
 await runCheck("risk manager rewards stronger portfolio allocator scores in rank ordering", async () => {
   const manager = new RiskManager(makeConfig());
   const commonInput = {
@@ -3057,6 +3105,243 @@ await runCheck("performance report builds pnl attribution buckets", async () => 
   assert.equal(report.attribution.strategies[0].id, "ema_trend");
   assert.equal(report.attribution.executionStyles[0].id, "pegged_limit_maker");
   assert.equal(report.attribution.newsProviders[0].id, "cointelegraph");
+});
+
+await runCheck("performance report exposes execution cost budgets and pnl decomposition", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        {
+          symbol: "BTCUSDT",
+          entryAt: "2026-03-08T08:00:00.000Z",
+          exitAt: "2026-03-08T10:00:00.000Z",
+          entryPrice: 70000,
+          exitPrice: 70210,
+          quantity: 0.01,
+          totalCost: 701.2,
+          proceeds: 700.9,
+          entryFee: 0.7,
+          pnlQuote: -0.3,
+          netPnlPct: -0.0004,
+          captureEfficiency: 0.44,
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 4.2, slippageDeltaBps: 2.4, latencyBps: 0.8, queueDecayBps: 0.2 },
+          exitExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 3.1, slippageDeltaBps: 1.3, latencyBps: 0.5, queueDecayBps: 0.1 },
+          entryRationale: { providerBreakdown: [{ name: "cointelegraph" }] }
+        },
+        {
+          symbol: "ETHUSDT",
+          entryAt: "2026-03-08T11:00:00.000Z",
+          exitAt: "2026-03-08T12:30:00.000Z",
+          entryPrice: 2050,
+          exitPrice: 2061,
+          quantity: 0.08,
+          totalCost: 164.4,
+          proceeds: 164.55,
+          entryFee: 0.16,
+          pnlQuote: 0.15,
+          netPnlPct: 0.0009,
+          captureEfficiency: 0.63,
+          strategyAtEntry: "vwap_reversion",
+          regimeAtEntry: "range",
+          entryExecutionAttribution: { entryStyle: "pegged_limit_maker", realizedTouchSlippageBps: 0.8, slippageDeltaBps: -0.1, latencyBps: 0.2, queueDecayBps: 0.05 },
+          exitExecutionAttribution: { entryStyle: "market_exit", realizedTouchSlippageBps: 1.4, slippageDeltaBps: 0.4, latencyBps: 0.2, queueDecayBps: 0.05 },
+          entryRationale: { providerBreakdown: [{ name: "google_news" }] }
+        }
+      ]
+    },
+    runtime: { openPositions: [] },
+    config: { reportLookbackTrades: 50, executionCostBudgetWarnBps: 6, executionCostBudgetBlockBps: 10 }
+  });
+  assert.equal(report.executionCostSummary.worstStrategy, "ema_trend");
+  assert.ok(report.executionCostSummary.averageTotalCostBps > 0);
+  assert.ok(Number.isFinite(report.pnlDecomposition.totalFees));
+  assert.ok(Number.isFinite(report.pnlDecomposition.executionDragEstimate));
+});
+
+await runCheck("strategy retirement engine retires weak strategies", async () => {
+  const summary = buildStrategyRetirementSnapshot({
+    report: {
+      tradeQualityReview: {
+        strategyScorecards: [
+          {
+            id: "donchian_breakout",
+            tradeCount: 6,
+            realizedPnl: -48,
+            winRate: 0.17,
+            avgReviewScore: 0.31,
+            governanceScore: 0.28,
+            falseNegativeCount: 0
+          }
+        ]
+      },
+      attribution: {
+        strategies: [
+          { id: "donchian_breakout", tradeCount: 6, realizedPnl: -48, winRate: 0.17, averagePnlPct: -0.012 }
+        ]
+      }
+    },
+    offlineTrainer: {
+      strategyScorecards: [
+        {
+          id: "donchian_breakout",
+          tradeCount: 6,
+          realizedPnl: -48,
+          winRate: 0.17,
+          avgMovePct: -0.012,
+          falsePositiveRate: 0.46,
+          falseNegativeRate: 0.08,
+          governanceScore: 0.22,
+          status: "cooldown"
+        }
+      ]
+    },
+    journal: {
+      trades: [{ symbol: "BTCUSDT", pnlQuote: -12, strategyAtEntry: "donchian_breakout" }]
+    },
+    config: makeConfig(),
+    nowIso: "2026-03-09T12:00:00.000Z"
+  });
+  assert.equal(summary.retireCount, 1);
+  assert.equal(summary.policies[0].id, "donchian_breakout");
+  assert.equal(summary.policies[0].status, "retire");
+});
+
+await runCheck("exchange safety audit blocks stale live reconciliation", async () => {
+  const audit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [
+        { symbol: "BTCUSDT", brokerMode: "live", protectiveOrderListId: null, reconcileRequired: true }
+      ],
+      exchangeTruth: {
+        mismatchCount: 1,
+        lastReconciledAt: "2026-03-09T09:00:00.000Z"
+      },
+      orderLifecycle: {
+        pendingActions: [
+          { state: "reconcile_required", updatedAt: "2026-03-09T09:05:00.000Z" }
+        ]
+      }
+    },
+    report: {
+      recentEvents: [{ type: "broker_reconciliation_warning" }]
+    },
+    config: makeConfig({ botMode: "live" }),
+    streamStatus: {
+      lastPublicMessageAt: "2026-03-09T09:10:00.000Z"
+    },
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(audit.status, "blocked");
+  assert.equal(audit.freezeEntries, true);
+  assert.ok(audit.reasons.includes("exchange_truth_mismatch"));
+});
+
+await runCheck("operator alerts surface critical safety issues", async () => {
+  const alerts = buildOperatorAlerts({
+    runtime: {
+      health: { circuitOpen: true, reason: "too_many_failures" },
+      orderLifecycle: { pendingActions: [{ state: "manual_review" }] },
+      selfHeal: { mode: "paused", reason: "calibration_break" },
+      thresholdTuning: { appliedRecommendation: { status: "probation", id: "book_pressure" } }
+    },
+    readiness: { status: "blocked", reasons: ["exchange_safety_blocked"] },
+    exchangeSafety: { status: "blocked", notes: ["reconcile needed"], actions: ["run reconcile"] },
+    strategyRetirement: { retireCount: 1, policies: [{ id: "donchian_breakout", status: "retire" }] },
+    executionCost: { status: "blocked", notes: ["execution costs too high"] },
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(alerts.criticalCount, 2);
+  assert.ok(alerts.alerts.some((item) => item.id === "health_circuit_open"));
+  assert.ok(alerts.alerts.some((item) => item.id === "execution_cost_budget_blocked"));
+});
+
+await runCheck("replay chaos lab summarizes vulnerable strategies", async () => {
+  const summary = buildReplayChaosSummary({
+    journal: {
+      trades: [
+        {
+          symbol: "BTCUSDT",
+          strategyAtEntry: "ema_trend",
+          netPnlPct: -0.012,
+          pnlQuote: -8,
+          replayCheckpoints: [{ at: "2026-03-09T09:00:00.000Z", price: 70000 }]
+        },
+        {
+          symbol: "BTCUSDT",
+          strategyAtEntry: "ema_trend",
+          netPnlPct: -0.008,
+          pnlQuote: -5,
+          replayCheckpoints: [{ at: "2026-03-09T10:00:00.000Z", price: 69800 }]
+        }
+      ],
+      blockedSetups: [
+        { outcome: "missed_winner" }
+      ]
+    },
+    nowIso: "2026-03-09T12:00:00.000Z"
+  });
+  assert.equal(summary.tradeCount, 2);
+  assert.equal(summary.missedWinnerCount, 1);
+  assert.equal(summary.worstStrategy, "ema_trend");
+  assert.ok(summary.scenarioLeaders.length >= 1);
+});
+
+await runCheck("execution cost and pnl decomposition stay finite on randomized trade samples", async () => {
+  let seed = 42;
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+  const trades = Array.from({ length: 20 }, (_, index) => {
+    const entryPrice = 100 + nextRand() * 20;
+    const exitPrice = entryPrice * (0.985 + nextRand() * 0.04);
+    const quantity = 0.5 + nextRand() * 1.5;
+    const totalCost = entryPrice * quantity + 0.2;
+    const grossExit = exitPrice * quantity;
+    const proceeds = grossExit - 0.18;
+    return {
+      symbol: index % 2 === 0 ? "BTCUSDT" : "ETHUSDT",
+      entryAt: `2026-03-08T${String(index).padStart(2, "0")}:00:00.000Z`,
+      exitAt: `2026-03-08T${String(index).padStart(2, "0")}:30:00.000Z`,
+      entryPrice,
+      exitPrice,
+      quantity,
+      totalCost,
+      proceeds,
+      entryFee: 0.2,
+      pnlQuote: proceeds - totalCost,
+      netPnlPct: totalCost ? (proceeds - totalCost) / totalCost : 0,
+      captureEfficiency: nextRand(),
+      strategyAtEntry: index % 3 === 0 ? "ema_trend" : "vwap_reversion",
+      regimeAtEntry: index % 2 === 0 ? "trend" : "range",
+      entryExecutionAttribution: {
+        entryStyle: index % 2 === 0 ? "market" : "pegged_limit_maker",
+        realizedTouchSlippageBps: nextRand() * 4,
+        slippageDeltaBps: nextRand() * 2,
+        latencyBps: nextRand(),
+        queueDecayBps: nextRand()
+      },
+      exitExecutionAttribution: {
+        entryStyle: "market_exit",
+        realizedTouchSlippageBps: nextRand() * 3,
+        slippageDeltaBps: nextRand() * 1.5,
+        latencyBps: nextRand(),
+        queueDecayBps: nextRand()
+      },
+      entryRationale: { providerBreakdown: [{ name: "google_news" }] }
+    };
+  });
+  const report = buildPerformanceReport({
+    journal: { trades },
+    runtime: { openPositions: [] },
+    config: { reportLookbackTrades: 50 }
+  });
+  assert.ok(["warmup", "ready", "caution", "blocked"].includes(report.executionCostSummary.status));
+  assert.ok(Number.isFinite(report.executionCostSummary.averageTotalCostBps));
+  assert.ok(Number.isFinite(report.pnlDecomposition.netRealizedPnl));
+  assert.ok(Number.isFinite(report.pnlDecomposition.executionDragEstimate));
 });
 
 await runCheck("model registry picks a healthy rollback candidate", async () => {

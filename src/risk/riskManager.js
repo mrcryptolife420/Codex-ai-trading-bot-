@@ -220,6 +220,58 @@ export class RiskManager {
     };
   }
 
+  resolveStrategyRetirement(strategyRetirementSummary = {}, strategySummary = {}) {
+    const strategyId = strategySummary.activeStrategy || null;
+    const policy = (strategyRetirementSummary.policies || []).find((item) => item.id === strategyId) || null;
+    if (!policy) {
+      return {
+        active: false,
+        status: "ready",
+        sizeMultiplier: 1,
+        blocked: false,
+        reason: null
+      };
+    }
+    return {
+      active: true,
+      status: policy.status || "observe",
+      sizeMultiplier: clamp(safeValue(policy.sizeMultiplier || 1), 0, 1),
+      blocked: (policy.status || "") === "retire",
+      reason: policy.note || null,
+      confidence: safeValue(policy.confidence || 0)
+    };
+  }
+
+  resolveExecutionCostBudget(executionCostSummary = {}, strategySummary = {}, regimeSummary = {}) {
+    const strategyId = strategySummary.activeStrategy || null;
+    const regimeId = regimeSummary.regime || null;
+    const strategyScope = (executionCostSummary.strategies || []).find((item) => item.id === strategyId) || null;
+    const regimeScope = (executionCostSummary.regimes || []).find((item) => item.id === regimeId) || null;
+    const scopes = [strategyScope, regimeScope].filter(Boolean);
+    if (!scopes.length) {
+      return {
+        active: false,
+        status: executionCostSummary.status || "warmup",
+        blocked: false,
+        sizeMultiplier: 1,
+        averageTotalCostBps: safeValue(executionCostSummary.averageTotalCostBps || 0)
+      };
+    }
+    const averageTotalCostBps = average(scopes.map((item) => safeValue(item.averageTotalCostBps || 0)), safeValue(executionCostSummary.averageTotalCostBps || 0));
+    const averageSlippageDeltaBps = average(scopes.map((item) => safeValue(item.averageSlippageDeltaBps || 0)), safeValue(executionCostSummary.averageSlippageDeltaBps || 0));
+    const blocked = scopes.some((item) => (item.status || "") === "blocked");
+    const caution = !blocked && scopes.some((item) => (item.status || "") === "caution");
+    return {
+      active: true,
+      status: blocked ? "blocked" : caution ? "caution" : "ready",
+      blocked,
+      sizeMultiplier: blocked ? 0.58 : caution ? 0.82 : 1,
+      averageTotalCostBps,
+      averageSlippageDeltaBps,
+      notes: [...new Set(scopes.map((item) => item.id).filter(Boolean))]
+    };
+  }
+
   evaluateEntry({
     symbol,
     score,
@@ -242,6 +294,8 @@ export class RiskManager {
     onChainLiteSummary = {},
     divergenceSummary = {},
     qualityQuorumSummary = {},
+    executionCostSummary = {},
+    strategyRetirementSummary = {},
     runtime,
     journal,
     balance,
@@ -262,6 +316,8 @@ export class RiskManager {
     const optimizerAdjustments = this.getOptimizerAdjustments(strategySummary);
     const thresholdTuningAdjustment = this.getThresholdTuningAdjustment(thresholdTuningSummary, strategySummary, regimeSummary);
     const parameterGovernorAdjustment = this.resolveParameterGovernor(parameterGovernorSummary, strategySummary, regimeSummary);
+    const strategyRetirementPolicy = this.resolveStrategyRetirement(strategyRetirementSummary, strategySummary);
+    const executionCostBudget = this.resolveExecutionCostBudget(executionCostSummary, strategySummary, regimeSummary);
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const selfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -295,6 +351,8 @@ export class RiskManager {
     const strategyMetaSizeMultiplier = clamp(safeValue(strategyMetaSummary.sizeMultiplier) || 1, 0.75, 1.15);
     const venueSizeMultiplier = clamp((venueConfirmationSummary.status || "") === "blocked" ? 0.45 : (venueConfirmationSummary.confirmed ? 1.04 : 0.9), 0.45, 1.05);
     const capitalLadderSizeMultiplier = clamp(safeValue(capitalLadderSummary.sizeMultiplier) || 1, 0, 1.2);
+    const retirementSizeMultiplier = clamp(strategyRetirementPolicy.sizeMultiplier || 1, 0, 1);
+    const executionCostSizeMultiplier = clamp(executionCostBudget.sizeMultiplier || 1, 0.45, 1);
     const lowRiskCandidate = ["trend_following", "mean_reversion", "orderflow"].includes(strategySummary.family || "") &&
       (marketSnapshot.book.spreadBps || 0) <= Math.max(this.config.maxSpreadBps * 0.4, 3) &&
       (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
@@ -324,6 +382,11 @@ export class RiskManager {
     }
     if ((venueConfirmationSummary.status || "") === "blocked") {
       reasons.push(...(venueConfirmationSummary.blockerReasons || ["reference_venue_divergence"]));
+    }
+    if (strategyRetirementPolicy.blocked) {
+      reasons.push("strategy_retired");
+    } else if (strategyRetirementPolicy.active && (strategyRetirementPolicy.status || "") === "cooldown" && score.probability < threshold + 0.04) {
+      reasons.push("strategy_cooldown");
     }
     if (["paused", "paper_fallback"].includes(selfHealState.mode)) {
       reasons.push("self_heal_pause_entries");
@@ -429,6 +492,9 @@ export class RiskManager {
     }
     if ((portfolioSummary.reasons || []).length) {
       reasons.push(...portfolioSummary.reasons);
+    }
+    if (executionCostBudget.blocked) {
+      reasons.push("execution_cost_budget_exceeded");
     }
     if ((driftSummary.severity || 0) >= 0.45 && (score.calibrationConfidence || 0) < this.config.minCalibrationConfidence + 0.05) {
       reasons.push("drift_confidence_guard");
@@ -548,6 +614,8 @@ export class RiskManager {
       strategyMetaSizeMultiplier *
       venueSizeMultiplier *
       capitalLadderSizeMultiplier *
+      retirementSizeMultiplier *
+      executionCostSizeMultiplier *
       parameterGovernorAdjustment.executionAggressivenessBias;
 
     if (quoteAmount < this.config.minTradeUsdt) {
@@ -614,6 +682,8 @@ export class RiskManager {
       thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
       thresholdTuningApplied: thresholdTuningAdjustment,
       parameterGovernorApplied: parameterGovernorAdjustment,
+      strategyRetirementApplied: strategyRetirementPolicy,
+      executionCostBudgetApplied: executionCostBudget,
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,
