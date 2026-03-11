@@ -305,6 +305,11 @@ export class BotManager {
       readiness.status = "blocked";
       readiness.reasons.push("capital_governor_blocked");
     }
+    if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => !item.resolvedAt && !item.acknowledgedAt && ["negative", "critical"].includes(item.severity || ""))) {
+      readiness.ok = false;
+      readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
+      readiness.reasons.push("operator_ack_required");
+    }
     if ((snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
       readiness.ok = false;
       readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
@@ -317,12 +322,12 @@ export class BotManager {
     return this.buildOperationalReadiness(await this.getSnapshot());
   }
 
-  async acknowledgeAlert(id, acknowledged = true) {
+  async acknowledgeAlert(id, acknowledged = true, note = null) {
     return this.withLock(async () => {
       if (!this.bot) {
         await this.reinitializeBot();
       }
-      await this.bot.acknowledgeAlert(id, { acknowledged });
+      await this.bot.acknowledgeAlert(id, { acknowledged, note });
       return this.getSnapshot();
     });
   }
@@ -337,12 +342,42 @@ export class BotManager {
     });
   }
 
-  async resolveAlert(id, resolved = true) {
+  async resolveAlert(id, resolved = true, note = null) {
     return this.withLock(async () => {
       if (!this.bot) {
         await this.reinitializeBot();
       }
-      await this.bot.resolveAlert(id, { resolved });
+      await this.bot.resolveAlert(id, { resolved, note });
+      return this.getSnapshot();
+    });
+  }
+
+  async forceReconcile(note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.forceReconcile({ note });
+      return this.getSnapshot();
+    });
+  }
+
+  async markPositionReviewed(positionId, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.markPositionReviewed(positionId, { note });
+      return this.getSnapshot();
+    });
+  }
+
+  async setProbeOnly(enabled = true, minutes = null, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.setProbeOnly({ enabled, minutes: minutes ?? 90, note });
       return this.getSnapshot();
     });
   }

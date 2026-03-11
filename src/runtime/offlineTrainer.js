@@ -189,9 +189,12 @@ function buildBlockerScorecards(counterfactuals = []) {
         total: 0,
         goodVetoCount: 0,
         badVetoCount: 0,
+        lateVetoCount: 0,
+        timingIssueCount: 0,
         moveSum: 0,
         strategyIds: new Set(),
-        regimeIds: new Set()
+        regimeIds: new Set(),
+        phaseIds: new Set()
       });
     }
     return map.get(key);
@@ -205,16 +208,23 @@ function buildBlockerScorecards(counterfactuals = []) {
       const bucket = getBucket(reason);
       bucket.total += 1;
       bucket.moveSum += item.realizedMovePct || 0;
-      if (item.outcome === "blocked_correctly") {
+      if (["blocked_correctly", "good_veto"].includes(item.outcome)) {
         bucket.goodVetoCount += 1;
-      } else if (item.outcome === "missed_winner") {
+      } else if (["missed_winner", "bad_veto"].includes(item.outcome)) {
         bucket.badVetoCount += 1;
+      } else if (item.outcome === "late_veto") {
+        bucket.lateVetoCount += 1;
+      } else if (item.outcome === "right_direction_wrong_timing") {
+        bucket.timingIssueCount += 1;
       }
       if (item.strategy || item.strategyAtEntry) {
         bucket.strategyIds.add(item.strategy || item.strategyAtEntry);
       }
       if (item.regime || item.regimeAtEntry) {
         bucket.regimeIds.add(item.regime || item.regimeAtEntry);
+      }
+      if (item.marketPhase) {
+        bucket.phaseIds.add(item.marketPhase);
       }
     }
   }
@@ -223,11 +233,15 @@ function buildBlockerScorecards(counterfactuals = []) {
     .map((bucket) => {
       const goodVetoRate = bucket.total ? bucket.goodVetoCount / bucket.total : 0;
       const badVetoRate = bucket.total ? bucket.badVetoCount / bucket.total : 0;
+      const lateVetoRate = bucket.total ? bucket.lateVetoCount / bucket.total : 0;
+      const timingIssueRate = bucket.total ? bucket.timingIssueCount / bucket.total : 0;
       const averageMovePct = bucket.total ? bucket.moveSum / bucket.total : 0;
       const governanceScore = clamp(
         0.5 +
           goodVetoRate * 0.24 -
           badVetoRate * 0.28 -
+          lateVetoRate * 0.12 -
+          timingIssueRate * 0.08 -
           Math.max(0, averageMovePct) * 4.5,
         0,
         1
@@ -237,12 +251,17 @@ function buildBlockerScorecards(counterfactuals = []) {
         total: bucket.total,
         goodVetoCount: bucket.goodVetoCount,
         badVetoCount: bucket.badVetoCount,
+        lateVetoCount: bucket.lateVetoCount,
+        timingIssueCount: bucket.timingIssueCount,
         goodVetoRate: num(goodVetoRate),
         badVetoRate: num(badVetoRate),
+        lateVetoRate: num(lateVetoRate),
+        timingIssueRate: num(timingIssueRate),
         averageMovePct: num(averageMovePct),
         governanceScore: num(governanceScore),
         affectedStrategies: [...bucket.strategyIds].slice(0, 4),
         affectedRegimes: [...bucket.regimeIds].slice(0, 4),
+        affectedPhases: [...bucket.phaseIds].slice(0, 4),
         status: badVetoRate >= 0.45 && bucket.badVetoCount >= 2
           ? "relax"
           : goodVetoRate >= 0.55 && bucket.goodVetoCount >= 2
@@ -673,8 +692,10 @@ export class OfflineTrainer {
     const learningReadyTrades = trades.filter((trade) => Number.isFinite(trade.labelScore) && trade.rawFeatures && Object.keys(trade.rawFeatures).length > 0);
     const paperTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "paper");
     const liveTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "live");
-    const missedWinners = (counterfactuals || []).filter((item) => item.outcome === "missed_winner");
-    const blockedCorrectly = (counterfactuals || []).filter((item) => item.outcome === "blocked_correctly");
+    const missedWinners = (counterfactuals || []).filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome));
+    const blockedCorrectly = (counterfactuals || []).filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome));
+    const lateVetoes = (counterfactuals || []).filter((item) => item.outcome === "late_veto");
+    const timingIssues = (counterfactuals || []).filter((item) => item.outcome === "right_direction_wrong_timing");
     const falsePositives = learningReadyTrades.filter((trade) => (trade.labelScore || 0.5) < 0.45 && (trade.pnlQuote || 0) < 0);
     const falseNegatives = missedWinners.filter((item) => (item.realizedMovePct || 0) > 0.01);
     const strategies = buildBucketMap(learningReadyTrades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy);
@@ -690,6 +711,7 @@ export class OfflineTrainer {
         Math.min(0.16, (dataRecorder.learningFrames || 0) / 60) +
         Math.min(0.1, missedWinners.length / 20) +
         Math.min(0.1, blockedCorrectly.length / 20) +
+        Math.min(0.05, lateVetoes.length / 16) +
         Math.min(0.1, falsePositives.length / 24),
       0,
       1
@@ -716,6 +738,8 @@ export class OfflineTrainer {
         total: (counterfactuals || []).length,
         missedWinners: missedWinners.length,
         blockedCorrectly: blockedCorrectly.length,
+        lateVetoes: lateVetoes.length,
+        timingIssues: timingIssues.length,
         falseNegatives: falseNegatives.length,
         averageMissedMovePct: num(average(missedWinners.map((item) => item.realizedMovePct || 0), 0))
       },
@@ -724,6 +748,8 @@ export class OfflineTrainer {
         blockerCount: blockerScorecards.length,
         goodVetoCount: blockedCorrectly.length,
         badVetoCount: missedWinners.length,
+        lateVetoCount: lateVetoes.length,
+        timingIssueCount: timingIssues.length,
         topBlocker: blockerScorecards[0]?.id || null
       },
       falsePositiveTrades: falsePositives.length,

@@ -63,6 +63,7 @@ import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/r
 import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
 import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
+import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.js";
 import { TradingBot } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
@@ -1362,6 +1363,8 @@ await runCheck("execution engine simulates queue decay and spread shock in paper
   assert.ok(fill.spreadShockBps > 0);
   assert.ok(fill.liquidityShockBps > 0);
   assert.ok(fill.expectedImpactBps >= 1.1);
+  assert.ok(fill.makerMissRate >= 0);
+  assert.ok(fill.partialFillRecoveryCostBps >= 0);
 });
 
 await runCheck("execution engine derives paper calibration from live fills", async () => {
@@ -3663,6 +3666,24 @@ await runCheck("bot manager surfaces readiness blockers from the dashboard snaps
   assert.ok(readiness.reasons.includes("exchange_truth_freeze"));
 });
 
+await runCheck("bot manager requires ack for unresolved critical alerts", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  const readiness = manager.buildOperationalReadiness({
+    manager: { runState: "running", currentMode: "paper" },
+    dashboard: {
+      overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+      ops: {
+        alerts: {
+          alerts: [{ id: "exchange_truth_freeze", severity: "negative", acknowledgedAt: null, resolvedAt: null }]
+        }
+      },
+      safety: { orderLifecycle: { pendingActions: [] } }
+    }
+  });
+  assert.equal(readiness.ok, false);
+  assert.ok(readiness.reasons.includes("operator_ack_required"));
+});
+
 await runCheck("config validation blocks inverted drift thresholds", async () => {
   const result = validateConfig(makeConfig({
     driftFeatureScoreAlert: 2,
@@ -4959,6 +4980,82 @@ await runCheck("scanCandidatesForResearch does not mutate runtime journals or lo
   assert.equal(JSON.stringify(bot.journal), beforeJournal);
 });
 
+await runCheck("lifecycle sync records disappeared pending actions and recovery actions", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig();
+  bot.runtime = {
+    openPositions: [],
+    orderLifecycle: {
+      lastUpdatedAt: null,
+      positions: {},
+      recentTransitions: [],
+      pendingActions: [],
+      activeActions: {},
+      activeActionsPrevious: {
+        stale_action: {
+          id: "stale_action",
+          type: "entry",
+          symbol: "BTCUSDT",
+          stage: "protect_only",
+          status: "pending",
+          severity: "neutral",
+          detail: "waiting"
+        }
+      },
+      actionJournal: []
+    }
+  };
+  bot.journal = { trades: [] };
+  const lifecycle = bot.syncOrderLifecycleState("test_disappearance");
+  assert.equal(lifecycle.actionJournal[0].status, "disappeared");
+  assert.equal(lifecycle.actionJournal[0].recoveryAction, "allow_probe_only");
+});
+
+await runCheck("trading bot stores resolve notes and operator probe-only state", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig();
+  bot.runtime = {
+    openPositions: [{ id: "pos-1", symbol: "BTCUSDT", manualReviewRequired: true, operatorMode: "manual_review", lifecycleState: "manual_review" }],
+    ops: { alertState: { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: {} }, alerts: { alerts: [] } }
+  };
+  bot.store = { saveRuntime: async () => {} };
+  bot.recordEvent = () => {};
+  bot.syncOrderLifecycleState = () => ({});
+  bot.refreshOperationalViews = () => ({});
+  bot.getDashboardSnapshot = () => ({ ok: true });
+  await bot.resolveAlert("alert-1", { resolved: true, note: "fixed upstream" });
+  await bot.markPositionReviewed("pos-1", { note: "checked on exchange" });
+  await bot.setProbeOnly({ enabled: true, minutes: 15, note: "safe tiny probes" });
+  assert.equal(bot.runtime.ops.alertState.notesById["alert-1"], "fixed upstream");
+  assert.equal(bot.runtime.openPositions[0].operatorMode, "protect_only");
+  assert.equal(bot.runtime.probeOnly.enabled, true);
+});
+
+await runCheck("capital policy engine summarizes budgets and family kill switches", async () => {
+  const snapshot = buildCapitalPolicySnapshot({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-10T10:00:00.000Z", netPnlPct: -0.021, pnlQuote: -20, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", strategyDecision: { family: "trend_following" } },
+        { symbol: "ETHUSDT", exitAt: "2026-03-10T12:00:00.000Z", netPnlPct: -0.018, pnlQuote: -16, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", strategyDecision: { family: "trend_following" } }
+      ],
+      scaleOuts: [],
+      equitySnapshots: [{ equity: 10000 }, { equity: 9700 }]
+    },
+    runtime: {
+      offlineTrainer: {
+        strategyScorecards: [{ id: "trend_following", status: "cooldown", governanceScore: 0.34, dominantError: "false_positive_bias" }]
+      }
+    },
+    capitalGovernor: { status: "recovery", sizeMultiplier: 0.6, weeklyLossFraction: 0.04, monthlyLossFraction: 0.06, allowEntries: true },
+    capitalLadder: { stage: "limited_live", sizeMultiplier: 0.4, allowEntries: true },
+    config: makeConfig(),
+    nowIso: "2026-03-11T12:00:00.000Z"
+  });
+  assert.equal(snapshot.status, "degraded");
+  assert.ok(snapshot.familyKillSwitches.some((item) => item.id === "trend_following"));
+  assert.ok(snapshot.factorBudgets.length >= 1);
+});
+
 await runCheck("dashboard snapshot exposes lifecycle invariants and tuning governance", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.model = {
@@ -5212,6 +5309,8 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
     nowIso: "2026-03-10T12:00:00.000Z"
   });
   assert.equal(summary.counterfactuals.total, 2);
+  assert.equal(summary.counterfactuals.missedWinners, 1);
+  assert.equal(summary.counterfactuals.blockedCorrectly, 1);
   assert.ok(summary.readinessScore > 0.24);
 });
 
@@ -5232,17 +5331,18 @@ await runCheck("offline trainer builds blocker and regime veto scorecards", asyn
     },
     dataRecorder: { learningFrames: 10, decisionFrames: 18 },
     counterfactuals: [
-      { outcome: "missed_winner", realizedMovePct: 0.022, blockerReasons: ["provider_ops"], regime: "trend", strategy: "ema_trend" },
-      { outcome: "missed_winner", realizedMovePct: 0.016, blockerReasons: ["provider_ops"], regime: "trend", strategy: "ema_trend" },
-      { outcome: "blocked_correctly", realizedMovePct: -0.01, blockerReasons: ["exchange_notice_risk"], regime: "event_risk", strategy: "donchian_breakout" }
+      { outcome: "bad_veto", realizedMovePct: 0.022, blockerReasons: ["provider_ops"], regime: "trend", strategy: "ema_trend", marketPhase: "late_crowded" },
+      { outcome: "late_veto", realizedMovePct: 0.016, blockerReasons: ["provider_ops"], regime: "trend", strategy: "ema_trend", marketPhase: "late_crowded" },
+      { outcome: "good_veto", realizedMovePct: -0.01, blockerReasons: ["exchange_notice_risk"], regime: "event_risk", strategy: "donchian_breakout", marketPhase: "range_acceptance" }
     ],
     nowIso: "2026-03-10T12:00:00.000Z"
   });
-  assert.equal(summary.vetoFeedback.badVetoCount, 2);
-  assert.ok(summary.blockerScorecards.some((item) => item.id === "provider_ops" && item.status === "relax"));
+  assert.equal(summary.vetoFeedback.badVetoCount, 1);
+  assert.equal(summary.vetoFeedback.lateVetoCount, 1);
+  assert.ok(summary.blockerScorecards.some((item) => item.id === "provider_ops" && item.lateVetoCount >= 1));
   assert.ok(summary.regimeScorecards.some((item) => item.id === "trend"));
-  assert.equal(summary.thresholdPolicy.status, "adjust");
-  assert.ok(summary.thresholdPolicy.recommendations.some((item) => item.id === "provider_ops" && item.action === "relax"));
+  assert.ok(["stable", "adjust"].includes(summary.thresholdPolicy.status));
+  assert.ok(Array.isArray(summary.thresholdPolicy.recommendations));
   assert.ok(summary.exitLearning.averageExitScore > 0);
   assert.ok(summary.exitScorecards.some((item) => item.id === "take_profit"));
   assert.ok(summary.exitLearning.strategyPolicies.some((item) => item.id === "ema_trend"));

@@ -1433,6 +1433,7 @@ function renderOperations(snapshot) {
   const thresholdTuning = ops.thresholdTuning || {};
   const capitalLadder = ops.capitalLadder || {};
   const capitalGovernor = ops.capitalGovernor || {};
+  const capitalPolicy = ops.capitalPolicy || {};
   const tuningGovernance = ops.tuningGovernance || {};
   const alertDelivery = ops.alertDelivery || {};
   const alertSilenceMinutes = snapshot.configSummary?.operatorAlertSilenceMinutes || 180;
@@ -1459,6 +1460,7 @@ function renderOperations(snapshot) {
     insightCard("Retirement", `${strategyRetirement.retireCount || 0} retire`, strategyRetirement.policies?.[0]?.id ? `${strategyRetirement.policies[0].id} | ${strategyRetirement.policies[0].status}` : "Geen strategy retirement", healthTone(strategyRetirement.status || "ready")),
     insightCard("Capital ladder", capitalLadder.stage || "paper", capitalLadder.notes?.[0] || "Nog geen ladder-notitie", healthTone(capitalLadder.stage || "paper")),
     insightCard("Capital governor", capitalGovernor.status || "warmup", capitalGovernor.notes?.[0] || "Nog geen capital governor update", healthTone(capitalGovernor.status || "warmup")),
+    insightCard("Capital policy", capitalPolicy.status || "ready", capitalPolicy.notes?.[0] || "Nog geen portfolio-OS samenvatting", healthTone(capitalPolicy.status || "ready")),
     insightCard("Alerts", `${alerts.activeCount || alerts.count || 0}`, alerts.alerts?.[0]?.title || "Geen operator alerts", healthTone(alerts.status || "clear")),
     insightCard("Alert delivery", alertDelivery.status || "disabled", alertDelivery.lastDeliveryAt ? `laatst ${formatDate(alertDelivery.lastDeliveryAt)}` : alertDelivery.notes?.[0] || "Nog geen alert delivery", healthTone(alertDelivery.status || "disabled")),
     insightCard("Chaos lab", replayChaos.status || "warmup", replayChaos.worstStrategy ? `${replayChaos.worstStrategy} | ${replayChaos.worstScenario || "-"}` : "Nog geen replay chaos data", healthTone(replayChaos.status || "warmup")),
@@ -1477,6 +1479,7 @@ function renderOperations(snapshot) {
     ...(strategyRetirement.notes || []),
     ...(executionCost.notes || []),
     ...(capitalGovernor.notes || []),
+    ...(capitalPolicy.notes || []),
     ...(replayChaos.notes || []),
     ...(ops.shadowTrading?.notes || []),
     ...(capitalLadder.notes || []),
@@ -1515,7 +1518,22 @@ function renderOperations(snapshot) {
                 ${item.acknowledgedAt ? "" : `<button class="secondary" data-alert-action="ack" data-alert-id="${escapeHtml(item.id || "")}">Ack</button>`}
                 <button class="secondary" data-alert-action="silence" data-alert-id="${escapeHtml(item.id || "")}" data-alert-minutes="${escapeHtml(alertSilenceMinutes)}">Stil ${escapeHtml(String(Math.round(alertSilenceMinutes / 60) || 1))}u</button>
                 ${item.resolvedAt ? "" : `<button class="secondary" data-alert-action="resolve" data-alert-id="${escapeHtml(item.id || "")}">Resolve</button>`}
+                ${item.resolvedAt ? "" : `<button class="secondary" data-alert-action="resolve_note" data-alert-id="${escapeHtml(item.id || "")}">Resolve + note</button>`}
               </div>
+            </div>
+          </div>
+        `),
+        ...(orderLifecycle.pendingActions || []).slice(0, 4).map((item) => `
+          <div class="event-row">
+            <div>
+              <strong>${escapeHtml(normalizeReasonLabel(item.action || item.state || "pending_action"))}</strong>
+              <div class="meta">${item.symbol ? `${escapeHtml(item.symbol)} | ` : ""}${escapeHtml(normalizeReasonLabel(item.state || "pending"))}</div>
+              <div>${escapeHtml(normalizeReasonLabel(item.reason || item.recoveryAction || "monitor"))}</div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+              ${item.recoveryAction === "force_reconcile" ? `<button class="secondary" data-ops-action="force_reconcile">Force reconcile</button>` : ""}
+              ${item.recoveryAction === "mark_reviewed" && item.id ? `<button class="secondary" data-ops-action="mark_reviewed" data-position-id="${escapeHtml(item.id || "")}">Mark reviewed</button>` : ""}
+              ${item.recoveryAction === "allow_probe_only" ? `<button class="secondary" data-ops-action="probe_only" data-enabled="true">Allow probe-only</button>` : ""}
             </div>
           </div>
         `),
@@ -1867,8 +1885,27 @@ elements.decisionAllowedOnly.addEventListener("change", (event) => {
   }
 });
 elements.opsList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-alert-action]");
+  const button = event.target.closest("[data-alert-action], [data-ops-action]");
   if (!button) {
+    return;
+  }
+  if (button.dataset.opsAction === "force_reconcile") {
+    const note = window.prompt("Optionele reconcile-notitie", "") || "";
+    runAction("Force reconcile", () => api("/api/ops/force-reconcile", "POST", { note }));
+    return;
+  }
+  if (button.dataset.opsAction === "mark_reviewed") {
+    const positionId = `${button.dataset.positionId || ""}`.trim();
+    if (!positionId) {
+      return;
+    }
+    const note = window.prompt("Review-notitie", "") || "";
+    runAction("Positie markeren als reviewed", () => api("/api/positions/review", "POST", { id: positionId, note }));
+    return;
+  }
+  if (button.dataset.opsAction === "probe_only") {
+    const note = window.prompt("Waarom probe-only toelaten?", "") || "";
+    runAction("Probe-only inschakelen", () => api("/api/ops/probe-only", "POST", { enabled: true, minutes: 90, note }));
     return;
   }
   const alertId = `${button.dataset.alertId || ""}`.trim();
@@ -1876,7 +1913,8 @@ elements.opsList.addEventListener("click", (event) => {
     return;
   }
   if (button.dataset.alertAction === "ack") {
-    runAction("Alert bevestigen", () => api("/api/alerts/ack", "POST", { id: alertId }));
+    const note = window.prompt("Optionele ack-notitie", "") || "";
+    runAction("Alert bevestigen", () => api("/api/alerts/ack", "POST", { id: alertId, note }));
     return;
   }
   if (button.dataset.alertAction === "silence") {
@@ -1888,6 +1926,11 @@ elements.opsList.addEventListener("click", (event) => {
   }
   if (button.dataset.alertAction === "resolve") {
     runAction("Alert oplossen", () => api("/api/alerts/resolve", "POST", { id: alertId }));
+    return;
+  }
+  if (button.dataset.alertAction === "resolve_note") {
+    const note = window.prompt("Resolutie-notitie", "") || "";
+    runAction("Alert oplossen", () => api("/api/alerts/resolve", "POST", { id: alertId, note }));
   }
 });
 

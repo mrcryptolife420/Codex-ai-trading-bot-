@@ -120,7 +120,7 @@ export class ExecutionEngine {
     };
   }
 
-  buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null, executionNeuralSummary = null, strategyMetaSummary = null, capitalLadderSummary = null, venueConfirmationSummary = null }) {
+  buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null, executionNeuralSummary = null, strategyMetaSummary = null, capitalLadderSummary = null, venueConfirmationSummary = null, sessionSummary = null }) {
     const spreadBps = marketSnapshot.book.spreadBps || 0;
     const tradeFlow = marketSnapshot.book.tradeFlowImbalance || 0;
     const localBook = marketSnapshot.book.localBook || {};
@@ -152,6 +152,13 @@ export class ExecutionEngine {
     const venueRouteAdvice = venueConfirmationSummary?.routeAdvice || {};
     const venueMakerShift = safeNumber(venueRouteAdvice.preferMakerBoost, 0);
     const parameterGovernorBias = safeNumber(decision?.parameterGovernorApplied?.executionAggressivenessBias || 1, 1);
+    const sessionLatencyBias = sessionSummary?.session === "asia"
+      ? 1.08
+      : sessionSummary?.session === "weekend"
+        ? 1.12
+        : sessionSummary?.session === "us"
+          ? 0.96
+          : 1;
     const governorMakerShift = clamp((1 - parameterGovernorBias) * 0.18, -0.08, 0.08);
     const committeeTailwind = committeeSummary ? Math.max(0, committeeSummary.netScore || 0) * 0.06 : 0;
     const microstructureTailwind = depthConfidence * 0.18 + queueImbalance * 0.14 + queueRefreshScore * 0.1 + resilienceScore * 0.08 - expectedImpactBps / 28;
@@ -224,6 +231,8 @@ export class ExecutionEngine {
       expectedImpactBps,
       expectedSlippageBps: safeNumber(impactEstimate?.midSlippageBps || expectedImpactBps),
       expectedMakerFillPct,
+      sessionLatencyBias,
+      symbolLiquidityTag: depthConfidence >= 0.72 ? "high" : depthConfidence >= 0.46 ? "medium" : "thin",
       rlAction: rlAdvice?.action || "balanced",
       rlBucket: rlAdvice?.bucket || null,
       expectedReward: rlAdvice?.expectedReward || 0,
@@ -269,7 +278,8 @@ export class ExecutionEngine {
         `meta_exec:${(strategyMetaSummary?.confidence || 0).toFixed(3)}`,
         `venue_route:${venueRouteAdvice.preferredEntryStyle || "none"}`,
         `gov_exec:${parameterGovernorBias.toFixed(3)}`,
-        `ladder:${capitalLadderSummary?.stage || "paper"}`
+        `ladder:${capitalLadderSummary?.stage || "paper"}`,
+        `session:${sessionSummary?.session || "mixed"}`
       ]
     };
   }
@@ -307,7 +317,8 @@ export class ExecutionEngine {
     const latencyMultiplier = clamp(safeNumber(calibration?.latencyMultiplier, 1), 0.65, 1.75);
     const queueDecayBiasBps = safeNumber(calibration?.queueDecayBiasBps, 0);
     const spreadShockBiasBps = safeNumber(calibration?.spreadShockBiasBps, 0);
-    const adjustedLatencyMs = Math.round((latencyMs || 0) * latencyMultiplier);
+    const sessionLatencyBias = clamp(safeNumber(plan.sessionLatencyBias, 1), 0.85, 1.35);
+    const adjustedLatencyMs = Math.round((latencyMs || 0) * latencyMultiplier * sessionLatencyBias);
     const workingTimeMs = isMaker ? Math.round((plan.makerPatienceMs || 0) * clamp(0.72 + depthConfidence * 0.45 - queueImbalance * 0.14, 0.45, 1.2) * latencyMultiplier) : Math.round(adjustedLatencyMs || 0);
     const latencyBps = clamp((adjustedLatencyMs / 1000) * (volatility * 520 + spreadBps * 0.05 + Math.abs(tradeFlow) * 1.6), 0, 18);
     const queueDecayBps = isMaker
@@ -333,6 +344,32 @@ export class ExecutionEngine {
       0,
       6.5
     );
+    const makerMissRate = isMaker
+      ? clamp(
+          (1 - depthConfidence) * 0.44 +
+          Math.max(0, 0.2 - queueRefreshScore) * 0.48 +
+          Math.max(0, volatility - 0.02) * 4.5 +
+          (plan.symbolLiquidityTag === "thin" ? 0.12 : 0),
+          0,
+          0.85
+        )
+      : 0;
+    const queueRefillBps = isMaker
+      ? clamp(
+          Math.max(0, queueRefreshScore - 0.52) * 1.6 +
+          Math.max(0, depthConfidence - 0.55) * 1.1,
+          0,
+          3.2
+        )
+      : 0;
+    const cancellationShockBps = isMaker
+      ? clamp(
+          Math.max(0, 0.48 - queueRefreshScore) * 2.4 +
+          Math.max(0, 0.12 - queueImbalance) * 2.1,
+          0,
+          4.5
+        )
+      : 0;
     const makerCompletion = isMaker
       ? clamp(
           safeNumber(plan.expectedMakerFillPct, 0.32) +
@@ -345,6 +382,9 @@ export class ExecutionEngine {
             queueDecayBps / -18 -
             spreadShockBps / 28 -
             calibrationBiasBps / 42 -
+            makerMissRate * -0.35 +
+            queueRefillBps / 20 -
+            cancellationShockBps / 18 -
             (isPegged ? 0.08 : 0),
           resolvedMakerFillFloor,
           0.98
@@ -360,6 +400,9 @@ export class ExecutionEngine {
         : 1;
     const makerFillRatio = isMaker ? clamp(Math.min(makerCompletion, safeCompletionRatio), 0, 1) : 0;
     const takerFillRatio = clamp(safeCompletionRatio - makerFillRatio, 0, 1);
+    const partialFillRecoveryCostBps = takerFillRatio > 0 && makerFillRatio > 0
+      ? clamp((1 - makerFillRatio) * 1.8 + cancellationShockBps * 0.25, 0, 3.8)
+      : 0;
     const styleImpact = !isMaker ? 1 : isPegged ? 0.22 : 0.38;
     const queuePenaltyBps = isMaker ? clamp((1 - depthConfidence) * 1.4 + Math.max(0, -queueImbalance) * 1.2, 0, 4.5) : 0;
     const executionBps = Math.max(
@@ -371,7 +414,10 @@ export class ExecutionEngine {
         queuePenaltyBps +
         queueDecayBps * 0.35 +
         spreadShockBps * 0.55 +
-        liquidityShockBps * 0.45
+        liquidityShockBps * 0.45 +
+        cancellationShockBps * 0.3 +
+        partialFillRecoveryCostBps * 0.45 -
+        queueRefillBps * 0.18
     );
     const fillPrice = referencePrice
       ? side === "BUY"
@@ -394,6 +440,10 @@ export class ExecutionEngine {
       queueDecayBps,
       spreadShockBps,
       liquidityShockBps,
+      queueRefillBps,
+      cancellationShockBps,
+      makerMissRate,
+      partialFillRecoveryCostBps,
       executedQuote,
       executedQuantity,
       notes: [
@@ -402,6 +452,8 @@ export class ExecutionEngine {
         `latency_bps:${latencyBps.toFixed(2)}`,
         `queue_decay_bps:${queueDecayBps.toFixed(2)}`,
         `spread_shock_bps:${spreadShockBps.toFixed(2)}`,
+        `maker_miss:${makerMissRate.toFixed(2)}`,
+        `recovery_bps:${partialFillRecoveryCostBps.toFixed(2)}`,
         `working_ms:${workingTimeMs}`,
         `calibration_bps:${calibrationBiasBps.toFixed(2)}`
       ]
@@ -462,6 +514,11 @@ export class ExecutionEngine {
       queueDecayBps: safeNumber(fillEstimate?.queueDecayBps ?? orderTelemetry.queueDecayBps, 0),
       spreadShockBps: safeNumber(fillEstimate?.spreadShockBps ?? orderTelemetry.spreadShockBps, 0),
       liquidityShockBps: safeNumber(fillEstimate?.liquidityShockBps ?? orderTelemetry.liquidityShockBps, 0),
+      queueRefillBps: safeNumber(fillEstimate?.queueRefillBps ?? orderTelemetry.queueRefillBps, 0),
+      cancellationShockBps: safeNumber(fillEstimate?.cancellationShockBps ?? orderTelemetry.cancellationShockBps, 0),
+      makerMissRate: safeNumber(fillEstimate?.makerMissRate ?? orderTelemetry.makerMissRate, 0),
+      partialFillRecoveryCostBps: safeNumber(fillEstimate?.partialFillRecoveryCostBps ?? orderTelemetry.partialFillRecoveryCostBps, 0),
+      partialFillRatio: clamp(1 - safeNumber(fillEstimate?.makerFillRatio ?? makerRatio, 0), 0, 1),
       makerFillRatio: clamp(makerRatio, 0, 1),
       takerFillRatio: clamp(takerRatio, 0, 1),
       depthConfidence: safeNumber(plan.depthConfidence, 0),

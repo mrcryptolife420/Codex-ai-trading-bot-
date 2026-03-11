@@ -137,13 +137,22 @@ async function handleApi(request, response, manager) {
     return sendJson(response, 200, await manager.setMode(body.mode));
   }
   if (url.pathname === "/api/alerts/ack") {
-    return sendJson(response, 200, await manager.acknowledgeAlert(body.id, body.acknowledged !== false));
+    return sendJson(response, 200, await manager.acknowledgeAlert(body.id, body.acknowledged !== false, body.note || null));
   }
   if (url.pathname === "/api/alerts/silence") {
     return sendJson(response, 200, await manager.silenceAlert(body.id, body.minutes));
   }
   if (url.pathname === "/api/alerts/resolve") {
-    return sendJson(response, 200, await manager.resolveAlert(body.id, body.resolved !== false));
+    return sendJson(response, 200, await manager.resolveAlert(body.id, body.resolved !== false, body.note || null));
+  }
+  if (url.pathname === "/api/ops/force-reconcile") {
+    return sendJson(response, 200, await manager.forceReconcile(body.note || null));
+  }
+  if (url.pathname === "/api/positions/review") {
+    return sendJson(response, 200, await manager.markPositionReviewed(body.id, body.note || null));
+  }
+  if (url.pathname === "/api/ops/probe-only") {
+    return sendJson(response, 200, await manager.setProbeOnly(body.enabled !== false, body.minutes, body.note || null));
   }
 
   return sendJson(response, 404, { error: "Unknown API route" });

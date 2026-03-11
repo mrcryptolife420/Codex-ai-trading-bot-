@@ -108,7 +108,7 @@ function resolveFactorSet({ family = "", regime = "", marketStructureSummary = {
   return [...factors];
 }
 
-function buildBudgetState(journal = {}, config = {}, nowIso = new Date().toISOString()) {
+export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().toISOString()) {
   const nowMs = new Date(nowIso).getTime();
   const minMs = nowMs - 21 * 86_400_000;
   const strategyBuckets = new Map();

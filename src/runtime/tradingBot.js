@@ -49,6 +49,7 @@ import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts as deliverOperat
 import { buildStrategyRetirementSnapshot } from "./strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "./replayChaosLab.js";
 import { buildCapitalGovernor } from "./capitalGovernor.js";
+import { buildCapitalPolicySnapshot } from "./capitalPolicyEngine.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
@@ -1632,7 +1633,8 @@ function summarizeOrderLifecycle(summary = {}) {
     operatorMode: item.operatorMode || "normal",
     failureCount: item.failureCount || 0,
     manualReviewRequired: Boolean(item.manualReviewRequired),
-    reconcileRequired: Boolean(item.reconcileRequired)
+    reconcileRequired: Boolean(item.reconcileRequired),
+    recoveryAction: item.recoveryAction || null
   }));
   const pendingActions = arr(summary.pendingActions || []).slice(0, 12).map((item) => ({
     id: item.id || null,
@@ -1640,7 +1642,8 @@ function summarizeOrderLifecycle(summary = {}) {
     action: item.action || null,
     state: item.state || null,
     reason: item.reason || null,
-    severity: item.severity || "neutral"
+    severity: item.severity || "neutral",
+    recoveryAction: item.recoveryAction || null
   }));
   return {
     lastUpdatedAt: summary.lastUpdatedAt || null,
@@ -1661,7 +1664,8 @@ function summarizeOrderLifecycle(summary = {}) {
       severity: item.severity || "neutral",
       startedAt: item.startedAt || null,
       updatedAt: item.updatedAt || null,
-      detail: item.detail || null
+      detail: item.detail || null,
+      recoveryAction: item.recoveryAction || null
     })),
     pendingActions,
     recentTransitions: arr(summary.recentTransitions || []).slice(0, 20).map((item) => ({
@@ -1682,7 +1686,8 @@ function summarizeOrderLifecycle(summary = {}) {
       startedAt: item.startedAt || null,
       completedAt: item.completedAt || null,
       detail: item.detail || null,
-      error: item.error || null
+      error: item.error || null,
+      recoveryAction: item.recoveryAction || null
     }))
   };
 }
@@ -2121,13 +2126,46 @@ function summarizeMarketState(summary = {}) {
 }
 
 function summarizeCapitalPolicy({ capitalLadder = {}, capitalGovernor = {} } = {}) {
+  const policyEngine = capitalGovernor.policyEngine || capitalLadder.policyEngine || {};
   return {
     stage: capitalLadder.stage || "paper",
     allowEntries: capitalLadder.allowEntries !== false && capitalGovernor.allowEntries !== false,
     sizeMultiplier: num((capitalLadder.sizeMultiplier ?? 1) * (capitalGovernor.sizeMultiplier ?? 1), 4),
     ladder: summarizeCapitalLadder(capitalLadder),
-    governor: summarizeCapitalGovernor(capitalGovernor)
+    governor: summarizeCapitalGovernor(capitalGovernor),
+    status: policyEngine.status || capitalGovernor.status || capitalLadder.stage || "ready",
+    deRiskLevel: num(policyEngine.deRiskLevel || 0, 4),
+    budgets: policyEngine.budgets || null,
+    factorBudgets: arr(policyEngine.factorBudgets || []).slice(0, 4),
+    clusterBudgets: arr(policyEngine.clusterBudgets || []).slice(0, 4),
+    regimeBudgets: arr(policyEngine.regimeBudgets || []).slice(0, 4),
+    familyBudgets: arr(policyEngine.familyBudgets || []).slice(0, 4),
+    familyKillSwitches: arr(policyEngine.familyKillSwitches || []).slice(0, 4),
+    regimeLossStreaks: arr(policyEngine.regimeLossStreaks || []).slice(0, 6),
+    notes: arr(policyEngine.notes || []).slice(0, 6)
   };
+}
+
+function resolveLifecycleRecoveryAction(state, position = {}, activeAction = null) {
+  if (activeAction?.status === "failed") {
+    return "force_reconcile";
+  }
+  if (state === "manual_review") {
+    return "mark_reviewed";
+  }
+  if (state === "reconcile_required") {
+    return "force_reconcile";
+  }
+  if (state === "protect_only") {
+    return "allow_probe_only";
+  }
+  if (state === "protection_pending") {
+    return "rebuild_protection";
+  }
+  if ((position.brokerMode || "") === "live" && !position.protectiveOrderListId && ["open", "recovered_open"].includes(state)) {
+    return "rebuild_protection";
+  }
+  return "monitor";
 }
 
 function summarizeAlertDelivery(summary = {}) {
@@ -2587,7 +2625,24 @@ export class TradingBot {
       return;
     }
     const dueAt = new Date(new Date(queuedAt).getTime() + Math.max(5, this.config.counterfactualLookaheadMinutes || 90) * 60000).toISOString();
-    this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), { id: crypto.randomUUID(), symbol: candidate.symbol, queuedAt, dueAt, entryPrice, probability: candidate.score?.probability || 0, threshold: candidate.decision?.threshold || 0, strategy: candidate.strategySummary?.activeStrategy || null, regime: candidate.regimeSummary?.regime || null, blockerReasons: [...(candidate.decision?.reasons || [])].slice(0, 6), executionStyle: candidate.decision?.executionPlan?.entryStyle || null }].slice(-(this.config.counterfactualQueueLimit || 40));
+    this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), {
+      id: crypto.randomUUID(),
+      symbol: candidate.symbol,
+      queuedAt,
+      dueAt,
+      entryPrice,
+      probability: candidate.score?.probability || 0,
+      threshold: candidate.decision?.threshold || 0,
+      strategy: candidate.strategySummary?.activeStrategy || null,
+      strategyFamily: candidate.strategySummary?.family || null,
+      regime: candidate.regimeSummary?.regime || null,
+      marketPhase: candidate.marketStateSummary?.phase || null,
+      blockerReasons: [...(candidate.decision?.reasons || [])].slice(0, 6),
+      executionStyle: candidate.decision?.executionPlan?.entryStyle || null,
+      signalQuality: candidate.signalQualitySummary?.overallScore || 0,
+      executionViability: candidate.signalQualitySummary?.executionViability || 0,
+      modelConfidence: candidate.confidenceBreakdown?.modelConfidence || 0
+    }].slice(-(this.config.counterfactualQueueLimit || 40));
   }
 
   async resolveCounterfactualQueue(nowAt = nowIso(), snapshotMap = {}) {
@@ -2613,8 +2668,22 @@ export class TradingBot {
         const realizedMovePct = currentPrice / item.entryPrice - 1;
         const winBar = Math.max(this.config.scaleOutTriggerPct || 0.014, (this.config.takeProfitPct || 0.03) * 0.35);
         const lossBar = -Math.max((this.config.stopLossPct || 0.018) * 0.5, 0.006);
-        const outcome = realizedMovePct >= winBar ? "missed_winner" : realizedMovePct <= lossBar ? "blocked_correctly" : "neutral";
-        this.journal.counterfactuals.push({ ...item, resolvedAt: nowAt, currentPrice, realizedMovePct: num(realizedMovePct, 4), outcome });
+        const outcome = realizedMovePct >= winBar
+          ? (item.executionViability || 0) < 0.46 || (item.modelConfidence || 0) < 0.5
+            ? "right_direction_wrong_timing"
+            : "bad_veto"
+          : realizedMovePct <= lossBar
+            ? "good_veto"
+            : realizedMovePct > 0 && realizedMovePct < winBar
+              ? "late_veto"
+              : "neutral";
+        this.journal.counterfactuals.push({
+          ...item,
+          resolvedAt: nowAt,
+          currentPrice,
+          realizedMovePct: num(realizedMovePct, 4),
+          outcome
+        });
       } catch (error) {
         this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: error.message });
       }
@@ -2928,6 +2997,9 @@ export class TradingBot {
     const nextPositions = {};
     const transitions = arr(lifecycle.recentTransitions);
     const activeActions = lifecycle.activeActions && typeof lifecycle.activeActions === "object" ? lifecycle.activeActions : {};
+    const previousActiveActions = lifecycle.activeActionsPrevious && typeof lifecycle.activeActionsPrevious === "object"
+      ? lifecycle.activeActionsPrevious
+      : {};
     const tradeIndex = new Map(arr(this.journal.trades).slice(-120).map((trade) => [trade.id, trade]));
     const transitionAt = nowIso();
 
@@ -2967,7 +3039,8 @@ export class TradingBot {
         operatorMode: position.operatorMode || "normal",
         failureCount: position.managementFailureCount || 0,
         manualReviewRequired: Boolean(position.manualReviewRequired),
-        reconcileRequired: Boolean(position.reconcileRequired)
+        reconcileRequired: Boolean(position.reconcileRequired),
+        recoveryAction: resolveLifecycleRecoveryAction(state, position)
       };
       nextPositions[position.id] = view;
       if (previous.state !== state) {
@@ -3006,6 +3079,24 @@ export class TradingBot {
     lifecycle.recentTransitions = transitions.slice(0, 60);
     lifecycle.activeActions = activeActions;
     lifecycle.actionJournal = arr(lifecycle.actionJournal || []).slice(0, 80);
+    const completedActionIds = new Set(lifecycle.actionJournal.map((item) => item.id).filter(Boolean));
+    const currentActionIds = new Set(Object.keys(activeActions));
+    for (const [actionId, previousAction] of Object.entries(previousActiveActions)) {
+      if (currentActionIds.has(actionId) || completedActionIds.has(actionId)) {
+        continue;
+      }
+      lifecycle.actionJournal.unshift({
+        ...previousAction,
+        completedAt: transitionAt,
+        updatedAt: transitionAt,
+        status: "disappeared",
+        severity: "negative",
+        error: "pending action disappeared without completion journal",
+        detail: previousAction.detail || reason,
+        recoveryAction: resolveLifecycleRecoveryAction(previousAction.stage || "reconcile_required", previousAction, previousAction)
+      });
+    }
+    lifecycle.actionJournal = lifecycle.actionJournal.slice(0, 80);
     const stateActions = Object.values(nextPositions)
       .filter((item) => ["protect_only", "manual_review", "reconcile_required", "protection_pending"].includes(item.state))
       .map((item) => ({
@@ -3022,7 +3113,8 @@ export class TradingBot {
         reason: item.state === "protection_pending"
           ? "protective_order_missing"
           : item.state,
-        severity: ["manual_review", "reconcile_required"].includes(item.state) ? "negative" : "neutral"
+        severity: ["manual_review", "reconcile_required"].includes(item.state) ? "negative" : "neutral",
+        recoveryAction: item.recoveryAction || resolveLifecycleRecoveryAction(item.state, item)
       }));
     const activeLifecycleActions = Object.values(activeActions).map((item) => ({
       id: item.id || null,
@@ -3030,9 +3122,11 @@ export class TradingBot {
       state: item.stage || "pending",
       action: item.type || "exchange_action",
       reason: item.detail || item.type || "pending_exchange_action",
-      severity: item.severity || "neutral"
+      severity: item.severity || "neutral",
+      recoveryAction: item.recoveryAction || resolveLifecycleRecoveryAction(item.stage || "pending", item, item)
     }));
     lifecycle.pendingActions = [...activeLifecycleActions, ...stateActions].slice(0, 12);
+    lifecycle.activeActionsPrevious = Object.fromEntries(Object.entries(activeActions).map(([id, item]) => [id, { ...item }]));
     this.runtime.orderLifecycle = lifecycle;
     return lifecycle;
   }
@@ -3372,6 +3466,9 @@ export class TradingBot {
     if (this.config.botMode === "live" && this.runtime.capitalGovernor?.allowEntries === false) {
       reasons.push("capital_governor_blocked");
     }
+    if (arr(this.runtime.ops?.alerts?.alerts || []).some((item) => !item.resolvedAt && !item.acknowledgedAt && ["negative", "critical"].includes(item.severity || ""))) {
+      reasons.push("operator_ack_required");
+    }
     return {
       checkedAt: referenceNow,
       ready: reasons.length === 0,
@@ -3429,6 +3526,14 @@ export class TradingBot {
 
   refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
     const evaluation = report || buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    this.runtime.capitalPolicy = buildCapitalPolicySnapshot({
+      journal: this.journal,
+      runtime: this.runtime,
+      capitalGovernor: this.runtime.capitalGovernor || {},
+      capitalLadder: this.runtime.capitalLadder || {},
+      config: this.config,
+      nowIso: referenceNow
+    });
     const exchangeSafety = summarizeExchangeSafety(buildExchangeSafetyAudit({
       runtime: this.runtime,
       report: evaluation,
@@ -3469,7 +3574,7 @@ export class TradingBot {
       performanceChange: this.buildPerformanceChangeView(evaluation),
       readiness,
       alerts,
-      alertState: this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
+      alertState: this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
       alertDelivery,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {})
     };
@@ -3489,7 +3594,7 @@ export class TradingBot {
       nowIso: referenceNow
     });
     const result = summarizeAlertDelivery(deliveryResult);
-    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
     this.runtime.ops = {
       ...(this.runtime.ops || {}),
       alertState: {
@@ -3509,11 +3614,11 @@ export class TradingBot {
     return result;
   }
 
-  async acknowledgeAlert(alertId, { acknowledged = true, at = nowIso() } = {}) {
+  async acknowledgeAlert(alertId, { acknowledged = true, at = nowIso(), note = null } = {}) {
     if (!alertId) {
       throw new Error("Alert id ontbreekt.");
     }
-    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
     const acknowledgedAtById = { ...(currentAlertState.acknowledgedAtById || {}) };
     const resolvedAtById = { ...(currentAlertState.resolvedAtById || {}) };
     if (acknowledged) {
@@ -3527,7 +3632,11 @@ export class TradingBot {
       alertState: {
         ...currentAlertState,
         acknowledgedAtById,
-        resolvedAtById
+        resolvedAtById,
+        notesById: {
+          ...(currentAlertState.notesById || {}),
+          ...(note ? { [alertId]: note } : {})
+        }
       }
     };
     this.refreshOperationalViews({ nowIso: at });
@@ -3540,7 +3649,7 @@ export class TradingBot {
       throw new Error("Alert id ontbreekt.");
     }
     const durationMinutes = Math.max(1, Number(minutes || this.config.operatorAlertSilenceMinutes || 180));
-    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
     this.runtime.ops = {
       ...(this.runtime.ops || {}),
       alertState: {
@@ -3556,11 +3665,11 @@ export class TradingBot {
     return this.getDashboardSnapshot();
   }
 
-  async resolveAlert(alertId, { resolved = true, at = nowIso() } = {}) {
+  async resolveAlert(alertId, { resolved = true, at = nowIso(), note = null } = {}) {
     if (!alertId) {
       throw new Error("Alert id ontbreekt.");
     }
-    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
+    const currentAlertState = this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } };
     const resolvedAtById = { ...(currentAlertState.resolvedAtById || {}) };
     if (resolved) {
       resolvedAtById[alertId] = at;
@@ -3571,9 +3680,59 @@ export class TradingBot {
       ...(this.runtime.ops || {}),
       alertState: {
         ...currentAlertState,
-        resolvedAtById
+        resolvedAtById,
+        notesById: {
+          ...(currentAlertState.notesById || {}),
+          ...(note ? { [alertId]: note } : {})
+        }
       }
     };
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
+  async forceReconcile({ note = null, at = nowIso() } = {}) {
+    this.runtime.exchangeTruth = {
+      ...(this.runtime.exchangeTruth || {}),
+      freezeEntries: true,
+      notes: [...new Set([...(this.runtime.exchangeTruth?.notes || []), note || "Operator force reconcile requested."])].slice(0, 8)
+    };
+    this.recordEvent("operator_force_reconcile", { at, note: note || null });
+    this.syncOrderLifecycleState("operator_force_reconcile");
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
+  async markPositionReviewed(positionId, { note = null, at = nowIso() } = {}) {
+    const position = arr(this.runtime.openPositions).find((item) => item.id === positionId);
+    if (!position) {
+      throw new Error("Positie niet gevonden.");
+    }
+    position.reviewedAt = at;
+    position.reviewNote = note || null;
+    if (position.manualReviewRequired) {
+      position.manualReviewRequired = false;
+      position.operatorMode = "protect_only";
+      position.lifecycleState = "protect_only";
+    }
+    this.recordEvent("operator_mark_reviewed", { at, symbol: position.symbol, id: positionId, note: note || null });
+    this.syncOrderLifecycleState("operator_mark_reviewed");
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
+  async setProbeOnly({ enabled = true, minutes = 90, note = null, at = nowIso() } = {}) {
+    const until = enabled ? new Date(new Date(at).getTime() + Math.max(1, Number(minutes || 90)) * 60_000).toISOString() : null;
+    this.runtime.probeOnly = {
+      enabled: Boolean(enabled),
+      until,
+      note: note || null,
+      updatedAt: at
+    };
+    this.recordEvent(enabled ? "operator_probe_only_enabled" : "operator_probe_only_disabled", { at, note: note || null, until });
     this.refreshOperationalViews({ nowIso: at });
     await this.store.saveRuntime(this.runtime);
     return this.getDashboardSnapshot();
@@ -4482,7 +4641,8 @@ export class TradingBot {
       committeeSummary: null,
       rlAdvice: provisionalRlAdvice,
       executionNeuralSummary: score.executionNeural,
-      venueConfirmationSummary: context.venueConfirmationSummary || {}
+      venueConfirmationSummary: context.venueConfirmationSummary || {},
+      sessionSummary
     });
     const committeeSummary = this.committee.evaluate({
       symbol,
@@ -4598,6 +4758,14 @@ export class TradingBot {
     });
     decision.rankScore = num((decision.rankScore || 0) + (attributionSummary.rankBoost || 0), 4);
     decision.attributionSummary = attributionSummary;
+    const probeOnlyState = this.runtime.probeOnly || {};
+    const probeOnlyActive = Boolean(probeOnlyState.enabled) && (!probeOnlyState.until || new Date(probeOnlyState.until).getTime() > now.getTime());
+    if (probeOnlyActive) {
+      decision.quoteAmount = num((decision.quoteAmount || 0) * 0.32, 2);
+      decision.reasons = [...new Set([...(decision.reasons || []), "operator_probe_only"])].slice(0, 10);
+      decision.operatorAction = "probe_only";
+      decision.autoRecovery = "operator_probe_window";
+    }
     marketSnapshot.book.entryEstimate = this.stream.estimateFill?.(symbol, "BUY", { quoteAmount: decision.quoteAmount }) || null;
     decision.executionPlan = this.execution.buildEntryPlan({
       symbol,
@@ -4612,7 +4780,8 @@ export class TradingBot {
       executionNeuralSummary: score.executionNeural,
       strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
       capitalLadderSummary: this.runtime.capitalLadder || {},
-      venueConfirmationSummary
+      venueConfirmationSummary,
+      sessionSummary
     });
     const signalQualitySummary = buildSignalQualitySummary({
       marketFeatures: marketSnapshot.market,
@@ -5112,7 +5281,10 @@ export class TradingBot {
         qualityQuorum: summarizeQualityQuorum(candidate.qualityQuorumSummary),
         capitalPolicy: summarizeCapitalPolicy({
           capitalLadder: candidate.decision.capitalLadderApplied || {},
-          capitalGovernor: candidate.decision.capitalGovernorApplied || {}
+          capitalGovernor: {
+            ...(candidate.decision.capitalGovernorApplied || {}),
+            policyEngine: this.runtime?.capitalPolicy || {}
+          }
         })
       },
       executionBudget: summarizeExecutionCost(candidate.decision.executionCostBudgetApplied || this.runtime.executionCost || {}),
@@ -5939,7 +6111,10 @@ export class TradingBot {
         qualityQuorum: decision.qualityQuorum || null,
         capitalPolicy: summarizeCapitalPolicy({
           capitalLadder: decision.capitalLadder || decision.capitalLadderApplied || {},
-          capitalGovernor: decision.capitalGovernor || decision.capitalGovernorApplied || {}
+          capitalGovernor: {
+            ...(decision.capitalGovernor || decision.capitalGovernorApplied || {}),
+            policyEngine: this.runtime?.capitalPolicy || {}
+          }
         })
       },
       executionBudget: decision.executionBudget || summarizeExecutionCost(decision.executionCostBudget || decision.executionCostBudgetApplied || {}),
@@ -6295,7 +6470,10 @@ export class TradingBot {
         capitalGovernor: summarizeCapitalGovernor(this.runtime.capitalGovernor || {}),
         capitalPolicy: summarizeCapitalPolicy({
           capitalLadder: this.runtime.capitalLadder || {},
-          capitalGovernor: this.runtime.capitalGovernor || {}
+          capitalGovernor: {
+            ...(this.runtime.capitalGovernor || {}),
+            policyEngine: this.runtime?.capitalPolicy || {}
+          }
         }),
         tuningGovernance: summarizeTuningGovernance({
           thresholdTuning: this.runtime.thresholdTuning || {},

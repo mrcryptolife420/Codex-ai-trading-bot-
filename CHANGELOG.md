@@ -29,6 +29,10 @@
 - Parameter-governor scopes that learn bounded threshold, stop, take-profit, scale-out, hold-time, and execution-aggressiveness adjustments from closed-trade outcomes.
 - Shared candidate insight summaries for `dataQuality`, `signalQuality`, and per-layer `confidenceBreakdown`, so runtime, risk, and dashboard all reason over the same explainable quality model.
 - Shared trend-state phase classification with explicit `early_ignition`, `healthy_continuation`, `late_crowded`, `range_acceptance`, and transition labels.
+- A central `capitalPolicy` snapshot that reuses existing allocator, governor, and ladder state to expose factor, cluster, regime, and family budget pressure without introducing a duplicate portfolio stack.
+- Explicit lifecycle `recoveryAction` recommendations per tracked position and pending action, plus disappearance journaling when a pending exchange action vanishes without a terminal record.
+- Semi-incident-response operator controls for `force reconcile`, `mark reviewed`, `allow probe-only`, and resolve-with-note flows across runtime, manager, dashboard API, and UI.
+- Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
 - Normalized operator alerts around explicit `new`, `acked`, `silenced`, and `resolved` states, and surfaced those states directly in dashboard actions and payloads.
@@ -61,6 +65,11 @@
 - Made doctor preview scans read-only and bounded candidate evaluation with concurrency limits, reducing accidental runtime/journal mutation and improving scan latency on larger universes.
 - Tightened risk de-risking around crowded trends, fragile breakout follow-through, and healthy downtrend mean-reversion traps while keeping the new confidence layer bounded enough for paper warm-up entries.
 - Expanded replay chaos output with recommended actions per active scenario, so stale book, divergence, protection, and partial-fill risks now surface as concrete operator follow-ups instead of only counts.
+- Tightened operational readiness so unresolved critical alerts now require acknowledgement before the bot is considered re-enabled.
+- Made `probe-only` a real runtime behavior by shrinking allowed entry sizing during operator-controlled recovery windows instead of only surfacing a dashboard label.
+- Deepened paper, backtest, and research execution realism with session-biased fill delay, maker miss rate, queue refill/cancellation effects, and partial-fill recovery cost attribution.
+- Surfaced the new capital-policy and lifecycle recovery context directly in dashboard operations cards and action rows for faster incident handling.
+- Expanded offline veto learning so blocker scorecards now track late-veto and timing-issue patterns alongside classic good/bad veto counts.
 
 ### Fixed
 - Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
@@ -78,6 +87,8 @@
 - Fixed the relative-strength candidate-scan path so runtime smoke runs no longer fail on a missing shared `average()` helper import while building peer-strength summaries.
 - Fixed paper exploration regressions so `trade_size_below_minimum` can still be treated as a paper-only soft blocker during tiny warm-up probes instead of shutting exploration off entirely.
 - Fixed dashboard/operator decision context so session, drift, and self-heal blockers also generate concrete operator guidance instead of silently missing the action layer.
+- Fixed dashboard decision serialization to stay null-safe when lightweight test/runtime stubs do not yet carry the full `runtime.capitalPolicy` tree.
+- Fixed lifecycle invariants so disappeared pending actions are now flagged explicitly instead of silently dropping out of operator visibility.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`
@@ -88,6 +99,7 @@
 - `node --check test/run.js`
 - `node test/run.js`
 - `node src/cli.js status`
+- `node src/cli.js once`
 - `node src/cli.js once`
 - Added regression coverage for the strategy DSL, strategy research miner, neural strategy meta selector, reference-venue confirmation, parameter governor, capital ladder, runtime state migration, and the new execution/risk integrations.
 - Added regression coverage for candidate insight summaries, read-only doctor scans, shared trend-state dashboard serialization, and the new quality/confidence overlays in risk decisions.
