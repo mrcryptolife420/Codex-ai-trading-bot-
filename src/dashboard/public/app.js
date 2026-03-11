@@ -1353,15 +1353,22 @@ function renderOperations(snapshot) {
   const exchangeTruth = snapshot.dashboard.safety?.exchangeTruth || {};
   const orderLifecycle = snapshot.dashboard.safety?.orderLifecycle || {};
   const service = ops.service || {};
+  const readiness = ops.readiness || {};
+  const executionCalibration = ops.executionCalibration || {};
+  const thresholdTuning = ops.thresholdTuning || {};
   const incidentLead = (ops.incidentTimeline || [])[0] || {};
   const leadRunbook = (ops.runbooks || [])[0] || {};
+  const leadCalibration = Object.entries(executionCalibration.styles || {})[0] || [];
   elements.opsSummary.innerHTML = [
     insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0}`),
     insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
     insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.latestSnapshotAt ? `laatst ${formatDate(modelRegistry.latestSnapshotAt)}` : "Nog geen modelsnapshot"),
     insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive"),
+    insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is operationeel klaar", healthTone(readiness.status || "ready")),
     insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
     insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
+    insightCard("Exec calib", `${executionCalibration.liveTradeCount || 0} live`, leadCalibration[0] ? `${leadCalibration[0]} ${formatNumber(leadCalibration[1]?.slippageBiasBps || 0, 2)} bps` : "Nog geen style-calibratie", healthTone(executionCalibration.status || "warmup")),
+    insightCard("Threshold", thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable", thresholdTuning.appliedRecommendation?.id ? normalizeReasonLabel(thresholdTuning.appliedRecommendation.id) : "Geen actieve probation", healthTone(thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable")),
     insightCard("Service", service.watchdogStatus || "idle", service.lastHeartbeatAt ? `heartbeat ${formatDate(service.lastHeartbeatAt)}` : "Nog geen heartbeat", healthTone(service.watchdogStatus || "idle")),
     insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
   ].join("");
@@ -1371,6 +1378,8 @@ function renderOperations(snapshot) {
     ...(ops.runbooks || []).map((item) => `${item.title}: ${item.action}`),
     ...(exchangeTruth.notes || []),
     ...(ops.shadowTrading?.notes || []),
+    ...(executionCalibration.notes || []),
+    ...(thresholdTuning.notes || []),
     ...(modelRegistry.notes || []),
     backups.lastReason ? `Laatste backup reden: ${backups.lastReason}` : "",
     recorder.rootDir ? `Feature store: ${recorder.rootDir}` : "",
@@ -1378,6 +1387,16 @@ function renderOperations(snapshot) {
   ].filter(Boolean);
   elements.opsList.innerHTML = notes.length || (ops.incidentTimeline || []).length
     ? [
+        ...(orderLifecycle.activeActions || []).slice(0, 6).map((item) => `
+          <div class="event-row">
+            <div>
+              <strong>${escapeHtml(normalizeReasonLabel(item.type || "exchange_action"))}</strong>
+              <div class="meta">${item.symbol ? `${escapeHtml(item.symbol)} | ` : ""}${item.startedAt ? formatDate(item.startedAt) : "-"}</div>
+              <div>${escapeHtml(item.detail || item.stage || "Pending exchange action")}</div>
+            </div>
+            <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.stage || "pending")}</div>
+          </div>
+        `),
         ...(ops.incidentTimeline || []).slice(0, 6).map((item) => `
           <div class="event-row">
             <div>
@@ -1386,6 +1405,16 @@ function renderOperations(snapshot) {
               <div>${escapeHtml(item.detail || "Geen extra detail")}</div>
             </div>
             <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.severity || "neutral")}</div>
+          </div>
+        `),
+        ...(orderLifecycle.actionJournal || []).slice(0, 6).map((item) => `
+          <div class="event-row">
+            <div>
+              <strong>${escapeHtml(normalizeReasonLabel(item.type || "action"))}</strong>
+              <div class="meta">${item.symbol ? `${escapeHtml(item.symbol)} | ` : ""}${item.completedAt ? formatDate(item.completedAt) : "-"}</div>
+              <div>${escapeHtml(item.error || item.detail || item.status || "Geen extra detail")}</div>
+            </div>
+            <div class="pill ${healthTone(item.severity || item.status || "neutral")}">${escapeHtml(item.status || "done")}</div>
           </div>
         `),
         ...notes.map((note) => `<div class="event-row"><div>${escapeHtml(note)}</div></div>`)
@@ -1406,13 +1435,16 @@ function renderGovernance(snapshot) {
   const exitLearning = offlineTrainer.exitLearning || {};
   const topExitReason = (offlineTrainer.exitScorecards || [])[0] || {};
   const featureDecay = offlineTrainer.featureDecay || {};
+  const opsThresholdTuning = snapshot.dashboard.ops?.thresholdTuning || {};
+  const activeThreshold = opsThresholdTuning.appliedRecommendation || {};
+  const topExitPolicy = (exitLearning.strategyPolicies || [])[0] || (exitLearning.regimePolicies || [])[0] || {};
   elements.governanceSummary.innerHTML = [
     insightCard("Research runs", `${registry.runCount || 0}`, registry.lastRunAt ? `laatst ${formatDate(registry.lastRunAt)}` : "Nog geen run"),
     insightCard("Promo kandidaten", `${(governance.promotionCandidates || []).length}`, leader.symbol ? `${leader.symbol} leidt` : "Nog geen kandidaat", (governance.promotionCandidates || []).length ? "positive" : "neutral"),
     insightCard("Regimes", `${promotionPolicy.strongRegimeScorecardCount || 0}/${promotionPolicy.regimeScorecardCount || 0}`, (promotionPolicy.readyRegimes || [])[0] ? `${promotionPolicy.readyRegimes[0]} klaar` : "Nog geen sterk regime"),
     insightCard("Veto feedback", `${offlineTrainer.vetoFeedback?.badVetoCount || 0}/${offlineTrainer.vetoFeedback?.goodVetoCount || 0}`, topBlocker.id ? `${normalizeReasonLabel(topBlocker.id)} ${topBlocker.status || "observe"}` : "Nog geen blocker-patroon"),
-    insightCard("Threshold tuning", `${(thresholdPolicy.recommendations || []).length}`, topThresholdRecommendation.id ? `${normalizeReasonLabel(topThresholdRecommendation.id)} ${topThresholdRecommendation.action || "observe"}` : "Geen threshold-aanpassing"),
-    insightCard("Exit learning", `${exitLearning.lateExitCount || 0}/${exitLearning.prematureExitCount || 0}`, topExitReason.id ? `${normalizeReasonLabel(topExitReason.id)} ${topExitReason.status || "observe"}` : "Nog geen exit-leider"),
+    insightCard("Threshold tuning", `${(thresholdPolicy.recommendations || []).length}`, activeThreshold.id ? `${normalizeReasonLabel(activeThreshold.id)} ${activeThreshold.status || "probation"}` : topThresholdRecommendation.id ? `${normalizeReasonLabel(topThresholdRecommendation.id)} ${topThresholdRecommendation.action || "observe"}` : "Geen threshold-aanpassing"),
+    insightCard("Exit learning", `${exitLearning.lateExitCount || 0}/${exitLearning.prematureExitCount || 0}`, topExitPolicy.id ? `${normalizeReasonLabel(topExitPolicy.id)} ${topExitPolicy.status || "balanced"}` : topExitReason.id ? `${normalizeReasonLabel(topExitReason.id)} ${topExitReason.status || "observe"}` : "Nog geen exit-leider"),
     insightCard("Feature decay", `${featureDecay.degradedFeatureCount || 0}/${featureDecay.weakFeatureCount || 0}`, featureDecay.weakestFeature ? `${normalizeReasonLabel(featureDecay.weakestFeature)} zwakst` : "Nog geen decay-signaal", healthTone(featureDecay.status))
   ].join("");
 
@@ -1469,22 +1501,22 @@ function renderGovernance(snapshot) {
         </div>
       </article>
     ` : "",
-    topThresholdRecommendation.id ? `
+    (activeThreshold.id || topThresholdRecommendation.id) ? `
       <article class="registry-card">
         <div class="section-head compact">
           <div>
             <div class="kicker">threshold tuning</div>
-            <h3>${escapeHtml(normalizeReasonLabel(topThresholdRecommendation.id))}</h3>
+            <h3>${escapeHtml(normalizeReasonLabel(activeThreshold.id || topThresholdRecommendation.id))}</h3>
           </div>
-          <div class="pill ${healthTone(topThresholdRecommendation.action)}">${escapeHtml(topThresholdRecommendation.action || "observe")}</div>
+          <div class="pill ${healthTone(activeThreshold.status || topThresholdRecommendation.action)}">${escapeHtml(activeThreshold.status || topThresholdRecommendation.action || "observe")}</div>
         </div>
         <div class="mini-grid">
-          <div class="mini-stat"><span class="kicker">Shift</span><strong>${formatNumber(topThresholdRecommendation.adjustment || 0, 4)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Confidence</span><strong>${formatPct(topThresholdRecommendation.confidence || 0, 1)}</strong></div>
-          <div class="mini-stat"><span class="kicker">Samples</span><strong>${topThresholdRecommendation.total || 0}</strong></div>
-          <div class="mini-stat"><span class="kicker">Scope</span><strong>${(topThresholdRecommendation.affectedStrategies || []).length}</strong><div class="meta">${escapeHtml(((topThresholdRecommendation.affectedRegimes || []).slice(0, 2).join(", ")) || "regimes")}</div></div>
+          <div class="mini-stat"><span class="kicker">Shift</span><strong>${formatNumber(activeThreshold.adjustment || topThresholdRecommendation.adjustment || 0, 4)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Confidence</span><strong>${formatPct(activeThreshold.confidence || topThresholdRecommendation.confidence || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Status</span><strong>${escapeHtml(activeThreshold.status || topThresholdRecommendation.action || "observe")}</strong></div>
+          <div class="mini-stat"><span class="kicker">Scope</span><strong>${((activeThreshold.affectedStrategies || topThresholdRecommendation.affectedStrategies || [])).length}</strong><div class="meta">${escapeHtml((((activeThreshold.affectedRegimes || topThresholdRecommendation.affectedRegimes || [])).slice(0, 2).join(", ")) || "regimes")}</div></div>
         </div>
-        <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList([topThresholdRecommendation.rationale].filter(Boolean), "Geen extra context")}</div></div>
+        <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList([topThresholdRecommendation.rationale].filter(Boolean), activeThreshold.appliedAt ? `actief sinds ${formatDate(activeThreshold.appliedAt)}` : "Geen extra context")}</div></div>
       </article>
     ` : "",
     topExitReason.id ? `

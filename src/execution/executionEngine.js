@@ -4,6 +4,14 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function average(values = [], fallback = 0) {
+  return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
+}
+
+function normalizeStyle(style = null) {
+  return style || "market";
+}
+
 function getStrategyProfile(strategySummary = {}) {
   const active = strategySummary.activeStrategy || null;
   const family = strategySummary.family || null;
@@ -56,6 +64,60 @@ function summarizeConditionalFields(orderResponses = []) {
 export class ExecutionEngine {
   constructor(config) {
     this.config = config;
+  }
+
+  buildPaperCalibration({ journal = {}, nowIso = new Date().toISOString() } = {}) {
+    const liveTrades = (journal.trades || [])
+      .filter((trade) => (trade.brokerMode || "paper") === "live" && trade.entryExecutionAttribution)
+      .slice(-(this.config.executionCalibrationLookbackTrades || 48));
+    const maxAdjust = Math.max(0.5, this.config.executionCalibrationMaxBpsAdjust || 6);
+    const minTrades = this.config.executionCalibrationMinLiveTrades || 6;
+    const byStyle = new Map();
+
+    for (const trade of liveTrades) {
+      const attribution = trade.entryExecutionAttribution || {};
+      const style = normalizeStyle(attribution.entryStyle);
+      if (!byStyle.has(style)) {
+        byStyle.set(style, []);
+      }
+      byStyle.get(style).push(attribution);
+    }
+
+    const styles = Object.fromEntries(
+      [...byStyle.entries()].map(([style, items]) => {
+        const slippageBiasBps = clamp(average(items.map((item) => safeNumber(item.slippageDeltaBps, 0))), -maxAdjust, maxAdjust);
+        const makerFillBias = clamp(average(items.map((item) => safeNumber(item.makerFillRatio, 0))) - 0.5, -0.2, 0.2);
+        const latencyMultiplier = clamp(1 + average(items.map((item) => safeNumber(item.latencyBps, 0))) / 24, 0.82, 1.45);
+        const queueDecayBiasBps = clamp(average(items.map((item) => safeNumber(item.queueDecayBps, 0))) * 0.18, -2, 2.5);
+        const spreadShockBiasBps = clamp(average(items.map((item) => safeNumber(item.spreadShockBps, 0))) * 0.15, -1, 2);
+        return [style, {
+          tradeCount: items.length,
+          slippageBiasBps: Number(slippageBiasBps.toFixed(2)),
+          makerFillBias: Number(makerFillBias.toFixed(4)),
+          latencyMultiplier: Number(latencyMultiplier.toFixed(3)),
+          queueDecayBiasBps: Number(queueDecayBiasBps.toFixed(2)),
+          spreadShockBiasBps: Number(spreadShockBiasBps.toFixed(2))
+        }];
+      })
+    );
+
+    const calibrationReady = liveTrades.length >= minTrades;
+    return {
+      generatedAt: nowIso,
+      status: calibrationReady ? "calibrated" : liveTrades.length ? "warming" : "warmup",
+      liveTradeCount: liveTrades.length,
+      styles,
+      notes: [
+        calibrationReady
+          ? `${liveTrades.length} live fills kalibreren de paper execution-biases.`
+          : liveTrades.length
+            ? `${minTrades - liveTrades.length} extra live fills nodig voor stabiele execution-calibratie.`
+            : "Nog geen live fills beschikbaar voor execution-calibratie.",
+        Object.keys(styles).length
+          ? `Actieve styles: ${Object.keys(styles).join(", ")}.`
+          : "Nog geen style-specifieke execution-calibratie beschikbaar."
+      ]
+    };
   }
 
   buildEntryPlan({ symbol, marketSnapshot, score, decision, regimeSummary, strategySummary = {}, portfolioSummary, committeeSummary = null, rlAdvice = null, executionNeuralSummary = null }) {
@@ -201,6 +263,7 @@ export class ExecutionEngine {
     requestedQuantity = 0,
     plan = {},
     latencyMs = 0,
+    calibration = null,
     fallbackStyle = null,
     makerFillFloor = this.config.paperMakerFillFloor,
     minPartialFillRatio = this.config.paperPartialFillMinRatio
@@ -221,8 +284,14 @@ export class ExecutionEngine {
     const isMaker = ["limit_maker", "pegged_limit_maker"].includes(plan.entryStyle);
     const isPegged = plan.entryStyle === "pegged_limit_maker";
     const fallbackMode = fallbackStyle || plan.fallbackStyle || "none";
-    const workingTimeMs = isMaker ? Math.round((plan.makerPatienceMs || 0) * clamp(0.72 + depthConfidence * 0.45 - queueImbalance * 0.14, 0.45, 1.2)) : Math.round(latencyMs || 0);
-    const latencyBps = clamp((latencyMs / 1000) * (volatility * 520 + spreadBps * 0.05 + Math.abs(tradeFlow) * 1.6), 0, 18);
+    const calibrationBiasBps = safeNumber(calibration?.slippageBiasBps, 0);
+    const makerFillBias = safeNumber(calibration?.makerFillBias, 0);
+    const latencyMultiplier = clamp(safeNumber(calibration?.latencyMultiplier, 1), 0.65, 1.75);
+    const queueDecayBiasBps = safeNumber(calibration?.queueDecayBiasBps, 0);
+    const spreadShockBiasBps = safeNumber(calibration?.spreadShockBiasBps, 0);
+    const adjustedLatencyMs = Math.round((latencyMs || 0) * latencyMultiplier);
+    const workingTimeMs = isMaker ? Math.round((plan.makerPatienceMs || 0) * clamp(0.72 + depthConfidence * 0.45 - queueImbalance * 0.14, 0.45, 1.2) * latencyMultiplier) : Math.round(adjustedLatencyMs || 0);
+    const latencyBps = clamp((adjustedLatencyMs / 1000) * (volatility * 520 + spreadBps * 0.05 + Math.abs(tradeFlow) * 1.6), 0, 18);
     const queueDecayBps = isMaker
       ? clamp(
           (workingTimeMs / 1000) *
@@ -230,6 +299,7 @@ export class ExecutionEngine {
           0,
           8
         )
+        + queueDecayBiasBps
       : 0;
     const spreadShockBps = clamp(
       Math.max(0, spreadBps - Math.max(plan.expectedSlippageBps || expectedImpactBps, spreadBps * 0.35)) * 0.14 +
@@ -237,7 +307,7 @@ export class ExecutionEngine {
         Math.max(0, 0.5 - depthConfidence) * 2.2,
       0,
       10
-    );
+    ) + spreadShockBiasBps;
     const liquidityShockBps = clamp(
       (1 - depthConfidence) * 1.6 +
         Math.max(0, 0.28 - queueRefreshScore) * 3.2 +
@@ -253,8 +323,10 @@ export class ExecutionEngine {
             queueImbalance * 0.08 -
             volatility * 2.4 -
             spreadBps / 180 +
+            makerFillBias +
             queueDecayBps / -18 -
             spreadShockBps / 28 -
+            calibrationBiasBps / 42 -
             (isPegged ? 0.08 : 0),
           resolvedMakerFillFloor,
           0.98
@@ -276,6 +348,7 @@ export class ExecutionEngine {
       0.01,
       expectedImpactBps * styleImpact +
         expectedMidSlippageBps * 0.25 +
+        calibrationBiasBps +
         latencyBps * (isMaker ? 0.55 : 1) +
         queuePenaltyBps +
         queueDecayBps * 0.35 +
@@ -311,7 +384,8 @@ export class ExecutionEngine {
         `latency_bps:${latencyBps.toFixed(2)}`,
         `queue_decay_bps:${queueDecayBps.toFixed(2)}`,
         `spread_shock_bps:${spreadShockBps.toFixed(2)}`,
-        `working_ms:${workingTimeMs}`
+        `working_ms:${workingTimeMs}`,
+        `calibration_bps:${calibrationBiasBps.toFixed(2)}`
       ]
     };
   }

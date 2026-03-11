@@ -463,6 +463,8 @@ function buildExitLearning(trades = []) {
     lateExitCount,
     topReason: exitScorecards[0]?.id || null,
     scorecards: exitScorecards,
+    strategyPolicies: buildScopedExitPolicies(trades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown"),
+    regimePolicies: buildScopedExitPolicies(trades, (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown"),
     notes: [
       exitScorecards[0]
         ? `${exitScorecards[0].id} is momenteel de sterkste exit-route.`
@@ -475,6 +477,62 @@ function buildExitLearning(trades = []) {
         : "Geen duidelijke premature exits in de huidige set."
     ]
   };
+}
+
+function buildScopedExitPolicies(trades = [], keyFn = null) {
+  const map = new Map();
+  for (const trade of trades) {
+    const id = (keyFn ? keyFn(trade) : "unknown") || "unknown";
+    if (!map.has(id)) {
+      map.set(id, {
+        id,
+        tradeCount: 0,
+        prematureExitCount: 0,
+        lateExitCount: 0,
+        captureSum: 0
+      });
+    }
+    const bucket = map.get(id);
+    const mfePct = Math.max(0, trade.mfePct || 0);
+    const captureRatio = mfePct > 0 ? clamp((trade.netPnlPct || 0) / mfePct, -1, 1.4) : (trade.netPnlPct || 0) > 0 ? 0.65 : 0.45;
+    const prematureExit = (trade.netPnlPct || 0) > 0 && mfePct >= 0.012 && captureRatio < 0.42;
+    const lateExit = (trade.netPnlPct || 0) <= 0 && mfePct >= 0.012 && captureRatio < 0.08;
+    bucket.tradeCount += 1;
+    bucket.captureSum += Math.max(0, captureRatio);
+    if (prematureExit) {
+      bucket.prematureExitCount += 1;
+    }
+    if (lateExit) {
+      bucket.lateExitCount += 1;
+    }
+  }
+
+  return [...map.values()]
+    .filter((bucket) => bucket.tradeCount >= 2)
+    .map((bucket) => {
+      const prematureRate = bucket.tradeCount ? bucket.prematureExitCount / bucket.tradeCount : 0;
+      const lateRate = bucket.tradeCount ? bucket.lateExitCount / bucket.tradeCount : 0;
+      const lateBiased = lateRate > prematureRate + 0.05;
+      const prematureBiased = prematureRate > lateRate + 0.05;
+      return {
+        id: bucket.id,
+        tradeCount: bucket.tradeCount,
+        prematureExitCount: bucket.prematureExitCount,
+        lateExitCount: bucket.lateExitCount,
+        averageCapture: num(bucket.captureSum / Math.max(bucket.tradeCount, 1)),
+        scaleOutFractionMultiplier: num(lateBiased ? 1.08 : prematureBiased ? 0.92 : 1),
+        scaleOutTriggerMultiplier: num(lateBiased ? 0.94 : prematureBiased ? 1.08 : 1),
+        trailingStopMultiplier: num(lateBiased ? 0.9 : prematureBiased ? 1.08 : 1),
+        maxHoldMinutesMultiplier: num(lateBiased ? 0.84 : prematureBiased ? 1.08 : 1),
+        status: lateBiased
+          ? "tighten"
+          : prematureBiased
+            ? "widen"
+            : "balanced"
+      };
+    })
+    .sort((left, right) => (right.tradeCount || 0) - (left.tradeCount || 0))
+    .slice(0, 8);
 }
 
 function buildFeatureDecay(trades = [], config = {}) {

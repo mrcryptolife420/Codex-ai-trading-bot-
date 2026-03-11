@@ -1,7 +1,7 @@
 import path from "node:path";
 import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
-const RUNTIME_SCHEMA_VERSION = 3;
+const RUNTIME_SCHEMA_VERSION = 4;
 const JOURNAL_SCHEMA_VERSION = 2;
 
 const DEFAULT_MODEL = {
@@ -52,16 +52,22 @@ const DEFAULT_RUNTIME = {
   dataRecorder: {},
   shadowTrading: {},
   thresholdTuning: {},
+  executionCalibration: {},
   exchangeTruth: {
     status: "unknown",
     freezeEntries: false,
     mismatchCount: 0,
     runtimePositionCount: 0,
     exchangePositionCount: 0,
+    openOrderCount: 0,
+    openOrderListCount: 0,
     lastReconciledAt: null,
     lastHealthyAt: null,
     orphanedSymbols: [],
     missingRuntimeSymbols: [],
+    unmatchedOrderSymbols: [],
+    staleProtectiveSymbols: [],
+    recentFillSymbols: [],
     warnings: [],
     notes: []
   },
@@ -69,13 +75,16 @@ const DEFAULT_RUNTIME = {
     lastUpdatedAt: null,
     positions: {},
     recentTransitions: [],
-    pendingActions: []
+    pendingActions: [],
+    activeActions: {},
+    actionJournal: []
   },
   ops: {
     lastUpdatedAt: null,
     incidentTimeline: [],
     runbooks: [],
-    performanceChange: null
+    performanceChange: null,
+    readiness: null
   },
   service: {
     lastHeartbeatAt: null,
@@ -153,6 +162,7 @@ function migrateRuntime(runtime) {
   merged.qualityQuorum = merged.qualityQuorum && typeof merged.qualityQuorum === "object" ? merged.qualityQuorum : {};
   merged.shadowTrading = mergeDefaultShape(clone(DEFAULT_RUNTIME.shadowTrading), merged.shadowTrading);
   merged.thresholdTuning = mergeDefaultShape(clone(DEFAULT_RUNTIME.thresholdTuning), merged.thresholdTuning);
+  merged.executionCalibration = mergeDefaultShape(clone(DEFAULT_RUNTIME.executionCalibration), merged.executionCalibration);
   merged.exchangeTruth = mergeDefaultShape(clone(DEFAULT_RUNTIME.exchangeTruth), merged.exchangeTruth);
   merged.orderLifecycle = mergeDefaultShape(clone(DEFAULT_RUNTIME.orderLifecycle), merged.orderLifecycle);
   merged.ops = mergeDefaultShape(clone(DEFAULT_RUNTIME.ops), merged.ops);

@@ -164,15 +164,24 @@ export function validateConfig(config) {
   assertRange("OFFLINE_TRAINER_MIN_READINESS", config.offlineTrainerMinReadiness, 0, 1, errors);
   assertRange("MODEL_PROMOTION_PROBATION_LIVE_TRADES", config.modelPromotionProbationLiveTrades, 1, 100, errors);
   assertRange("EXCHANGE_TRUTH_FREEZE_MISMATCH_COUNT", config.exchangeTruthFreezeMismatchCount, 1, 20, errors);
+  assertRange("EXCHANGE_TRUTH_RECENT_FILL_LOOKBACK_MINUTES", config.exchangeTruthRecentFillLookbackMinutes, 1, 240, errors);
   assertRange("POSITION_FAILURE_PROTECT_ONLY_COUNT", config.positionFailureProtectOnlyCount, 1, 20, errors);
   assertRange("POSITION_FAILURE_MANUAL_REVIEW_COUNT", config.positionFailureManualReviewCount, 1, 30, errors);
   assertRange("SHADOW_TRADE_DECISION_LIMIT", config.shadowTradeDecisionLimit, 1, 20, errors);
+  assertRange("THRESHOLD_AUTO_APPLY_MIN_CONFIDENCE", config.thresholdAutoApplyMinConfidence, 0, 1, errors);
+  assertRange("THRESHOLD_PROBATION_MIN_TRADES", config.thresholdProbationMinTrades, 1, 100, errors);
+  assertRange("THRESHOLD_PROBATION_WINDOW_DAYS", config.thresholdProbationWindowDays, 1, 90, errors);
+  assertRange("THRESHOLD_PROBATION_MAX_AVG_PNL_DROP_PCT", config.thresholdProbationMaxAvgPnlDropPct, 0, 0.2, errors);
+  assertRange("THRESHOLD_PROBATION_MAX_WIN_RATE_DROP", config.thresholdProbationMaxWinRateDrop, 0, 0.5, errors);
   assertRange("THRESHOLD_RELAX_STEP", config.thresholdRelaxStep, 0.001, 0.05, errors);
   assertRange("THRESHOLD_TIGHTEN_STEP", config.thresholdTightenStep, 0.001, 0.05, errors);
   assertRange("THRESHOLD_TUNING_MAX_RECOMMENDATIONS", config.thresholdTuningMaxRecommendations, 1, 20, errors);
   assertRange("FEATURE_DECAY_MIN_TRADES", config.featureDecayMinTrades, 3, 100, errors);
   assertRange("FEATURE_DECAY_WEAK_SCORE", config.featureDecayWeakScore, 0, 1, errors);
   assertRange("FEATURE_DECAY_BLOCKED_SCORE", config.featureDecayBlockedScore, 0, 1, errors);
+  assertRange("EXECUTION_CALIBRATION_MIN_LIVE_TRADES", config.executionCalibrationMinLiveTrades, 1, 200, errors);
+  assertRange("EXECUTION_CALIBRATION_LOOKBACK_TRADES", config.executionCalibrationLookbackTrades, 4, 500, errors);
+  assertRange("EXECUTION_CALIBRATION_MAX_BPS_ADJUST", config.executionCalibrationMaxBpsAdjust, 0.5, 50, errors);
   assertRange("COUNTERFACTUAL_LOOKAHEAD_MINUTES", config.counterfactualLookaheadMinutes, 5, 1440, errors);
   assertRange("COUNTERFACTUAL_QUEUE_LIMIT", config.counterfactualQueueLimit, 5, 500, errors);
   assertRange("MIN_BOOK_PRESSURE_FOR_ENTRY", config.minBookPressureForEntry, -1, 1, errors);
@@ -200,6 +209,9 @@ export function validateConfig(config) {
   assertRange("CANARY_LIVE_TRADE_COUNT", config.canaryLiveTradeCount, 1, 100, errors);
   assertRange("CANARY_LIVE_SIZE_MULTIPLIER", config.canaryLiveSizeMultiplier, 0.05, 1, errors);
   assertRange("DAILY_RISK_BUDGET_FLOOR", config.dailyRiskBudgetFloor, 0.05, 1, errors);
+  assertRange("PORTFOLIO_MAX_CVAR_PCT", config.portfolioMaxCvarPct, 0.001, 0.2, errors);
+  assertRange("PORTFOLIO_DRAWDOWN_BUDGET_PCT", config.portfolioDrawdownBudgetPct, 0.005, 0.5, errors);
+  assertRange("PORTFOLIO_REGIME_KILL_SWITCH_LOSS_STREAK", config.portfolioRegimeKillSwitchLossStreak, 1, 20, errors);
   assertRange("MAX_ENTRIES_PER_DAY", config.maxEntriesPerDay, 1, 100, errors);
   assertRange("MAX_ENTRIES_PER_SYMBOL_PER_DAY", config.maxEntriesPerSymbolPerDay, 1, 24, errors);
   assertRange("SYMBOL_LOSS_COOLDOWN_MINUTES", config.symbolLossCooldownMinutes, 0, 1440, errors);
@@ -309,8 +321,17 @@ export function validateConfig(config) {
   if (config.positionFailureManualReviewCount < config.positionFailureProtectOnlyCount) {
     errors.push("POSITION_FAILURE_MANUAL_REVIEW_COUNT cannot be smaller than POSITION_FAILURE_PROTECT_ONLY_COUNT.");
   }
+  if (config.thresholdProbationMaxWinRateDrop >= 0.25) {
+    warnings.push("THRESHOLD_PROBATION_MAX_WIN_RATE_DROP is wide; threshold experiments may stay active despite weaker trade quality.");
+  }
   if (config.featureDecayBlockedScore >= config.featureDecayWeakScore) {
     errors.push("FEATURE_DECAY_BLOCKED_SCORE must be smaller than FEATURE_DECAY_WEAK_SCORE.");
+  }
+  if (config.executionCalibrationLookbackTrades < config.executionCalibrationMinLiveTrades) {
+    errors.push("EXECUTION_CALIBRATION_LOOKBACK_TRADES cannot be smaller than EXECUTION_CALIBRATION_MIN_LIVE_TRADES.");
+  }
+  if (config.portfolioDrawdownBudgetPct < config.maxDailyDrawdown) {
+    warnings.push("PORTFOLIO_DRAWDOWN_BUDGET_PCT is tighter than MAX_DAILY_DRAWDOWN; allocator cooling may trigger before the global drawdown guard.");
   }
   if (config.serviceRestartMaxDelaySeconds < config.serviceRestartDelaySeconds) {
     errors.push("SERVICE_RESTART_MAX_DELAY_SECONDS cannot be smaller than SERVICE_RESTART_DELAY_SECONDS.");

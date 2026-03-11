@@ -64,6 +64,19 @@ async function handleApi(request, response, manager) {
   if (request.method === "GET" && url.pathname === "/api/snapshot") {
     return sendJson(response, 200, await manager.getSnapshot());
   }
+  if (request.method === "GET" && url.pathname === "/api/health") {
+    const readiness = await manager.getOperationalReadiness();
+    return sendJson(response, 200, {
+      ok: true,
+      status: readiness.status,
+      reasons: readiness.reasons,
+      checkedAt: readiness.checkedAt
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/readiness") {
+    const readiness = await manager.getOperationalReadiness();
+    return sendJson(response, readiness.ok ? 200 : 503, readiness);
+  }
 
   if (request.method !== "POST") {
     return sendJson(response, 405, { error: "Method not allowed" });

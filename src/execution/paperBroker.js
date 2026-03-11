@@ -23,6 +23,20 @@ function buildExitPlan(position) {
   };
 }
 
+function resolveExecutionCalibration(runtime = {}, plan = {}) {
+  const summary = runtime.executionCalibration || {};
+  const style = summary.styles?.[plan.entryStyle || "market"] || summary.styles?.market || null;
+  return style
+    ? {
+        slippageBiasBps: Number(style.slippageBiasBps || 0),
+        makerFillBias: Number(style.makerFillBias || 0),
+        latencyMultiplier: Number(style.latencyMultiplier || 1),
+        queueDecayBiasBps: Number(style.queueDecayBiasBps || 0),
+        spreadShockBiasBps: Number(style.spreadShockBiasBps || 0)
+      }
+    : null;
+}
+
 function resolvePaperBuySize({ quoteAmount, executionPrice, fillEstimate, rules }) {
   const requestedSize = resolveMarketBuyQuantity(quoteAmount, executionPrice, rules);
   if (!requestedSize.valid) {
@@ -141,7 +155,8 @@ export class PaperBroker {
       side: "BUY",
       requestedQuoteAmount: quoteAmount,
       plan: executionPlan,
-      latencyMs: this.config.paperLatencyMs
+      latencyMs: this.config.paperLatencyMs,
+      calibration: resolveExecutionCalibration(runtime, executionPlan)
     });
     const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.ask || marketSnapshot.book.mid;
     const size = resolvePaperBuySize({
@@ -236,7 +251,8 @@ export class PaperBroker {
       side: "SELL",
       requestedQuantity: quantity,
       plan: exitPlan,
-      latencyMs: this.config.paperLatencyMs
+      latencyMs: this.config.paperLatencyMs,
+      calibration: resolveExecutionCalibration(runtime, exitPlan)
     });
     const executedQuantity = fillEstimate.executedQuantity || quantity;
     const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.bid;
@@ -304,7 +320,8 @@ export class PaperBroker {
       side: "SELL",
       requestedQuantity: position.quantity,
       plan: exitPlan,
-      latencyMs: this.config.paperLatencyMs
+      latencyMs: this.config.paperLatencyMs,
+      calibration: resolveExecutionCalibration(runtime, exitPlan)
     });
     const executedQuantity = fillEstimate.executedQuantity || position.quantity;
     const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.bid;

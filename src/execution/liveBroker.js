@@ -98,6 +98,72 @@ const EMPTY_NEWS = {
   sourceQualityScore: 0
 };
 
+function ensureLifecycleJournal(runtime) {
+  if (!runtime) {
+    return null;
+  }
+  runtime.orderLifecycle = runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
+  runtime.orderLifecycle.activeActions = runtime.orderLifecycle.activeActions && typeof runtime.orderLifecycle.activeActions === "object"
+    ? runtime.orderLifecycle.activeActions
+    : {};
+  runtime.orderLifecycle.actionJournal = Array.isArray(runtime.orderLifecycle.actionJournal)
+    ? runtime.orderLifecycle.actionJournal
+    : [];
+  return runtime.orderLifecycle;
+}
+
+function startLifecycleAction(runtime, action = {}) {
+  const lifecycle = ensureLifecycleJournal(runtime);
+  if (!lifecycle) {
+    return null;
+  }
+  const id = action.id || crypto.randomUUID();
+  lifecycle.activeActions[id] = {
+    id,
+    type: action.type || "exchange_action",
+    symbol: action.symbol || null,
+    positionId: action.positionId || null,
+    status: "pending",
+    stage: action.stage || "queued",
+    severity: action.severity || "neutral",
+    startedAt: nowIso(),
+    updatedAt: nowIso(),
+    detail: action.detail || null
+  };
+  return id;
+}
+
+function touchLifecycleAction(runtime, actionId, patch = {}) {
+  const lifecycle = ensureLifecycleJournal(runtime);
+  if (!lifecycle || !actionId || !lifecycle.activeActions[actionId]) {
+    return null;
+  }
+  lifecycle.activeActions[actionId] = {
+    ...lifecycle.activeActions[actionId],
+    ...patch,
+    updatedAt: nowIso()
+  };
+  return lifecycle.activeActions[actionId];
+}
+
+function finishLifecycleAction(runtime, actionId, patch = {}) {
+  const lifecycle = ensureLifecycleJournal(runtime);
+  if (!lifecycle || !actionId) {
+    return null;
+  }
+  const active = lifecycle.activeActions[actionId] || { id: actionId };
+  delete lifecycle.activeActions[actionId];
+  lifecycle.actionJournal.unshift({
+    ...active,
+    ...patch,
+    completedAt: nowIso(),
+    updatedAt: nowIso(),
+    status: patch.status || active.status || "completed"
+  });
+  lifecycle.actionJournal = lifecycle.actionJournal.slice(0, 80);
+  return lifecycle.actionJournal[0];
+}
+
 export class LiveBroker {
   constructor({ client, config, logger, symbolRules, stream = null }) {
     this.client = client;
@@ -165,27 +231,50 @@ export class LiveBroker {
     };
   }
 
-  async placeProtectiveOrder(position, rules) {
-    const orderList = await this.client.placeOrderListOco(await this.buildProtectiveOrderParams(position, rules));
-    position.protectiveOrderListId = orderList.orderListId;
-    position.protectiveListClientOrderId = orderList.listClientOrderId || null;
-    position.protectiveOrders = orderList.orders || [];
-    position.protectiveOrderStatus = orderList.listStatusType || orderList.listOrderStatus || "NEW";
-    position.protectiveOrderPlacedAt = nowIso();
-    position.reconcileRequired = false;
-    position.lifecycleState = position.manualReviewRequired
-      ? "manual_review"
-      : position.operatorMode === "protect_only"
-        ? "protect_only"
-        : "protected";
-    return orderList;
+  async placeProtectiveOrder(position, rules, runtime = null, origin = "protective_build") {
+    const actionId = startLifecycleAction(runtime, {
+      type: origin,
+      symbol: position.symbol,
+      positionId: position.id || null,
+      stage: "submit",
+      detail: "protective_order"
+    });
+    try {
+      const orderList = await this.client.placeOrderListOco(await this.buildProtectiveOrderParams(position, rules));
+      position.protectiveOrderListId = orderList.orderListId;
+      position.protectiveListClientOrderId = orderList.listClientOrderId || null;
+      position.protectiveOrders = orderList.orders || [];
+      position.protectiveOrderStatus = orderList.listStatusType || orderList.listOrderStatus || "NEW";
+      position.protectiveOrderPlacedAt = nowIso();
+      position.reconcileRequired = false;
+      position.lifecycleState = position.manualReviewRequired
+        ? "manual_review"
+        : position.operatorMode === "protect_only"
+          ? "protect_only"
+          : "protected";
+      finishLifecycleAction(runtime, actionId, {
+        status: "completed",
+        stage: "protected",
+        severity: "positive",
+        detail: `order_list:${orderList.orderListId || "unknown"}`
+      });
+      return orderList;
+    } catch (error) {
+      finishLifecycleAction(runtime, actionId, {
+        status: "failed",
+        stage: "error",
+        severity: "negative",
+        error: error.message
+      });
+      throw error;
+    }
   }
 
-  async ensureProtectiveOrder(position, rules) {
+  async ensureProtectiveOrder(position, rules, runtime = null, origin = "protective_build") {
     if (!this.config.enableExchangeProtection || position.protectiveOrderListId) {
       return null;
     }
-    return this.placeProtectiveOrder(position, rules);
+    return this.placeProtectiveOrder(position, rules, runtime, origin);
   }
 
   clearProtectiveOrderState(position, status = null) {
@@ -547,6 +636,11 @@ export class LiveBroker {
   }
 
   async enterPosition({ symbol, rules, quoteAmount, marketSnapshot, decision, score, rawFeatures, strategySummary, newsSummary, entryRationale, runtime }) {
+    const entryActionId = startLifecycleAction(runtime, {
+      type: "entry_open",
+      symbol,
+      stage: "submit"
+    });
     const plan = decision.executionPlan || this.execution.buildEntryPlan({
       symbol,
       marketSnapshot,
@@ -601,6 +695,7 @@ export class LiveBroker {
 
       const orderIds = executions.map((item) => item.order.orderId).filter(Boolean);
       orderTelemetry = await this.collectOrderTelemetry(symbol, orderIds);
+      touchLifecycleAction(runtime, entryActionId, { stage: "build_position" });
       position = this.buildEntryFromExecutions({
         symbol,
         executions,
@@ -619,8 +714,16 @@ export class LiveBroker {
         keepPriorityCount,
         requestedQuoteAmount: quoteAmount
       });
-      await this.ensureProtectiveOrder(position, rules);
+      touchLifecycleAction(runtime, entryActionId, { stage: "protect_position", positionId: position.id });
+      await this.ensureProtectiveOrder(position, rules, runtime, "protective_build");
       runtime.openPositions.push(position);
+      finishLifecycleAction(runtime, entryActionId, {
+        status: "completed",
+        stage: "position_opened",
+        severity: "positive",
+        positionId: position.id,
+        detail: position.protectiveOrderListId ? "protected" : "open_without_protection"
+      });
       return position;
     } catch (error) {
       if (!executions.length && error.pendingOrderId) {
@@ -664,6 +767,13 @@ export class LiveBroker {
           marketSnapshot,
           plan
         });
+        finishLifecycleAction(runtime, entryActionId, {
+          status: "recovered",
+          stage: "auto_flattened",
+          severity: "neutral",
+          positionId: position.id,
+          detail: recoveredTrade.reason
+        });
         const exposureError = new Error(`Live entry for ${symbol} opened exchange exposure but was auto-flattened after failure: ${error.message}`);
         exposureError.preventFurtherEntries = true;
         exposureError.blockedReason = "entry_recovered_after_partial_fill";
@@ -676,6 +786,14 @@ export class LiveBroker {
         position.reconcileRequired = true;
         position.lifecycleState = "reconcile_required";
         runtime.openPositions.push(position);
+        finishLifecycleAction(runtime, entryActionId, {
+          status: "failed",
+          stage: "reconcile_required",
+          severity: "negative",
+          positionId: position.id,
+          error: flattenError.message,
+          detail: error.message
+        });
         const exposureError = new Error(`Live entry for ${symbol} opened exchange exposure and remains under runtime management after failure: ${error.message}. Recovery failed: ${flattenError.message}`);
         exposureError.preventFurtherEntries = true;
         exposureError.blockedReason = "entry_requires_runtime_recovery";
@@ -683,19 +801,44 @@ export class LiveBroker {
         exposureError.cleanupError = flattenError;
         throw exposureError;
       }
+    } finally {
+      if (runtime?.orderLifecycle?.activeActions?.[entryActionId]) {
+        finishLifecycleAction(runtime, entryActionId, {
+          status: "failed",
+          stage: "entry_error",
+          severity: "negative"
+        });
+      }
     }
   }
 
-  async cancelProtectiveOrders(position, { strict = false } = {}) {
+  async cancelProtectiveOrders(position, { strict = false, runtime = null, origin = "protective_cancel" } = {}) {
     if (!position.protectiveOrderListId) {
       return null;
     }
+    const actionId = startLifecycleAction(runtime, {
+      type: origin,
+      symbol: position.symbol,
+      positionId: position.id || null,
+      stage: "cancel"
+    });
     try {
       const response = await this.client.cancelOrderList({ symbol: position.symbol, orderListId: position.protectiveOrderListId });
       this.clearProtectiveOrderState(position, "CANCELED");
+      finishLifecycleAction(runtime, actionId, {
+        status: "completed",
+        stage: "canceled",
+        severity: "neutral"
+      });
       return response;
     } catch (error) {
       this.logger?.warn?.("Protective order-list cancel failed", { symbol: position.symbol, error: error.message });
+      finishLifecycleAction(runtime, actionId, {
+        status: strict ? "failed" : "warning",
+        stage: "cancel_error",
+        severity: "negative",
+        error: error.message
+      });
       if (strict) {
         throw error;
       }
@@ -817,17 +960,36 @@ export class LiveBroker {
   }
 
   async reconcileRuntime({ runtime, getMarketSnapshot }) {
-    const account = await this.client.getAccountInfo(true);
-    const assetMap = toAssetMap(account);
-    const closedTrades = [];
-    const recoveredPositions = [];
-    const warnings = [];
+    const reconcileActionId = startLifecycleAction(runtime, {
+      type: "exchange_reconcile",
+      symbol: null,
+      stage: "account_sync"
+    });
+    try {
+      const account = await this.client.getAccountInfo(true);
+      const assetMap = toAssetMap(account);
+      const openOrders = this.client.getOpenOrders
+        ? await this.client.getOpenOrders().catch(() => [])
+        : [];
+      const openOrderLists = this.client.getOpenOrderLists
+        ? await this.client.getOpenOrderLists().catch(() => [])
+        : [];
+      const openOrderListIds = new Set((openOrderLists || []).map((item) => item.orderListId).filter((value) => value != null));
+      const closedTrades = [];
+      const recoveredPositions = [];
+      const warnings = [];
 
     for (const position of [...runtime.openPositions]) {
-      const trade = await this.syncPosition(position, runtime);
-      if (trade) {
-        closedTrades.push(trade);
-        continue;
+      try {
+        const trade = await this.syncPosition(position, runtime);
+        if (trade) {
+          closedTrades.push(trade);
+          continue;
+        }
+      } catch (error) {
+        position.reconcileRequired = true;
+        position.lifecycleState = "reconcile_required";
+        warnings.push({ symbol: position.symbol, issue: "position_sync_failed", error: error.message });
       }
       const rules = this.symbolRules[position.symbol];
       const balance = assetMap[rules.baseAsset]?.total || 0;
@@ -836,9 +998,13 @@ export class LiveBroker {
         warnings.push({ symbol: position.symbol, issue: "runtime_position_missing_on_exchange" });
         continue;
       }
+      if (position.protectiveOrderListId && !openOrderListIds.has(position.protectiveOrderListId)) {
+        this.clearProtectiveOrderState(position, "UNKNOWN");
+        warnings.push({ symbol: position.symbol, issue: "protective_order_state_stale" });
+      }
       if (!position.protectiveOrderListId && this.config.enableExchangeProtection) {
         try {
-          await this.ensureProtectiveOrder(position, rules);
+          await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
         } catch (error) {
           position.reconcileRequired = true;
           position.lifecycleState = "reconcile_required";
@@ -898,7 +1064,7 @@ export class LiveBroker {
       runtime.openPositions.push(recoveredPosition);
       recoveredPositions.push(recoveredPosition);
       try {
-        await this.ensureProtectiveOrder(recoveredPosition, rules);
+        await this.ensureProtectiveOrder(recoveredPosition, rules, runtime, "protective_rebuild");
       } catch (error) {
         recoveredPosition.reconcileRequired = true;
         recoveredPosition.lifecycleState = "reconcile_required";
@@ -906,67 +1072,133 @@ export class LiveBroker {
       }
     }
 
-    const runtimeSymbols = new Set((runtime.openPositions || []).map((position) => position.symbol));
-    const exchangeSymbols = Object.entries(this.symbolRules)
-      .filter(([, rules]) => (assetMap[rules.baseAsset]?.total || 0) >= Math.max(rules.minQty || 0, 0))
-      .map(([symbol]) => symbol);
-    const orphanedSymbols = exchangeSymbols.filter((symbol) => !runtimeSymbols.has(symbol));
-    const missingRuntimeSymbols = warnings
-      .filter((warning) => warning.issue === "runtime_position_missing_on_exchange")
-      .map((warning) => warning.symbol)
-      .filter(Boolean);
-    const mismatchCount = [...new Set([
-      ...orphanedSymbols,
-      ...missingRuntimeSymbols,
-      ...warnings
-        .filter((warning) => [
-          "protective_order_rebuild_failed",
-          "protective_order_for_recovered_position_failed",
-          "unmanaged_balance_detected"
-        ].includes(warning.issue))
+      const runtimeSymbols = new Set((runtime.openPositions || []).map((position) => position.symbol));
+      const exchangeSymbols = Object.entries(this.symbolRules)
+        .filter(([, rules]) => (assetMap[rules.baseAsset]?.total || 0) >= Math.max(rules.minQty || 0, 0))
+        .map(([symbol]) => symbol);
+      const trackedTruthSymbols = [...new Set([...runtimeSymbols, ...exchangeSymbols, ...(openOrders || []).map((order) => order.symbol).filter(Boolean)])].slice(0, 12);
+      const unmatchedOrderSymbols = [...new Set((openOrders || []).map((order) => order.symbol).filter((symbol) => symbol && !runtimeSymbols.has(symbol)))];
+      const staleProtectiveSymbols = warnings
+        .filter((warning) => warning.issue === "protective_order_state_stale")
         .map((warning) => warning.symbol)
-        .filter(Boolean)
-    ])].length;
-    const freezeEntries = mismatchCount >= (this.config.exchangeTruthFreezeMismatchCount || 2);
-    const truthAt = nowIso();
-    const exchangeTruth = {
-      status: freezeEntries ? "blocked" : mismatchCount ? "degraded" : "healthy",
-      freezeEntries,
-      mismatchCount,
-      runtimePositionCount: runtime.openPositions.length,
-      exchangePositionCount: exchangeSymbols.length,
-      lastReconciledAt: truthAt,
-      lastHealthyAt: mismatchCount === 0 ? truthAt : runtime.exchangeTruth?.lastHealthyAt || null,
-      orphanedSymbols,
-      missingRuntimeSymbols,
-      warnings: warnings.slice(0, 8),
-      notes: [
-        mismatchCount
-          ? `${mismatchCount} exchange/runtime mismatches vragen operator-aandacht.`
-          : "Exchange en runtime inventory zijn in sync.",
-        orphanedSymbols.length
-          ? `Onbeheerde exchange-symbolen: ${orphanedSymbols.join(", ")}.`
-          : "Geen onbeheerde exchange-balansen gedetecteerd.",
-        missingRuntimeSymbols.length
-          ? `Runtime-posities missen op de exchange: ${missingRuntimeSymbols.join(", ")}.`
-          : "Geen runtime-posities missen op de exchange."
-      ]
-    };
-
-    return {
-      closedTrades,
-      recoveredPositions,
-      warnings,
-      exchangeTruth,
-      account: {
-        canTrade: account.canTrade,
-        accountType: account.accountType,
-        permissions: account.permissions
+        .filter(Boolean);
+      const orphanedSymbols = exchangeSymbols.filter((symbol) => !runtimeSymbols.has(symbol));
+      const missingRuntimeSymbols = warnings
+        .filter((warning) => warning.issue === "runtime_position_missing_on_exchange")
+        .map((warning) => warning.symbol)
+        .filter(Boolean);
+      const recentFillSymbols = [];
+      if (this.client.getMyTrades) {
+        const tradeLookbackMs = (this.config.exchangeTruthRecentFillLookbackMinutes || 30) * 60_000;
+        const recentTradeResults = await Promise.allSettled(
+          trackedTruthSymbols.map((symbol) => this.client.getMyTrades(symbol, { limit: 8 }))
+        );
+        recentTradeResults.forEach((result, index) => {
+          if (result.status !== "fulfilled") {
+            return;
+          }
+          const hasRecentTrade = (result.value || []).some((trade) => {
+            const tradeAt = Number(trade.time || trade.transactTime || 0);
+            return Number.isFinite(tradeAt) && (Date.now() - tradeAt) <= tradeLookbackMs;
+          });
+          if (hasRecentTrade) {
+            recentFillSymbols.push(trackedTruthSymbols[index]);
+          }
+        });
       }
-    };
+      const mismatchCount = [...new Set([
+        ...orphanedSymbols,
+        ...missingRuntimeSymbols,
+        ...unmatchedOrderSymbols,
+        ...staleProtectiveSymbols,
+        ...recentFillSymbols,
+        ...warnings
+          .filter((warning) => [
+            "protective_order_rebuild_failed",
+            "protective_order_for_recovered_position_failed",
+            "protective_order_state_stale",
+            "position_sync_failed",
+            "unmanaged_balance_detected"
+          ].includes(warning.issue))
+          .map((warning) => warning.symbol)
+          .filter(Boolean)
+      ])].length;
+      const freezeEntries = mismatchCount >= (this.config.exchangeTruthFreezeMismatchCount || 2);
+      const truthAt = nowIso();
+      const exchangeTruth = {
+        status: freezeEntries ? "blocked" : mismatchCount ? "degraded" : "healthy",
+        freezeEntries,
+        mismatchCount,
+        runtimePositionCount: runtime.openPositions.length,
+        exchangePositionCount: exchangeSymbols.length,
+        openOrderCount: openOrders.length,
+        openOrderListCount: openOrderLists.length,
+        lastReconciledAt: truthAt,
+        lastHealthyAt: mismatchCount === 0 ? truthAt : runtime.exchangeTruth?.lastHealthyAt || null,
+        orphanedSymbols,
+        missingRuntimeSymbols,
+        unmatchedOrderSymbols,
+        staleProtectiveSymbols,
+        recentFillSymbols,
+        warnings: warnings.slice(0, 8),
+        notes: [
+          mismatchCount
+            ? `${mismatchCount} exchange/runtime mismatches vragen operator-aandacht.`
+            : "Exchange en runtime inventory zijn in sync.",
+          orphanedSymbols.length
+            ? `Onbeheerde exchange-symbolen: ${orphanedSymbols.join(", ")}.`
+            : "Geen onbeheerde exchange-balansen gedetecteerd.",
+          missingRuntimeSymbols.length
+            ? `Runtime-posities missen op de exchange: ${missingRuntimeSymbols.join(", ")}.`
+            : "Geen runtime-posities missen op de exchange.",
+          unmatchedOrderSymbols.length
+            ? `Open orders zonder runtime-positie: ${unmatchedOrderSymbols.join(", ")}.`
+            : "Geen orphaned open orders gedetecteerd.",
+          staleProtectiveSymbols.length
+            ? `Protective-state werd herbouwd of gemarkeerd voor: ${staleProtectiveSymbols.join(", ")}.`
+            : "Geen stale protective order states gedetecteerd.",
+          recentFillSymbols.length
+            ? `Recente fills in truth-window: ${recentFillSymbols.join(", ")}.`
+            : "Geen zeer recente fills in truth-window."
+        ]
+      };
+
+      finishLifecycleAction(runtime, reconcileActionId, {
+        status: freezeEntries ? "warning" : "completed",
+        stage: freezeEntries ? "degraded" : "healthy",
+        severity: freezeEntries ? "negative" : "positive",
+        detail: `mismatches:${mismatchCount}`
+      });
+
+      return {
+        closedTrades,
+        recoveredPositions,
+        warnings,
+        exchangeTruth,
+        account: {
+          canTrade: account.canTrade,
+          accountType: account.accountType,
+          permissions: account.permissions
+        }
+      };
+    } catch (error) {
+      finishLifecycleAction(runtime, reconcileActionId, {
+        status: "failed",
+        stage: "error",
+        severity: "negative",
+        error: error.message
+      });
+      throw error;
+    }
   }
 
-  async scaleOutPosition({ position, rules, marketSnapshot, fraction, reason }) {
+  async scaleOutPosition({ position, rules, marketSnapshot, fraction, reason, runtime = null }) {
+    const scaleOutActionId = startLifecycleAction(runtime, {
+      type: "scale_out",
+      symbol: position.symbol,
+      positionId: position.id || null,
+      stage: "submit"
+    });
     const originalQuantity = Number(position.quantity || 0);
     const requestedFraction = Math.min(Math.max(fraction || this.config.scaleOutFraction, 0.05), 0.95);
     const requestedQuantity = normalizeQuantity(originalQuantity * requestedFraction, rules, "floor", true);
@@ -979,7 +1211,7 @@ export class LiveBroker {
       throw new Error(`Scale-out would leave an invalid remainder for ${position.symbol}.`);
     }
 
-    await this.cancelProtectiveOrders(position, { strict: true });
+    await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
 
     const order = await this.client.placeOrder({
       symbol: position.symbol,
@@ -1009,7 +1241,7 @@ export class LiveBroker {
 
     let protectionWarning = null;
     try {
-      await this.ensureProtectiveOrder(position, rules);
+      await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
     } catch (error) {
       protectionWarning = error.message;
       this.logger?.warn?.("Protective order rebuild after scale-out failed", { symbol: position.symbol, error: error.message });
@@ -1017,6 +1249,13 @@ export class LiveBroker {
       position.reconcileRequired = true;
       position.lifecycleState = "reconcile_required";
     }
+
+    finishLifecycleAction(runtime, scaleOutActionId, {
+      status: protectionWarning ? "warning" : "completed",
+      stage: protectionWarning ? "protection_pending" : "scaled_out",
+      severity: protectionWarning ? "negative" : "positive",
+      detail: reason || "partial_take_profit"
+    });
 
     return {
       id: `${position.id}:scaleout:${Date.now()}`,
@@ -1051,11 +1290,17 @@ export class LiveBroker {
   }
 
   async exitPosition({ position, rules, marketSnapshot, reason, runtime }) {
+    const exitActionId = startLifecycleAction(runtime, {
+      type: "exit_position",
+      symbol: position.symbol,
+      positionId: position.id || null,
+      stage: "submit"
+    });
     const quantity = normalizeQuantity(position.quantity, rules, "floor", true);
     if (!quantity) {
       throw new Error(`Unable to normalize sell quantity for ${position.symbol}.`);
     }
-    await this.cancelProtectiveOrders(position, { strict: true });
+    await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
     const order = await this.client.placeOrder({
       symbol: position.symbol,
       side: "SELL",
@@ -1065,6 +1310,12 @@ export class LiveBroker {
     });
     const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
     runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+    finishLifecycleAction(runtime, exitActionId, {
+      status: "completed",
+      stage: "closed",
+      severity: "positive",
+      detail: reason || "bot_market_exit"
+    });
     return this.buildTradeFromOrder(position, order, order.fills || [], reason, "bot_market_exit", marketSnapshot, orderTelemetry);
   }
 }

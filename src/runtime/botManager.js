@@ -265,6 +265,48 @@ export class BotManager {
     });
   }
 
+  buildOperationalReadiness(snapshot) {
+    const readiness = {
+      ok: true,
+      status: "ready",
+      reasons: [],
+      checkedAt: nowIso(),
+      lastAnalysisAt: snapshot?.dashboard?.overview?.lastAnalysisAt || null,
+      runState: snapshot?.manager?.runState || this.runState,
+      mode: snapshot?.manager?.currentMode || this.config?.botMode || "paper"
+    };
+    if (!snapshot?.dashboard?.overview?.lastAnalysisAt) {
+      readiness.ok = false;
+      readiness.status = "warming";
+      readiness.reasons.push("analysis_not_ready");
+    }
+    if (snapshot?.manager?.lastError?.message || this.lastError?.message) {
+      readiness.ok = false;
+      readiness.status = "degraded";
+      readiness.reasons.push("manager_error");
+    }
+    if (snapshot?.dashboard?.health?.circuitOpen) {
+      readiness.ok = false;
+      readiness.status = "blocked";
+      readiness.reasons.push("health_circuit_open");
+    }
+    if (snapshot?.dashboard?.safety?.exchangeTruth?.freezeEntries) {
+      readiness.ok = false;
+      readiness.status = "blocked";
+      readiness.reasons.push("exchange_truth_freeze");
+    }
+    if ((snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
+      readiness.ok = false;
+      readiness.status = "degraded";
+      readiness.reasons.push("lifecycle_attention_required");
+    }
+    return readiness;
+  }
+
+  async getOperationalReadiness() {
+    return this.buildOperationalReadiness(await this.getSnapshot());
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();

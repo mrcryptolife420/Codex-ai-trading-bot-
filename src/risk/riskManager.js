@@ -36,6 +36,18 @@ function isSoftPaperReason(reason) {
   ].includes(reason);
 }
 
+function average(values = [], fallback = 0) {
+  return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
+}
+
+function matchesScopedAdjustment(entry = {}, strategyId = null, regimeId = null) {
+  const strategies = entry.affectedStrategies || [];
+  const regimes = entry.affectedRegimes || [];
+  const strategyMatch = !strategies.length || (strategyId && strategies.includes(strategyId));
+  const regimeMatch = !regimes.length || (regimeId && regimes.includes(regimeId));
+  return strategyMatch || regimeMatch;
+}
+
 export class RiskManager {
   constructor(config) {
     this.config = config;
@@ -120,6 +132,58 @@ export class RiskManager {
     };
   }
 
+  getThresholdTuningAdjustment(thresholdTuningSummary = {}, strategySummary = {}, regimeSummary = {}) {
+    const applied = thresholdTuningSummary?.appliedRecommendation || null;
+    if (!applied || !["probation", "confirmed"].includes(applied.status || "")) {
+      return {
+        adjustment: 0,
+        status: "inactive",
+        id: null,
+        confidence: 0
+      };
+    }
+    if (!matchesScopedAdjustment(applied, strategySummary?.activeStrategy || null, regimeSummary?.regime || null)) {
+      return {
+        adjustment: 0,
+        status: "out_of_scope",
+        id: applied.id || null,
+        confidence: safeValue(applied.confidence || 0)
+      };
+    }
+    return {
+      adjustment: clamp(safeValue(applied.adjustment || 0), -0.06, 0.06),
+      status: applied.status || "probation",
+      id: applied.id || null,
+      confidence: safeValue(applied.confidence || 0)
+    };
+  }
+
+  resolveAdaptiveExitPolicy(exitLearningSummary = {}, position = {}) {
+    const strategyId = position.strategyAtEntry || position.strategyDecision?.activeStrategy || position.entryRationale?.strategy?.activeStrategy || null;
+    const regimeId = position.regimeAtEntry || position.entryRationale?.regimeSummary?.regime || null;
+    const strategyPolicy = (exitLearningSummary?.strategyPolicies || []).find((item) => item.id === strategyId) || null;
+    const regimePolicy = (exitLearningSummary?.regimePolicies || []).find((item) => item.id === regimeId) || null;
+    const policies = [strategyPolicy, regimePolicy].filter(Boolean);
+    if (!policies.length) {
+      return {
+        active: false,
+        scaleOutFractionMultiplier: 1,
+        scaleOutTriggerMultiplier: 1,
+        trailingStopMultiplier: 1,
+        maxHoldMinutesMultiplier: 1,
+        sources: []
+      };
+    }
+    return {
+      active: true,
+      scaleOutFractionMultiplier: clamp(average(policies.map((item) => safeValue(item.scaleOutFractionMultiplier || 1)), 1), 0.75, 1.25),
+      scaleOutTriggerMultiplier: clamp(average(policies.map((item) => safeValue(item.scaleOutTriggerMultiplier || 1)), 1), 0.78, 1.25),
+      trailingStopMultiplier: clamp(average(policies.map((item) => safeValue(item.trailingStopMultiplier || 1)), 1), 0.82, 1.22),
+      maxHoldMinutesMultiplier: clamp(average(policies.map((item) => safeValue(item.maxHoldMinutesMultiplier || 1)), 1), 0.75, 1.25),
+      sources: policies.map((item) => item.id)
+    };
+  }
+
   evaluateEntry({
     symbol,
     score,
@@ -148,12 +212,14 @@ export class RiskManager {
     symbolStats,
     portfolioSummary = {},
     regimeSummary = { regime: "range" },
+    thresholdTuningSummary = {},
     nowIso
   }) {
     const reasons = [];
     const openPositions = runtime.openPositions || [];
     const baseThreshold = Math.max(this.config.modelThreshold, this.config.minModelConfidence);
     const optimizerAdjustments = this.getOptimizerAdjustments(strategySummary);
+    const thresholdTuningAdjustment = this.getThresholdTuningAdjustment(thresholdTuningSummary, strategySummary, regimeSummary);
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const selfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -164,7 +230,7 @@ export class RiskManager {
       ? Math.max(0.5, this.config.minModelConfidence - paperWarmupDiscount)
       : this.config.minModelConfidence;
     const threshold = clamp(
-      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty,
+      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty + thresholdTuningAdjustment.adjustment,
       thresholdFloor,
       0.99
     );
@@ -490,6 +556,7 @@ export class RiskManager {
       baseThreshold,
       threshold,
       thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
+      thresholdTuningApplied: thresholdTuningAdjustment,
       strategyConfidenceFloor,
       strategyConfidenceAdjustment: optimizerAdjustments.strategyConfidenceAdjustment,
       optimizerApplied: {
@@ -498,6 +565,7 @@ export class RiskManager {
         baseThreshold,
         effectiveThreshold: threshold,
         thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
+        thresholdTuningAdjustment: thresholdTuningAdjustment.adjustment,
         globalThresholdTilt: optimizerAdjustments.globalThresholdTilt,
         familyThresholdTilt: optimizerAdjustments.familyThresholdTilt,
         strategyThresholdTilt: optimizerAdjustments.strategyThresholdTilt,
@@ -571,13 +639,16 @@ export class RiskManager {
     };
   }
 
-  evaluateExit({ position, currentPrice, newsSummary, announcementSummary = {}, marketStructureSummary = {}, calendarSummary = {}, marketSnapshot = {}, exitIntelligenceSummary = {}, nowIso }) {
+  evaluateExit({ position, currentPrice, newsSummary, announcementSummary = {}, marketStructureSummary = {}, calendarSummary = {}, marketSnapshot = {}, exitIntelligenceSummary = {}, exitPolicySummary = {}, nowIso }) {
     const updatedHigh = Math.max(position.highestPrice || position.entryPrice, currentPrice);
     const updatedLow = Math.min(position.lowestPrice || position.entryPrice, currentPrice);
-    const trailingStopPrice = updatedHigh * (1 - position.trailingStopPct);
+    const adaptiveExitPolicy = this.resolveAdaptiveExitPolicy(exitPolicySummary, position);
+    const trailingStopPct = clamp((position.trailingStopPct || this.config.trailingStopPct) * (adaptiveExitPolicy.trailingStopMultiplier || 1), 0.004, 0.04);
+    const trailingStopPrice = updatedHigh * (1 - trailingStopPct);
     const heldMinutes = minutesBetween(position.entryAt, nowIso);
-    const scaleOutTriggerPrice = position.scaleOutTriggerPrice || position.entryPrice * (1 + this.config.scaleOutTriggerPct);
+    const scaleOutTriggerPrice = (position.scaleOutTriggerPrice || position.entryPrice * (1 + this.config.scaleOutTriggerPct)) * (adaptiveExitPolicy.scaleOutTriggerMultiplier || 1);
     const notional = position.lastMarkedPrice ? position.lastMarkedPrice * position.quantity : position.notional || position.totalCost || 0;
+    const effectiveMaxHoldMinutes = Math.max(1, Math.round((this.config.maxHoldMinutes || 1) * (adaptiveExitPolicy.maxHoldMinutesMultiplier || 1)));
     const canScaleOut =
       !position.scaleOutCompletedAt &&
       !position.scaleOutInProgress &&
@@ -589,10 +660,15 @@ export class RiskManager {
       return {
         shouldExit: false,
         shouldScaleOut: true,
-        scaleOutFraction: exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction,
+        scaleOutFraction: clamp(
+          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1),
+          0.05,
+          0.95
+        ),
         scaleOutReason: "partial_take_profit",
         updatedHigh,
-        updatedLow
+        updatedLow,
+        exitPolicy: adaptiveExitPolicy
       };
     }
     if (currentPrice <= position.stopLossPrice) {
@@ -604,7 +680,7 @@ export class RiskManager {
     if (updatedHigh > position.entryPrice * 1.004 && currentPrice <= trailingStopPrice) {
       return { shouldExit: true, shouldScaleOut: false, reason: "trailing_stop", updatedHigh, updatedLow };
     }
-    if (heldMinutes >= this.config.maxHoldMinutes) {
+    if (heldMinutes >= effectiveMaxHoldMinutes) {
       return { shouldExit: true, shouldScaleOut: false, reason: "time_stop", updatedHigh, updatedLow };
     }
     if ((marketSnapshot.book?.spreadBps || 0) >= this.config.exitOnSpreadShockBps) {
@@ -637,10 +713,15 @@ export class RiskManager {
       return {
         shouldExit: false,
         shouldScaleOut: true,
-        scaleOutFraction: exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction,
+        scaleOutFraction: clamp(
+          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1),
+          0.05,
+          0.95
+        ),
         scaleOutReason: exitIntelligenceSummary.reason || "exit_ai_trim",
         updatedHigh,
-        updatedLow
+        updatedLow,
+        exitPolicy: adaptiveExitPolicy
       };
     }
     if (
@@ -656,12 +737,9 @@ export class RiskManager {
       shouldScaleOut: false,
       reason: null,
       updatedHigh,
-      updatedLow
+      updatedLow,
+      exitPolicy: adaptiveExitPolicy
     };
   }
 }
-
-
-
-
 

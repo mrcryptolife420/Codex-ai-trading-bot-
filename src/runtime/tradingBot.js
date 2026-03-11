@@ -678,6 +678,7 @@ function summarizeOptimizerApplied(applied = {}) {
     baseThreshold: num(applied.baseThreshold || 0, 4),
     effectiveThreshold: num(applied.effectiveThreshold ?? applied.baseThreshold ?? 0, 4),
     thresholdAdjustment: num(applied.thresholdAdjustment || 0, 4),
+    thresholdTuningAdjustment: num(applied.thresholdTuningAdjustment || 0, 4),
     strategyConfidenceFloor: num(applied.strategyConfidenceFloor || 0, 4),
     strategyConfidenceAdjustment: num(applied.strategyConfidenceAdjustment || 0, 4),
     globalThresholdTilt: num(applied.globalThresholdTilt || 0, 4),
@@ -868,6 +869,11 @@ function summarizePortfolio(portfolioSummary = {}) {
     strategyHeat: num(portfolioSummary.strategyHeat || 0, 4),
     factorHeat: num(portfolioSummary.factorHeat || 0, 4),
     portfolioHeat: num(portfolioSummary.portfolioHeat || 0, 4),
+    portfolioCvarPct: num(portfolioSummary.portfolioCvarPct || 0, 4),
+    drawdownPct: num(portfolioSummary.drawdownPct || 0, 4),
+    drawdownBudgetUsage: num(portfolioSummary.drawdownBudgetUsage || 0, 4),
+    regimeLossStreak: portfolioSummary.regimeLossStreak || 0,
+    regimeKillSwitchActive: Boolean(portfolioSummary.regimeKillSwitchActive),
     sameFactorCount: portfolioSummary.sameFactorCount || 0,
     candidateFactors: [...(portfolioSummary.candidateFactors || [])],
     reasons: [...(portfolioSummary.reasons || [])],
@@ -1393,6 +1399,24 @@ function summarizeOfflineTrainer(summary = {}) {
       prematureExitCount: summary.exitLearning?.prematureExitCount || 0,
       lateExitCount: summary.exitLearning?.lateExitCount || 0,
       topReason: summary.exitLearning?.topReason || null,
+      strategyPolicies: arr(summary.exitLearning?.strategyPolicies || []).slice(0, 6).map((item) => ({
+        id: item.id || null,
+        tradeCount: item.tradeCount || 0,
+        status: item.status || "balanced",
+        scaleOutFractionMultiplier: num(item.scaleOutFractionMultiplier || 1, 4),
+        scaleOutTriggerMultiplier: num(item.scaleOutTriggerMultiplier || 1, 4),
+        trailingStopMultiplier: num(item.trailingStopMultiplier || 1, 4),
+        maxHoldMinutesMultiplier: num(item.maxHoldMinutesMultiplier || 1, 4)
+      })),
+      regimePolicies: arr(summary.exitLearning?.regimePolicies || []).slice(0, 6).map((item) => ({
+        id: item.id || null,
+        tradeCount: item.tradeCount || 0,
+        status: item.status || "balanced",
+        scaleOutFractionMultiplier: num(item.scaleOutFractionMultiplier || 1, 4),
+        scaleOutTriggerMultiplier: num(item.scaleOutTriggerMultiplier || 1, 4),
+        trailingStopMultiplier: num(item.trailingStopMultiplier || 1, 4),
+        maxHoldMinutesMultiplier: num(item.maxHoldMinutesMultiplier || 1, 4)
+      })),
       notes: [...(summary.exitLearning?.notes || [])]
     },
     exitScorecards: arr(summary.exitScorecards || []).slice(0, 6).map((item) => ({
@@ -1444,6 +1468,44 @@ function summarizeOfflineTrainer(summary = {}) {
   };
 }
 
+function summarizeThresholdTuningState(summary = {}) {
+  return {
+    status: summary.status || "stable",
+    relaxCount: summary.relaxCount || 0,
+    tightenCount: summary.tightenCount || 0,
+    netThresholdShift: num(summary.netThresholdShift || 0, 4),
+    activeThresholdShift: num(summary.activeThresholdShift || 0, 4),
+    appliedRecommendation: summary.appliedRecommendation
+      ? {
+          id: summary.appliedRecommendation.id || null,
+          action: summary.appliedRecommendation.action || "observe",
+          adjustment: num(summary.appliedRecommendation.adjustment || 0, 4),
+          confidence: num(summary.appliedRecommendation.confidence || 0, 4),
+          status: summary.appliedRecommendation.status || "probation",
+          appliedAt: summary.appliedRecommendation.appliedAt || null,
+          reviewedAt: summary.appliedRecommendation.reviewedAt || null,
+          affectedStrategies: [...(summary.appliedRecommendation.affectedStrategies || [])],
+          affectedRegimes: [...(summary.appliedRecommendation.affectedRegimes || [])]
+        }
+      : null,
+    recommendations: arr(summary.recommendations || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      action: item.action || "observe",
+      adjustment: num(item.adjustment || 0, 4),
+      confidence: num(item.confidence || 0, 4),
+      total: item.total || 0
+    })),
+    history: arr(summary.history || []).slice(0, 8).map((item) => ({
+      id: item.id || null,
+      status: item.status || null,
+      adjustment: num(item.adjustment || 0, 4),
+      reviewedAt: item.reviewedAt || item.appliedAt || null,
+      tradeCount: item.review?.tradeCount || item.baseline?.tradeCount || 0
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
 function summarizeExchangeTruth(summary = {}) {
   return {
     status: summary.status || "unknown",
@@ -1451,10 +1513,15 @@ function summarizeExchangeTruth(summary = {}) {
     mismatchCount: summary.mismatchCount || 0,
     runtimePositionCount: summary.runtimePositionCount || 0,
     exchangePositionCount: summary.exchangePositionCount || 0,
+    openOrderCount: summary.openOrderCount || 0,
+    openOrderListCount: summary.openOrderListCount || 0,
     lastReconciledAt: summary.lastReconciledAt || null,
     lastHealthyAt: summary.lastHealthyAt || null,
     orphanedSymbols: [...(summary.orphanedSymbols || [])],
     missingRuntimeSymbols: [...(summary.missingRuntimeSymbols || [])],
+    unmatchedOrderSymbols: [...(summary.unmatchedOrderSymbols || [])],
+    staleProtectiveSymbols: [...(summary.staleProtectiveSymbols || [])],
+    recentFillSymbols: [...(summary.recentFillSymbols || [])],
     warnings: arr(summary.warnings || []).slice(0, 8).map((item) => ({
       symbol: item.symbol || null,
       issue: item.issue || null,
@@ -1482,6 +1549,18 @@ function summarizeOrderLifecycle(summary = {}) {
   return {
     lastUpdatedAt: summary.lastUpdatedAt || null,
     positions,
+    activeActions: Object.values(summary.activeActions || {}).slice(0, 10).map((item) => ({
+      id: item.id || null,
+      type: item.type || null,
+      symbol: item.symbol || null,
+      positionId: item.positionId || null,
+      stage: item.stage || null,
+      status: item.status || "pending",
+      severity: item.severity || "neutral",
+      startedAt: item.startedAt || null,
+      updatedAt: item.updatedAt || null,
+      detail: item.detail || null
+    })),
     pendingActions: arr(summary.pendingActions || []).slice(0, 12).map((item) => ({
       id: item.id || null,
       symbol: item.symbol || null,
@@ -1497,6 +1576,18 @@ function summarizeOrderLifecycle(summary = {}) {
       previousState: item.previousState || null,
       detail: item.detail || null,
       severity: item.severity || "neutral"
+    })),
+    actionJournal: arr(summary.actionJournal || []).slice(0, 20).map((item) => ({
+      id: item.id || null,
+      type: item.type || null,
+      symbol: item.symbol || null,
+      stage: item.stage || null,
+      status: item.status || null,
+      severity: item.severity || "neutral",
+      startedAt: item.startedAt || null,
+      completedAt: item.completedAt || null,
+      detail: item.detail || null,
+      error: item.error || null
     }))
   };
 }
@@ -1528,6 +1619,25 @@ function summarizeServiceState(summary = {}) {
     restartBackoffSeconds: summary.restartBackoffSeconds == null ? null : num(summary.restartBackoffSeconds || 0, 1),
     lastExitCode: summary.lastExitCode == null ? null : summary.lastExitCode,
     statusFile: summary.statusFile || null
+  };
+}
+
+function summarizeExecutionCalibration(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    status: summary.status || "warmup",
+    liveTradeCount: summary.liveTradeCount || 0,
+    styles: Object.fromEntries(
+      Object.entries(summary.styles || {}).map(([style, item]) => [style, {
+        tradeCount: item.tradeCount || 0,
+        slippageBiasBps: num(item.slippageBiasBps || 0, 2),
+        makerFillBias: num(item.makerFillBias || 0, 4),
+        latencyMultiplier: num(item.latencyMultiplier || 1, 3),
+        queueDecayBiasBps: num(item.queueDecayBiasBps || 0, 2),
+        spreadShockBiasBps: num(item.spreadShockBiasBps || 0, 2)
+      }])
+    ),
+    notes: [...(summary.notes || [])]
   };
 }
 
@@ -1759,9 +1869,10 @@ export class TradingBot {
     this.runtime.offlineTrainer = this.runtime.offlineTrainer || summarizeOfflineTrainer({});
     this.runtime.shadowTrading = this.runtime.shadowTrading || {};
     this.runtime.thresholdTuning = this.runtime.thresholdTuning || {};
+    this.runtime.executionCalibration = this.runtime.executionCalibration || {};
     this.runtime.exchangeTruth = this.runtime.exchangeTruth || {};
-    this.runtime.orderLifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [] };
-    this.runtime.ops = this.runtime.ops || { lastUpdatedAt: null, incidentTimeline: [], runbooks: [], performanceChange: null };
+    this.runtime.orderLifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
+    this.runtime.ops = this.runtime.ops || { lastUpdatedAt: null, incidentTimeline: [], runbooks: [], performanceChange: null, readiness: null };
     this.runtime.service = this.runtime.service || { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, lastExitCode: null, statusFile: null };
     this.runtime.counterfactualQueue = arr(this.runtime.counterfactualQueue);
     this.runtime.session = this.runtime.session || {};
@@ -2068,30 +2179,176 @@ export class TradingBot {
     return snapshot;
   }
 
+  collectScopedThresholdTrades(scope = {}, { beforeAt = null, afterAt = null } = {}) {
+    return arr(this.journal.trades || [])
+      .filter((trade) => trade.exitAt)
+      .filter((trade) => {
+        const exitMs = new Date(trade.exitAt || 0).getTime();
+        if (!Number.isFinite(exitMs)) {
+          return false;
+        }
+        if (beforeAt && exitMs >= new Date(beforeAt).getTime()) {
+          return false;
+        }
+        if (afterAt && exitMs <= new Date(afterAt).getTime()) {
+          return false;
+        }
+        const strategies = scope.affectedStrategies || [];
+        const regimes = scope.affectedRegimes || [];
+        const strategyId = trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null;
+        const regimeId = trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || null;
+        const strategyMatch = !strategies.length || (strategyId && strategies.includes(strategyId));
+        const regimeMatch = !regimes.length || (regimeId && regimes.includes(regimeId));
+        return strategyMatch || regimeMatch;
+      });
+  }
+
+  buildThresholdExperimentSnapshot(scope = {}, options = {}) {
+    const sampleSize = this.config.thresholdProbationMinTrades || 6;
+    const trades = this.collectScopedThresholdTrades(scope, options).slice(-sampleSize);
+    const tradeCount = trades.length;
+    const winRate = tradeCount ? trades.filter((trade) => (trade.pnlQuote || 0) > 0).length / tradeCount : 0;
+    const avgPnlPct = tradeCount ? trades.reduce((total, trade) => total + (trade.netPnlPct || 0), 0) / tradeCount : 0;
+    return {
+      tradeCount,
+      winRate: num(winRate, 4),
+      avgPnlPct: num(avgPnlPct, 4)
+    };
+  }
+
+  updateThresholdTuningState(offlineTrainerSummary = {}, referenceNow = nowIso()) {
+    const previous = this.runtime.thresholdTuning || {};
+    const policy = offlineTrainerSummary.thresholdPolicy || {};
+    const next = {
+      ...previous,
+      status: policy.status || previous.status || "stable",
+      relaxCount: policy.relaxCount || 0,
+      tightenCount: policy.tightenCount || 0,
+      netThresholdShift: num(policy.netThresholdShift || 0, 4),
+      topRecommendation: policy.topRecommendation || null,
+      recommendations: arr(policy.recommendations || []).slice(0, 6),
+      notes: [...(policy.notes || [])],
+      history: arr(previous.history || []).slice(0, 12),
+      appliedRecommendation: previous.appliedRecommendation || null,
+      activeThresholdShift: num(previous.activeThresholdShift || 0, 4)
+    };
+    const probationTrades = this.config.thresholdProbationMinTrades || 6;
+    const probationWindowMs = (this.config.thresholdProbationWindowDays || 7) * 86_400_000;
+    const active = next.appliedRecommendation;
+
+    if (active?.status === "probation") {
+      const reviewed = this.buildThresholdExperimentSnapshot(active, { afterAt: active.appliedAt });
+      const ageMs = Math.max(0, new Date(referenceNow).getTime() - new Date(active.appliedAt || referenceNow).getTime());
+      if (reviewed.tradeCount >= probationTrades || ageMs >= probationWindowMs) {
+        const baseline = active.baseline || { tradeCount: 0, avgPnlPct: 0, winRate: 0 };
+        const avgPnlDrop = (baseline.avgPnlPct || 0) - (reviewed.avgPnlPct || 0);
+        const winRateDrop = (baseline.winRate || 0) - (reviewed.winRate || 0);
+        if (
+          reviewed.tradeCount &&
+          (
+            avgPnlDrop > (this.config.thresholdProbationMaxAvgPnlDropPct || 0.01) ||
+            winRateDrop > (this.config.thresholdProbationMaxWinRateDrop || 0.08)
+          )
+        ) {
+          next.history.unshift({ ...active, status: "rolled_back", reviewedAt: referenceNow, review: reviewed, baseline });
+          next.appliedRecommendation = null;
+          next.activeThresholdShift = 0;
+          next.status = "rolled_back";
+          next.notes = [
+            `${active.id} werd automatisch teruggedraaid na zwakkere probation-resultaten.`,
+            ...next.notes
+          ].slice(0, 8);
+          this.recordEvent("threshold_tuning_rolled_back", {
+            id: active.id,
+            adjustment: active.adjustment || 0,
+            avgPnlDrop,
+            winRateDrop
+          });
+        } else if (reviewed.tradeCount) {
+          next.appliedRecommendation = { ...active, status: "confirmed", reviewedAt: referenceNow, review: reviewed };
+          next.activeThresholdShift = num(active.adjustment || 0, 4);
+          next.history.unshift({ ...active, status: "confirmed", reviewedAt: referenceNow, review: reviewed, baseline });
+          next.status = "confirmed";
+          this.recordEvent("threshold_tuning_confirmed", {
+            id: active.id,
+            adjustment: active.adjustment || 0,
+            tradeCount: reviewed.tradeCount
+          });
+        } else {
+          next.history.unshift({ ...active, status: "expired", reviewedAt: referenceNow, review: reviewed });
+          next.appliedRecommendation = null;
+          next.activeThresholdShift = 0;
+          next.status = policy.status || "observe";
+        }
+      } else {
+        next.activeThresholdShift = num(active.adjustment || 0, 4);
+        next.status = "probation";
+      }
+    } else if (active?.status === "confirmed") {
+      next.activeThresholdShift = num(active.adjustment || 0, 4);
+      next.status = "confirmed";
+    } else {
+      next.activeThresholdShift = 0;
+    }
+
+    if (!next.appliedRecommendation && this.config.thresholdAutoApplyEnabled) {
+      const recentHistoryIds = new Set(arr(next.history || []).slice(0, 4).map((item) => `${item.id}:${item.status}`));
+      const candidate = arr(policy.recommendations || []).find((item) =>
+        (item.confidence || 0) >= (this.config.thresholdAutoApplyMinConfidence || 0.58) &&
+        Math.abs(item.adjustment || 0) > 0 &&
+        !recentHistoryIds.has(`${item.id}:rolled_back`)
+      );
+      if (candidate) {
+        const baseline = this.buildThresholdExperimentSnapshot(candidate, { beforeAt: referenceNow });
+        next.appliedRecommendation = {
+          ...candidate,
+          status: "probation",
+          appliedAt: referenceNow,
+          reviewDueAt: new Date(new Date(referenceNow).getTime() + probationWindowMs).toISOString(),
+          baseline
+        };
+        next.activeThresholdShift = num(candidate.adjustment || 0, 4);
+        next.status = "probation";
+        this.recordEvent("threshold_tuning_applied", {
+          id: candidate.id,
+          adjustment: candidate.adjustment || 0,
+          confidence: candidate.confidence || 0
+        });
+      }
+    }
+
+    next.history = arr(next.history || []).slice(0, 12);
+    this.runtime.thresholdTuning = next;
+    return next;
+  }
+
   refreshGovernanceViews(referenceNow = nowIso()) {
     const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     const rawResearchRegistry = this.researchRegistry.buildRegistry({ journal: this.journal, latestSummary: this.runtime.researchLab?.latestSummary || null, modelBackups: this.modelBackups || [], nowIso: referenceNow });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: referenceNow });
     const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: referenceNow });
+    const executionCalibration = this.execution.buildPaperCalibration({ journal: this.journal, nowIso: referenceNow });
     this.runtime.strategyAttribution = summarizeAttributionSnapshot(this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: referenceNow }));
     this.runtime.researchRegistry = summarizeResearchRegistry(rawResearchRegistry);
     this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
     this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
     this.runtime.modelRegistry = summarizeModelRegistry(this.modelRegistry.buildRegistry({ snapshots: this.modelBackups || [], report, researchRegistry: rawResearchRegistry, calibration: this.model.getCalibrationSummary(), deployment: this.model.getDeploymentSummary(), divergenceSummary, offlineTrainer: offlineTrainerSummary, nowIso: referenceNow }));
+    this.runtime.executionCalibration = summarizeExecutionCalibration(executionCalibration);
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
-    this.runtime.thresholdTuning = this.runtime.offlineTrainer?.thresholdPolicy || {};
+    this.updateThresholdTuningState(offlineTrainerSummary, referenceNow);
     this.syncOrderLifecycleState("governance_refresh");
     this.refreshOperationalViews({ report, nowIso: referenceNow });
-    return { report, rawResearchRegistry, divergenceSummary, offlineTrainerSummary };
+    return { report, rawResearchRegistry, divergenceSummary, offlineTrainerSummary, executionCalibration };
   }
 
   syncOrderLifecycleState(reason = "runtime_sync") {
-    const lifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [] };
+    const lifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
     const previousPositions = lifecycle.positions && typeof lifecycle.positions === "object" ? lifecycle.positions : {};
     const nextPositions = {};
     const transitions = arr(lifecycle.recentTransitions);
+    const activeActions = lifecycle.activeActions && typeof lifecycle.activeActions === "object" ? lifecycle.activeActions : {};
     const tradeIndex = new Map(arr(this.journal.trades).slice(-120).map((trade) => [trade.id, trade]));
     const transitionAt = nowIso();
 
@@ -2168,7 +2425,9 @@ export class TradingBot {
     lifecycle.positions = nextPositions;
     lifecycle.lastUpdatedAt = transitionAt;
     lifecycle.recentTransitions = transitions.slice(0, 60);
-    lifecycle.pendingActions = Object.values(nextPositions)
+    lifecycle.activeActions = activeActions;
+    lifecycle.actionJournal = arr(lifecycle.actionJournal || []).slice(0, 80);
+    const stateActions = Object.values(nextPositions)
       .filter((item) => ["protect_only", "manual_review", "reconcile_required", "protection_pending"].includes(item.state))
       .map((item) => ({
         id: item.id,
@@ -2185,8 +2444,16 @@ export class TradingBot {
           ? "protective_order_missing"
           : item.state,
         severity: ["manual_review", "reconcile_required"].includes(item.state) ? "negative" : "neutral"
-      }))
-      .slice(0, 12);
+      }));
+    const activeLifecycleActions = Object.values(activeActions).map((item) => ({
+      id: item.id || null,
+      symbol: item.symbol || null,
+      state: item.stage || "pending",
+      action: item.type || "exchange_action",
+      reason: item.detail || item.type || "pending_exchange_action",
+      severity: item.severity || "neutral"
+    }));
+    lifecycle.pendingActions = [...activeLifecycleActions, ...stateActions].slice(0, 12);
     this.runtime.orderLifecycle = lifecycle;
     return lifecycle;
   }
@@ -2212,7 +2479,14 @@ export class TradingBot {
       detail: warning.error || (warning.issues || []).join(", "),
       severity: "negative"
     }));
-    return [...eventEntries, ...warningEntries]
+    const actionEntries = arr(this.runtime.orderLifecycle?.actionJournal || []).map((action) => ({
+      at: action.completedAt || action.updatedAt || action.startedAt || null,
+      type: `${action.type || "exchange_action"}_${action.status || "completed"}`,
+      symbol: action.symbol || null,
+      detail: action.error || action.detail || action.stage || null,
+      severity: action.severity || ((action.status || "") === "failed" ? "negative" : "neutral")
+    }));
+    return [...eventEntries, ...warningEntries, ...actionEntries]
       .filter((item) => {
         const atMs = new Date(item.at || 0).getTime();
         return Number.isFinite(atMs) && atMs >= cutoffMs;
@@ -2257,6 +2531,15 @@ export class TradingBot {
         action: "Draai reconcile/status, bevestig quantity en herbouw bescherming of flatten handmatig."
       });
     }
+    if (Object.keys(lifecycle.activeActions || {}).length) {
+      runbooks.push({
+        id: "pending_exchange_actions",
+        severity: "neutral",
+        title: "Exchange actie nog in vlucht",
+        reason: `${Object.keys(lifecycle.activeActions || {}).length} runtime action(s) zijn nog pending of recent gecrasht.`,
+        action: "Controleer entry/exit/protection flows voor stuck actions voordat de bot opnieuw wordt gestart."
+      });
+    }
     if (health.circuitOpen) {
       runbooks.push({
         id: "health_circuit_open",
@@ -2291,6 +2574,15 @@ export class TradingBot {
         title: "Drift guard actief",
         reason: drift.blockerReasons[0] || "Drift-monitor blokkeert agressievere entries.",
         action: "Vergelijk recente fills, calibration en feature drift voordat thresholds weer worden verruimd."
+      });
+    }
+    if ((this.runtime.thresholdTuning?.appliedRecommendation?.status || "") === "probation") {
+      runbooks.push({
+        id: "threshold_probation",
+        severity: "neutral",
+        title: "Threshold probation actief",
+        reason: `${this.runtime.thresholdTuning.appliedRecommendation.id} draait tijdelijk met een aangepaste gate.`,
+        action: "Volg winrate en gemiddelde PnL in deze scope tot de probation automatisch bevestigt of terugdraait."
       });
     }
     if (!runbooks.length && (report?.tradeQualityReview?.notes || []).length) {
@@ -2337,8 +2629,40 @@ export class TradingBot {
       notes: [
         tradeQuality.notes?.[0] || "Nog geen trade-quality context beschikbaar.",
         topStrategy ? `${topStrategy.id} draagt nu het meeste bij.` : "Nog geen leidende strategie zichtbaar.",
-        weakestStyle ? `${weakestStyle.style} is de zwakste execution-style in recente trades.` : "Nog geen duidelijke execution-stijl zwakker dan de rest."
+        weakestStyle ? `${weakestStyle.style} is de zwakste execution-style in recente trades.` : "Nog geen duidelijke execution-stijl zwakker dan de rest.",
+        this.runtime.thresholdTuning?.appliedRecommendation
+          ? `Threshold probation: ${this.runtime.thresholdTuning.appliedRecommendation.id} (${this.runtime.thresholdTuning.appliedRecommendation.status}).`
+          : "Geen actieve threshold probation.",
+        this.runtime.executionCalibration?.status === "calibrated"
+          ? "Paper execution gebruikt live fill-calibratie."
+          : "Execution-calibratie warmt nog op."
       ]
+    };
+  }
+
+  buildOperationalReadiness(referenceNow = nowIso()) {
+    const reasons = [];
+    if (!this.runtime.lastAnalysisAt) {
+      reasons.push("analysis_not_ready");
+    }
+    if (this.runtime.health?.circuitOpen) {
+      reasons.push("health_circuit_open");
+    }
+    if (this.runtime.exchangeTruth?.freezeEntries) {
+      reasons.push("exchange_truth_freeze");
+    }
+    if (arr(this.runtime.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
+      reasons.push("lifecycle_attention_required");
+    }
+    return {
+      checkedAt: referenceNow,
+      ready: reasons.length === 0,
+      status: reasons.includes("exchange_truth_freeze") || reasons.includes("health_circuit_open")
+        ? "blocked"
+        : reasons.length
+          ? "degraded"
+          : "ready",
+      reasons
     };
   }
 
@@ -2388,12 +2712,12 @@ export class TradingBot {
   refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
     const evaluation = report || buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
-    this.runtime.thresholdTuning = this.runtime.offlineTrainer?.thresholdPolicy || this.runtime.thresholdTuning || {};
     this.runtime.ops = {
       lastUpdatedAt: referenceNow,
       incidentTimeline: this.buildIncidentTimeline(referenceNow),
       runbooks: this.buildOperatorRunbooks(evaluation),
-      performanceChange: this.buildPerformanceChangeView(evaluation)
+      performanceChange: this.buildPerformanceChangeView(evaluation),
+      readiness: this.buildOperationalReadiness(referenceNow)
     };
     this.runtime.service = {
       ...(this.runtime.service || {}),
@@ -2925,6 +3249,7 @@ export class TradingBot {
       baseThreshold: num(candidate.decision.baseThreshold || candidate.decision.threshold, 4),
       threshold: num(candidate.decision.threshold, 4),
       thresholdAdjustment: num(candidate.decision.thresholdAdjustment || 0, 4),
+      thresholdTuningApplied: candidate.decision.thresholdTuningApplied || null,
       strategyConfidenceFloor: num(candidate.decision.strategyConfidenceFloor || this.config.strategyMinConfidence, 4),
       rankScore: num(candidate.decision.rankScore, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
@@ -3287,6 +3612,7 @@ export class TradingBot {
       symbolStats,
       portfolioSummary,
       regimeSummary,
+      thresholdTuningSummary: this.runtime.thresholdTuning || {},
       timeframeSummary,
       pairHealthSummary,
       qualityQuorumSummary,
@@ -3439,6 +3765,7 @@ export class TradingBot {
           calendarSummary,
           marketSnapshot,
           exitIntelligenceSummary,
+          exitPolicySummary: this.runtime.offlineTrainer?.exitLearning || {},
           nowIso: nowIso()
         });
         position.highestPrice = exitDecision.updatedHigh;
@@ -3452,6 +3779,7 @@ export class TradingBot {
         position.latestTimeframeSummary = timeframeSummary;
         position.latestOnChainLiteSummary = onChainLiteSummary;
         position.latestExitIntelligence = exitIntelligenceSummary;
+        position.latestExitPolicy = exitDecision.exitPolicy || null;
         position.replayCheckpoints = arr(position.replayCheckpoints || []);
         position.replayCheckpoints.push({ at: nowIso(), price: num(marketSnapshot.book.mid, 6), spreadBps: num(marketSnapshot.book.spreadBps || 0, 2), bookPressure: num(marketSnapshot.book.bookPressure || 0, 3), newsRisk: num(newsSummary.riskScore || 0, 3), tfAlignment: num(timeframeSummary.alignmentScore || 0, 4), onChainStress: num(onChainLiteSummary.stressScore || 0, 4) });
         position.replayCheckpoints = position.replayCheckpoints.slice(-24);
@@ -3674,6 +4002,7 @@ export class TradingBot {
       baseThreshold: num(candidate.decision.baseThreshold || candidate.decision.threshold, 4),
       threshold: num(candidate.decision.threshold, 4),
       thresholdAdjustment: num(candidate.decision.thresholdAdjustment || 0, 4),
+      thresholdTuningApplied: candidate.decision.thresholdTuningApplied || null,
       strategyConfidenceFloor: num(candidate.decision.strategyConfidenceFloor || this.config.strategyMinConfidence, 4),
       executionStyle: candidate.decision.executionPlan?.entryStyle || "market",
       providerBreakdown: summarizeBreakdown(candidate.newsSummary.providerCounts),
@@ -4696,8 +5025,11 @@ export class TradingBot {
         incidentTimeline: arr(this.runtime.ops?.incidentTimeline || []).slice(0, 16),
         runbooks: arr(this.runtime.ops?.runbooks || []).slice(0, 8),
         performanceChange: this.runtime.ops?.performanceChange || null,
+        readiness: this.runtime.ops?.readiness || null,
         shadowTrading: summarizeShadowTrading(this.runtime.shadowTrading || {}),
-        service: summarizeServiceState(this.runtime.service || {})
+        service: summarizeServiceState(this.runtime.service || {}),
+        thresholdTuning: summarizeThresholdTuningState(this.runtime.thresholdTuning || {}),
+        executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {})
       },
       portfolio: this.buildPortfolioView(),
       exchange: exchangeOverview,
@@ -4805,19 +5137,6 @@ export class TradingBot {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

@@ -228,6 +228,9 @@ function makeConfig(overrides = {}) {
     canaryLiveTradeCount: 5,
     canaryLiveSizeMultiplier: 0.35,
     dailyRiskBudgetFloor: 0.35,
+    portfolioMaxCvarPct: 0.028,
+    portfolioDrawdownBudgetPct: 0.05,
+    portfolioRegimeKillSwitchLossStreak: 3,
     maxEntriesPerDay: 12,
     scaleOutTriggerPct: 0.014,
     scaleOutFraction: 0.4,
@@ -240,15 +243,25 @@ function makeConfig(overrides = {}) {
     researchMaxWindows: 6,
     researchMaxSymbols: 4,
     exchangeTruthFreezeMismatchCount: 2,
+    exchangeTruthRecentFillLookbackMinutes: 30,
     positionFailureProtectOnlyCount: 2,
     positionFailureManualReviewCount: 4,
     shadowTradeDecisionLimit: 3,
+    thresholdAutoApplyEnabled: true,
+    thresholdAutoApplyMinConfidence: 0.58,
+    thresholdProbationMinTrades: 6,
+    thresholdProbationWindowDays: 7,
+    thresholdProbationMaxAvgPnlDropPct: 0.01,
+    thresholdProbationMaxWinRateDrop: 0.08,
     thresholdRelaxStep: 0.012,
     thresholdTightenStep: 0.01,
     thresholdTuningMaxRecommendations: 5,
     featureDecayMinTrades: 8,
     featureDecayWeakScore: 0.18,
     featureDecayBlockedScore: 0.1,
+    executionCalibrationMinLiveTrades: 6,
+    executionCalibrationLookbackTrades: 48,
+    executionCalibrationMaxBpsAdjust: 6,
     paperLatencyMs: 220,
     paperMakerFillFloor: 0.22,
     paperPartialFillMinRatio: 0.35,
@@ -735,6 +748,83 @@ await runCheck("risk manager blocks abstain and drawdown conditions", async () =
   assert.ok(decision.reasons.includes("pair_correlation_too_high"));
 });
 
+await runCheck("risk manager applies threshold probation shifts and scoped exit policies", async () => {
+  const manager = new RiskManager(makeConfig());
+  const entry = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: { probability: 0.56, calibrationConfidence: 0.34, disagreement: 0.08, shouldAbstain: false },
+    marketSnapshot: {
+      book: { spreadBps: 6, bookPressure: 0.14, microPriceEdgeBps: 0.4 },
+      market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.12, bullishPatternScore: 0.42 }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.12, eventBullishScore: 0.04, eventBearishScore: 0 },
+    runtime: {
+      openPositions: [],
+      thresholdTuning: {
+        appliedRecommendation: {
+          id: "committee_low_agreement",
+          status: "probation",
+          adjustment: -0.015,
+          confidence: 0.64,
+          affectedStrategies: ["ema_trend"],
+          affectedRegimes: ["trend"]
+        }
+      }
+    },
+    journal: { trades: [] },
+    balance: { quoteFree: 10000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { reasons: [], sizeMultiplier: 1, maxCorrelation: 0.1, allocatorScore: 0.62 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7 },
+    regimeSummary: { regime: "trend" },
+    thresholdTuningSummary: {
+      appliedRecommendation: {
+        id: "committee_low_agreement",
+        status: "probation",
+        adjustment: -0.015,
+        confidence: 0.64,
+        affectedStrategies: ["ema_trend"],
+        affectedRegimes: ["trend"]
+      }
+    },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(entry.allow, true);
+  assert.equal(entry.thresholdTuningApplied.id, "committee_low_agreement");
+  assert.ok(entry.threshold < entry.baseThreshold);
+
+  const exit = manager.evaluateExit({
+    position: {
+      id: "pos-1",
+      symbol: "BTCUSDT",
+      entryAt: "2026-03-08T08:00:00.000Z",
+      entryPrice: 100,
+      highestPrice: 104,
+      lowestPrice: 99,
+      quantity: 1,
+      notional: 100,
+      totalCost: 100,
+      trailingStopPct: 0.01,
+      scaleOutFraction: 0.4,
+      scaleOutTriggerPrice: 101.2,
+      strategyAtEntry: "ema_trend",
+      regimeAtEntry: "trend"
+    },
+    currentPrice: 102.4,
+    newsSummary: { riskScore: 0.1, sentimentScore: 0.1 },
+    marketSnapshot: { book: { spreadBps: 3, bookPressure: 0.08 }, market: { bearishPatternScore: 0.08 } },
+    exitIntelligenceSummary: { action: "trim", confidence: 0.7, trimScore: 0.72, trimFraction: 0.4, reason: "protect_winner" },
+    exitPolicySummary: {
+      strategyPolicies: [{ id: "ema_trend", scaleOutFractionMultiplier: 1.08, scaleOutTriggerMultiplier: 0.94, trailingStopMultiplier: 0.9, maxHoldMinutesMultiplier: 0.84 }],
+      regimePolicies: [{ id: "trend", scaleOutFractionMultiplier: 1.04, scaleOutTriggerMultiplier: 0.96, trailingStopMultiplier: 0.94, maxHoldMinutesMultiplier: 0.9 }]
+    },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(exit.shouldScaleOut, true);
+  assert.ok(exit.scaleOutFraction > 0.4);
+  assert.equal(exit.exitPolicy.active, true);
+});
+
 await runCheck("config validation blocks unsafe live mode", async () => {
   const result = validateConfig(makeConfig({
     botMode: "live",
@@ -1043,6 +1133,26 @@ await runCheck("execution engine simulates queue decay and spread shock in paper
   assert.ok(fill.expectedImpactBps >= 1.1);
 });
 
+await runCheck("execution engine derives paper calibration from live fills", async () => {
+  const engine = new ExecutionEngine(makeConfig());
+  const calibration = engine.buildPaperCalibration({
+    journal: {
+      trades: [
+        { brokerMode: "live", entryExecutionAttribution: { entryStyle: "limit_maker", slippageDeltaBps: 2.4, makerFillRatio: 0.72, latencyBps: 1.8, queueDecayBps: 1.2, spreadShockBps: 0.9 } },
+        { brokerMode: "live", entryExecutionAttribution: { entryStyle: "limit_maker", slippageDeltaBps: 1.8, makerFillRatio: 0.65, latencyBps: 1.1, queueDecayBps: 0.8, spreadShockBps: 0.6 } },
+        { brokerMode: "live", entryExecutionAttribution: { entryStyle: "market", slippageDeltaBps: 3.2, makerFillRatio: 0.08, latencyBps: 0.6, queueDecayBps: 0.1, spreadShockBps: 0.4 } },
+        { brokerMode: "live", entryExecutionAttribution: { entryStyle: "market", slippageDeltaBps: 2.7, makerFillRatio: 0.04, latencyBps: 0.5, queueDecayBps: 0.2, spreadShockBps: 0.5 } },
+        { brokerMode: "live", entryExecutionAttribution: { entryStyle: "market", slippageDeltaBps: 2.9, makerFillRatio: 0.03, latencyBps: 0.7, queueDecayBps: 0.2, spreadShockBps: 0.6 } },
+        { brokerMode: "live", entryExecutionAttribution: { entryStyle: "market", slippageDeltaBps: 2.5, makerFillRatio: 0.05, latencyBps: 0.6, queueDecayBps: 0.2, spreadShockBps: 0.5 } }
+      ]
+    },
+    nowIso: "2026-03-11T09:00:00.000Z"
+  });
+  assert.equal(calibration.status, "calibrated");
+  assert.ok(calibration.styles.limit_maker.slippageBiasBps > 0);
+  assert.ok(calibration.styles.market.latencyMultiplier > 0.8);
+});
+
 await runCheck("live broker places protective OCO after a buy", async () => {
   const clientCalls = [];
   const client = {
@@ -1277,6 +1387,9 @@ await runCheck("live broker auto-flattens filled entries when protection setup f
   );
   assert.deepEqual(placedSides, ["BUY", "SELL"]);
   assert.equal(runtime.openPositions.length, 0);
+  assert.ok(Array.isArray(runtime.orderLifecycle?.actionJournal));
+  assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "protective_build" && item.status === "failed"));
+  assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "entry_open" && item.status === "recovered"));
 });
 
 await runCheck("strategy router selects a mean reversion setup in range conditions", async () => {
@@ -1971,6 +2084,29 @@ await runCheck("bot manager stops instead of switching live positions to paper",
   }
 });
 
+await runCheck("bot manager surfaces readiness blockers from the dashboard snapshot", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  const readiness = manager.buildOperationalReadiness({
+    manager: {
+      runState: "running",
+      currentMode: "live",
+      lastError: { message: "cycle failed" }
+    },
+    dashboard: {
+      overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+      health: { circuitOpen: true },
+      safety: {
+        exchangeTruth: { freezeEntries: true },
+        orderLifecycle: { pendingActions: [{ state: "manual_review" }] }
+      }
+    }
+  });
+  assert.equal(readiness.ok, false);
+  assert.ok(readiness.reasons.includes("manager_error"));
+  assert.ok(readiness.reasons.includes("health_circuit_open"));
+  assert.ok(readiness.reasons.includes("exchange_truth_freeze"));
+});
+
 await runCheck("config validation blocks inverted drift thresholds", async () => {
   const result = validateConfig(makeConfig({
     driftFeatureScoreAlert: 2,
@@ -2086,10 +2222,13 @@ await runCheck("state store migrates runtime and journal schemas forward", async
     const store = new StateStore(tempDir);
     const runtime = await store.loadRuntime();
     const journal = await store.loadJournal();
-    assert.equal(runtime.schemaVersion, 3);
+    assert.equal(runtime.schemaVersion, 4);
     assert.deepEqual(runtime.qualityQuorum, {});
     assert.equal(runtime.exchangeTruth.status, "unknown");
     assert.deepEqual(runtime.orderLifecycle.positions, {});
+    assert.deepEqual(runtime.orderLifecycle.activeActions, {});
+    assert.ok(Array.isArray(runtime.orderLifecycle.actionJournal));
+    assert.deepEqual(runtime.executionCalibration, {});
     assert.ok(Array.isArray(runtime.ops.incidentTimeline));
     assert.equal(runtime.health.consecutiveFailures, 1);
     assert.equal(journal.schemaVersion, 2);
@@ -2838,6 +2977,8 @@ await runCheck("offline trainer builds blocker and regime veto scorecards", asyn
   assert.ok(summary.thresholdPolicy.recommendations.some((item) => item.id === "provider_ops" && item.action === "relax"));
   assert.ok(summary.exitLearning.averageExitScore > 0);
   assert.ok(summary.exitScorecards.some((item) => item.id === "take_profit"));
+  assert.ok(summary.exitLearning.strategyPolicies.some((item) => item.id === "ema_trend"));
+  assert.ok(summary.exitLearning.regimePolicies.some((item) => item.id === "trend"));
   assert.ok(summary.featureDecay.trackedFeatureCount >= 2);
   assert.ok(summary.calibrationGovernance.governanceScore > 0);
   assert.ok(summary.regimeDeployment.readyRegimes.includes("trend"));
@@ -3085,6 +3226,36 @@ await runCheck("portfolio optimizer tracks factor budgets and factor heat", asyn
   assert.ok(summary.candidateFactors.includes("momentum"));
   assert.ok(summary.factorBudgetFactor > 0);
   assert.ok(summary.factorHeat > 0);
+});
+
+await runCheck("portfolio optimizer enforces cvar budgets and regime kill switches", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({ portfolioMaxCvarPct: 0.02, portfolioRegimeKillSwitchLossStreak: 2 }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "ETHUSDT",
+    runtime: { lastKnownEquity: 9500 },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.032, exitAt: "2026-03-08T10:00:00.000Z", pnlQuote: -40 },
+        { symbol: "SOLUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.028, exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: -36 },
+        { symbol: "ADAUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.022, exitAt: "2026-03-10T10:00:00.000Z", pnlQuote: -24 }
+      ],
+      scaleOuts: [],
+      equitySnapshots: [
+        { equity: 10000 },
+        { equity: 9800 },
+        { equity: 9560 },
+        { equity: 9480 }
+      ]
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.02 } },
+    candidateProfile: { cluster: "layer1", sector: "layer1" },
+    openPositionContexts: [],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.equal(summary.regimeKillSwitchActive, true);
+  assert.ok(summary.reasons.includes("portfolio_cvar_budget_hit"));
+  assert.ok(summary.reasons.includes("regime_kill_switch_active"));
 });
 
 await runCheck("on-chain lite v2 summary captures majors and trending proxies", async () => {

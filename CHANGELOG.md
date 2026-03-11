@@ -9,18 +9,28 @@
 - Position-level failure budgets that degrade repeated management failures into `protect_only` and `manual_review` states instead of retrying the same risky automation every cycle.
 - Dashboard/operator views for lifecycle state, incident timeline, runbooks, performance-delta notes, shadow entries, threshold tuning, exit learning, and feature decay.
 - Watchdog status-file output plus exponential restart backoff in `Run-BotService.ps1`.
+- Crash-safe pending live action journaling so entries, exits, protective-order rebuilds, and exchange recovery steps survive restarts with explicit lifecycle state.
+- Dashboard health and readiness endpoints that surface live blockers such as exchange-truth freezes, lifecycle manual-review states, and circuit-open health failures.
+- Execution-calibration feedback that derives paper slippage, maker fill bias, latency, and queue-decay adjustments from recent live fill telemetry.
+- Auto-applied threshold probation with scoped rollback rules, so high-confidence threshold recommendations can be trialed and reverted without manual intervention.
+- CVaR, drawdown-budget, and regime kill-switch controls in the portfolio allocator alongside the existing exposure and factor budgeting.
 
 ### Improved
 - Deepened model-promotion governance so regime readiness now sits beside threshold, exit, calibration, and feature-health feedback instead of only paper/live scorecards.
 - Extended replay cards with veto-chain and alternate-exit context so post-trade review shows more than entry/exit prices alone.
 - Refreshed status serialization so live runtime output now includes lifecycle and operator layers end-to-end.
 - Documented the new tuning and watchdog knobs in `.env.example`.
+- Tightened exchange-truth reconciliation so open orders, order lists, stale protective state, and recent fills all participate in live freeze decisions and recovery guidance.
+- Expanded operator dashboards with readiness summaries, active lifecycle actions, lifecycle journals, threshold probation context, and execution-calibration status.
+- Deepened exit learning with strategy- and regime-scoped exit policies that tune scale-outs, trailing behavior, and hold windows per context.
 
 ### Fixed
 - Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.
 - Prevented `openBestCandidate()` from crashing in lightweight prototype-based tests when `this.config` is absent.
 - Kept recovered/rebuilt live positions explicitly marked as `reconcile_required` or `protected` so lifecycle state no longer goes stale after broker recovery paths.
 - Fixed scale-out protection recovery so failed protective rebuilds now leave a clear reconcile state instead of silently falling back to a generic open position.
+- Stopped per-position exchange sync failures from aborting the broader reconcile pass; failed symbols now degrade into `reconcile_required` while the rest of the book still updates.
+- Cleared stale protective-order assumptions when exchange order-list truth disagrees, so later rebuilds can recover instead of believing a dead protective order still exists.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`

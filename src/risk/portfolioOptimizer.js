@@ -46,6 +46,41 @@ function sameUtcDay(left, right) {
   return `${left || ""}`.slice(0, 10) === `${right || ""}`.slice(0, 10);
 }
 
+function computeLossStreakMap(trades = [], keyFn, limit = 60) {
+  const streaks = {};
+  const settled = trades.filter((trade) => trade.exitAt).slice(-limit).reverse();
+  const cooled = new Set();
+  for (const trade of settled) {
+    const key = keyFn(trade) || "unknown";
+    if (cooled.has(key)) {
+      continue;
+    }
+    if ((trade.netPnlPct || 0) < 0) {
+      streaks[key] = (streaks[key] || 0) + 1;
+      continue;
+    }
+    cooled.add(key);
+  }
+  return streaks;
+}
+
+function computeDrawdownPct(equitySnapshots = []) {
+  let peak = 0;
+  let maxDrawdown = 0;
+  for (const snapshot of equitySnapshots) {
+    const equity = Number(snapshot?.equity || 0);
+    if (!Number.isFinite(equity) || equity <= 0) {
+      continue;
+    }
+    peak = Math.max(peak, equity);
+    if (!peak) {
+      continue;
+    }
+    maxDrawdown = Math.max(maxDrawdown, (peak - equity) / peak);
+  }
+  return clamp(maxDrawdown, 0, 1);
+}
+
 function resolveStrategy(trade) {
   return trade.strategyAtEntry || trade.strategyDecision?.activeStrategy || trade.entryRationale?.strategy?.activeStrategy || "unknown";
 }
@@ -137,6 +172,19 @@ function buildBudgetState(journal = {}, config = {}, nowIso = new Date().toISOSt
       .reduce((total, event) => total + (event.realizedPnl || 0), 0);
   const dailyLossFraction = dailyRealized < 0 ? Math.abs(dailyRealized) / Math.max(config.startingCash || 1, 1) : 0;
   const dailyBudgetFactor = clamp(1 - dailyLossFraction * 7.5, config.dailyRiskBudgetFloor || 0.35, 1.08);
+  const settledTrades = (journal.trades || []).filter((trade) => trade.exitAt);
+  const recentReturns = settledTrades
+    .slice(-(config.executionCalibrationLookbackTrades || 48))
+    .map((trade) => Number(trade.netPnlPct || 0))
+    .filter((value) => Number.isFinite(value));
+  const tailLosses = recentReturns.filter((value) => value < 0).sort((left, right) => left - right);
+  const cvarTailCount = Math.max(1, Math.floor(Math.max(1, tailLosses.length) * 0.2));
+  const portfolioCvarPct = tailLosses.length ? Math.abs(average(tailLosses.slice(0, cvarTailCount))) : 0;
+  const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240));
+  const drawdownBudgetUsage = config.portfolioDrawdownBudgetPct
+    ? clamp(drawdownPct / Math.max(config.portfolioDrawdownBudgetPct, 0.0001), 0, 3)
+    : 0;
+  const regimeLossStreakMap = computeLossStreakMap(settledTrades, (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown");
 
   return {
     strategyBudgetMap: scoreBucketMap(strategyBuckets),
@@ -146,7 +194,11 @@ function buildBudgetState(journal = {}, config = {}, nowIso = new Date().toISOSt
     sectorBudgetMap: scoreBucketMap(sectorBuckets),
     factorBudgetMap: scoreBucketMap(factorBuckets),
     dailyBudgetFactor: Number(dailyBudgetFactor.toFixed(4)),
-    dailyLossFraction: Number(dailyLossFraction.toFixed(4))
+    dailyLossFraction: Number(dailyLossFraction.toFixed(4)),
+    portfolioCvarPct: Number(portfolioCvarPct.toFixed(4)),
+    drawdownPct: Number(drawdownPct.toFixed(4)),
+    drawdownBudgetUsage: Number(drawdownBudgetUsage.toFixed(4)),
+    regimeLossStreakMap
   };
 }
 
@@ -253,6 +305,18 @@ export class PortfolioOptimizer {
     const sectorHeatPenalty = clamp(1 - Math.max(0, sectorHeat - 0.28) * 1.4, 0.62, 1);
     const factorHeatPenalty = clamp(1 - Math.max(0, factorHeat - 0.22) * 1.6, 0.58, 1);
     const portfolioHeatPenalty = clamp(1 - portfolioHeat * 0.42, 0.55, 1);
+    const cvarPenalty = clamp(
+      1 - Math.max(0, (budgetState.portfolioCvarPct || 0) - (this.config.portfolioMaxCvarPct || 0.028)) * 18,
+      0.5,
+      1
+    );
+    const drawdownBudgetPenalty = clamp(
+      1 - Math.max(0, (budgetState.drawdownBudgetUsage || 0) - 0.7) * 0.55,
+      0.48,
+      1
+    );
+    const regimeLossStreak = budgetState.regimeLossStreakMap?.[activeRegime] || 0;
+    const regimeKillSwitchActive = regimeLossStreak >= (this.config.portfolioRegimeKillSwitchLossStreak || 3);
 
     const sizeMultiplier = clamp(
       volatilityTargetFraction *
@@ -273,7 +337,10 @@ export class PortfolioOptimizer {
         clusterHeatPenalty *
         sectorHeatPenalty *
         factorHeatPenalty *
-        portfolioHeatPenalty,
+        portfolioHeatPenalty *
+        cvarPenalty *
+        drawdownBudgetPenalty *
+        (regimeKillSwitchActive ? 0.22 : 1),
       0.18,
       1.12
     );
@@ -290,7 +357,10 @@ export class PortfolioOptimizer {
         clusterHeat * 0.18 -
         sectorHeat * 0.12 -
         factorHeat * 0.1 -
-        portfolioHeat * 0.14,
+        portfolioHeat * 0.14 -
+        Math.max(0, (budgetState.portfolioCvarPct || 0) - (this.config.portfolioMaxCvarPct || 0.028)) * 1.6 -
+        Math.max(0, (budgetState.drawdownBudgetUsage || 0) - 1) * 0.18 -
+        (regimeKillSwitchActive ? 0.28 : 0),
       0,
       1
     );
@@ -332,6 +402,15 @@ export class PortfolioOptimizer {
     if (factorBudgetFactor < 0.9) {
       reasons.push("factor_budget_cooled");
     }
+    if ((budgetState.portfolioCvarPct || 0) >= (this.config.portfolioMaxCvarPct || 0.028)) {
+      reasons.push("portfolio_cvar_budget_hit");
+    }
+    if ((budgetState.drawdownBudgetUsage || 0) >= 1) {
+      reasons.push("portfolio_drawdown_budget_hit");
+    }
+    if (regimeKillSwitchActive) {
+      reasons.push("regime_kill_switch_active");
+    }
     if (clusterHeat >= 0.24) {
       reasons.push("cluster_heat_elevated");
     }
@@ -369,6 +448,13 @@ export class PortfolioOptimizer {
       strategyHeat,
       factorHeat,
       portfolioHeat,
+      portfolioCvarPct: budgetState.portfolioCvarPct,
+      drawdownPct: budgetState.drawdownPct,
+      drawdownBudgetUsage: budgetState.drawdownBudgetUsage,
+      regimeLossStreak,
+      regimeKillSwitchActive,
+      cvarPenalty,
+      drawdownBudgetPenalty,
       candidateFactors,
       sameFactorCount: sameFactorPositions.length,
       allocatorScore,
