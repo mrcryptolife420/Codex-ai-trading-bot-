@@ -31,6 +31,7 @@ import { classifyRegime } from "../src/ai/regimeModel.js";
 import { buildFeatureVector } from "../src/strategy/features.js";
 import { evaluateStrategySet } from "../src/strategy/strategyRouter.js";
 import { buildTrendStateSummary } from "../src/strategy/trendState.js";
+import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../src/strategy/candidateInsights.js";
 import { StrategyOptimizer } from "../src/ai/strategyOptimizer.js";
 import { StrategyAttribution } from "../src/ai/strategyAttribution.js";
 import { ExitIntelligence } from "../src/ai/exitIntelligence.js";
@@ -2006,6 +2007,64 @@ await runCheck("trend state summary detects sideways tapes and soft data confide
   assert.ok(summary.reasons.includes("data_confidence_soft"));
 });
 
+await runCheck("candidate insight summaries expose data quality, signal quality and confidence breakdown", async () => {
+  const trendStateSummary = buildTrendStateSummary({
+    marketFeatures: {
+      momentum20: 0.009,
+      emaGap: 0.004,
+      dmiSpread: 0.16,
+      trendQualityScore: 0.38,
+      trendPersistence: 0.72,
+      swingStructureScore: 0.42,
+      trendMaturityScore: 0.61,
+      trendExhaustionScore: 0.21,
+      realizedVolPct: 0.018,
+      vwapGapPct: 0.006,
+      anchoredVwapAcceptanceScore: 0.58,
+      bollingerPosition: 0.68
+    },
+    bookFeatures: { spreadBps: 4, bookPressure: 0.16, depthConfidence: 0.66, totalDepthNotional: 250000, freshnessScore: 0.9 },
+    newsSummary: { confidence: 0.7, providerDiversity: 3, freshnessScore: 0.72 },
+    announcementSummary: { freshnessScore: 0.64 },
+    qualityQuorumSummary: { status: "degraded", quorumScore: 0.74, observeOnly: false },
+    venueConfirmationSummary: { confirmed: true, status: "confirmed", averageHealthScore: 0.82, venueCount: 2 },
+    timeframeSummary: { blockerReasons: [] }
+  });
+  const dataQuality = buildDataQualitySummary({
+    newsSummary: { coverage: 0.8, freshnessScore: 0.72, reliabilityScore: 0.76, confidence: 0.7 },
+    announcementSummary: { coverage: 0.5, freshnessScore: 0.64, confidence: 0.58, riskScore: 0.08 },
+    marketStructureSummary: { coverage: 1, signalScore: 0.14, riskScore: 0.12, fundingRate: 0.00002 },
+    marketSentimentSummary: { coverage: 1, confidence: 0.68 },
+    volatilitySummary: { coverage: 1, confidence: 0.7 },
+    onChainLiteSummary: { coverage: 0.5, confidence: 0.54 },
+    qualityQuorumSummary: { status: "degraded", quorumScore: 0.74, observeOnly: false },
+    venueConfirmationSummary: { confirmed: true, status: "confirmed", averageHealthScore: 0.82, venueCount: 2 },
+    bookFeatures: { totalDepthNotional: 250000, freshnessScore: 0.9, depthConfidence: 0.66 }
+  });
+  const signalQuality = buildSignalQualitySummary({
+    marketFeatures: { trendQualityScore: 0.44, trendExhaustionScore: 0.2 },
+    bookFeatures: { spreadBps: 4, depthConfidence: 0.66 },
+    strategySummary: { fitScore: 0.62 },
+    trendStateSummary,
+    qualityQuorumSummary: { quorumScore: 0.74, status: "degraded", observeOnly: false },
+    venueConfirmationSummary: { confirmed: true, status: "confirmed" },
+    newsSummary: { riskScore: 0.08, reliabilityScore: 0.76, confidence: 0.7, socialRisk: 0.06 }
+  });
+  const confidence = buildConfidenceBreakdown({
+    score: { calibrationConfidence: 0.61, disagreement: 0.08 },
+    trendStateSummary,
+    signalQualitySummary: signalQuality,
+    venueConfirmationSummary: { confirmed: true, status: "confirmed" },
+    qualityQuorumSummary: { quorumScore: 0.74, averageScore: 0.74 },
+    strategySummary: { confidence: 0.58 },
+    executionPlan: { depthConfidence: 0.66 }
+  });
+  assert.equal(dataQuality.status, "degraded");
+  assert.ok(dataQuality.degradedButAllowed);
+  assert.ok(signalQuality.overallScore > 0.5);
+  assert.ok(confidence.overallConfidence > 0.5);
+});
+
 
 await runCheck("risk manager ignores stale loss streaks outside the lookback window", async () => {
   const manager = new RiskManager(makeConfig({ lossStreakLookbackMinutes: 60 }));
@@ -2373,6 +2432,66 @@ await runCheck("risk manager keeps trend-state size tuning inside hard capital c
   assert.ok(decision.allow);
   assert.ok(decision.trendStateTuningApplied.active);
   assert.equal(decision.quoteAmount <= 100, true);
+});
+
+await runCheck("risk manager exposes quality summaries and blocks exhausted fragile trend entries", async () => {
+  const manager = new RiskManager(makeConfig({ maxSpreadBps: 18 }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.66,
+      calibrationConfidence: 0.54,
+      disagreement: 0.06,
+      shouldAbstain: false,
+      transformer: { probability: 0.63, confidence: 0.22 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 18, bookPressure: 0.08, microPriceEdgeBps: 0.3, depthConfidence: 0.18, totalDepthNotional: 20000, freshnessScore: 0.42 },
+      market: {
+        realizedVolPct: 0.022,
+        atrPct: 0.01,
+        bullishPatternScore: 0.12,
+        bearishPatternScore: 0.05,
+        momentum20: 0.014,
+        emaGap: 0.007,
+        dmiSpread: 0.24,
+        trendPersistence: 0.82,
+        trendQualityScore: 0.34,
+        trendExhaustionScore: 0.82,
+        trendMaturityScore: 0.84,
+        swingStructureScore: 0.4,
+        upsideAccelerationScore: 0.22,
+        downsideAccelerationScore: 0.02,
+        anchoredVwapAcceptanceScore: 0.62,
+        supertrendDirection: 1
+      }
+    },
+    newsSummary: { riskScore: 0.12, sentimentScore: 0.05, reliabilityScore: 0.58, confidence: 0.52, freshnessScore: 0.34, socialRisk: 0.08 },
+    announcementSummary: { riskScore: 0.04, sentimentScore: 0.01, confidence: 0.45, freshnessScore: 0.4, coverage: 0.2 },
+    marketStructureSummary: { riskScore: 0.12, signalScore: 0.08, crowdingBias: 0.1, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0, coverage: 1 },
+    marketSentimentSummary: { riskScore: 0.28, contrarianScore: 0.02, confidence: 0.56, coverage: 1 },
+    volatilitySummary: { riskScore: 0.18, confidence: 0.62, coverage: 1 },
+    onChainLiteSummary: { liquidityScore: 0.48, marketBreadthScore: 0.44, majorsMomentumScore: 0.32, confidence: 0.5, coverage: 0.5 },
+    calendarSummary: { riskScore: 0.03, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.64, probability: 0.67, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.64, confidence: 0.52, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 14, sampleConfidence: 0.72 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "degraded", quorumScore: 0.62, observeOnly: false },
+    executionCostSummary: { blocked: true, sizeMultiplier: 0.7 },
+    venueConfirmationSummary: { status: "blocked", confirmed: false, averageHealthScore: 0.22, blockerReasons: ["reference_venue_divergence"], venueCount: 2 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.length > 0);
+  assert.ok(decision.dataQualitySummary.overallScore > 0);
+  assert.ok(decision.signalQualitySummary.overallScore > 0);
+  assert.ok(decision.confidenceBreakdown.executionConfidence < 0.5);
 });
 
 
@@ -4482,11 +4601,63 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
     session: { session: "asia", sessionLabel: "Asia", blockerReasons: ["session_liquidity_guard"] },
     drift: { blockerReasons: ["drift_confidence_guard"] },
     selfHeal: { issues: ["loss_streak_warning"] },
-    qualityQuorum: { status: "degraded", quorumScore: 0.75, blockerReasons: [], cautionReasons: ["calendar"] }
+    qualityQuorum: { status: "degraded", quorumScore: 0.75, blockerReasons: [], cautionReasons: ["calendar"] },
+    trendState: { direction: "sideways", phase: "range_acceptance", uptrendScore: 0.2, downtrendScore: 0.18, rangeScore: 0.76, rangeAcceptanceScore: 0.71, dataConfidenceScore: 0.62, completenessScore: 0.64, reasons: ["range_acceptance"] },
+    dataQuality: { status: "degraded", overallScore: 0.63, freshnessScore: 0.58, trustScore: 0.66, coverageScore: 0.61, degradedButAllowed: true, sources: [{ label: "news", status: "degraded" }] },
+    signalQuality: { overallScore: 0.57, setupFit: 0.58, structureQuality: 0.61, executionViability: 0.42, newsCleanliness: 0.63, quorumQuality: 0.54 },
+    confidenceBreakdown: { marketConfidence: 0.56, dataConfidence: 0.62, executionConfidence: 0.41, modelConfidence: 0.58, overallConfidence: 0.54 }
   });
   assert.deepEqual(view.sessionBlockers, ["session_liquidity_guard"]);
   assert.deepEqual(view.driftBlockers, ["drift_confidence_guard"]);
   assert.deepEqual(view.selfHealIssues, ["loss_streak_warning"]);
+  assert.equal(view.trendState.phase, "range_acceptance");
+  assert.equal(view.dataQuality.degradedButAllowed, true);
+  assert.equal(view.signalQuality.executionViability, 0.42);
+  assert.equal(view.confidenceBreakdown.executionConfidence, 0.41);
+});
+
+await runCheck("doctor preview scan uses read-only candidate scan mode", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  let capturedOptions = null;
+  bot.config = makeConfig();
+  bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
+  bot.runtime = {
+    mode: "paper",
+    openPositions: [],
+    drift: {},
+    selfHeal: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    offlineTrainer: {},
+    sourceReliability: {},
+    exchangeCapabilities: bot.config.exchangeCapabilities,
+    session: {},
+    marketSentiment: {},
+    onChainLite: {},
+    volatilityContext: {},
+    dataRecorder: {}
+  };
+  bot.broker = {
+    getBalance: async () => ({ quoteFree: 1000 }),
+    doctor: async () => ({ ok: true })
+  };
+  bot.health = { getStatus: () => ({ ok: true }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = {
+    getCalibrationSummary: () => ({}),
+    getDeploymentSummary: () => ({})
+  };
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({ filesWritten: 0 }) };
+  bot.buildResearchView = () => null;
+  bot.scanCandidates = async (_balance, options) => {
+    capturedOptions = options;
+    return [];
+  };
+  const report = await bot.runDoctor();
+  assert.deepEqual(capturedOptions, { readOnly: true });
+  assert.equal(report.mode, "paper");
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {

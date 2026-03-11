@@ -255,7 +255,9 @@ function evaluateTrendFollowing(context) {
   const trendExhaustion = clamp(safeValue(market.trendExhaustionScore), 0, 1);
   const supertrendTailwind = safeValue(market.supertrendDirection) > 0 ? ratio(safeValue(market.supertrendDistancePct) * 100, -0.08, 1.2) : 0;
   const crowdingRisk = clamp(ratio(Math.abs(safeValue(structure.crowdingBias)), 0.28, 0.88) * 0.55 + ratio(Math.abs(safeValue(structure.fundingRate)) * 10000, 1.2, 6.2) * 0.45, 0, 1);
-  const score = clamp(regimeFit * 0.15 + trendStrength * 0.11 + momentum * 0.1 + emaStack * 0.09 + persistence * 0.08 + obvSlope * 0.05 + adxStrength * 0.06 + dmiTailwind * 0.05 + structureBias * 0.07 + trendMaturity * 0.06 + supertrendTailwind * 0.05 + safeValue(trendState.uptrendScore) * 0.08 + safeValue(trendState.dataConfidenceScore) * 0.05 + orderflow * 0.04 + bullishPattern * 0.03 - trendExhaustion * 0.09 - crowdingRisk * 0.09 - bearishPattern * 0.06 - eventRisk * 0.04, 0, 1);
+  const trendPhaseBonus = trendState.phase === "early_ignition" || trendState.phase === "healthy_continuation" ? 0.04 : 0;
+  const trendPhasePenalty = trendState.phase === "late_crowded" ? 0.05 : 0;
+  const score = clamp(regimeFit * 0.15 + trendStrength * 0.11 + momentum * 0.1 + emaStack * 0.09 + persistence * 0.08 + obvSlope * 0.05 + adxStrength * 0.06 + dmiTailwind * 0.05 + structureBias * 0.07 + trendMaturity * 0.06 + supertrendTailwind * 0.05 + safeValue(trendState.uptrendScore) * 0.08 + safeValue(trendState.dataConfidenceScore) * 0.05 + orderflow * 0.04 + bullishPattern * 0.03 + trendPhaseBonus - trendPhasePenalty - trendExhaustion * 0.09 - crowdingRisk * 0.09 - bearishPattern * 0.06 - eventRisk * 0.04, 0, 1);
   const confidence = clamp(0.28 + average([regimeFit, trendStrength, momentum, emaStack, persistence, adxStrength, structureBias, safeValue(trendState.dataConfidenceScore)], 0) * 0.52 - crowdingRisk * 0.08 - trendExhaustion * 0.05, 0, 1);
   return buildStrategy("trend_following", score, confidence, [
     `regime ${regime}`,
@@ -270,7 +272,7 @@ function evaluateTrendFollowing(context) {
     crowdingRisk > 0.64 ? "crowded_trend" : null,
     trendExhaustion > 0.7 ? "trend_exhaustion" : null,
     bearishPattern > 0.64 ? "pattern_reversal_risk" : null
-  ], { regimeFit, trendStrength, momentum, emaStack, persistence, adxStrength, dmiTailwind, structureBias, trendMaturity, trendExhaustion, uptrendScore: safeValue(trendState.uptrendScore), dataConfidence: safeValue(trendState.dataConfidenceScore) });
+  ], { regimeFit, trendStrength, momentum, emaStack, persistence, adxStrength, dmiTailwind, structureBias, trendMaturity, trendExhaustion, uptrendScore: safeValue(trendState.uptrendScore), dataConfidence: safeValue(trendState.dataConfidenceScore), trendPhase: trendState.phase || "mixed_transition" });
 }
 
 function evaluateEmaTrend(context) {
@@ -288,7 +290,9 @@ function evaluateEmaTrend(context) {
   const trendExhaustion = clamp(safeValue(market.trendExhaustionScore), 0, 1);
   const supertrendTailwind = safeValue(market.supertrendDirection) > 0 ? ratio(safeValue(market.supertrendDistancePct) * 100, -0.08, 1.15) : 0;
   const crowdingRisk = clamp(ratio(Math.abs(safeValue(structure.crowdingBias)), 0.32, 0.92) * 0.6 + ratio(Math.max(0, safeValue(structure.fundingRate)) * 10000, 1.4, 6.4) * 0.4, 0, 1);
-  const score = clamp(regimeFit * 0.16 + emaTrend * 0.13 + emaSlope * 0.1 + persistence * 0.08 + vwapSupport * 0.06 + obvSlope * 0.05 + adxStrength * 0.06 + dmiTailwind * 0.05 + structureBias * 0.07 + trendMaturity * 0.06 + supertrendTailwind * 0.06 + safeValue(trendState.uptrendScore) * 0.07 + safeValue(trendState.dataConfidenceScore) * 0.05 + orderflow * 0.05 + bullishPattern * 0.03 - trendExhaustion * 0.1 - crowdingRisk * 0.09 - bearishPattern * 0.07 - eventRisk * 0.04, 0, 1);
+  const emaTrendPhaseBonus = trendState.phase === "early_ignition" || trendState.phase === "healthy_continuation" ? 0.04 : 0;
+  const emaTrendPhasePenalty = trendState.phase === "late_crowded" ? 0.05 : 0;
+  const score = clamp(regimeFit * 0.16 + emaTrend * 0.13 + emaSlope * 0.1 + persistence * 0.08 + vwapSupport * 0.06 + obvSlope * 0.05 + adxStrength * 0.06 + dmiTailwind * 0.05 + structureBias * 0.07 + trendMaturity * 0.06 + supertrendTailwind * 0.06 + safeValue(trendState.uptrendScore) * 0.07 + safeValue(trendState.dataConfidenceScore) * 0.05 + orderflow * 0.05 + bullishPattern * 0.03 + emaTrendPhaseBonus - emaTrendPhasePenalty - trendExhaustion * 0.1 - crowdingRisk * 0.09 - bearishPattern * 0.07 - eventRisk * 0.04, 0, 1);
   const confidence = clamp(0.28 + average([regimeFit, emaTrend, emaSlope, persistence, orderflow, adxStrength, structureBias, safeValue(trendState.dataConfidenceScore)], 0) * 0.5 - crowdingRisk * 0.07 - trendExhaustion * 0.05, 0, 1);
   return buildStrategy("ema_trend", score, confidence, [
     `ema trend ${safeValue(market.emaTrendScore).toFixed(3)}`,
@@ -302,7 +306,7 @@ function evaluateEmaTrend(context) {
     trendExhaustion > 0.7 ? "trend_exhaustion" : null,
     bearishPattern > 0.66 ? "pattern_reversal_risk" : null,
     eventRisk > 0.76 ? "event_risk_headwind" : null
-  ], { regimeFit, emaTrend, emaSlope, persistence, adxStrength, dmiTailwind, supertrendTailwind, structureBias, trendMaturity, trendExhaustion, uptrendScore: safeValue(trendState.uptrendScore), dataConfidence: safeValue(trendState.dataConfidenceScore) });
+  ], { regimeFit, emaTrend, emaSlope, persistence, adxStrength, dmiTailwind, supertrendTailwind, structureBias, trendMaturity, trendExhaustion, uptrendScore: safeValue(trendState.uptrendScore), dataConfidence: safeValue(trendState.dataConfidenceScore), trendPhase: trendState.phase || "mixed_transition" });
 }
 
 function evaluateDonchianBreakout(context) {

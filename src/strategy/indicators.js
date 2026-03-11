@@ -496,6 +496,10 @@ export function computeMarketFeatures(candles) {
   }
   const recentReturns = selectRecent(returns, 8);
   const realizedVolPct = standardDeviation(selectRecent(returns, 30));
+  const upsideReturns = selectRecent(returns.filter((value) => value > 0), 20);
+  const downsideReturns = selectRecent(returns.filter((value) => value < 0).map((value) => Math.abs(value)), 20);
+  const upsideRealizedVolPct = standardDeviation(upsideReturns);
+  const downsideRealizedVolPct = standardDeviation(downsideReturns);
   const priorChannel = donchianChannel(highs, lows, 20, false);
   const currentChannel = donchianChannel(highs, lows, 20, true);
   const vwap = volumeWeightedAveragePrice(candles, 30);
@@ -552,6 +556,33 @@ export function computeMarketFeatures(candles) {
     0,
     1
   );
+  const anchoredVwapAcceptanceScore = clamp(
+    Math.max(0, 1 - Math.min(1, Math.abs(pctChange(anchoredVwap || lastClose || 1, lastClose)) * 75)) * 0.48 +
+      Math.max(0, trendPersistence - 0.45) * 0.22 +
+      Math.max(0, 1 - Math.abs(closeLocation - 0.5) * 1.6) * 0.15 +
+      Math.max(0, 1 - Math.abs(dmi.dmiSpread) * 1.8) * 0.15,
+    0,
+    1
+  );
+  const anchoredVwapRejectionScore = clamp(
+    Math.max(0, Math.abs(pctChange(anchoredVwap || lastClose || 1, lastClose)) * 55) * 0.42 +
+      Math.max(0, Math.abs(closeLocation - 0.5) - 0.2) * 1.4 * 0.2 +
+      Math.max(0, Math.abs(dmi.dmiSpread)) * 1.8 * 0.18 +
+      Math.max(directionalAcceleration.upsideAccelerationScore, directionalAcceleration.downsideAccelerationScore) * 0.2,
+    0,
+    1
+  );
+  const trendFailureScore = clamp(
+    Math.max(0, swingStructure.swingStructureScore) * 0.18 +
+      Math.max(0, momentum20 * 28) * 0.18 +
+      Math.max(0, trendQualityScore) * 0.16 +
+      Math.max(0, 0.54 - closeLocation) * 0.2 +
+      Math.max(0, directionalAcceleration.downsideAccelerationScore - directionalAcceleration.upsideAccelerationScore) * 0.16 +
+      Math.max(0, -patterns.bearishPatternScore + 0.2) * 0 +
+      Math.max(0, patterns.bearishPatternScore) * 0.12,
+    0,
+    1
+  );
 
   return {
     lastClose,
@@ -574,6 +605,8 @@ export function computeMarketFeatures(candles) {
     atrExpansion: atr30 ? atr14 / atr30 - 1 : 0,
     macdHistogramPct: lastClose ? macdValues.histogram / lastClose : 0,
     realizedVolPct,
+    upsideRealizedVolPct,
+    downsideRealizedVolPct,
     volumeZ,
     breakoutPct: priorChannel.upper ? pctChange(priorChannel.upper, lastClose) : 0,
     trendStrength: lastClose ? pctChange(sma(closes, 50), lastClose) : 0,
@@ -581,6 +614,8 @@ export function computeMarketFeatures(candles) {
     vwapSlopePct,
     anchoredVwapGapPct: anchoredVwap ? pctChange(anchoredVwap, lastClose) : 0,
     anchoredVwapSlopePct: priorAnchoredVwap ? pctChange(priorAnchoredVwap, anchoredVwap) : 0,
+    anchoredVwapAcceptanceScore,
+    anchoredVwapRejectionScore,
     obvSlope: obvBase ? ((obvSeries.at(-1) || 0) - (obvSeries.at(-21) || 0)) / obvBase : 0,
     rangeCompression: atr30 ? atr14 / atr30 : 1,
     candleBodyRatio: lastRange ? Math.abs(lastCandle.close - lastCandle.open) / lastRange : 0,
@@ -596,6 +631,7 @@ export function computeMarketFeatures(candles) {
     downsideAccelerationScore: directionalAcceleration.downsideAccelerationScore,
     trendMaturityScore,
     trendExhaustionScore,
+    trendFailureScore,
     bullishPatternScore: patterns.bullishPatternScore,
     bearishPatternScore: patterns.bearishPatternScore,
     insideBar: patterns.insideBar,

@@ -60,6 +60,7 @@ export function buildTrendStateSummary({
       : rangeScore >= 0.54
         ? "sideways"
         : "mixed";
+  const rangeAcceptanceScore = rangeScore;
 
   const completenessInputs = [
     marketFeatures.momentum20,
@@ -110,6 +111,21 @@ export function buildTrendStateSummary({
   );
 
   const reasons = [];
+  const phase = direction === "uptrend"
+    ? safeValue(marketFeatures.trendMaturityScore) < 0.34
+      ? "early_ignition"
+      : safeValue(marketFeatures.trendExhaustionScore) > 0.68
+        ? "late_crowded"
+        : "healthy_continuation"
+    : direction === "downtrend"
+      ? safeValue(marketFeatures.trendExhaustionScore) > 0.66 && safeValue(marketFeatures.downsideAccelerationScore) > 0.46
+        ? "capitulation_bounce_risk"
+        : safeValue(marketFeatures.trendMaturityScore) < 0.34
+          ? "early_breakdown"
+          : "healthy_downtrend"
+      : direction === "sideways"
+        ? "range_acceptance"
+        : "mixed_transition";
   if (direction === "uptrend") reasons.push("uptrend_structure");
   else if (direction === "downtrend") reasons.push("downtrend_structure");
   else if (direction === "sideways") reasons.push("range_acceptance");
@@ -123,6 +139,8 @@ export function buildTrendStateSummary({
     uptrendScore,
     downtrendScore,
     rangeScore,
+    rangeAcceptanceScore,
+    phase,
     maturityScore: clamp(safeValue(marketFeatures.trendMaturityScore), 0, 1),
     exhaustionScore: clamp(safeValue(marketFeatures.trendExhaustionScore), 0, 1),
     completenessScore,

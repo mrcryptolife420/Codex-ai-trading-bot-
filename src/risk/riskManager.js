@@ -1,6 +1,7 @@
 import { clamp } from "../utils/math.js";
 import { minutesBetween, sameUtcDay } from "../utils/time.js";
 import { buildTrendStateSummary } from "../strategy/trendState.js";
+import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
 
 function safeValue(value) {
   return Number.isFinite(value) ? value : 0;
@@ -489,6 +490,26 @@ export class RiskManager {
       venueConfirmationSummary,
       timeframeSummary
     });
+    const dataQualitySummary = buildDataQualitySummary({
+      newsSummary,
+      announcementSummary,
+      marketStructureSummary,
+      marketSentimentSummary,
+      volatilitySummary,
+      onChainLiteSummary,
+      qualityQuorumSummary,
+      venueConfirmationSummary,
+      bookFeatures: marketSnapshot.book || {}
+    });
+    const signalQualitySummary = buildSignalQualitySummary({
+      marketFeatures: marketSnapshot.market || {},
+      bookFeatures: marketSnapshot.book || {},
+      strategySummary,
+      trendStateSummary,
+      qualityQuorumSummary,
+      venueConfirmationSummary,
+      newsSummary
+    });
     const downtrendPolicy = buildDowntrendPolicy({
       marketSnapshot,
       marketStructureSummary,
@@ -697,6 +718,14 @@ export class RiskManager {
     if (executionCostBudget.blocked) {
       reasons.push("execution_cost_budget_exceeded");
     }
+    if (
+      ((trendStateSummary.direction || "") === "uptrend" || (trendStateSummary.uptrendScore || 0) >= 0.58) &&
+      (trendStateSummary.exhaustionScore || 0) >= 0.72 &&
+      (signalQualitySummary.executionViability || 0) <= 0.44 &&
+      ((venueConfirmationSummary.status || "") === "blocked" || executionCostBudget.blocked)
+    ) {
+      reasons.push("trend_exhausted_execution_fragile");
+    }
     if (capitalGovernor.recoveryMode && score.probability < threshold + 0.025) {
       reasons.push("capital_governor_recovery");
     }
@@ -782,6 +811,7 @@ export class RiskManager {
       1.04
     );
     const dataConfidenceFactor = clamp(0.72 + safeValue(trendStateSummary.dataConfidenceScore, 0.6) * 0.36, 0.48, 1.05);
+    const signalQualityFactor = clamp(0.76 + (signalQualitySummary.overallScore || 0.5) * 0.34, 0.5, 1.08);
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
     const streakPenalty = clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
@@ -810,6 +840,7 @@ export class RiskManager {
       onChainFactor *
       qualityQuorumFactor *
       dataConfidenceFactor *
+      signalQualityFactor *
       divergenceFactor *
       heatPenalty *
       streakPenalty *
@@ -826,6 +857,16 @@ export class RiskManager {
       spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
     const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier;
+
+    const confidenceBreakdown = buildConfidenceBreakdown({
+      score,
+      trendStateSummary,
+      signalQualitySummary,
+      venueConfirmationSummary,
+      qualityQuorumSummary,
+      strategySummary,
+      executionPlan: {}
+    });
 
     if (adjustedQuoteAmount < this.config.minTradeUsdt) {
       reasons.push("trade_size_below_minimum");
@@ -979,6 +1020,9 @@ export class RiskManager {
       exchangeCapabilitiesApplied: exchangeCapabilities,
       downtrendPolicy,
       trendStateSummary,
+      dataQualitySummary,
+      signalQualitySummary,
+      confidenceBreakdown,
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,
@@ -1046,6 +1090,9 @@ export class RiskManager {
         (timeframeSummary.alignmentScore || 0) * 0.05 +
         (onChainLiteSummary.liquidityScore || 0) * 0.03 +
         (qualityQuorumSummary.quorumScore || qualityQuorumSummary.averageScore || 0) * 0.04 +
+        (signalQualitySummary.overallScore || 0) * 0.05 +
+        (dataQualitySummary.overallScore || 0) * 0.04 +
+        (confidenceBreakdown.overallConfidence || 0) * 0.03 +
         (onChainLiteSummary.marketBreadthScore || 0) * 0.025 +
         (onChainLiteSummary.majorsMomentumScore || 0) * 0.018 +
         ((venueConfirmationSummary.confirmed ? 0.02 : (venueConfirmationSummary.status || "") === "blocked" ? -0.06 : 0)) +

@@ -53,6 +53,7 @@ import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
 import { buildTrendStateSummary } from "../strategy/trendState.js";
+import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
 import { summarizeStrategyDsl } from "../research/strategyDsl.js";
 import { minutesBetween, nowIso } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
@@ -4184,6 +4185,17 @@ export class TradingBot {
       venueConfirmationSummary,
       timeframeSummary
     });
+    const dataQualitySummary = buildDataQualitySummary({
+      newsSummary,
+      announcementSummary: exchangeSummary,
+      marketStructureSummary,
+      marketSentimentSummary,
+      volatilitySummary,
+      onChainLiteSummary,
+      qualityQuorumSummary,
+      venueConfirmationSummary,
+      bookFeatures: marketSnapshot.book
+    });
     const attributionSummary = this.strategyAttribution.getAdjustment(context.attributionSnapshot || {}, {
       symbol,
       strategyId: strategySummary.activeStrategy || null,
@@ -4415,9 +4427,30 @@ export class TradingBot {
       capitalLadderSummary: this.runtime.capitalLadder || {},
       venueConfirmationSummary
     });
+    const signalQualitySummary = buildSignalQualitySummary({
+      marketFeatures: marketSnapshot.market,
+      bookFeatures: marketSnapshot.book,
+      strategySummary,
+      trendStateSummary,
+      qualityQuorumSummary,
+      venueConfirmationSummary,
+      newsSummary
+    });
+    const confidenceBreakdown = buildConfidenceBreakdown({
+      score,
+      trendStateSummary,
+      signalQualitySummary,
+      venueConfirmationSummary,
+      qualityQuorumSummary,
+      strategySummary,
+      executionPlan: decision.executionPlan
+    });
     decision.committeeSummary = committeeSummary;
     decision.rlAdvice = rlAdvice;
     decision.strategySummary = strategySummary;
+    decision.dataQualitySummary = decision.dataQualitySummary || dataQualitySummary;
+    decision.signalQualitySummary = decision.signalQualitySummary || signalQualitySummary;
+    decision.confidenceBreakdown = confidenceBreakdown;
     return {
       symbol,
       marketSnapshot,
@@ -4431,6 +4464,9 @@ export class TradingBot {
       timeframeSummary,
       pairHealthSummary,
       trendStateSummary,
+      dataQualitySummary,
+      signalQualitySummary,
+      confidenceBreakdown,
       venueConfirmationSummary,
       qualityQuorumSummary,
       divergenceSummary,
@@ -4652,7 +4688,8 @@ export class TradingBot {
     return mids;
   }
 
-  async scanCandidates(balance) {
+  async scanCandidates(balance, options = {}) {
+    const readOnly = Boolean(options.readOnly);
     const now = new Date();
     const symbols = [...new Set([...this.config.watchlist, ...this.runtime.openPositions.map((position) => position.symbol)])];
     const shallowSnapshotMap = Object.fromEntries(symbols.map((symbol) => [
@@ -4697,63 +4734,75 @@ export class TradingBot {
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
     const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: now.toISOString() });
     const sourceReliabilitySummary = summarizeSourceReliability(this.runtime.sourceReliability || {});
-    this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
-    this.runtime.strategyAttribution = summarizeAttributionSnapshot(attributionSnapshot);
-    this.runtime.marketSentiment = summarizeMarketSentiment(sharedMarketSentimentSummary);
-    this.runtime.volatilityContext = summarizeVolatility(sharedVolatilitySummary);
-    this.runtime.onChainLite = summarizeOnChainLite(sharedOnChainLiteSummary);
-    this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
-    this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
-    this.runtime.sourceReliability = sourceReliabilitySummary;
+    if (!readOnly) {
+      this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
+      this.runtime.strategyAttribution = summarizeAttributionSnapshot(attributionSnapshot);
+      this.runtime.marketSentiment = summarizeMarketSentiment(sharedMarketSentimentSummary);
+      this.runtime.volatilityContext = summarizeVolatility(sharedVolatilitySummary);
+      this.runtime.onChainLite = summarizeOnChainLite(sharedOnChainLiteSummary);
+      this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
+      this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
+      this.runtime.sourceReliability = sourceReliabilitySummary;
+    }
     const universeSnapshot = scanPlan.universeSnapshot;
-    this.runtime.universe = summarizeUniverseSelection(universeSnapshot);
-    this.journal.universeRuns.push({
-      at: now.toISOString(),
-      selectedSymbols: [...(universeSnapshot.selectedSymbols || [])],
-      selectedCount: universeSnapshot.selectedCount || 0,
-      eligibleCount: universeSnapshot.eligibleCount || 0,
-      averageScore: num(universeSnapshot.averageScore || 0, 4),
-      bestSymbol: universeSnapshot.selectedSymbols?.[0] || null
-    });
+    if (!readOnly) {
+      this.runtime.universe = summarizeUniverseSelection(universeSnapshot);
+      this.journal.universeRuns.push({
+        at: now.toISOString(),
+        selectedSymbols: [...(universeSnapshot.selectedSymbols || [])],
+        selectedCount: universeSnapshot.selectedCount || 0,
+        eligibleCount: universeSnapshot.eligibleCount || 0,
+        averageScore: num(universeSnapshot.averageScore || 0, 4),
+        bestSymbol: universeSnapshot.selectedSymbols?.[0] || null
+      });
+    }
     const universeEntryMap = Object.fromEntries(
       [...arr(universeSnapshot.selected || []), ...arr(universeSnapshot.skipped || [])].map((entry) => [entry.symbol, entry])
     );
     const symbolsToEvaluate = (universeSnapshot.selectedSymbols || []).length ? universeSnapshot.selectedSymbols : this.config.watchlist;
-    const candidates = [];
-
-    for (const symbol of symbolsToEvaluate) {
-      if (!this.symbolRules[symbol]) {
-        continue;
+    const candidateEntries = await mapWithConcurrency(
+      symbolsToEvaluate.filter((symbol) => this.symbolRules[symbol]),
+      Math.max(1, this.config.candidateEvaluationConcurrency || 3),
+      async (symbol) => {
+        try {
+          const candidate = await this.evaluateCandidate(symbol, balance, now, {
+            marketSnapshot: snapshotMap[symbol],
+            openPositionContexts,
+            optimizerSummary: optimizerSnapshot,
+            attributionSnapshot,
+            universeSummary: universeEntryMap[symbol] || null,
+            marketSentimentSummary: sharedMarketSentimentSummary,
+            volatilitySummary: sharedVolatilitySummary,
+            onChainLiteSummary: sharedOnChainLiteSummary,
+            pairHealthSnapshot,
+            divergenceSummary,
+            sourceReliabilitySummary
+          });
+          return candidate;
+        } catch (error) {
+          this.logger.warn("Candidate evaluation failed", { symbol, error: error.message });
+          if (!readOnly) {
+            this.recordEvent("candidate_evaluation_failed", { symbol, error: error.message });
+          }
+          return null;
+        }
       }
-      try {
-        const candidate = await this.evaluateCandidate(symbol, balance, now, {
-          marketSnapshot: snapshotMap[symbol],
-          openPositionContexts,
-          optimizerSummary: optimizerSnapshot,
-          attributionSnapshot,
-          universeSummary: universeEntryMap[symbol] || null,
-          marketSentimentSummary: sharedMarketSentimentSummary,
-          volatilitySummary: sharedVolatilitySummary,
-          onChainLiteSummary: sharedOnChainLiteSummary,
-          pairHealthSnapshot,
-          divergenceSummary,
-          sourceReliabilitySummary
-        });
-        candidates.push(candidate);
+    );
+    const candidates = candidateEntries.filter(Boolean);
+    if (!readOnly) {
+      for (const candidate of candidates) {
         if (!candidate.decision.allow) {
           this.queueCounterfactualCandidate(candidate, now.toISOString());
         }
-      } catch (error) {
-        this.logger.warn("Candidate evaluation failed", { symbol, error: error.message });
-        this.recordEvent("candidate_evaluation_failed", { symbol, error: error.message });
       }
     }
 
     candidates.sort((left, right) => right.decision.rankScore - left.decision.rankScore);
-    this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
-    this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(candidates, now.toISOString()));
-    this.runtime.venueConfirmation = summarizeVenueConfirmation(this.referenceVenue.summarizeRuntime(candidates, now.toISOString()));
-    this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
+    if (!readOnly) {
+      this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
+      this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(candidates, now.toISOString()));
+      this.runtime.venueConfirmation = summarizeVenueConfirmation(this.referenceVenue.summarizeRuntime(candidates, now.toISOString()));
+      this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
       symbol: candidate.symbol,
       summary: this.buildCandidateSummary(candidate),
       setupStyle: buildSetupStyle(candidate),
@@ -4821,12 +4870,40 @@ export class TradingBot {
       qualityQuorum: summarizeQualityQuorum(candidate.qualityQuorumSummary),
       trendState: candidate.trendStateSummary ? {
         direction: candidate.trendStateSummary.direction || "mixed",
+        phase: candidate.trendStateSummary.phase || "mixed_transition",
         uptrendScore: num(candidate.trendStateSummary.uptrendScore || 0, 4),
         downtrendScore: num(candidate.trendStateSummary.downtrendScore || 0, 4),
         rangeScore: num(candidate.trendStateSummary.rangeScore || 0, 4),
+        rangeAcceptanceScore: num(candidate.trendStateSummary.rangeAcceptanceScore || 0, 4),
         dataConfidenceScore: num(candidate.trendStateSummary.dataConfidenceScore || 0, 4),
         completenessScore: num(candidate.trendStateSummary.completenessScore || 0, 4),
         reasons: [...(candidate.trendStateSummary.reasons || [])].slice(0, 4)
+      } : null,
+      dataQuality: candidate.dataQualitySummary ? {
+        status: candidate.dataQualitySummary.status || "ready",
+        overallScore: num(candidate.dataQualitySummary.overallScore || 0, 4),
+        freshnessScore: num(candidate.dataQualitySummary.freshnessScore || 0, 4),
+        trustScore: num(candidate.dataQualitySummary.trustScore || 0, 4),
+        coverageScore: num(candidate.dataQualitySummary.coverageScore || 0, 4),
+        degradedButAllowed: Boolean(candidate.dataQualitySummary.degradedButAllowed),
+        degradedCount: candidate.dataQualitySummary.degradedCount || 0,
+        missingCount: candidate.dataQualitySummary.missingCount || 0,
+        sources: arr(candidate.dataQualitySummary.sources || []).slice(0, 6)
+      } : null,
+      signalQuality: candidate.signalQualitySummary ? {
+        overallScore: num(candidate.signalQualitySummary.overallScore || 0, 4),
+        setupFit: num(candidate.signalQualitySummary.setupFit || 0, 4),
+        structureQuality: num(candidate.signalQualitySummary.structureQuality || 0, 4),
+        executionViability: num(candidate.signalQualitySummary.executionViability || 0, 4),
+        newsCleanliness: num(candidate.signalQualitySummary.newsCleanliness || 0, 4),
+        quorumQuality: num(candidate.signalQualitySummary.quorumQuality || 0, 4)
+      } : null,
+      confidenceBreakdown: candidate.confidenceBreakdown ? {
+        marketConfidence: num(candidate.confidenceBreakdown.marketConfidence || 0, 4),
+        dataConfidence: num(candidate.confidenceBreakdown.dataConfidence || 0, 4),
+        executionConfidence: num(candidate.confidenceBreakdown.executionConfidence || 0, 4),
+        modelConfidence: num(candidate.confidenceBreakdown.modelConfidence || 0, 4),
+        overallConfidence: num(candidate.confidenceBreakdown.overallConfidence || 0, 4)
       } : null,
       onChainLite: summarizeOnChainLite(candidate.onChainLiteSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
@@ -4885,24 +4962,25 @@ export class TradingBot {
       entryAttempted: false,
       executionBlockers: []
     }));
-    const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
+      const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
       blockedAt: now.toISOString()
-    }));
-    this.runtime.latestBlockedSetups = blockedCandidates;
-    this.journal.blockedSetups.push(...blockedCandidates.slice(0, 4));
-    this.runtime.marketSentiment = candidates[0]
-      ? summarizeMarketSentiment(candidates[0].marketSentimentSummary)
-      : this.runtime.marketSentiment || summarizeMarketSentiment(EMPTY_MARKET_SENTIMENT);
-    this.runtime.volatilityContext = candidates[0]
-      ? summarizeVolatility(candidates[0].volatilitySummary)
-      : this.runtime.volatilityContext || summarizeVolatility(EMPTY_VOLATILITY_CONTEXT);
-    this.runtime.onChainLite = candidates[0]
-      ? summarizeOnChainLite(candidates[0].onChainLiteSummary)
-      : this.runtime.onChainLite || summarizeOnChainLite(EMPTY_ONCHAIN);
-    this.runtime.session = candidates[0]
-      ? summarizeSession(candidates[0].sessionSummary)
-      : this.runtime.session || summarizeSession({});
+      }));
+      this.runtime.latestBlockedSetups = blockedCandidates;
+      this.journal.blockedSetups.push(...blockedCandidates.slice(0, 4));
+      this.runtime.marketSentiment = candidates[0]
+        ? summarizeMarketSentiment(candidates[0].marketSentimentSummary)
+        : this.runtime.marketSentiment || summarizeMarketSentiment(EMPTY_MARKET_SENTIMENT);
+      this.runtime.volatilityContext = candidates[0]
+        ? summarizeVolatility(candidates[0].volatilitySummary)
+        : this.runtime.volatilityContext || summarizeVolatility(EMPTY_VOLATILITY_CONTEXT);
+      this.runtime.onChainLite = candidates[0]
+        ? summarizeOnChainLite(candidates[0].onChainLiteSummary)
+        : this.runtime.onChainLite || summarizeOnChainLite(EMPTY_ONCHAIN);
+      this.runtime.session = candidates[0]
+        ? summarizeSession(candidates[0].sessionSummary)
+        : this.runtime.session || summarizeSession({});
+    }
     return candidates;
   }
 
@@ -5528,12 +5606,38 @@ export class TradingBot {
       },
       trendState: {
         direction: decision.trendState?.direction || decision.trendStateSummary?.direction || null,
+        phase: decision.trendState?.phase || decision.trendStateSummary?.phase || null,
         uptrendScore: num(decision.trendState?.uptrendScore || decision.trendStateSummary?.uptrendScore || 0, 4),
         downtrendScore: num(decision.trendState?.downtrendScore || decision.trendStateSummary?.downtrendScore || 0, 4),
         rangeScore: num(decision.trendState?.rangeScore || decision.trendStateSummary?.rangeScore || 0, 4),
+        rangeAcceptanceScore: num(decision.trendState?.rangeAcceptanceScore || decision.trendStateSummary?.rangeAcceptanceScore || 0, 4),
         dataConfidenceScore: num(decision.trendState?.dataConfidenceScore || decision.trendStateSummary?.dataConfidenceScore || 0, 4),
         completenessScore: num(decision.trendState?.completenessScore || decision.trendStateSummary?.completenessScore || 0, 4),
         reasons: arr(decision.trendState?.reasons || decision.trendStateSummary?.reasons || []).slice(0, 3)
+      },
+      dataQuality: {
+        status: decision.dataQuality?.status || decision.dataQualitySummary?.status || null,
+        overallScore: num(decision.dataQuality?.overallScore || decision.dataQualitySummary?.overallScore || 0, 4),
+        freshnessScore: num(decision.dataQuality?.freshnessScore || decision.dataQualitySummary?.freshnessScore || 0, 4),
+        trustScore: num(decision.dataQuality?.trustScore || decision.dataQualitySummary?.trustScore || 0, 4),
+        coverageScore: num(decision.dataQuality?.coverageScore || decision.dataQualitySummary?.coverageScore || 0, 4),
+        degradedButAllowed: Boolean(decision.dataQuality?.degradedButAllowed || decision.dataQualitySummary?.degradedButAllowed),
+        sources: arr(decision.dataQuality?.sources || decision.dataQualitySummary?.sources || []).slice(0, 5)
+      },
+      signalQuality: {
+        overallScore: num(decision.signalQuality?.overallScore || decision.signalQualitySummary?.overallScore || 0, 4),
+        setupFit: num(decision.signalQuality?.setupFit || decision.signalQualitySummary?.setupFit || 0, 4),
+        structureQuality: num(decision.signalQuality?.structureQuality || decision.signalQualitySummary?.structureQuality || 0, 4),
+        executionViability: num(decision.signalQuality?.executionViability || decision.signalQualitySummary?.executionViability || 0, 4),
+        newsCleanliness: num(decision.signalQuality?.newsCleanliness || decision.signalQualitySummary?.newsCleanliness || 0, 4),
+        quorumQuality: num(decision.signalQuality?.quorumQuality || decision.signalQualitySummary?.quorumQuality || 0, 4)
+      },
+      confidenceBreakdown: {
+        marketConfidence: num(decision.confidenceBreakdown?.marketConfidence || 0, 4),
+        dataConfidence: num(decision.confidenceBreakdown?.dataConfidence || 0, 4),
+        executionConfidence: num(decision.confidenceBreakdown?.executionConfidence || 0, 4),
+        modelConfidence: num(decision.confidenceBreakdown?.modelConfidence || 0, 4),
+        overallConfidence: num(decision.confidenceBreakdown?.overallConfidence || 0, 4)
       },
       selfHealIssues: arr(decision.selfHealIssues || decision.selfHeal?.issues || []).slice(0, 2),
       sessionBlockers: arr(decision.sessionBlockers || decision.session?.blockerReasons || []).slice(0, 2),
@@ -5778,7 +5882,7 @@ export class TradingBot {
   async runDoctor() {
     const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     const balance = await this.broker.getBalance(this.runtime);
-    const previewCandidates = await this.scanCandidates(balance);
+    const previewCandidates = await this.scanCandidates(balance, { readOnly: true });
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -6016,9 +6120,4 @@ export class TradingBot {
     };
   }
 }
-
-
-
-
-
 
