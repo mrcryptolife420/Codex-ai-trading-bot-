@@ -196,7 +196,7 @@ const DEFAULTS = {
   paperExplorationThresholdBuffer: 0.06,
   paperExplorationSizeMultiplier: 0.45,
   paperExplorationCooldownMinutes: 90,
-  paperExplorationMinBookPressure: -0.42,
+  paperExplorationMinBookPressure: -0.36,
   exitOnSpreadShockBps: 20,
   minVolTargetFraction: 0.4,
   maxVolTargetFraction: 1.05,

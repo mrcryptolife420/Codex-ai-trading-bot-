@@ -173,7 +173,7 @@ function makeConfig(overrides = {}) {
     paperExplorationThresholdBuffer: 0.06,
     paperExplorationSizeMultiplier: 0.45,
     paperExplorationCooldownMinutes: 90,
-    paperExplorationMinBookPressure: -0.42,
+    paperExplorationMinBookPressure: -0.28,
     exitOnSpreadShockBps: 20,
     minVolTargetFraction: 0.4,
     maxVolTargetFraction: 1.05,
@@ -817,6 +817,22 @@ await runCheck("health monitor uses sync quality instead of raw clock offset", a
   assert.ok(staleIssues.includes("clock_drift_too_large"));
 });
 
+await runCheck("health monitor clears stale cycle failures after a successful run", async () => {
+  const runtime = {
+    health: {
+      warnings: [
+        { at: "2026-03-10T18:32:59.943Z", issues: ["cycle_failure"], error: "clamp is not defined" },
+        { at: "2026-03-10T18:32:27.146Z", issues: ["cycle_failure"], error: "safeNumber is not defined" },
+        { at: "2026-03-10T18:31:00.000Z", issues: ["clock_sync_stale"] }
+      ]
+    }
+  };
+  const monitor = new HealthMonitor(makeConfig(), { warn() {} });
+  monitor.recordSuccess(runtime);
+  assert.equal(runtime.health.warnings.length, 1);
+  assert.deepEqual(runtime.health.warnings[0].issues, ["clock_sync_stale"]);
+});
+
 await runCheck("local order book engine waits for startup depth before priming", async () => {
   let engine;
   let sawBufferedEventBeforeSnapshot = false;
@@ -1258,7 +1274,7 @@ await runCheck("risk manager adapts thresholds from optimizer priors", async () 
 });
 
 await runCheck("risk manager can allow small paper warm-up entries near threshold", async () => {
-  const manager = new RiskManager(makeConfig());
+  const manager = new RiskManager(makeConfig({ paperExplorationMinBookPressure: -0.42 }));
   const decision = manager.evaluateEntry({
     symbol: "BTCUSDT",
     score: {
