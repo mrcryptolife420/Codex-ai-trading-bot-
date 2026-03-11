@@ -4,6 +4,7 @@ import { ExecutionEngine } from "../execution/executionEngine.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
+import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
 
@@ -137,10 +138,17 @@ function buildContext({ candles, index, symbol, model, config }) {
     regimeSummary,
     streamFeatures: { tradeFlowImbalance: book.tradeFlowImbalance, microTrend: book.microTrend }
   });
+  const trendStateSummary = buildTrendStateSummary({
+    marketFeatures: market,
+    bookFeatures: book,
+    newsSummary,
+    timeframeSummary: {}
+  });
   const rawFeatures = buildFeatureVector({
     symbolStats: model.getSymbolStats(symbol),
     marketFeatures: market,
     bookFeatures: book,
+    trendStateSummary,
     newsSummary,
     portfolioFeatures: { heat: 0, maxCorrelation: 0 },
     streamFeatures: { tradeFlowImbalance: book.tradeFlowImbalance, microTrend: book.microTrend },
@@ -155,6 +163,7 @@ function buildContext({ candles, index, symbol, model, config }) {
     newsSummary,
     regimeSummary,
     strategySummary,
+    trendStateSummary,
     rawFeatures
   };
 }

@@ -848,6 +848,9 @@ function renderDecisions(snapshot) {
       const qualityBand = decision.meta?.qualityBand || (qualityScore >= 0.62 ? "sterk" : qualityScore >= 0.5 ? "ok" : "zwak");
       const quorumStatus = decision.qualityQuorum?.status || "ready";
       const quorumScore = decision.qualityQuorum?.quorumScore || 0;
+      const trendPhase = decision.trendState?.phase || "mixed_transition";
+      const trendDirection = decision.trendState?.direction || "mixed";
+      const dataQualityStatus = decision.dataQuality?.status || "ready";
       const entryStatus = decision.entryStatus || (decision.allow ? "eligible" : "blocked");
       const statusMeta = statusMap[entryStatus] || statusMap.blocked;
       let summary = `${strategyLabel} is overgeslagen. Hoofdreden: ${leadBear}.`;
@@ -875,12 +878,17 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Status</span><strong>${escapeHtml(statusMeta.label)}</strong><div class="meta">${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</div></div>
           <div class="mini-stat"><span class="kicker">Quality</span><strong>${formatPct(qualityScore || 0, 1)}</strong><div class="meta">${escapeHtml(qualityBand)}</div></div>
           <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${formatPct(quorumScore || 0, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Trend state</span><strong>${escapeHtml(trendDirection.replaceAll("_", " "))}</strong><div class="meta">${escapeHtml(trendPhase.replaceAll("_", " "))}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
+        <div class="note-line"><span class="kicker">Trend signalen</span><div class="tag-list">${renderTagList([`${formatPct(decision.trendState?.uptrendScore || 0, 1)} up`, `${formatPct(decision.trendState?.downtrendScore || 0, 1)} down`, `${formatPct(decision.trendState?.rangeAcceptanceScore || decision.trendState?.rangeScore || 0, 1)} range`, ...((decision.trendState?.reasons || []).slice(0, 2).map(normalizeReasonLabel))], "Geen trend-context")}</div></div>
+        <div class="note-line"><span class="kicker">Confidence</span><div class="tag-list">${renderTagList([`market ${formatPct(decision.confidenceBreakdown?.marketConfidence || 0, 1)}`, `data ${formatPct(decision.confidenceBreakdown?.dataConfidence || 0, 1)}`, `exec ${formatPct(decision.confidenceBreakdown?.executionConfidence || 0, 1)}`, `model ${formatPct(decision.confidenceBreakdown?.modelConfidence || 0, 1)}`], "Geen confidence breakdown")}</div></div>
+        <div class="note-line"><span class="kicker">Signal quality</span><div class="tag-list">${renderTagList([`setup ${formatPct(decision.signalQuality?.setupFit || 0, 1)}`, `structure ${formatPct(decision.signalQuality?.structureQuality || 0, 1)}`, `execution ${formatPct(decision.signalQuality?.executionViability || 0, 1)}`, `news ${formatPct(decision.signalQuality?.newsCleanliness || 0, 1)}`], "Geen signal-quality score")}</div></div>
         ${decision.paperExploration?.mode ? `<div class="note-line"><span class="kicker">Paper mode</span><div class="tag-list">${renderTagList([decision.paperExploration.mode === "paper_recovery_probe" ? "paper recovery probe" : "paper warm-up"], "Geen paper override")}</div></div>` : ""}
         ${decision.paperGuardrailRelief?.length ? `<div class="note-line"><span class="kicker">${decision.paperExploration?.mode === "paper_recovery_probe" ? "Recovery relief" : "Paper leniency"}</span><div class="tag-list">${renderTagList((decision.paperGuardrailRelief || []).slice(0, 3).map(normalizeReasonLabel), "Geen versoepeling")}</div></div>` : ""}
         ${decision.downtrendPolicy?.strongDowntrend ? `<div class="note-line"><span class="kicker">Bear market</span><div class="tag-list">${renderTagList([decision.downtrendPolicy?.shortingUnavailable ? "spot-only defensive mode" : "shorting available", `${formatPct(decision.downtrendPolicy?.downtrendScore || 0, 1)} downtrend`], "Geen bear-market context")}</div></div>` : ""}
         ${decision.qualityQuorum?.blockerReasons?.length || decision.qualityQuorum?.cautionReasons?.length ? `<div class="note-line"><span class="kicker">Data quorum</span><div class="tag-list">${renderTagList([...(decision.qualityQuorum?.blockerReasons || []), ...(decision.qualityQuorum?.cautionReasons || [])].slice(0, 3).map(normalizeReasonLabel), "Quorum ready")}</div></div>` : ""}
+        <div class="note-line"><span class="kicker">Data quality</span><div class="tag-list">${renderTagList([dataQualityStatus, decision.dataQuality?.degradedButAllowed ? "degraded but allowed" : "", `coverage ${formatPct(decision.dataQuality?.coverageScore || 0, 1)}`, `fresh ${formatPct(decision.dataQuality?.freshnessScore || 0, 1)}`, `trust ${formatPct(decision.dataQuality?.trustScore || 0, 1)}`].filter(Boolean), "Geen data-quality status")}</div></div>
         ${decision.allow && decision.executionBlockers?.length ? `<div class="note-line"><span class="kicker">Niet uitgevoerd door</span><div class="tag-list">${renderTagList((decision.executionBlockers || []).slice(0, 3).map(normalizeReasonLabel), "Geen runtime blocker")}</div></div>` : ""}
       `;
       const contextView = `
@@ -892,6 +900,8 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Pair health</span><strong>${escapeHtml(decision.pairHealth?.health || "-")}</strong><div class="meta">${formatPct(decision.pairHealth?.score || 0, 1)}</div></div>
           <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${(decision.qualityQuorum?.observeOnly) ? "observe-only" : "entry ok"}</div></div>
         </div>
+        <div class="note-line"><span class="kicker">Risk layer</span><div class="tag-list">${renderTagList((decision.blockerReasons || decision.reasons || []).slice(0, 4).map(normalizeReasonLabel), "Geen blokkerende risk layer")}</div></div>
+        <div class="note-line"><span class="kicker">Data sources</span><div class="tag-list">${renderTagList((decision.dataQuality?.sources || []).slice(0, 5).map((source) => `${source.label}:${source.status}`), "Geen datasource-status")}</div></div>
       `;
       return `
         <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}"${detailAttrs(`decision:${decision.symbol}:${entryStatus}`, false)}>
@@ -1141,10 +1151,13 @@ function renderBlockedSetups(snapshot) {
                 </summary>
                 <div class="fold-body compact-body">
                   <div class="note-line"><span class="kicker">Blockers</span><div class="tag-list">${renderTagList((item.blockerReasons || item.reasons || []).slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen blockers")}</div></div>
+                  <div class="note-line"><span class="kicker">Trend state</span><div class="tag-list">${renderTagList([item.trendState?.direction || "mixed", item.trendState?.phase || "", `${formatPct(item.trendState?.uptrendScore || 0, 1)} up`, `${formatPct(item.trendState?.downtrendScore || 0, 1)} down`, `${formatPct(item.trendState?.rangeAcceptanceScore || item.trendState?.rangeScore || 0, 1)} range`].filter(Boolean), "Geen trend-state")}</div></div>
+                  <div class="note-line"><span class="kicker">Confidence</span><div class="tag-list">${renderTagList([`market ${formatPct(item.confidenceBreakdown?.marketConfidence || 0, 1)}`, `data ${formatPct(item.confidenceBreakdown?.dataConfidence || 0, 1)}`, `exec ${formatPct(item.confidenceBreakdown?.executionConfidence || 0, 1)}`, `model ${formatPct(item.confidenceBreakdown?.modelConfidence || 0, 1)}`], "Geen confidence breakdown")}</div></div>
                   ${item.paperExploration?.mode ? `<div class="note-line"><span class="kicker">Paper mode</span><div class="tag-list">${renderTagList([item.paperExploration.mode === "paper_recovery_probe" ? "paper recovery probe" : "paper warm-up"], "Geen paper override")}</div></div>` : ""}
                   ${item.paperGuardrailRelief?.length ? `<div class="note-line"><span class="kicker">${item.paperExploration?.mode === "paper_recovery_probe" ? "Recovery relief" : "Paper leniency"}</span><div class="tag-list">${renderTagList((item.paperGuardrailRelief || []).slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen versoepeling")}</div></div>` : ""}
                   ${item.downtrendPolicy?.strongDowntrend ? `<div class="note-line"><span class="kicker">Bear market</span><div class="tag-list">${renderTagList([item.downtrendPolicy?.shortingUnavailable ? "spot-only defensive mode" : "shorting available", `${formatPct(item.downtrendPolicy?.downtrendScore || 0, 1)} downtrend`], "Geen bear-market context")}</div></div>` : ""}
                   <div class="note-line"><span class="kicker">Data quorum</span><div class="tag-list">${renderTagList([...(item.qualityQuorum?.blockerReasons || []), ...(item.qualityQuorum?.cautionReasons || [])].slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), item.qualityQuorum?.status || "Quorum ready")}</div></div>
+                  <div class="note-line"><span class="kicker">Data quality</span><div class="tag-list">${renderTagList([item.dataQuality?.status || "ready", item.dataQuality?.degradedButAllowed ? "degraded but allowed" : "", `coverage ${formatPct(item.dataQuality?.coverageScore || 0, 1)}`, `fresh ${formatPct(item.dataQuality?.freshnessScore || 0, 1)}`].filter(Boolean), "Geen data-quality status")}</div></div>
                   <div class="note-line"><span class="kicker">Safety</span><div class="tag-list">${renderTagList([...(item.selfHealIssues || []), ...(item.sessionBlockers || []), ...(item.driftBlockers || [])].slice(0, REPLAY_RENDER_LIMIT).map(normalizeReasonLabel), "Geen extra safety-flags")}</div></div>
                 </div>
               </details>

@@ -5,6 +5,7 @@ import { buildPerformanceReport } from "./reportBuilder.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
+import { buildTrendStateSummary } from "../strategy/trendState.js";
 
 function buildSyntheticBook(candle, market, config) {
   const latencyBps = Math.max(0.4, (config.backtestLatencyMs || 0) / 1000 * 1.6);
@@ -73,10 +74,17 @@ function buildBacktestContext({ window, candle, symbol, model, config }) {
     regimeSummary,
     streamFeatures: { tradeFlowImbalance: book.tradeFlowImbalance, microTrend: book.microTrend }
   });
+  const trendStateSummary = buildTrendStateSummary({
+    marketFeatures: market,
+    bookFeatures: book,
+    newsSummary,
+    timeframeSummary: {}
+  });
   const rawFeatures = buildFeatureVector({
     symbolStats: model.getSymbolStats(symbol),
     marketFeatures: market,
     bookFeatures: book,
+    trendStateSummary,
     newsSummary,
     portfolioFeatures: { heat: 0, maxCorrelation: 0 },
     streamFeatures: { tradeFlowImbalance: book.tradeFlowImbalance, microTrend: book.microTrend },
@@ -84,7 +92,7 @@ function buildBacktestContext({ window, candle, symbol, model, config }) {
     strategySummary,
     now: new Date(candle.closeTime)
   });
-  return { market, book, newsSummary, regimeSummary, strategySummary, rawFeatures };
+  return { market, book, newsSummary, regimeSummary, strategySummary, trendStateSummary, rawFeatures };
 }
 
 export async function runBacktest({ config, logger, symbol }) {
