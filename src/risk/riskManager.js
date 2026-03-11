@@ -38,7 +38,8 @@ function isSoftPaperReason(reason) {
     "execution_cost_budget_exceeded",
     "strategy_cooldown",
     "capital_governor_blocked",
-    "capital_governor_recovery"
+    "capital_governor_recovery",
+    "trade_size_below_minimum"
   ].includes(reason);
 }
 
@@ -511,6 +512,15 @@ export class RiskManager {
       venueConfirmationSummary,
       newsSummary
     });
+    const preliminaryConfidenceBreakdown = buildConfidenceBreakdown({
+      score,
+      trendStateSummary,
+      signalQualitySummary,
+      venueConfirmationSummary,
+      qualityQuorumSummary,
+      strategySummary,
+      executionPlan: {}
+    });
     const downtrendPolicy = buildDowntrendPolicy({
       marketSnapshot,
       marketStructureSummary,
@@ -720,6 +730,37 @@ export class RiskManager {
       reasons.push("execution_cost_budget_exceeded");
     }
     if (
+      ["trend_following", "breakout"].includes(strategySummary.family || "") &&
+      (marketStateSummary.phase || "") === "late_crowded" &&
+      (
+        (preliminaryConfidenceBreakdown.executionConfidence || 0) < 0.46 ||
+        (venueConfirmationSummary.status || "") === "blocked" ||
+        executionCostBudget.blocked
+      )
+    ) {
+      reasons.push("late_trend_execution_fragile");
+    }
+    if (
+      strategySummary.family === "mean_reversion" &&
+      (marketStateSummary.phase || "") === "healthy_downtrend" &&
+      !["bear_rally_reclaim"].includes(strategySummary.activeStrategy || "") &&
+      (marketStateSummary.trendFailure || 0) < 0.42 &&
+      (signalQualitySummary.structureQuality || 0) < 0.58
+    ) {
+      reasons.push("mean_reversion_vs_healthy_downtrend");
+    }
+    if (
+      strategySummary.family === "breakout" &&
+      (marketStateSummary.phase || "") === "range_acceptance" &&
+      (marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.38 &&
+      (
+        executionCostBudget.blocked ||
+        (marketSnapshot.book.spreadBps || 0) > Math.max(this.config.maxSpreadBps * 0.7, 8)
+      )
+    ) {
+      reasons.push("range_breakout_follow_through_weak");
+    }
+    if (
       ((trendStateSummary.direction || "") === "uptrend" || (trendStateSummary.uptrendScore || 0) >= 0.58) &&
       (trendStateSummary.exhaustionScore || 0) >= 0.72 &&
       (signalQualitySummary.executionViability || 0) <= 0.44 &&
@@ -811,7 +852,10 @@ export class RiskManager {
       0.38,
       1.04
     );
+    const marketConfidenceFactor = clamp(0.84 + (preliminaryConfidenceBreakdown.marketConfidence || 0.5) * 0.18, 0.72, 1.02);
     const dataConfidenceFactor = clamp(0.72 + safeValue(trendStateSummary.dataConfidenceScore, 0.6) * 0.36, 0.48, 1.05);
+    const executionConfidenceFactor = clamp(0.82 + (preliminaryConfidenceBreakdown.executionConfidence || 0.45) * 0.2, 0.68, 1.02);
+    const modelConfidenceFactor = clamp(0.82 + (preliminaryConfidenceBreakdown.modelConfidence || 0.45) * 0.2, 0.7, 1.03);
     const signalQualityFactor = clamp(0.76 + (signalQualitySummary.overallScore || 0.5) * 0.34, 0.5, 1.08);
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
@@ -840,7 +884,10 @@ export class RiskManager {
       timeframeFactor *
       onChainFactor *
       qualityQuorumFactor *
+      marketConfidenceFactor *
       dataConfidenceFactor *
+      executionConfidenceFactor *
+      modelConfidenceFactor *
       signalQualityFactor *
       divergenceFactor *
       heatPenalty *
@@ -859,15 +906,7 @@ export class RiskManager {
       parameterGovernorAdjustment.executionAggressivenessBias;
     const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier;
 
-    const confidenceBreakdown = buildConfidenceBreakdown({
-      score,
-      trendStateSummary,
-      signalQualitySummary,
-      venueConfirmationSummary,
-      qualityQuorumSummary,
-      strategySummary,
-      executionPlan: {}
-    });
+    const confidenceBreakdown = preliminaryConfidenceBreakdown;
 
     if (adjustedQuoteAmount < this.config.minTradeUsdt) {
       reasons.push("trade_size_below_minimum");

@@ -32,6 +32,39 @@ function buildCandidateFromTrade(trade = {}) {
   };
 }
 
+function collectScenarioTags(item = {}) {
+  const tags = new Set();
+  const reasons = [
+    ...(item.reasons || []),
+    ...(item.blockerReasons || []),
+    ...(item.executionBlockers || []),
+    item.reason || null,
+    item.worstScenario || null
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (/stale_book|local_book_quality|warmup_gap/.test(reasons)) {
+    tags.add("stale_book");
+  }
+  if (/reference_venue_divergence|venue divergence|cross-venue/.test(reasons)) {
+    tags.add("venue_divergence");
+  }
+  if (/missing_news|news/.test(reasons) && (item.newsCoverage || item.dataQuality?.missingCount || 0) > 0) {
+    tags.add("missing_news");
+  }
+  if (/protection|protective_order|rebuild/.test(reasons) || item.protectionWarning || item.reconcileRequired) {
+    tags.add("protection_rebuild_failure");
+  }
+  if (
+    safeNumber(item.partialFillProbability) > 0 ||
+    safeNumber(item.entryExecutionAttribution?.partialFillRatio) > 0 ||
+    safeNumber(item.exitExecutionAttribution?.partialFillRatio) > 0 ||
+    safeNumber(item.remainingQuantity) > 0
+  ) {
+    tags.add("partial_fill");
+  }
+  return [...tags];
+}
+
 export function buildReplayChaosSummary({
   journal = {},
   nowIso = new Date().toISOString()
@@ -39,6 +72,7 @@ export function buildReplayChaosSummary({
   const trades = arr(journal.trades || []).slice(-18);
   const blockedSetups = arr(journal.blockedSetups || []).slice(-24);
   const byStrategy = new Map();
+  const scenarioCounts = {};
 
   for (const trade of trades) {
     const id = trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown";
@@ -46,6 +80,15 @@ export function buildReplayChaosSummary({
       byStrategy.set(id, []);
     }
     byStrategy.get(id).push(trade);
+    for (const tag of collectScenarioTags(trade)) {
+      scenarioCounts[tag] = (scenarioCounts[tag] || 0) + 1;
+    }
+  }
+
+  for (const setup of blockedSetups) {
+    for (const tag of collectScenarioTags(setup)) {
+      scenarioCounts[tag] = (scenarioCounts[tag] || 0) + 1;
+    }
   }
 
   const scenarioLeaders = [...byStrategy.entries()]
@@ -74,6 +117,10 @@ export function buildReplayChaosSummary({
     : 0;
   const missedWinners = blockedSetups.filter((item) => (item.counterfactualOutcome || item.outcome) === "missed_winner").length;
   const worstScenario = scenarioLeaders[0] || null;
+  const activeScenarios = Object.entries(scenarioCounts)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 6)
+    .map(([id, count]) => ({ id, count }));
   const status = worstScenario?.status === "blocked"
     ? "blocked"
     : worstScenario?.status === "observe"
@@ -91,6 +138,8 @@ export function buildReplayChaosSummary({
     missedWinnerCount: missedWinners,
     worstStrategy: worstScenario?.id || null,
     worstScenario: worstScenario?.worstScenario || null,
+    activeScenarios,
+    scenarioCounts,
     scenarioLeaders,
     notes: [
       trades.length
@@ -99,6 +148,9 @@ export function buildReplayChaosSummary({
       blockedSetups.length
         ? `${blockedSetups.length} blocked setups blijven beschikbaar voor counterfactual replay.`
         : "Nog geen blocked setups voor extra replay-context.",
+      activeScenarios.length
+        ? `Meest zichtbare chaos-risico's: ${activeScenarios.map((item) => `${item.id} (${item.count})`).join(", ")}.`
+        : "Nog geen expliciete chaos-scenario's uit recente runtime-data herkend.",
       worstScenario
         ? `${worstScenario.id} heeft nu de zwakste chaos-score via ${worstScenario.worstScenario}.`
         : "Nog geen strategy-specifieke chaos-scenario's beschikbaar."

@@ -2530,6 +2530,73 @@ await runCheck("risk manager exposes quality summaries and blocks exhausted frag
   assert.ok(decision.dataQualitySummary.overallScore > 0);
   assert.ok(decision.signalQualitySummary.overallScore > 0);
   assert.ok(decision.confidenceBreakdown.executionConfidence < 0.5);
+  assert.ok(
+    decision.reasons.includes("execution_cost_budget_exceeded") ||
+    decision.reasons.includes("reference_venue_divergence") ||
+    decision.reasons.includes("trend_exhausted_execution_fragile")
+  );
+});
+
+await runCheck("risk manager de-risks crowded trend entries when execution confidence is fragile", async () => {
+  const manager = new RiskManager(makeConfig({ maxSpreadBps: 16 }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.68,
+      calibrationConfidence: 0.57,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.66, confidence: 0.28 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 15, bookPressure: 0.11, microPriceEdgeBps: 0.1, depthConfidence: 0.16, totalDepthNotional: 18000, freshnessScore: 0.48 },
+      market: {
+        realizedVolPct: 0.024,
+        atrPct: 0.011,
+        bullishPatternScore: 0.09,
+        bearishPatternScore: 0.04,
+        momentum20: 0.017,
+        emaGap: 0.008,
+        dmiSpread: 0.26,
+        trendPersistence: 0.81,
+        trendQualityScore: 0.39,
+        trendExhaustionScore: 0.79,
+        trendMaturityScore: 0.88,
+        swingStructureScore: 0.42,
+        upsideAccelerationScore: 0.63,
+        downsideAccelerationScore: 0.03,
+        anchoredVwapAcceptanceScore: 0.58,
+        supertrendDirection: 1
+      }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.04, reliabilityScore: 0.62, confidence: 0.58, freshnessScore: 0.46, socialRisk: 0.09 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0.01, confidence: 0.5, freshnessScore: 0.45, coverage: 0.5 },
+    marketStructureSummary: { riskScore: 0.11, signalScore: 0.09, crowdingBias: 0.08, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0, coverage: 1 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.01, confidence: 0.6, coverage: 1 },
+    volatilitySummary: { riskScore: 0.14, confidence: 0.61, coverage: 1 },
+    onChainLiteSummary: { liquidityScore: 0.5, marketBreadthScore: 0.46, majorsMomentumScore: 0.31, confidence: 0.52, coverage: 0.6 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.67, probability: 0.69, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.66, confidence: 0.56, blockers: [], agreementGap: 0.04, optimizer: { sampleSize: 12, sampleConfidence: 0.72 } },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.76 },
+    qualityQuorumSummary: { status: "ready", quorumScore: 0.8, observeOnly: false },
+    executionCostSummary: { strategies: [{ id: "ema_trend", status: "blocked", averageTotalCostBps: 9 }] },
+    venueConfirmationSummary: { status: "blocked", confirmed: false, averageHealthScore: 0.24, blockerReasons: ["reference_venue_divergence"], venueCount: 2 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.confidenceBreakdown.executionConfidence < 0.5);
+  assert.ok(
+    decision.reasons.includes("execution_cost_budget_exceeded") ||
+    decision.reasons.includes("reference_venue_divergence") ||
+    decision.reasons.includes("model_confidence_too_low")
+  );
 });
 
 
@@ -4490,11 +4557,18 @@ await runCheck("replay chaos lab summarizes vulnerable strategies", async () => 
           strategyAtEntry: "ema_trend",
           netPnlPct: -0.008,
           pnlQuote: -5,
-          replayCheckpoints: [{ at: "2026-03-09T10:00:00.000Z", price: 69800 }]
+          replayCheckpoints: [{ at: "2026-03-09T10:00:00.000Z", price: 69800 }],
+          protectionWarning: "rebuild_failed",
+          exitExecutionAttribution: { partialFillRatio: 0.35 }
         }
       ],
       blockedSetups: [
-        { outcome: "missed_winner" }
+        {
+          outcome: "missed_winner",
+          blockerReasons: ["reference_venue_divergence", "local_book_quality_too_low"],
+          dataQuality: { missingCount: 1 },
+          reasons: ["missing_news"]
+        }
       ]
     },
     nowIso: "2026-03-09T12:00:00.000Z"
@@ -4503,6 +4577,9 @@ await runCheck("replay chaos lab summarizes vulnerable strategies", async () => 
   assert.equal(summary.missedWinnerCount, 1);
   assert.equal(summary.worstStrategy, "ema_trend");
   assert.ok(summary.scenarioLeaders.length >= 1);
+  assert.ok(summary.activeScenarios.some((item) => item.id === "stale_book"));
+  assert.ok(summary.activeScenarios.some((item) => item.id === "venue_divergence"));
+  assert.ok(summary.activeScenarios.some((item) => item.id === "partial_fill"));
 });
 
 await runCheck("execution cost and pnl decomposition stay finite on randomized trade samples", async () => {
@@ -4748,6 +4825,80 @@ await runCheck("doctor preview scan uses explicit read-only candidate scan mode"
   const report = await bot.runDoctor();
   assert.equal(called, 1);
   assert.equal(report.mode, "paper");
+});
+
+await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local-book universe", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  let localBookCalls = 0;
+  bot.config = makeConfig({
+    watchlist: ["BTCUSDT"],
+    enableUniverseSelector: false,
+    candidateEvaluationConcurrency: 1,
+    marketSnapshotConcurrency: 1
+  });
+  bot.logger = { warn() {}, info() {} };
+  bot.marketCache = {};
+  bot.symbolRules = { BTCUSDT: { minNotional: 5 } };
+  bot.runtime = {
+    openPositions: [],
+    latestDecisions: [{ symbol: "ETHUSDT", allow: true }],
+    aiTelemetry: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    venueConfirmation: {},
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    divergence: {},
+    offlineTrainer: {},
+    sourceReliability: {},
+    universe: {},
+    session: {}
+  };
+  bot.journal = {
+    universeRuns: [],
+    blockedSetups: [],
+    counterfactuals: [],
+    trades: [],
+    scaleOuts: []
+  };
+  bot.stream = {
+    getSymbolStreamFeatures() {
+      return {};
+    },
+    getOrderBookSnapshot() {
+      return null;
+    },
+    setLocalBookUniverse() {
+      localBookCalls += 1;
+    }
+  };
+  bot.buildOpenPositionContexts = () => ({});
+  bot.getMarketSnapshot = async () => ({
+    symbol: "BTCUSDT",
+    market: { realizedVolPct: 0.01, atrPct: 0.008 },
+    book: { spreadBps: 3, bookPressure: 0.1 }
+  });
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.strategyAttribution = { buildSnapshot: () => ({}) };
+  bot.marketSentiment = { getSummary: async () => ({}) };
+  bot.volatility = { getSummary: async () => ({}) };
+  bot.onChainLite = { getSummary: async () => ({}) };
+  bot.pairHealthMonitor = { buildSnapshot: () => ({}) };
+  bot.divergenceMonitor = { buildSummary: () => ({}) };
+  bot.offlineTrainer = { buildSummary: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.evaluateCandidate = async () => ({
+    symbol: "BTCUSDT",
+    decision: { allow: false, rankScore: 0.5 }
+  });
+  const beforeRuntime = JSON.stringify(bot.runtime);
+  const beforeJournal = JSON.stringify(bot.journal);
+  const candidates = await bot.scanCandidatesReadOnly({ quoteFree: 1000 });
+  assert.equal(candidates.length, 1);
+  assert.equal(localBookCalls, 0);
+  assert.equal(JSON.stringify(bot.runtime), beforeRuntime);
+  assert.equal(JSON.stringify(bot.journal), beforeJournal);
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {

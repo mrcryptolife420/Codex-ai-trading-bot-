@@ -52,9 +52,12 @@
 - Expanded the indicator/feature layer with anchored VWAP acceptance/rejection, upside-versus-downside realized volatility split, trend failure scoring, and richer trend maturity/exhaustion signals.
 - Added relative-strength signals versus BTC, ETH, cluster peers, and sector peers so continuation and relative-weakness context reaches runtime decisions without introducing a duplicate trend engine.
 - Added close-location quality, breakout follow-through, volume acceptance, and replenishment-quality signals to the shared feature stack and regression coverage.
+- Added explicit read-only scan isolation for preview/research paths so candidate scans no longer retarget the local-book universe while observing runtime state.
+- Added replay/chaos scenario tagging for stale book, venue divergence, missing news, protection rebuild issues, and partial fills so failure patterns surface earlier in operator review.
 - Improved dashboard decision visibility with explicit trend phase, confidence breakdown, signal-quality, data-quality, dominant source states, and clearer risk-layer blocker context.
 - Applied the shared trend-state semantics to backtest and research contexts as well, reducing live-vs-offline feature drift without a broad refactor.
 - Made doctor preview scans read-only and bounded candidate evaluation with concurrency limits, reducing accidental runtime/journal mutation and improving scan latency on larger universes.
+- Tightened risk de-risking around crowded trends, fragile breakout follow-through, and healthy downtrend mean-reversion traps while keeping the new confidence layer bounded enough for paper warm-up entries.
 
 ### Fixed
 - Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
@@ -70,6 +73,7 @@
 - Fixed candidate quality/explainability contract drift so live `once`/`status` output now carries trend-state, data-quality, signal-quality, and confidence summaries end-to-end instead of dashboard fields falling back to zeroed placeholders.
 - Fixed doctor preview behavior so observability scans no longer mutate blocked-setup journals, universe runs, or latest-decision runtime state.
 - Fixed the relative-strength candidate-scan path so runtime smoke runs no longer fail on a missing shared `average()` helper import while building peer-strength summaries.
+- Fixed paper exploration regressions so `trade_size_below_minimum` can still be treated as a paper-only soft blocker during tiny warm-up probes instead of shutting exploration off entirely.
 
 ### Verified
 - `node --check src/runtime/tradingBot.js`

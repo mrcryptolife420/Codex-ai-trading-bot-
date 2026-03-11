@@ -4815,6 +4815,7 @@ export class TradingBot {
 
   async scanCandidates(balance, options = {}) {
     const readOnly = Boolean(options.readOnly);
+    const scanMode = options.mode || (readOnly ? "preview" : "cycle");
     const now = new Date();
     const symbols = [...new Set([...this.config.watchlist, ...this.runtime.openPositions.map((position) => position.symbol)])];
     const shallowSnapshotMap = Object.fromEntries(symbols.map((symbol) => [
@@ -4836,7 +4837,13 @@ export class TradingBot {
       universeSelector: this.universeSelector,
       nowIso: now.toISOString()
     });
-    this.stream.setLocalBookUniverse(scanPlan.localBookSymbols || []);
+    if (!readOnly) {
+      this.stream.setLocalBookUniverse(scanPlan.localBookSymbols || []);
+    } else if (scanMode === "research") {
+      this.logger.info("Read-only research scan keeps existing local-book universe", {
+        localBookSymbols: (scanPlan.localBookSymbols || []).length
+      });
+    }
     const snapshotEntries = await mapWithConcurrency(scanPlan.deepScanSymbols || symbols, this.config.marketSnapshotConcurrency || 4, async (symbol) => {
       try {
         return [symbol, await this.getMarketSnapshot(symbol)];
