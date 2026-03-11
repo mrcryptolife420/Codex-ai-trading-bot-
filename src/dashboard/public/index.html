@@ -17,7 +17,7 @@
             <div class="brand-block">
               <p class="eyebrow">Codex AI crypto trading bot</p>
               <h1>Trading dashboard</h1>
-              <p class="subtle">Een rustige operator-view voor status, setups, posities en research.</p>
+              <p class="subtle">Compact overzicht voor status, setups, posities en research.</p>
             </div>
             <div class="status-cluster" aria-label="Status badges">
               <span class="badge" id="modeBadge">MODE</span>
@@ -28,10 +28,10 @@
 
           <div class="topbar-actions">
             <nav class="section-nav" aria-label="Snelle navigatie">
-              <a class="quick-link" href="#metricsSection">Overview</a>
+              <a class="quick-link" href="#metricsSection">Pulse</a>
               <a class="quick-link" href="#primaryTradesSection">Trades</a>
               <a class="quick-link" href="#advancedSection">Analyse</a>
-              <a class="quick-link" href="#recentTradesSection">History</a>
+              <a class="quick-link" href="#recentTradesSection">Historie</a>
             </nav>
 
             <div class="topbar-controls">
@@ -56,8 +56,8 @@
 
         <section class="operator-strip panel">
           <div>
-            <p class="eyebrow">Live summary</p>
-            <h2>Alleen wat nu telt</h2>
+            <p class="eyebrow">Nu</p>
+            <h2>Alleen wat telt</h2>
           </div>
           <p id="controlHint" class="hint">Status wordt geladen...</p>
         </section>
@@ -108,7 +108,7 @@
             <div class="section-head setup-head" data-collapsible="true">
               <div>
                 <h2>Top AI setups</h2>
-                <p>Korte samenvatting eerst. Detail pas na uitklappen.</p>
+                <p>Eerst de kern, details pas na uitklappen.</p>
               </div>
               <div class="setup-toolbar">
                 <input id="decisionSearch" type="search" placeholder="Zoek pair, token of strategie" />
@@ -135,10 +135,10 @@
             <section class="grid two-up" id="tradeIntelSection">
               <article class="panel collapsible" id="blockedPanel" data-default-collapsed="true">
                 <div class="section-head" data-collapsible="true">
-                  <div>
-                    <h2>Why not trades</h2>
-                    <p>De belangrijkste blocker-redenen.</p>
-                  </div>
+              <div>
+                <h2>Waarom niet</h2>
+                <p>Belangrijkste blocker-redenen.</p>
+              </div>
                 </div>
                 <div id="blockedList" class="stack compact"></div>
               </article>
@@ -166,10 +166,10 @@
               </article>
               <article class="panel collapsible" id="opsRuntimePanel" data-default-collapsed="true">
                 <div class="section-head" data-collapsible="true">
-                  <div>
-                    <h2>Operations &amp; recovery</h2>
-                    <p>Recorder, backups, registry en herstelstatus.</p>
-                  </div>
+              <div>
+                <h2>Operations &amp; recovery</h2>
+                <p>Herstel, alerts en runtime-status.</p>
+              </div>
                 </div>
                 <div id="opsSummary" class="insight-grid"></div>
                 <div id="opsList" class="stack compact"></div>

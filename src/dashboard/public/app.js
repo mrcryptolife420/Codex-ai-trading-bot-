@@ -280,11 +280,30 @@ function normalizeReasonLabel(value) {
   return `${value || ""}`.replaceAll("_", " ");
 }
 
+function uniqueTextItems(items = []) {
+  const seen = new Set();
+  const output = [];
+  for (const item of items) {
+    const text = `${item ?? ""}`.trim();
+    if (!text) {
+      continue;
+    }
+    const key = text.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(text);
+  }
+  return output;
+}
+
 function renderTagList(items = [], emptyText = "Geen extra redenen") {
-  if (!items.length) {
+  const uniqueItems = uniqueTextItems(items);
+  if (!uniqueItems.length) {
     return `<span class="empty">${escapeHtml(emptyText)}</span>`;
   }
-  return items.map((item) => `<span class="note-pill">${escapeHtml(normalizeReasonLabel(item))}</span>`).join("");
+  return uniqueItems.map((item) => `<span class="note-pill">${escapeHtml(normalizeReasonLabel(item))}</span>`).join("");
 }
 
 function truncateText(value, maxLength = 220) {
@@ -292,7 +311,7 @@ function truncateText(value, maxLength = 220) {
   if (input.length <= maxLength) {
     return input;
   }
-  return `${input.slice(0, maxLength - 1).trimEnd()}�`;
+  return `${input.slice(0, maxLength - 1).trimEnd()}...`;
 }
 
 function collectHighlights(items = [], limit = 4) {
@@ -853,17 +872,17 @@ function renderDecisions(snapshot) {
       const dataQualityStatus = decision.dataQuality?.status || "ready";
       const entryStatus = decision.entryStatus || (decision.allow ? "eligible" : "blocked");
       const statusMeta = statusMap[entryStatus] || statusMap.blocked;
-      let summary = `${strategyLabel} is overgeslagen. Hoofdreden: ${leadBear}.`;
+      let summary = `${strategyLabel} skip: ${leadBear}.`;
       if (entryStatus === "opened") {
-        summary = `${strategyLabel} is echt geopend. Hoofdreden: ${leadBull}.`;
+        summary = `${strategyLabel} geopend: ${leadBull}.`;
       } else if (entryStatus === "eligible") {
-        summary = `${strategyLabel} is eligible. Hoofdreden: ${leadBull}.`;
+        summary = `${strategyLabel} klaar: ${leadBull}.`;
       } else if (entryStatus === "standby" || entryStatus === "opened_elsewhere") {
-        summary = `${strategyLabel} was goed genoeg, maar een sterkere setup kreeg voorrang.`;
+        summary = `${strategyLabel} wacht: sterkere setup kreeg voorrang.`;
       } else if (entryStatus === "runtime_blocked") {
-        summary = `${strategyLabel} was eligible, maar runtime blokkeerde de entry door ${leadExecutionBlocker}.`;
+        summary = `${strategyLabel} geblokkeerd in runtime: ${leadExecutionBlocker}.`;
       } else if (entryStatus === "entry_failed") {
-        summary = `${strategyLabel} was eligible, maar de entry faalde door ${leadExecutionBlocker}.`;
+        summary = `${strategyLabel} entry faalde: ${leadExecutionBlocker}.`;
       }
 
       const keyPills = !decision.allow
@@ -873,24 +892,22 @@ function renderDecisions(snapshot) {
           : collectHighlights([leadBull, strategyLabel, familyLabel, statusMeta.label], 4);
       const compactView = `
         <div class="mini-grid compact-data-grid">
-          <div class="mini-stat"><span class="kicker">Model / gate</span><strong>${formatPct(decision.probability || 0, 1)} / ${formatPct(decision.threshold || 0, 1)}</strong><div class="meta">edge ${formatSignedPct(edge, 1)}</div></div>
+          <div class="mini-stat"><span class="kicker">Model</span><strong>${formatPct(decision.probability || 0, 1)} / ${formatPct(decision.threshold || 0, 1)}</strong><div class="meta">edge ${formatSignedPct(edge, 1)}</div></div>
           <div class="mini-stat"><span class="kicker">Strategie</span><strong>${escapeHtml(strategyLabel)}</strong><div class="meta">${escapeHtml(familyLabel)}</div></div>
           <div class="mini-stat"><span class="kicker">Status</span><strong>${escapeHtml(statusMeta.label)}</strong><div class="meta">${escapeHtml(decision.executionStyle || decision.executionAttribution?.entryStyle || "market")}</div></div>
           <div class="mini-stat"><span class="kicker">Quality</span><strong>${formatPct(qualityScore || 0, 1)}</strong><div class="meta">${escapeHtml(qualityBand)}</div></div>
           <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${formatPct(quorumScore || 0, 1)}</div></div>
-          <div class="mini-stat"><span class="kicker">Trend state</span><strong>${escapeHtml(trendDirection.replaceAll("_", " "))}</strong><div class="meta">${escapeHtml(trendPhase.replaceAll("_", " "))}</div></div>
+          <div class="mini-stat"><span class="kicker">Trend</span><strong>${escapeHtml(trendDirection.replaceAll("_", " "))}</strong><div class="meta">${escapeHtml(trendPhase.replaceAll("_", " "))}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
         ${decision.operatorAction ? `<div class="note-line"><span class="kicker">Actie</span><div class="tag-list">${renderTagList([decision.operatorAction].map(normalizeReasonLabel), "Geen operator-actie")}</div></div>` : ""}
-        ${decision.autoRecovery ? `<div class="note-line"><span class="kicker">Auto recovery</span><div class="tag-list">${renderTagList([decision.autoRecovery], "Geen automatisch herstel")}</div></div>` : ""}
-        <div class="note-line"><span class="kicker">Trend signalen</span><div class="tag-list">${renderTagList([`${formatPct(decision.trendState?.uptrendScore || 0, 1)} up`, `${formatPct(decision.trendState?.downtrendScore || 0, 1)} down`, `${formatPct(decision.trendState?.rangeAcceptanceScore || decision.trendState?.rangeScore || 0, 1)} range`, ...((decision.trendState?.reasons || []).slice(0, 2).map(normalizeReasonLabel))], "Geen trend-context")}</div></div>
+        ${decision.autoRecovery ? `<div class="note-line"><span class="kicker">Herstel</span><div class="tag-list">${renderTagList([decision.autoRecovery], "Geen automatisch herstel")}</div></div>` : ""}
         <div class="note-line"><span class="kicker">Confidence</span><div class="tag-list">${renderTagList([`market ${formatPct(decision.confidenceBreakdown?.marketConfidence || 0, 1)}`, `data ${formatPct(decision.confidenceBreakdown?.dataConfidence || 0, 1)}`, `exec ${formatPct(decision.confidenceBreakdown?.executionConfidence || 0, 1)}`, `model ${formatPct(decision.confidenceBreakdown?.modelConfidence || 0, 1)}`], "Geen confidence breakdown")}</div></div>
-        <div class="note-line"><span class="kicker">Signal quality</span><div class="tag-list">${renderTagList([`setup ${formatPct(decision.signalQuality?.setupFit || 0, 1)}`, `structure ${formatPct(decision.signalQuality?.structureQuality || 0, 1)}`, `execution ${formatPct(decision.signalQuality?.executionViability || 0, 1)}`, `news ${formatPct(decision.signalQuality?.newsCleanliness || 0, 1)}`], "Geen signal-quality score")}</div></div>
+        <div class="note-line"><span class="kicker">Kwaliteit</span><div class="tag-list">${renderTagList([`setup ${formatPct(decision.signalQuality?.setupFit || 0, 1)}`, `exec ${formatPct(decision.signalQuality?.executionViability || 0, 1)}`, dataQualityStatus, decision.dataQuality?.degradedButAllowed ? "degraded but allowed" : ""].filter(Boolean), "Geen kwaliteitsscore")}</div></div>
         ${decision.paperExploration?.mode ? `<div class="note-line"><span class="kicker">Paper mode</span><div class="tag-list">${renderTagList([decision.paperExploration.mode === "paper_recovery_probe" ? "paper recovery probe" : "paper warm-up"], "Geen paper override")}</div></div>` : ""}
         ${decision.paperGuardrailRelief?.length ? `<div class="note-line"><span class="kicker">${decision.paperExploration?.mode === "paper_recovery_probe" ? "Recovery relief" : "Paper leniency"}</span><div class="tag-list">${renderTagList((decision.paperGuardrailRelief || []).slice(0, 3).map(normalizeReasonLabel), "Geen versoepeling")}</div></div>` : ""}
         ${decision.downtrendPolicy?.strongDowntrend ? `<div class="note-line"><span class="kicker">Bear market</span><div class="tag-list">${renderTagList([decision.downtrendPolicy?.shortingUnavailable ? "spot-only defensive mode" : "shorting available", `${formatPct(decision.downtrendPolicy?.downtrendScore || 0, 1)} downtrend`], "Geen bear-market context")}</div></div>` : ""}
         ${decision.qualityQuorum?.blockerReasons?.length || decision.qualityQuorum?.cautionReasons?.length ? `<div class="note-line"><span class="kicker">Data quorum</span><div class="tag-list">${renderTagList([...(decision.qualityQuorum?.blockerReasons || []), ...(decision.qualityQuorum?.cautionReasons || [])].slice(0, 3).map(normalizeReasonLabel), "Quorum ready")}</div></div>` : ""}
-        <div class="note-line"><span class="kicker">Data quality</span><div class="tag-list">${renderTagList([dataQualityStatus, decision.dataQuality?.degradedButAllowed ? "degraded but allowed" : "", `coverage ${formatPct(decision.dataQuality?.coverageScore || 0, 1)}`, `fresh ${formatPct(decision.dataQuality?.freshnessScore || 0, 1)}`, `trust ${formatPct(decision.dataQuality?.trustScore || 0, 1)}`].filter(Boolean), "Geen data-quality status")}</div></div>
         ${decision.allow && decision.executionBlockers?.length ? `<div class="note-line"><span class="kicker">Niet uitgevoerd door</span><div class="tag-list">${renderTagList((decision.executionBlockers || []).slice(0, 3).map(normalizeReasonLabel), "Geen runtime blocker")}</div></div>` : ""}
       `;
       const contextView = `
@@ -903,7 +920,7 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${(decision.qualityQuorum?.observeOnly) ? "observe-only" : "entry ok"}</div></div>
         </div>
         <div class="note-line"><span class="kicker">Risk layer</span><div class="tag-list">${renderTagList((decision.blockerReasons || decision.reasons || []).slice(0, 4).map(normalizeReasonLabel), "Geen blokkerende risk layer")}</div></div>
-        <div class="note-line"><span class="kicker">Data sources</span><div class="tag-list">${renderTagList((decision.dataQuality?.sources || []).slice(0, 5).map((source) => `${source.label}:${source.status}`), "Geen datasource-status")}</div></div>
+        <div class="note-line"><span class="kicker">Datasources</span><div class="tag-list">${renderTagList((decision.dataQuality?.sources || []).slice(0, 5).map((source) => `${source.label}:${source.status}`), "Geen datasource-status")}</div></div>
         ${decision.dataQuality?.degradedSourceLabels?.length ? `<div class="note-line"><span class="kicker">Degraded</span><div class="tag-list">${renderTagList((decision.dataQuality?.degradedSourceLabels || []).map(normalizeReasonLabel), "Geen degraded sources")}</div></div>` : ""}
       `;
       return `
@@ -1468,7 +1485,7 @@ function renderOperations(snapshot) {
     insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
   ].join("");
 
-  const notes = [
+  const notes = uniqueTextItems([
     ...(ops.performanceChange?.notes || []),
     ...(alerts.alerts || []).map((item) => `${item.title}: ${item.action}`),
     ...(ops.runbooks || []).map((item) => `${item.title}: ${item.action}`),
@@ -1492,7 +1509,7 @@ function renderOperations(snapshot) {
     backups.lastReason ? `Laatste backup reden: ${backups.lastReason}` : "",
     recorder.rootDir ? `Feature store: ${recorder.rootDir}` : "",
     service.statusFile ? `Service statusfile: ${service.statusFile}` : ""
-  ].filter(Boolean);
+  ].filter(Boolean));
   elements.opsList.innerHTML = notes.length || (ops.incidentTimeline || []).length
     ? [
         ...(orderLifecycle.activeActions || []).slice(0, 6).map((item) => `
