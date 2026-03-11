@@ -182,6 +182,14 @@ export class LiveBroker {
     return this.placeProtectiveOrder(position, rules);
   }
 
+  clearProtectiveOrderState(position, status = null) {
+    position.protectiveOrderListId = null;
+    position.protectiveListClientOrderId = null;
+    position.protectiveOrders = [];
+    position.protectiveOrderStatus = status;
+    position.protectiveOrderPlacedAt = null;
+  }
+
   buildOrderRequestMeta(plan, rules, responseType = "RESULT") {
     const stpMode = resolveStpMode(this.config.stpMode, rules);
     return {
@@ -242,49 +250,54 @@ export class LiveBroker {
     const orderResponses = [order];
     let keepPriorityCount = 0;
     let amendmentCount = 0;
+    try {
+      await sleep(Math.max(1200, plan?.makerPatienceMs || 3500));
+      let settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+      const liveOrder = settled.order;
+      const remainingQty = normalizeQuantity(Number(liveOrder.origQty || 0) - Number(liveOrder.executedQty || 0), rules, "floor", false);
 
-    await sleep(Math.max(1200, plan?.makerPatienceMs || 3500));
-    let settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
-    const liveOrder = settled.order;
-    const remainingQty = normalizeQuantity(Number(liveOrder.origQty || 0) - Number(liveOrder.executedQty || 0), rules, "floor", false);
+      if ((liveOrder.status === "NEW" || liveOrder.status === "PARTIALLY_FILLED") && remainingQty && plan?.allowKeepPriority) {
+        try {
+          const shrinkQty = normalizeQuantity(Number(liveOrder.executedQty || 0) + Math.max(remainingQty * 0.5, rules.minQty || 0), rules, "floor", false);
+          if (shrinkQty && shrinkQty < Number(liveOrder.origQty || 0)) {
+            const amend = await this.client.amendOrderKeepPriority({
+              symbol,
+              orderId: workingOrderId,
+              newQty: formatQuantity(shrinkQty, rules, false)
+            });
+            keepPriorityCount += 1;
+            amendmentCount += 1;
+            orderResponses.push(...flattenReplaceResponse(amend));
+            await sleep(650);
+            settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+          }
+        } catch (error) {
+          this.logger?.warn?.("Pegged keep-priority amend skipped", { symbol, error: error.message });
+        }
+      }
 
-    if ((liveOrder.status === "NEW" || liveOrder.status === "PARTIALLY_FILLED") && remainingQty && plan?.allowKeepPriority) {
       try {
-        const shrinkQty = normalizeQuantity(Number(liveOrder.executedQty || 0) + Math.max(remainingQty * 0.5, rules.minQty || 0), rules, "floor", false);
-        if (shrinkQty && shrinkQty < Number(liveOrder.origQty || 0)) {
-          const amend = await this.client.amendOrderKeepPriority({
-            symbol,
-            orderId: workingOrderId,
-            newQty: formatQuantity(shrinkQty, rules, false)
-          });
-          keepPriorityCount += 1;
-          amendmentCount += 1;
-          orderResponses.push(...flattenReplaceResponse(amend));
-          await sleep(650);
+        if (settled.order?.status === "NEW" || settled.order?.status === "PARTIALLY_FILLED") {
+          const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
+          orderResponses.push(cancel);
           settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
         }
       } catch (error) {
-        this.logger?.warn?.("Pegged keep-priority amend skipped", { symbol, error: error.message });
+        this.logger?.warn?.("Pegged maker cancel failed", { symbol, error: error.message });
       }
-    }
 
-    try {
-      if (settled.order?.status === "NEW" || settled.order?.status === "PARTIALLY_FILLED") {
-        const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
-        orderResponses.push(cancel);
-        settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
-      }
+      return {
+        ...settled,
+        orderResponses,
+        amendmentCount,
+        cancelReplaceCount: 0,
+        keepPriorityCount
+      };
     } catch (error) {
-      this.logger?.warn?.("Pegged maker cancel failed", { symbol, error: error.message });
+      error.pendingOrderId = error.pendingOrderId || workingOrderId;
+      error.orderResponses = [...orderResponses];
+      throw error;
     }
-
-    return {
-      ...settled,
-      orderResponses,
-      amendmentCount,
-      cancelReplaceCount: 0,
-      keepPriorityCount
-    };
   }
 
   async placeLimitMakerBuy({ symbol, quoteAmount, rules, marketSnapshot, plan }) {
@@ -309,73 +322,78 @@ export class LiveBroker {
     let cancelReplaceCount = 0;
     let keepPriorityCount = 0;
     const halfPatience = Math.max(1200, Math.round((plan?.makerPatienceMs || 3500) / 2));
-
-    await sleep(halfPatience);
-    let settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
-    const firstOrder = settled.order;
-    const remainingQty = normalizeQuantity(Number(firstOrder.origQty || 0) - Number(firstOrder.executedQty || 0), rules, "floor", false);
-
-    if ((firstOrder.status === "NEW" || firstOrder.status === "PARTIALLY_FILLED") && remainingQty) {
-      const freshBook = await this.client.getBookTicker(symbol).catch(() => null);
-      const freshBid = freshBook ? normalizePrice(Number(freshBook.bidPrice || 0), rules, "floor") : null;
-      const currentPrice = Number(firstOrder.price || 0);
-      if (freshBid && freshBid !== currentPrice) {
-        try {
-          const replace = await this.client.cancelReplaceOrder({
-            symbol,
-            cancelOrderId: workingOrderId,
-            cancelReplaceMode: "STOP_ON_FAILURE",
-            side: "BUY",
-            type: "LIMIT_MAKER",
-            quantity: formatQuantity(remainingQty, rules, false),
-            price: formatPrice(freshBid, rules),
-            ...this.buildOrderRequestMeta(plan, rules)
-          });
-          cancelReplaceCount += 1;
-          amendmentCount += 1;
-          orderResponses.push(...flattenReplaceResponse(replace));
-          workingOrderId = replace.newOrderResponse?.orderId || replace.orderId || workingOrderId;
-          await sleep(Math.max(800, (plan?.makerPatienceMs || 3500) - halfPatience));
-          settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
-        } catch (error) {
-          this.logger?.warn?.("Limit maker refresh failed", { symbol, error: error.message });
-        }
-      } else if (firstOrder.status === "PARTIALLY_FILLED" && plan?.allowKeepPriority) {
-        try {
-          const shrinkQty = normalizeQuantity(Number(firstOrder.executedQty || 0) + Math.max(remainingQty * 0.5, rules.minQty || 0), rules, "floor", false);
-          if (shrinkQty && shrinkQty < Number(firstOrder.origQty || 0)) {
-            const amend = await this.client.amendOrderKeepPriority({
-              symbol,
-              orderId: workingOrderId,
-              newQty: formatQuantity(shrinkQty, rules, false)
-            });
-            keepPriorityCount += 1;
-            amendmentCount += 1;
-            orderResponses.push(...flattenReplaceResponse(amend));
-          }
-        } catch (error) {
-          this.logger?.warn?.("Keep-priority amend skipped", { symbol, error: error.message });
-        }
-      }
-    }
-
     try {
-      if (settled.order?.status === "NEW" || settled.order?.status === "PARTIALLY_FILLED") {
-        const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
-        orderResponses.push(cancel);
-        settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
-      }
-    } catch (error) {
-      this.logger?.warn?.("Limit maker cancel failed", { symbol, error: error.message });
-    }
+      await sleep(halfPatience);
+      let settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+      const firstOrder = settled.order;
+      const remainingQty = normalizeQuantity(Number(firstOrder.origQty || 0) - Number(firstOrder.executedQty || 0), rules, "floor", false);
 
-    return {
-      ...settled,
-      orderResponses,
-      amendmentCount,
-      cancelReplaceCount,
-      keepPriorityCount
-    };
+      if ((firstOrder.status === "NEW" || firstOrder.status === "PARTIALLY_FILLED") && remainingQty) {
+        const freshBook = await this.client.getBookTicker(symbol).catch(() => null);
+        const freshBid = freshBook ? normalizePrice(Number(freshBook.bidPrice || 0), rules, "floor") : null;
+        const currentPrice = Number(firstOrder.price || 0);
+        if (freshBid && freshBid !== currentPrice) {
+          try {
+            const replace = await this.client.cancelReplaceOrder({
+              symbol,
+              cancelOrderId: workingOrderId,
+              cancelReplaceMode: "STOP_ON_FAILURE",
+              side: "BUY",
+              type: "LIMIT_MAKER",
+              quantity: formatQuantity(remainingQty, rules, false),
+              price: formatPrice(freshBid, rules),
+              ...this.buildOrderRequestMeta(plan, rules)
+            });
+            cancelReplaceCount += 1;
+            amendmentCount += 1;
+            orderResponses.push(...flattenReplaceResponse(replace));
+            workingOrderId = replace.newOrderResponse?.orderId || replace.orderId || workingOrderId;
+            await sleep(Math.max(800, (plan?.makerPatienceMs || 3500) - halfPatience));
+            settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+          } catch (error) {
+            this.logger?.warn?.("Limit maker refresh failed", { symbol, error: error.message });
+          }
+        } else if (firstOrder.status === "PARTIALLY_FILLED" && plan?.allowKeepPriority) {
+          try {
+            const shrinkQty = normalizeQuantity(Number(firstOrder.executedQty || 0) + Math.max(remainingQty * 0.5, rules.minQty || 0), rules, "floor", false);
+            if (shrinkQty && shrinkQty < Number(firstOrder.origQty || 0)) {
+              const amend = await this.client.amendOrderKeepPriority({
+                symbol,
+                orderId: workingOrderId,
+                newQty: formatQuantity(shrinkQty, rules, false)
+              });
+              keepPriorityCount += 1;
+              amendmentCount += 1;
+              orderResponses.push(...flattenReplaceResponse(amend));
+            }
+          } catch (error) {
+            this.logger?.warn?.("Keep-priority amend skipped", { symbol, error: error.message });
+          }
+        }
+      }
+
+      try {
+        if (settled.order?.status === "NEW" || settled.order?.status === "PARTIALLY_FILLED") {
+          const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
+          orderResponses.push(cancel);
+          settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+        }
+      } catch (error) {
+        this.logger?.warn?.("Limit maker cancel failed", { symbol, error: error.message });
+      }
+
+      return {
+        ...settled,
+        orderResponses,
+        amendmentCount,
+        cancelReplaceCount,
+        keepPriorityCount
+      };
+    } catch (error) {
+      error.pendingOrderId = error.pendingOrderId || workingOrderId;
+      error.orderResponses = [...orderResponses];
+      throw error;
+    }
   }
 
   async collectPreventedMatches(symbol, orderIds = []) {
@@ -476,6 +494,40 @@ export class LiveBroker {
     };
   }
 
+  async recoverPendingEntryExecutions({ symbol, orderId, quoteAmount, rules }) {
+    if (!orderId) {
+      return { executions: [], orderResponses: [] };
+    }
+    try {
+      const settled = await this.settleMakerOrder({ symbol, orderId, quoteAmount, rules });
+      return {
+        executions: settled.executions || [],
+        orderResponses: settled.order ? [settled.order] : []
+      };
+    } catch (error) {
+      this.logger?.warn?.("Pending entry recovery failed", { symbol, orderId, error: error.message });
+      return { executions: [], orderResponses: [] };
+    }
+  }
+
+  async emergencyFlattenPosition({ position, rules, marketSnapshot, plan, reason = "entry_recovery_flatten" }) {
+    const quantity = normalizeQuantity(position.quantity, rules, "floor", true);
+    if (!quantity) {
+      throw new Error(`Unable to normalize recovery sell quantity for ${position.symbol}.`);
+    }
+    const order = await this.client.placeOrder({
+      symbol: position.symbol,
+      side: "SELL",
+      type: "MARKET",
+      quantity: formatQuantity(quantity, rules, true),
+      ...this.buildOrderRequestMeta(plan || position.executionPlan || {}, rules, "FULL")
+    });
+    const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]).catch(() => ({}));
+    const trade = this.buildTradeFromOrder(position, order, order.fills || [], reason, reason, marketSnapshot, orderTelemetry);
+    trade.recoveredEntry = true;
+    return trade;
+  }
+
   async enterPosition({ symbol, rules, quoteAmount, marketSnapshot, decision, score, rawFeatures, strategySummary, newsSummary, entryRationale, runtime }) {
     const plan = decision.executionPlan || this.execution.buildEntryPlan({
       symbol,
@@ -493,68 +545,140 @@ export class LiveBroker {
     let amendmentCount = 0;
     let cancelReplaceCount = 0;
     let keepPriorityCount = 0;
+    const resolvedDecision = {
+      ...decision,
+      strategySummary: strategySummary || decision.strategySummary || entryRationale?.strategy || null
+    };
+    let orderTelemetry = {};
+    let position = null;
 
-    if (plan.entryStyle === "pegged_limit_maker") {
-      const makerResult = await this.placePeggedLimitMakerBuy({ symbol, quoteAmount, rules, marketSnapshot, plan });
-      executions.push(...makerResult.executions);
-      remainingQuote = makerResult.remainingQuote;
-      orderResponses.push(...(makerResult.orderResponses || []));
-      amendmentCount += makerResult.amendmentCount || 0;
-      cancelReplaceCount += makerResult.cancelReplaceCount || 0;
-      keepPriorityCount += makerResult.keepPriorityCount || 0;
-    } else if (plan.entryStyle === "limit_maker") {
-      const makerResult = await this.placeLimitMakerBuy({ symbol, quoteAmount, rules, marketSnapshot, plan });
-      executions.push(...makerResult.executions);
-      remainingQuote = makerResult.remainingQuote;
-      orderResponses.push(...(makerResult.orderResponses || []));
-      amendmentCount += makerResult.amendmentCount || 0;
-      cancelReplaceCount += makerResult.cancelReplaceCount || 0;
-      keepPriorityCount += makerResult.keepPriorityCount || 0;
-    }
+    try {
+      if (plan.entryStyle === "pegged_limit_maker") {
+        const makerResult = await this.placePeggedLimitMakerBuy({ symbol, quoteAmount, rules, marketSnapshot, plan });
+        executions.push(...makerResult.executions);
+        remainingQuote = makerResult.remainingQuote;
+        orderResponses.push(...(makerResult.orderResponses || []));
+        amendmentCount += makerResult.amendmentCount || 0;
+        cancelReplaceCount += makerResult.cancelReplaceCount || 0;
+        keepPriorityCount += makerResult.keepPriorityCount || 0;
+      } else if (plan.entryStyle === "limit_maker") {
+        const makerResult = await this.placeLimitMakerBuy({ symbol, quoteAmount, rules, marketSnapshot, plan });
+        executions.push(...makerResult.executions);
+        remainingQuote = makerResult.remainingQuote;
+        orderResponses.push(...(makerResult.orderResponses || []));
+        amendmentCount += makerResult.amendmentCount || 0;
+        cancelReplaceCount += makerResult.cancelReplaceCount || 0;
+        keepPriorityCount += makerResult.keepPriorityCount || 0;
+      }
 
-    if (!executions.length || (remainingQuote >= Math.max(this.config.minTradeUsdt, rules.minNotional || 0) && plan.fallbackStyle !== "none")) {
-      const marketResult = await this.placeMarketBuy({ symbol, quoteAmount: executions.length ? remainingQuote : quoteAmount, rules, plan });
-      executions.push(...marketResult.executions);
-      remainingQuote = marketResult.remainingQuote;
-      orderResponses.push(...(marketResult.orderResponses || []));
-    }
-    if (remainingQuote >= Math.max(this.config.minTradeUsdt, rules.minNotional || 0)) {
-      this.logger?.warn?.("Entry left residual quote after fallback", { symbol, remainingQuote });
-    }
+      if (!executions.length || (remainingQuote >= Math.max(this.config.minTradeUsdt, rules.minNotional || 0) && plan.fallbackStyle !== "none")) {
+        const marketResult = await this.placeMarketBuy({ symbol, quoteAmount: executions.length ? remainingQuote : quoteAmount, rules, plan });
+        executions.push(...marketResult.executions);
+        remainingQuote = marketResult.remainingQuote;
+        orderResponses.push(...(marketResult.orderResponses || []));
+      }
+      if (remainingQuote >= Math.max(this.config.minTradeUsdt, rules.minNotional || 0)) {
+        this.logger?.warn?.("Entry left residual quote after fallback", { symbol, remainingQuote });
+      }
 
-    const orderIds = executions.map((item) => item.order.orderId).filter(Boolean);
-    const orderTelemetry = await this.collectOrderTelemetry(symbol, orderIds);
-    const position = this.buildEntryFromExecutions({
-      symbol,
-      executions,
-      rules,
-      marketSnapshot,
-      decision: { ...decision, strategySummary: strategySummary || decision.strategySummary || entryRationale?.strategy || null },
-      score,
-      rawFeatures,
-      newsSummary,
-      entryRationale,
-      plan,
-      orderResponses,
-      orderTelemetry,
-      amendmentCount,
-      cancelReplaceCount,
-      keepPriorityCount,
-      requestedQuoteAmount: quoteAmount
-    });
-    runtime.openPositions.push(position);
-    await this.ensureProtectiveOrder(position, rules);
-    return position;
+      const orderIds = executions.map((item) => item.order.orderId).filter(Boolean);
+      orderTelemetry = await this.collectOrderTelemetry(symbol, orderIds);
+      position = this.buildEntryFromExecutions({
+        symbol,
+        executions,
+        rules,
+        marketSnapshot,
+        decision: resolvedDecision,
+        score,
+        rawFeatures,
+        newsSummary,
+        entryRationale,
+        plan,
+        orderResponses,
+        orderTelemetry,
+        amendmentCount,
+        cancelReplaceCount,
+        keepPriorityCount,
+        requestedQuoteAmount: quoteAmount
+      });
+      await this.ensureProtectiveOrder(position, rules);
+      runtime.openPositions.push(position);
+      return position;
+    } catch (error) {
+      if (!executions.length && error.pendingOrderId) {
+        const recovered = await this.recoverPendingEntryExecutions({
+          symbol,
+          orderId: error.pendingOrderId,
+          quoteAmount,
+          rules
+        });
+        executions.push(...(recovered.executions || []));
+        orderResponses.push(...(error.orderResponses || []), ...(recovered.orderResponses || []));
+      }
+
+      if (!executions.length) {
+        throw error;
+      }
+
+      position = position || this.buildEntryFromExecutions({
+        symbol,
+        executions,
+        rules,
+        marketSnapshot,
+        decision: resolvedDecision,
+        score,
+        rawFeatures,
+        newsSummary,
+        entryRationale,
+        plan,
+        orderResponses,
+        orderTelemetry,
+        amendmentCount,
+        cancelReplaceCount,
+        keepPriorityCount,
+        requestedQuoteAmount: quoteAmount
+      });
+
+      try {
+        const recoveredTrade = await this.emergencyFlattenPosition({
+          position,
+          rules,
+          marketSnapshot,
+          plan
+        });
+        const exposureError = new Error(`Live entry for ${symbol} opened exchange exposure but was auto-flattened after failure: ${error.message}`);
+        exposureError.preventFurtherEntries = true;
+        exposureError.blockedReason = "entry_recovered_after_partial_fill";
+        exposureError.recoveredTrade = recoveredTrade;
+        throw exposureError;
+      } catch (flattenError) {
+        if (flattenError?.preventFurtherEntries) {
+          throw flattenError;
+        }
+        runtime.openPositions.push(position);
+        const exposureError = new Error(`Live entry for ${symbol} opened exchange exposure and remains under runtime management after failure: ${error.message}. Recovery failed: ${flattenError.message}`);
+        exposureError.preventFurtherEntries = true;
+        exposureError.blockedReason = "entry_requires_runtime_recovery";
+        exposureError.openPosition = position;
+        exposureError.cleanupError = flattenError;
+        throw exposureError;
+      }
+    }
   }
 
-  async cancelProtectiveOrders(position) {
+  async cancelProtectiveOrders(position, { strict = false } = {}) {
     if (!position.protectiveOrderListId) {
       return null;
     }
     try {
-      return await this.client.cancelOrderList({ symbol: position.symbol, orderListId: position.protectiveOrderListId });
+      const response = await this.client.cancelOrderList({ symbol: position.symbol, orderListId: position.protectiveOrderListId });
+      this.clearProtectiveOrderState(position, "CANCELED");
+      return response;
     } catch (error) {
       this.logger?.warn?.("Protective order-list cancel failed", { symbol: position.symbol, error: error.message });
+      if (strict) {
+        throw error;
+      }
       return null;
     }
   }
@@ -668,6 +792,7 @@ export class LiveBroker {
         );
       }
     }
+    this.clearProtectiveOrderState(position, orderList.listStatusType || orderList.listOrderStatus || "ALL_DONE");
     return null;
   }
 
@@ -765,7 +890,6 @@ export class LiveBroker {
   }
 
   async scaleOutPosition({ position, rules, marketSnapshot, fraction, reason }) {
-    await this.cancelProtectiveOrders(position);
     const originalQuantity = Number(position.quantity || 0);
     const requestedFraction = Math.min(Math.max(fraction || this.config.scaleOutFraction, 0.05), 0.95);
     const requestedQuantity = normalizeQuantity(originalQuantity * requestedFraction, rules, "floor", true);
@@ -777,6 +901,8 @@ export class LiveBroker {
     if (remainingQuantity < (rules.minQty || 0) || remainingNotional < Math.max(rules.minNotional || 0, this.config.scaleOutMinNotionalUsd)) {
       throw new Error(`Scale-out would leave an invalid remainder for ${position.symbol}.`);
     }
+
+    await this.cancelProtectiveOrders(position, { strict: true });
 
     const order = await this.client.placeOrder({
       symbol: position.symbol,
@@ -802,10 +928,16 @@ export class LiveBroker {
     position.scaleOutCount = (position.scaleOutCount || 0) + 1;
     position.lastMarkedPrice = marketSnapshot.book.mid;
     position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || this.config.scaleOutTrailOffsetPct)));
-    position.protectiveOrderListId = null;
-    position.protectiveOrders = [];
-    position.protectiveOrderStatus = null;
-    await this.ensureProtectiveOrder(position, rules);
+    this.clearProtectiveOrderState(position);
+
+    let protectionWarning = null;
+    try {
+      await this.ensureProtectiveOrder(position, rules);
+    } catch (error) {
+      protectionWarning = error.message;
+      this.logger?.warn?.("Protective order rebuild after scale-out failed", { symbol: position.symbol, error: error.message });
+      this.clearProtectiveOrderState(position);
+    }
 
     return {
       id: `${position.id}:scaleout:${Date.now()}`,
@@ -822,6 +954,7 @@ export class LiveBroker {
       realizedPnl,
       reason,
       brokerMode: "live",
+      protectionWarning,
       executionAttribution: this.execution.buildExecutionAttribution({
         plan: this.buildExitPlan(position, "bot_partial_exit"),
         marketSnapshot,
@@ -839,11 +972,11 @@ export class LiveBroker {
   }
 
   async exitPosition({ position, rules, marketSnapshot, reason, runtime }) {
-    await this.cancelProtectiveOrders(position);
     const quantity = normalizeQuantity(position.quantity, rules, "floor", true);
     if (!quantity) {
       throw new Error(`Unable to normalize sell quantity for ${position.symbol}.`);
     }
+    await this.cancelProtectiveOrders(position, { strict: true });
     const order = await this.client.placeOrder({
       symbol: position.symbol,
       side: "SELL",

@@ -24,6 +24,11 @@
 - Repaired light and dark theme application so both `html` and `body` switch together and persist correctly.
 - Cleaned stale runtime `.tmp` files during boot to avoid orphaned state artifacts after interrupted saves.
 - Migrated older runtime and journal files forward to the latest persisted shape so new quorum/governance fields do not disappear on pre-existing state.
+- Blocked self-heal from auto-switching a live bot to paper while exchange positions are still open; the manager now stops instead of orphaning live inventory under a paper broker.
+- Hardened live entry recovery so partially filled entries either auto-flatten immediately after downstream failures or stay under runtime management while further entries are blocked for that cycle.
+- Fixed live protective-order lifecycle drift so canceled or `ALL_DONE`-without-fill OCOs clear stale IDs and can be rebuilt instead of leaving positions falsely marked as protected.
+- Stopped stale websocket book tickers from overriding fresher market data after disconnects by expiring them and falling back to fresh local-book snapshots.
+- Retried Binance non-JSON failure responses, including user-data listen-key endpoints, so transient HTML/empty `5xx` pages do not bypass the retry layer.
 - Fixed portfolio ranking so stronger allocator scores now improve setup ordering instead of accidentally penalizing the best-shaped candidates.
 - Synced dashboard/runtime summaries with the new indicator payloads and persisted learning telemetry.
 - Fixed dashboard fold cards and nested detail panels so user collapse state survives polling refreshes instead of reopening every few seconds.
@@ -41,6 +46,7 @@
 - Reduced visible density by showing fewer setups, blocked trades, replay cards, and recent trades at once.
 - Extended governance and blocked/setup views with veto-learning, regime-readiness, and data-quorum context instead of only aggregate promotion stats.
 - Improved paper execution realism with queue-decay, spread-shock, and liquidity-shock penalties flowing into execution attribution.
+- Isolated per-position management failures so one symbol can fail review without preventing the rest of the open book from being evaluated that cycle.
 - Expanded portfolio allocation with factor budget and factor heat controls on top of the existing cluster/sector/family/regime exposure checks.
 - Added persistent detail memory for dynamic setup, position, and replay cards so manual open-close choices stick across refreshes.
 - Tightened universe, attribution, replay, and blocked-trade lists into a more compact operator view.
@@ -60,6 +66,11 @@
 - `node --check test/run.js`
 - `npm.cmd test`
 - `node test/run.js`
+- `node --check src/runtime/botManager.js`
+- `node --check src/execution/liveBroker.js`
+- `node --check src/runtime/streamCoordinator.js`
+- `node --check src/binance/client.js`
+- `node --check src/runtime/tradingBot.js`
 - `node src/cli.js once`
 - `node src/cli.js status`
 - `node src/cli.js doctor`

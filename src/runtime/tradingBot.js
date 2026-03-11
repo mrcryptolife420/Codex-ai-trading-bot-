@@ -2827,137 +2827,148 @@ export class TradingBot {
     await this.applyReconciliation(reconciliation);
 
     for (const position of [...this.runtime.openPositions]) {
-      const aliases = this.config.symbolMetadata[position.symbol] || [position.symbol];
-      const marketSnapshot = await this.getMarketSnapshot(position.symbol);
-      marketSnapshot.book.exitEstimate = this.stream.estimateFill?.(position.symbol, "SELL", { quantity: position.quantity }) || null;
-      mids[position.symbol] = marketSnapshot.book.mid;
-      const newsSummary = await this.news.getSymbolSummary(position.symbol, aliases);
-      const exchangeSummary = await this.exchangeNotices.getSymbolSummary(position.symbol, aliases);
-      const calendarSummary = await this.calendar.getSymbolSummary(position.symbol, aliases);
-      const marketStructureSummary = await this.marketStructure.getSymbolSummary(position.symbol, marketSnapshot.stream || this.stream.getSymbolStreamFeatures(position.symbol));
-      const marketSentimentSummary = this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT;
-      const onChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(marketSentimentSummary) : EMPTY_ONCHAIN;
-      const strategySummary = position.strategyDecision || position.entryRationale?.strategy || {};
-      const regimeSummary = this.model.inferRegime({ marketFeatures: marketSnapshot.market, newsSummary, streamFeatures: marketSnapshot.stream || {}, bookFeatures: marketSnapshot.book, marketStructureSummary, marketSentimentSummary, volatilitySummary: this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT, announcementSummary: exchangeSummary, calendarSummary });
-      const timeframeSummary = this.config.enableCrossTimeframeConsensus ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config }) : summarizeTimeframeConsensus({ enabled: false });
-      const currentPrice = marketSnapshot.book.mid || position.lastMarkedPrice || position.entryPrice;
-      const currentValue = currentPrice * safeNumber(position.quantity || 0);
-      const totalCost = safeNumber(position.totalCost || position.notional || currentValue, currentValue);
-      const pnlPct = totalCost ? (currentValue - totalCost) / totalCost : 0;
-      const highestPrice = Math.max(safeNumber(position.highestPrice, position.entryPrice), safeNumber(position.entryPrice, currentPrice));
-      const drawdownFromHighPct = highestPrice ? (currentPrice - highestPrice) / highestPrice : 0;
-      const heldMinutes = minutesBetween(position.entryAt, nowIso());
-      const progressToScaleOut = clamp(
-        pnlPct / Math.max(position.scaleOutTrailOffsetPct || this.config.scaleOutTriggerPct || 0.01, 0.004),
-        -1,
-        2.2
-      );
-      const timePressure = clamp(heldMinutes / Math.max(this.config.maxHoldMinutes || 1, 1), 0, 1.5);
-      const spreadPressure = clamp(safeNumber(marketSnapshot.book.spreadBps) / Math.max(this.config.exitOnSpreadShockBps || 1, 1), 0, 1.5);
-      const entrySlipDelta = safeNumber(position.entryExecutionAttribution?.slippageDeltaBps);
-      const executionRegretScore = clamp(Math.max(0, entrySlipDelta) / 8 + Math.max(0, -safeNumber(marketSnapshot.book.bookPressure)) * 0.18, 0, 1);
-      const exitNeuralSummary = this.model.scoreExit({
-        pnlPct,
-        drawdownFromHighPct,
-        heldMinutes,
-        maxHoldMinutes: this.config.maxHoldMinutes,
-        bookPressure: marketSnapshot.book.bookPressure,
-        signalScore: marketStructureSummary.signalScore,
-        riskScore: marketStructureSummary.riskScore,
-        higherBias: timeframeSummary.higherBias,
-        alignmentScore: timeframeSummary.alignmentScore,
-        onChainLiquidity: onChainLiteSummary.liquidityScore,
-        onChainStress: onChainLiteSummary.stressScore,
-        spreadPressure,
-        timePressure,
-        executionRegretScore,
-        progressToScaleOut
-      });
-      const exitIntelligenceSummary = this.config.enableExitIntelligence
-        ? this.exitIntelligence.evaluate({
-            position,
-            marketSnapshot,
-            newsSummary,
-            announcementSummary: exchangeSummary,
-            marketStructureSummary,
-            calendarSummary,
-            marketSentimentSummary,
-            onChainLiteSummary,
-            timeframeSummary,
-            regimeSummary,
-            exitNeuralSummary,
-            runtime: this.runtime,
-            journal: this.journal,
-            nowIso: nowIso()
-          })
-        : summarizeExitIntelligence({ action: "disabled", nextReviewBias: "disabled" });
-      if (exitIntelligenceSummary.shouldTightenStop && exitIntelligenceSummary.suggestedStopLossPrice > (position.stopLossPrice || 0)) {
-        position.stopLossPrice = exitIntelligenceSummary.suggestedStopLossPrice;
-        this.recordEvent("position_stop_tightened", {
-          symbol: position.symbol,
-          stopLossPrice: position.stopLossPrice,
-          reason: exitIntelligenceSummary.reason || "protect_winner"
+      try {
+        const aliases = this.config.symbolMetadata[position.symbol] || [position.symbol];
+        const marketSnapshot = await this.getMarketSnapshot(position.symbol);
+        marketSnapshot.book.exitEstimate = this.stream.estimateFill?.(position.symbol, "SELL", { quantity: position.quantity }) || null;
+        mids[position.symbol] = marketSnapshot.book.mid;
+        const newsSummary = await this.news.getSymbolSummary(position.symbol, aliases);
+        const exchangeSummary = await this.exchangeNotices.getSymbolSummary(position.symbol, aliases);
+        const calendarSummary = await this.calendar.getSymbolSummary(position.symbol, aliases);
+        const marketStructureSummary = await this.marketStructure.getSymbolSummary(position.symbol, marketSnapshot.stream || this.stream.getSymbolStreamFeatures(position.symbol));
+        const marketSentimentSummary = this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT;
+        const onChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(marketSentimentSummary) : EMPTY_ONCHAIN;
+        const strategySummary = position.strategyDecision || position.entryRationale?.strategy || {};
+        const regimeSummary = this.model.inferRegime({ marketFeatures: marketSnapshot.market, newsSummary, streamFeatures: marketSnapshot.stream || {}, bookFeatures: marketSnapshot.book, marketStructureSummary, marketSentimentSummary, volatilitySummary: this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT, announcementSummary: exchangeSummary, calendarSummary });
+        const timeframeSummary = this.config.enableCrossTimeframeConsensus ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config }) : summarizeTimeframeConsensus({ enabled: false });
+        const currentPrice = marketSnapshot.book.mid || position.lastMarkedPrice || position.entryPrice;
+        const currentValue = currentPrice * safeNumber(position.quantity || 0);
+        const totalCost = safeNumber(position.totalCost || position.notional || currentValue, currentValue);
+        const pnlPct = totalCost ? (currentValue - totalCost) / totalCost : 0;
+        const highestPrice = Math.max(safeNumber(position.highestPrice, position.entryPrice), safeNumber(position.entryPrice, currentPrice));
+        const drawdownFromHighPct = highestPrice ? (currentPrice - highestPrice) / highestPrice : 0;
+        const heldMinutes = minutesBetween(position.entryAt, nowIso());
+        const progressToScaleOut = clamp(
+          pnlPct / Math.max(position.scaleOutTrailOffsetPct || this.config.scaleOutTriggerPct || 0.01, 0.004),
+          -1,
+          2.2
+        );
+        const timePressure = clamp(heldMinutes / Math.max(this.config.maxHoldMinutes || 1, 1), 0, 1.5);
+        const spreadPressure = clamp(safeNumber(marketSnapshot.book.spreadBps) / Math.max(this.config.exitOnSpreadShockBps || 1, 1), 0, 1.5);
+        const entrySlipDelta = safeNumber(position.entryExecutionAttribution?.slippageDeltaBps);
+        const executionRegretScore = clamp(Math.max(0, entrySlipDelta) / 8 + Math.max(0, -safeNumber(marketSnapshot.book.bookPressure)) * 0.18, 0, 1);
+        const exitNeuralSummary = this.model.scoreExit({
+          pnlPct,
+          drawdownFromHighPct,
+          heldMinutes,
+          maxHoldMinutes: this.config.maxHoldMinutes,
+          bookPressure: marketSnapshot.book.bookPressure,
+          signalScore: marketStructureSummary.signalScore,
+          riskScore: marketStructureSummary.riskScore,
+          higherBias: timeframeSummary.higherBias,
+          alignmentScore: timeframeSummary.alignmentScore,
+          onChainLiquidity: onChainLiteSummary.liquidityScore,
+          onChainStress: onChainLiteSummary.stressScore,
+          spreadPressure,
+          timePressure,
+          executionRegretScore,
+          progressToScaleOut
         });
-      }
-      const exitDecision = this.risk.evaluateExit({
-        position,
-        currentPrice: marketSnapshot.book.mid,
-        newsSummary,
-        announcementSummary: exchangeSummary,
-        marketStructureSummary,
-        calendarSummary,
-        marketSnapshot,
-        exitIntelligenceSummary,
-        nowIso: nowIso()
-      });
-      position.highestPrice = exitDecision.updatedHigh;
-      position.lowestPrice = exitDecision.updatedLow;
-      position.lastMarkedPrice = marketSnapshot.book.mid;
-      position.latestSpreadBps = marketSnapshot.book.spreadBps;
-      position.latestNewsSummary = newsSummary;
-      position.latestExchangeSummary = exchangeSummary;
-      position.latestCalendarSummary = calendarSummary;
-      position.latestMarketStructureSummary = marketStructureSummary;
-      position.latestTimeframeSummary = timeframeSummary;
-      position.latestOnChainLiteSummary = onChainLiteSummary;
-      position.latestExitIntelligence = exitIntelligenceSummary;
-      position.replayCheckpoints = arr(position.replayCheckpoints || []);
-      position.replayCheckpoints.push({ at: nowIso(), price: num(marketSnapshot.book.mid, 6), spreadBps: num(marketSnapshot.book.spreadBps || 0, 2), bookPressure: num(marketSnapshot.book.bookPressure || 0, 3), newsRisk: num(newsSummary.riskScore || 0, 3), tfAlignment: num(timeframeSummary.alignmentScore || 0, 4), onChainStress: num(onChainLiteSummary.stressScore || 0, 4) });
-      position.replayCheckpoints = position.replayCheckpoints.slice(-24);
-      position.lastReviewedAt = nowIso();
-      if (exitDecision.shouldScaleOut) {
-        const scaleOut = await this.broker.scaleOutPosition({
+        const exitIntelligenceSummary = this.config.enableExitIntelligence
+          ? this.exitIntelligence.evaluate({
+              position,
+              marketSnapshot,
+              newsSummary,
+              announcementSummary: exchangeSummary,
+              marketStructureSummary,
+              calendarSummary,
+              marketSentimentSummary,
+              onChainLiteSummary,
+              timeframeSummary,
+              regimeSummary,
+              exitNeuralSummary,
+              runtime: this.runtime,
+              journal: this.journal,
+              nowIso: nowIso()
+            })
+          : summarizeExitIntelligence({ action: "disabled", nextReviewBias: "disabled" });
+        if (exitIntelligenceSummary.shouldTightenStop && exitIntelligenceSummary.suggestedStopLossPrice > (position.stopLossPrice || 0)) {
+          position.stopLossPrice = exitIntelligenceSummary.suggestedStopLossPrice;
+          this.recordEvent("position_stop_tightened", {
+            symbol: position.symbol,
+            stopLossPrice: position.stopLossPrice,
+            reason: exitIntelligenceSummary.reason || "protect_winner"
+          });
+        }
+        const exitDecision = this.risk.evaluateExit({
+          position,
+          currentPrice: marketSnapshot.book.mid,
+          newsSummary,
+          announcementSummary: exchangeSummary,
+          marketStructureSummary,
+          calendarSummary,
+          marketSnapshot,
+          exitIntelligenceSummary,
+          nowIso: nowIso()
+        });
+        position.highestPrice = exitDecision.updatedHigh;
+        position.lowestPrice = exitDecision.updatedLow;
+        position.lastMarkedPrice = marketSnapshot.book.mid;
+        position.latestSpreadBps = marketSnapshot.book.spreadBps;
+        position.latestNewsSummary = newsSummary;
+        position.latestExchangeSummary = exchangeSummary;
+        position.latestCalendarSummary = calendarSummary;
+        position.latestMarketStructureSummary = marketStructureSummary;
+        position.latestTimeframeSummary = timeframeSummary;
+        position.latestOnChainLiteSummary = onChainLiteSummary;
+        position.latestExitIntelligence = exitIntelligenceSummary;
+        position.replayCheckpoints = arr(position.replayCheckpoints || []);
+        position.replayCheckpoints.push({ at: nowIso(), price: num(marketSnapshot.book.mid, 6), spreadBps: num(marketSnapshot.book.spreadBps || 0, 2), bookPressure: num(marketSnapshot.book.bookPressure || 0, 3), newsRisk: num(newsSummary.riskScore || 0, 3), tfAlignment: num(timeframeSummary.alignmentScore || 0, 4), onChainStress: num(onChainLiteSummary.stressScore || 0, 4) });
+        position.replayCheckpoints = position.replayCheckpoints.slice(-24);
+        position.lastReviewedAt = nowIso();
+        if (exitDecision.shouldScaleOut) {
+          const scaleOut = await this.broker.scaleOutPosition({
+            position,
+            rules: this.symbolRules[position.symbol],
+            marketSnapshot,
+            fraction: exitDecision.scaleOutFraction,
+            reason: exitDecision.scaleOutReason,
+            runtime: this.runtime
+          });
+          scaleOut.exitIntelligenceSummary = exitIntelligenceSummary;
+          this.journal.scaleOuts.push(scaleOut);
+          this.recordEvent("position_scaled_out", {
+            symbol: position.symbol,
+            reason: scaleOut.reason,
+            realizedPnl: scaleOut.realizedPnl,
+            fraction: scaleOut.fraction
+          });
+          if (scaleOut.protectionWarning) {
+            this.recordEvent("position_scale_out_protection_pending", {
+              symbol: position.symbol,
+              error: scaleOut.protectionWarning
+            });
+          }
+          continue;
+        }
+        if (!exitDecision.shouldExit) {
+          continue;
+        }
+        const trade = await this.broker.exitPosition({
           position,
           rules: this.symbolRules[position.symbol],
           marketSnapshot,
-          fraction: exitDecision.scaleOutFraction,
-          reason: exitDecision.scaleOutReason,
+          reason: exitDecision.reason,
           runtime: this.runtime
         });
-        scaleOut.exitIntelligenceSummary = exitIntelligenceSummary;
-        this.journal.scaleOuts.push(scaleOut);
-        this.recordEvent("position_scaled_out", {
-          symbol: position.symbol,
-          reason: scaleOut.reason,
-          realizedPnl: scaleOut.realizedPnl,
-          fraction: scaleOut.fraction
-        });
-        continue;
+        trade.exitIntelligenceSummary = exitIntelligenceSummary;
+        trade.replayCheckpoints = arr(position.replayCheckpoints || []);
+        this.journal.trades.push(trade);
+        await this.learnFromTrade(trade, "Closed position");
+      } catch (error) {
+        this.logger.warn("Position management failed", { symbol: position.symbol, error: error.message });
+        this.recordEvent("position_management_failed", { symbol: position.symbol, error: error.message });
       }
-      if (!exitDecision.shouldExit) {
-        continue;
-      }
-      const trade = await this.broker.exitPosition({
-        position,
-        rules: this.symbolRules[position.symbol],
-        marketSnapshot,
-        reason: exitDecision.reason,
-        runtime: this.runtime
-      });
-      trade.exitIntelligenceSummary = exitIntelligenceSummary;
-      trade.replayCheckpoints = arr(position.replayCheckpoints || []);
-      this.journal.trades.push(trade);
-      await this.learnFromTrade(trade, "Closed position");
     }
     return mids;
   }
@@ -3260,10 +3271,33 @@ export class TradingBot {
       } catch (error) {
         this.logger.warn("Position entry failed", { symbol: candidate.symbol, error: error.message });
         this.recordEvent("position_open_failed", { symbol: candidate.symbol, error: error.message });
+        if (error.recoveredTrade) {
+          this.journal.trades.push(error.recoveredTrade);
+          this.recordEvent("entry_recovered_flat", {
+            symbol: error.recoveredTrade.symbol,
+            pnlQuote: error.recoveredTrade.pnlQuote,
+            reason: error.recoveredTrade.reason
+          });
+        }
+        if (error.openPosition) {
+          this.recordEvent("entry_requires_runtime_recovery", {
+            symbol: error.openPosition.symbol,
+            quantity: error.openPosition.quantity
+          });
+        }
         attempt.entryErrors.push({ symbol: candidate.symbol, error: error.message });
+        if (error.preventFurtherEntries) {
+          attempt.status = "runtime_blocked";
+          attempt.blockedReasons.push(error.blockedReason || "entry_recovery_required");
+          break;
+        }
       }
     }
 
+    if (attempt.status === "runtime_blocked") {
+      attempt.blockedReasons = [...new Set(attempt.blockedReasons.filter(Boolean))];
+      return attempt;
+    }
     attempt.status = attempt.entryErrors.length ? "entry_failed" : "no_allowed_candidates";
     return attempt;
   }
@@ -4147,7 +4181,6 @@ export class TradingBot {
     };
   }
 }
-
 
 
 

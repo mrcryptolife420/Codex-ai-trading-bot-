@@ -46,6 +46,8 @@ import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
 import { TradingBot } from "../src/runtime/tradingBot.js";
+import { BotManager } from "../src/runtime/botManager.js";
+import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -779,6 +781,68 @@ await runCheck("binance client estimates effective drift from midpoint clock syn
   assert.equal(state.sampleCount, 3);
 });
 
+await runCheck("binance client retries non-json gateway failures", async () => {
+  let attempts = 0;
+  const client = new BinanceClient({
+    apiKey: "",
+    apiSecret: "",
+    baseUrl: "https://api.binance.com",
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        return {
+          ok: false,
+          status: 503,
+          async text() {
+            return "<html>temporarily unavailable</html>";
+          }
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ ok: true });
+        }
+      };
+    }
+  });
+  const payload = await client.publicRequest("GET", "/api/v3/ping");
+  assert.deepEqual(payload, { ok: true });
+  assert.equal(attempts, 3);
+});
+
+await runCheck("binance api-key requests retry non-json failures", async () => {
+  let attempts = 0;
+  const client = new BinanceClient({
+    apiKey: "test-key",
+    apiSecret: "test-secret",
+    baseUrl: "https://api.binance.com",
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        return {
+          ok: false,
+          status: 503,
+          async text() {
+            return "<html>gateway error</html>";
+          }
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ listenKey: "abc123" });
+        }
+      };
+    }
+  });
+  const payload = await client.apiKeyRequest("POST", "/api/v3/userDataStream");
+  assert.equal(payload.listenKey, "abc123");
+  assert.equal(attempts, 3);
+});
+
 await runCheck("health monitor uses sync quality instead of raw clock offset", async () => {
   const runtime = { health: { warnings: [] } };
   const monitor = new HealthMonitor(makeConfig({ maxServerTimeDriftMs: 100 }), { warn() {} });
@@ -1073,6 +1137,133 @@ await runCheck("live broker reconciles a filled protective order", async () => {
   assert.equal(reconciliation.closedTrades.length, 1);
   assert.equal(runtime.openPositions.length, 0);
   assert.equal(reconciliation.closedTrades[0].reason, "protective_take_profit");
+});
+
+await runCheck("live broker rebuilds stale protection after an unfilled ALL_DONE order list", async () => {
+  let rebuiltOrderListId = null;
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0.01000000", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOrderList() {
+      return { listStatusType: "ALL_DONE", orders: [{ orderId: 55 }] };
+    },
+    async getOrder() {
+      return {
+        orderId: 55,
+        status: "CANCELED",
+        type: "LIMIT_MAKER"
+      };
+    },
+    async placeOrderListOco() {
+      rebuiltOrderListId = 999;
+      return {
+        orderListId: rebuiltOrderListId,
+        listClientOrderId: "rebuild-1",
+        listStatusType: "NEW",
+        orders: [{ orderId: 91 }, { orderId: 92 }]
+      };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        rawFeatures: { momentum_5: 1 },
+        newsSummary: {},
+        protectiveOrderListId: 123,
+        protectiveListClientOrderId: "old-list",
+        protectiveOrders: [{ orderId: 55 }],
+        protectiveOrderStatus: "NEW",
+        protectiveOrderPlacedAt: "2026-03-08T10:01:00.000Z",
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        notional: 700,
+        highestPrice: 71000,
+        lowestPrice: 69500,
+        regimeAtEntry: "trend"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.equal(reconciliation.closedTrades.length, 0);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, rebuiltOrderListId);
+  assert.equal(runtime.openPositions[0].protectiveOrders.length, 2);
+  assert.equal(runtime.openPositions[0].protectiveOrderStatus, "NEW");
+});
+
+await runCheck("live broker auto-flattens filled entries when protection setup fails", async () => {
+  const placedSides = [];
+  const client = {
+    async placeOrder(params) {
+      placedSides.push(params.side);
+      if (params.side === "BUY") {
+        return {
+          orderId: 1,
+          executedQty: "0.01000000",
+          cummulativeQuoteQty: "700.00",
+          fills: [{ price: "70000", commission: "0.70", commissionAsset: "USDT" }]
+        };
+      }
+      return {
+        orderId: 2,
+        executedQty: params.quantity,
+        cummulativeQuoteQty: "698.50",
+        fills: [{ price: "69850", commission: "0.70", commissionAsset: "USDT" }]
+      };
+    },
+    async placeOrderListOco() {
+      throw new Error("oco endpoint unavailable");
+    }
+  };
+  const runtime = { openPositions: [] };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", enableSmartExecution: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  await assert.rejects(
+    broker.enterPosition({
+      symbol: "BTCUSDT",
+      rules,
+      quoteAmount: 700,
+      marketSnapshot: { book: { bid: 69990, ask: 70010, mid: 70000, spreadBps: 2 } },
+      decision: { stopLossPct: 0.02, takeProfitPct: 0.03, executionPlan: { entryStyle: "market", fallbackStyle: "none" }, regime: "trend" },
+      score: { probability: 0.7, regime: "trend" },
+      rawFeatures: { momentum_5: 1 },
+      newsSummary: { sentimentScore: 0.1 },
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.preventFurtherEntries, true);
+      assert.equal(error.blockedReason, "entry_recovered_after_partial_fill");
+      assert.equal(error.recoveredTrade?.reason, "entry_recovery_flatten");
+      return true;
+    }
+  );
+  assert.deepEqual(placedSides, ["BUY", "SELL"]);
+  assert.equal(runtime.openPositions.length, 0);
 });
 
 await runCheck("strategy router selects a mean reversion setup in range conditions", async () => {
@@ -1734,6 +1925,39 @@ await runCheck("self heal manager falls back to paper on critical live degradati
   assert.ok(state.actions.includes("restore_stable_model"));
 });
 
+await runCheck("bot manager stops instead of switching live positions to paper", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-manager-"));
+  try {
+    const envPath = path.join(tempDir, ".env");
+    await fs.writeFile(envPath, "BOT_MODE=live\n");
+    const manager = new BotManager({ projectRoot: tempDir, logger: { warn() {}, error() {} } });
+    manager.config = { botMode: "live", envPath };
+    manager.bot = {
+      runtime: {
+        openPositions: [{ symbol: "BTCUSDT" }]
+      },
+      async refreshAnalysis() {}
+    };
+    let reinitialized = false;
+    manager.reinitializeBot = async () => {
+      reinitialized = true;
+    };
+    manager.runState = "running";
+    const result = await manager.applySelfHealManagerAction({
+      managerAction: "switch_to_paper",
+      reason: "drawdown_guard"
+    });
+    const env = await fs.readFile(envPath, "utf8");
+    assert.equal(result, "paper_switch_blocked_open_positions");
+    assert.equal(reinitialized, false);
+    assert.equal(manager.stopRequested, true);
+    assert.equal(manager.stopReason, "self_heal_live_positions_open");
+    assert.match(env, /BOT_MODE=live/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 await runCheck("config validation blocks inverted drift thresholds", async () => {
   const result = validateConfig(makeConfig({
     driftFeatureScoreAlert: 2,
@@ -2382,6 +2606,100 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
   assert.deepEqual(view.sessionBlockers, ["session_liquidity_guard"]);
   assert.deepEqual(view.driftBlockers, ["drift_confidence_guard"]);
   assert.deepEqual(view.selfHealIssues, ["loss_streak_warning"]);
+});
+
+await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {
+  const coordinator = new StreamCoordinator({
+    client: {
+      getStreamBaseUrl() {
+        return "wss://stream.binance.com:9443";
+      },
+      getFuturesStreamBaseUrl() {
+        return "wss://fstream.binance.com";
+      }
+    },
+    config: makeConfig({ watchlist: ["BTCUSDT"], maxDepthEventAgeMs: 1000 }),
+    logger: { warn() {}, info() {} }
+  });
+  coordinator.orderBook.getSnapshot = () => ({
+    bestBid: 101,
+    bestAsk: 103,
+    bids: [[101, 1.2]],
+    asks: [[103, 1.1]],
+    mid: 102,
+    lastEventAt: new Date().toISOString()
+  });
+  coordinator.state.symbols.BTCUSDT.bookTicker = {
+    bid: 99,
+    ask: 101,
+    bidQty: 1,
+    askQty: 1,
+    mid: 100,
+    eventTime: Date.now() - 5_000
+  };
+  const features = coordinator.getSymbolStreamFeatures("BTCUSDT");
+  assert.equal(features.latestBookTicker.mid, 102);
+  assert.equal(features.latestBookTicker.bid, 101);
+  assert.equal(features.latestBookTicker.ask, 103);
+});
+
+await runCheck("trading bot blocks further entries after recovering a failed live exposure", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const attempted = [];
+  bot.health = {
+    canEnterNewPositions() {
+      return true;
+    }
+  };
+  bot.broker = {
+    async enterPosition({ symbol }) {
+      attempted.push(symbol);
+      const error = new Error("entry recovered");
+      error.preventFurtherEntries = true;
+      error.blockedReason = "entry_recovered_after_partial_fill";
+      error.recoveredTrade = { symbol, reason: "entry_recovery_flatten", pnlQuote: -1.5 };
+      throw error;
+    }
+  };
+  bot.buildEntryRationale = () => ({ summary: "test" });
+  bot.logger = { warn() {} };
+  bot.runtime = {};
+  bot.journal = { trades: [] };
+  bot.symbolRules = { BTCUSDT: {}, ETHUSDT: {} };
+  const events = [];
+  bot.recordEvent = (type, payload) => {
+    events.push({ type, ...(payload || {}) });
+  };
+  const candidates = [
+    {
+      symbol: "BTCUSDT",
+      decision: { allow: true, quoteAmount: 100, executionPlan: {} },
+      marketSnapshot: {},
+      score: { probability: 0.62 },
+      rawFeatures: {},
+      strategySummary: {},
+      newsSummary: {},
+      regimeSummary: {},
+      metaSummary: {}
+    },
+    {
+      symbol: "ETHUSDT",
+      decision: { allow: true, quoteAmount: 100, executionPlan: {} },
+      marketSnapshot: {},
+      score: { probability: 0.6 },
+      rawFeatures: {},
+      strategySummary: {},
+      newsSummary: {},
+      regimeSummary: {},
+      metaSummary: {}
+    }
+  ];
+  const attempt = await bot.openBestCandidate(candidates);
+  assert.equal(attempt.status, "runtime_blocked");
+  assert.deepEqual(attempt.attemptedSymbols, ["BTCUSDT"]);
+  assert.deepEqual(attempted, ["BTCUSDT"]);
+  assert.equal(bot.journal.trades.length, 1);
+  assert.ok(events.some((event) => event.type === "entry_recovered_flat"));
 });
 
 await runCheck("pair health monitor quarantines noisy symbols", async () => {

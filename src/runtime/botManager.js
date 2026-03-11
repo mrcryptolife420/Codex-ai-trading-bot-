@@ -82,6 +82,26 @@ export class BotManager {
       return null;
     }
     if (action === "switch_to_paper" && this.config?.botMode === "live") {
+      const openPositions = this.bot?.runtime?.openPositions || [];
+      if (openPositions.length) {
+        const message = `Self-heal requested paper fallback while ${openPositions.length} live position(s) remain open; stopping manager instead.`;
+        this.logger?.error?.("Self-heal paper fallback blocked by live positions", {
+          reason: selfHeal.reason,
+          openPositions: openPositions.map((position) => position.symbol)
+        });
+        this.lastError = {
+          at: nowIso(),
+          message,
+          stack: null
+        };
+        this.stopRequested = true;
+        this.stopReason = "self_heal_live_positions_open";
+        if (this.runState !== "stopped") {
+          this.runState = "stopping";
+        }
+        this.cancelDelay();
+        return "paper_switch_blocked_open_positions";
+      }
       this.logger.warn("Self-heal switching bot to paper mode", { reason: selfHeal.reason });
       await updateEnvFile(this.config.envPath, { BOT_MODE: "paper" });
       await this.reinitializeBot();
@@ -97,7 +117,9 @@ export class BotManager {
       try {
         const result = await this.bot.runCycle();
         await this.applySelfHealManagerAction(result.selfHeal);
-        this.lastError = null;
+        if (this.stopReason !== "self_heal_live_positions_open") {
+          this.lastError = null;
+        }
       } catch (error) {
         this.lastError = summarizeError(error);
         this.logger.error("Managed cycle failed", {

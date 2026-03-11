@@ -23,6 +23,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parsePayload(text) {
+  if (!text || !`${text}`.trim()) {
+    return null;
+  }
+  return JSON.parse(text);
+}
+
+function buildResponseError(response, payload, rawBody, fallbackMessage) {
+  const error = new Error(payload?.msg || fallbackMessage || `Binance request failed with ${response.status}`);
+  error.status = response.status;
+  error.payload = payload;
+  error.rawBody = rawBody;
+  return error;
+}
+
 function average(values = []) {
   if (!values.length) {
     return 0;
@@ -154,12 +169,18 @@ export class BinanceClient {
         });
 
         const text = await response.text();
-        const responsePayload = text ? JSON.parse(text) : null;
+        let responsePayload = null;
+        try {
+          responsePayload = parsePayload(text);
+        } catch (parseError) {
+          if (response.ok) {
+            parseError.status = response.status;
+            parseError.rawBody = text;
+            throw parseError;
+          }
+        }
         if (!response.ok) {
-          const error = new Error(responsePayload?.msg || `Binance request failed with ${response.status}`);
-          error.status = response.status;
-          error.payload = responsePayload;
-          throw error;
+          throw buildResponseError(response, responsePayload, text, `Binance request failed with ${response.status}`);
         }
         return responsePayload;
       } catch (error) {
@@ -194,12 +215,18 @@ export class BinanceClient {
           signal: AbortSignal.timeout(10_000)
         });
         const text = await response.text();
-        const payload = text ? JSON.parse(text) : null;
+        let payload = null;
+        try {
+          payload = parsePayload(text);
+        } catch (parseError) {
+          if (response.ok) {
+            parseError.status = response.status;
+            parseError.rawBody = text;
+            throw parseError;
+          }
+        }
         if (!response.ok) {
-          const error = new Error(payload?.msg || `Binance request failed with ${response.status}`);
-          error.status = response.status;
-          error.payload = payload;
-          throw error;
+          throw buildResponseError(response, payload, text, `Binance request failed with ${response.status}`);
         }
         return payload;
       } catch (error) {
@@ -227,19 +254,42 @@ export class BinanceClient {
   }
 
   async apiKeyRequest(method, pathname, params = {}) {
-    const queryString = createQueryString(params);
-    const url = `${this.baseUrl}${pathname}${queryString ? `?${queryString}` : ""}`;
-    const response = await this.fetchImpl(url, {
-      method,
-      headers: buildUserDataHeaders(this.apiKey),
-      signal: AbortSignal.timeout(10_000)
-    });
-    const text = await response.text();
-    const payload = text ? JSON.parse(text) : {};
-    if (!response.ok) {
-      throw new Error(payload?.msg || `Binance api-key request failed with ${response.status}`);
+    let lastError = null;
+    for (let attempt = 1; attempt <= this.maxRetries; attempt += 1) {
+      try {
+        const queryString = createQueryString(params);
+        const url = `${this.baseUrl}${pathname}${queryString ? `?${queryString}` : ""}`;
+        const response = await this.fetchImpl(url, {
+          method,
+          headers: buildUserDataHeaders(this.apiKey),
+          signal: AbortSignal.timeout(10_000)
+        });
+        const text = await response.text();
+        let payload = {};
+        try {
+          payload = parsePayload(text) || {};
+        } catch (parseError) {
+          if (response.ok) {
+            parseError.status = response.status;
+            parseError.rawBody = text;
+            throw parseError;
+          }
+          payload = {};
+        }
+        if (!response.ok) {
+          throw buildResponseError(response, payload, text, `Binance api-key request failed with ${response.status}`);
+        }
+        return payload;
+      } catch (error) {
+        lastError = error;
+        const shouldRetry = attempt < this.maxRetries && (isRetriableStatus(error.status || 0) || isRetriableNetworkError(error));
+        if (!shouldRetry) {
+          break;
+        }
+        await sleep(200 * attempt);
+      }
     }
-    return payload;
+    throw lastError;
   }
 
   async ping() {

@@ -87,6 +87,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function toEventTimeMs(value) {
+  if (value == null) {
+    return Number.NaN;
+  }
+  if (typeof value === "number") {
+    return value;
+  }
+  return new Date(value).getTime();
+}
+
 function summarizeExecutionEvents(events = []) {
   const tradeEvents = events.filter((event) => event.executionType === "TRADE");
   const makerQty = tradeEvents.reduce((total, event) => total + (event.maker ? event.lastExecutedQty : 0), 0);
@@ -154,6 +164,39 @@ export class StreamCoordinator {
       liquidations: createRollingStats(80),
       userEvents: createRollingStats(120)
     };
+  }
+
+  getBookTickerMaxAgeMs() {
+    return Math.max(250, Number(this.config.maxDepthEventAgeMs || 15_000));
+  }
+
+  buildLocalBookTicker(localBook) {
+    const eventTimeMs = toEventTimeMs(localBook?.lastEventAt);
+    if (!localBook?.bestBid || !localBook?.bestAsk || !Number.isFinite(eventTimeMs) || (Date.now() - eventTimeMs) > this.getBookTickerMaxAgeMs()) {
+      return null;
+    }
+    return {
+      bid: localBook.bestBid,
+      ask: localBook.bestAsk,
+      bidQty: localBook.bids?.[0]?.[1] || 0,
+      askQty: localBook.asks?.[0]?.[1] || 0,
+      mid: localBook.mid,
+      eventTime: localBook.lastEventAt
+    };
+  }
+
+  getFreshBookTicker(bookTicker, localBook) {
+    const eventTimeMs = toEventTimeMs(bookTicker?.eventTime);
+    if (bookTicker?.bid && bookTicker?.ask && Number.isFinite(eventTimeMs) && (Date.now() - eventTimeMs) <= this.getBookTickerMaxAgeMs()) {
+      return bookTicker;
+    }
+    return this.buildLocalBookTicker(localBook);
+  }
+
+  clearPublicBookTickers() {
+    for (const bucket of Object.values(this.state.symbols || {})) {
+      bucket.bookTicker = null;
+    }
   }
 
   setWatchlist(symbols = []) {
@@ -227,17 +270,11 @@ export class StreamCoordinator {
     const bucket = this.state.symbols[symbol];
     const localBook = this.orderBook.getSnapshot(symbol);
     if (!bucket) {
+      const latestBookTicker = this.buildLocalBookTicker(localBook);
       return {
         tradeFlowImbalance: 0,
         microTrend: 0,
-        latestBookTicker: localBook.bestBid && localBook.bestAsk ? {
-          bid: localBook.bestBid,
-          ask: localBook.bestAsk,
-          bidQty: localBook.bids?.[0]?.[1] || 0,
-          askQty: localBook.asks?.[0]?.[1] || 0,
-          mid: localBook.mid,
-          eventTime: localBook.lastEventAt
-        } : null,
+        latestBookTicker,
         recentTradeCount: 0,
         liquidationCount: 0,
         liquidationNotional: 0,
@@ -249,27 +286,17 @@ export class StreamCoordinator {
     }
 
     const trades = bucket.trades.items;
+    const latestBookTicker = this.getFreshBookTicker(bucket.bookTicker, localBook);
     const buyVolume = trades.reduce((total, trade) => total + (trade.isBuyerMaker ? 0 : trade.quantity), 0);
     const sellVolume = trades.reduce((total, trade) => total + (trade.isBuyerMaker ? trade.quantity : 0), 0);
     const totalVolume = buyVolume + sellVolume;
-    const firstPrice = trades[0]?.price || bucket.bookTicker?.mid || localBook.mid || 0;
-    const lastPrice = trades.at(-1)?.price || bucket.bookTicker?.mid || localBook.mid || 0;
+    const firstPrice = trades[0]?.price || latestBookTicker?.mid || 0;
+    const lastPrice = trades.at(-1)?.price || latestBookTicker?.mid || 0;
 
     const liquidations = bucket.liquidations.items;
     const bullishLiquidations = liquidations.reduce((total, item) => total + (item.side === "BUY" ? item.notional : 0), 0);
     const bearishLiquidations = liquidations.reduce((total, item) => total + (item.side === "SELL" ? item.notional : 0), 0);
     const liquidationTotal = bullishLiquidations + bearishLiquidations;
-
-    const latestBookTicker = bucket.bookTicker || (localBook.bestBid && localBook.bestAsk
-      ? {
-          bid: localBook.bestBid,
-          ask: localBook.bestAsk,
-          bidQty: localBook.bids?.[0]?.[1] || 0,
-          askQty: localBook.asks?.[0]?.[1] || 0,
-          mid: localBook.mid,
-          eventTime: localBook.lastEventAt
-        }
-      : null);
 
     return {
       tradeFlowImbalance: totalVolume ? (buyVolume - sellVolume) / totalVolume : 0,
@@ -411,9 +438,11 @@ export class StreamCoordinator {
     });
     socket.addEventListener("close", () => {
       this.state.publicStreamConnected = false;
+      this.clearPublicBookTickers();
     });
     socket.addEventListener("error", (error) => {
       this.state.lastError = error.message || "public_stream_error";
+      this.clearPublicBookTickers();
     });
     this.publicSocket = socket;
   }
