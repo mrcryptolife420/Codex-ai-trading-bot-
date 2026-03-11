@@ -245,6 +245,16 @@ const DEFAULTS = {
   divergenceAlertSlipGapBps: 3.5,
   offlineTrainerMinReadiness: 0.34,
   modelPromotionProbationLiveTrades: 4,
+  exchangeTruthFreezeMismatchCount: 2,
+  positionFailureProtectOnlyCount: 2,
+  positionFailureManualReviewCount: 4,
+  shadowTradeDecisionLimit: 3,
+  thresholdRelaxStep: 0.012,
+  thresholdTightenStep: 0.01,
+  thresholdTuningMaxRecommendations: 5,
+  featureDecayMinTrades: 8,
+  featureDecayWeakScore: 0.18,
+  featureDecayBlockedScore: 0.1,
   counterfactualLookaheadMinutes: 90,
   counterfactualQueueLimit: 40,
   researchPromotionMinSharpe: 0.35,
@@ -293,6 +303,9 @@ const DEFAULTS = {
   stateBackupIntervalMinutes: 30,
   stateBackupRetention: 6,
   serviceRestartDelaySeconds: 8,
+  serviceRestartBackoffMultiplier: 1.8,
+  serviceRestartMaxDelaySeconds: 180,
+  serviceStatusFilename: "service-status.json",
   serviceMaxRestartsPerHour: 20,
   gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
   liveTradingAcknowledged: "",
@@ -607,6 +620,16 @@ export async function loadConfig(projectRoot = process.cwd()) {
     divergenceAlertSlipGapBps: parseNumber(env.DIVERGENCE_ALERT_SLIP_GAP_BPS, DEFAULTS.divergenceAlertSlipGapBps),
     offlineTrainerMinReadiness: parseNumber(env.OFFLINE_TRAINER_MIN_READINESS, DEFAULTS.offlineTrainerMinReadiness),
     modelPromotionProbationLiveTrades: parseNumber(env.MODEL_PROMOTION_PROBATION_LIVE_TRADES, DEFAULTS.modelPromotionProbationLiveTrades),
+    exchangeTruthFreezeMismatchCount: parseNumber(env.EXCHANGE_TRUTH_FREEZE_MISMATCH_COUNT, DEFAULTS.exchangeTruthFreezeMismatchCount),
+    positionFailureProtectOnlyCount: parseNumber(env.POSITION_FAILURE_PROTECT_ONLY_COUNT, DEFAULTS.positionFailureProtectOnlyCount),
+    positionFailureManualReviewCount: parseNumber(env.POSITION_FAILURE_MANUAL_REVIEW_COUNT, DEFAULTS.positionFailureManualReviewCount),
+    shadowTradeDecisionLimit: parseNumber(env.SHADOW_TRADE_DECISION_LIMIT, DEFAULTS.shadowTradeDecisionLimit),
+    thresholdRelaxStep: parseNumber(env.THRESHOLD_RELAX_STEP, DEFAULTS.thresholdRelaxStep),
+    thresholdTightenStep: parseNumber(env.THRESHOLD_TIGHTEN_STEP, DEFAULTS.thresholdTightenStep),
+    thresholdTuningMaxRecommendations: parseNumber(env.THRESHOLD_TUNING_MAX_RECOMMENDATIONS, DEFAULTS.thresholdTuningMaxRecommendations),
+    featureDecayMinTrades: parseNumber(env.FEATURE_DECAY_MIN_TRADES, DEFAULTS.featureDecayMinTrades),
+    featureDecayWeakScore: parseNumber(env.FEATURE_DECAY_WEAK_SCORE, DEFAULTS.featureDecayWeakScore),
+    featureDecayBlockedScore: parseNumber(env.FEATURE_DECAY_BLOCKED_SCORE, DEFAULTS.featureDecayBlockedScore),
     counterfactualLookaheadMinutes: parseNumber(env.COUNTERFACTUAL_LOOKAHEAD_MINUTES, DEFAULTS.counterfactualLookaheadMinutes),
     counterfactualQueueLimit: parseNumber(env.COUNTERFACTUAL_QUEUE_LIMIT, DEFAULTS.counterfactualQueueLimit),
     researchPromotionMinSharpe: parseNumber(env.RESEARCH_PROMOTION_MIN_SHARPE, DEFAULTS.researchPromotionMinSharpe),
@@ -657,6 +680,9 @@ export async function loadConfig(projectRoot = process.cwd()) {
     stateBackupIntervalMinutes: parseNumber(env.STATE_BACKUP_INTERVAL_MINUTES, DEFAULTS.stateBackupIntervalMinutes),
     stateBackupRetention: parseNumber(env.STATE_BACKUP_RETENTION, DEFAULTS.stateBackupRetention),
     serviceRestartDelaySeconds: parseNumber(env.SERVICE_RESTART_DELAY_SECONDS, DEFAULTS.serviceRestartDelaySeconds),
+    serviceRestartBackoffMultiplier: parseNumber(env.SERVICE_RESTART_BACKOFF_MULTIPLIER, DEFAULTS.serviceRestartBackoffMultiplier),
+    serviceRestartMaxDelaySeconds: parseNumber(env.SERVICE_RESTART_MAX_DELAY_SECONDS, DEFAULTS.serviceRestartMaxDelaySeconds),
+    serviceStatusFilename: env.SERVICE_STATUS_FILENAME || DEFAULTS.serviceStatusFilename,
     serviceMaxRestartsPerHour: parseNumber(env.SERVICE_MAX_RESTARTS_PER_HOUR, DEFAULTS.serviceMaxRestartsPerHour),
     gitShortClonePath: env.GIT_SHORT_CLONE_PATH || DEFAULTS.gitShortClonePath,
     liveTradingAcknowledged: env.LIVE_TRADING_ACKNOWLEDGED || DEFAULTS.liveTradingAcknowledged,
@@ -672,7 +698,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

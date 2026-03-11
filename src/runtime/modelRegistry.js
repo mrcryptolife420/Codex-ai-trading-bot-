@@ -100,6 +100,22 @@ export class ModelRegistry {
     const regimeScorecards = [...(offlineTrainer?.regimeScorecards || [])];
     const matureRegimeScorecards = regimeScorecards.filter((item) => (item.tradeCount || 0) >= Math.max(2, (this.config.strategyAttributionMinTrades || 6) - 3));
     const strongRegimeScorecards = matureRegimeScorecards.filter((item) => (item.governanceScore || 0) >= 0.52);
+    const calibrationGovernance = offlineTrainer?.calibrationGovernance || {};
+    const exitLearning = offlineTrainer?.exitLearning || {};
+    const featureDecay = offlineTrainer?.featureDecay || {};
+    const thresholdPolicy = offlineTrainer?.thresholdPolicy || {};
+    const regimePolicies = matureRegimeScorecards
+      .map((item) => ({
+        id: item.id,
+        governanceScore: num(item.governanceScore || 0, 4),
+        tradeCount: item.tradeCount || 0,
+        status: (item.governanceScore || 0) >= 0.56
+          ? "ready"
+          : (item.governanceScore || 0) >= 0.42
+            ? "observe"
+            : "cooldown"
+      }))
+      .slice(0, 6);
     const readyRegimes = strongRegimeScorecards.map((item) => item.id).slice(0, 4);
     const observeRegimes = matureRegimeScorecards
       .filter((item) => !readyRegimes.includes(item.id))
@@ -140,6 +156,15 @@ export class ModelRegistry {
     if ((offlineTrainer?.readinessScore || 0) < this.config.offlineTrainerMinReadiness) {
       blockerReasons.push("offline_trainer_not_ready");
     }
+    if ((calibrationGovernance?.status || "") === "blocked") {
+      blockerReasons.push("calibration_governance_not_ready");
+    }
+    if ((exitLearning?.status || "") === "blocked") {
+      blockerReasons.push("exit_learning_not_ready");
+    }
+    if ((featureDecay?.status || "") === "blocked") {
+      blockerReasons.push("feature_decay_too_high");
+    }
     if (!matureStrategyScorecards.length) {
       blockerReasons.push("strategy_scorecards_not_ready");
     } else if (strongStrategyScorecards.length / Math.max(matureStrategyScorecards.length, 1) < 0.34) {
@@ -177,8 +202,14 @@ export class ModelRegistry {
       strongStrategyScorecardCount: strongStrategyScorecards.length,
       regimeScorecardCount: matureRegimeScorecards.length,
       strongRegimeScorecardCount: strongRegimeScorecards.length,
+      calibrationGovernanceStatus: calibrationGovernance.status || "warmup",
+      exitLearningStatus: exitLearning.status || "warmup",
+      featureDecayStatus: featureDecay.status || "warmup",
+      thresholdPolicyStatus: thresholdPolicy.status || "stable",
+      thresholdRecommendationCount: (thresholdPolicy.recommendations || []).length,
       readyRegimes,
       observeRegimes,
+      regimePolicies,
       blockerReasons
     };
   }
@@ -235,6 +266,10 @@ export class ModelRegistry {
         promotionPolicy.regimeScorecardCount
           ? `${promotionPolicy.strongRegimeScorecardCount}/${promotionPolicy.regimeScorecardCount} regimes staan op groen (${(promotionPolicy.readyRegimes || []).join(", ") || "geen"}).`
           : "Nog geen volwassen regime scorecards beschikbaar.",
+        `Calibration ${promotionPolicy.calibrationGovernanceStatus || "warmup"} | exits ${promotionPolicy.exitLearningStatus || "warmup"} | feature decay ${promotionPolicy.featureDecayStatus || "warmup"}.`,
+        (promotionPolicy.thresholdRecommendationCount || 0)
+          ? `${promotionPolicy.thresholdRecommendationCount} threshold-aanbevelingen wachten op review.`
+          : "Geen open threshold-aanbevelingen in governance.",
         promotionHint
           ? `${promotionHint.symbol} scoort als research-promotiekandidaat.`
           : "Nog geen research-promotiekandidaat in de registry."

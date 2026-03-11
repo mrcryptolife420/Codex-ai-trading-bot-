@@ -742,6 +742,7 @@ function renderPositions(snapshot) {
   elements.positionsList.innerHTML = positions
     .map((position, index) => {
       const rationale = position.entryRationale || {};
+      const lifecycle = position.lifecycle || {};
       const exitAi = position.latestExitIntelligence || {};
       const strategyLabel = rationale.strategy?.strategyLabel || position.strategyAtEntry || rationale.setupStyle || "-";
       const keyReasons = collectHighlights([
@@ -760,8 +761,8 @@ function renderPositions(snapshot) {
         <details class="position-card fold-card compact-fold"${detailAttrs(`position:${position.symbol}`, false)}>
           <summary class="fold-summary">
             <div class="fold-header">
-              <div>
-                <div class="reason-pill">Open</div>
+                <div>
+                <div class="reason-pill">${escapeHtml(normalizeReasonLabel(lifecycle.state || "open"))}</div>
                 <h3>${escapeHtml(position.symbol)}</h3>
                 <p class="meta">${escapeHtml(strategyLabel)} | ${escapeHtml(position.regimeAtEntry || "-")} | ${formatNumber(position.ageMinutes, 1)} min</p>
                 <p class="decision-blurb">${escapeHtml(truncateText(rationale.summary || "Positie actief.", 132))}</p>
@@ -782,6 +783,7 @@ function renderPositions(snapshot) {
             </div>
             <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList(keyReasons, "Geen kernreden")}</div></div>
             <div class="note-line"><span class="kicker">Nu opletten</span><div class="tag-list">${renderTagList(riskReasons, "Geen directe waarschuwingen")}</div></div>
+            <div class="note-line"><span class="kicker">Lifecycle</span><div class="tag-list">${renderTagList([lifecycle.state, lifecycle.operatorMode !== "normal" ? lifecycle.operatorMode : "", lifecycle.manualReviewRequired ? "manual_review" : "", lifecycle.reconcileRequired ? "reconcile_required" : "", lifecycle.managementFailureCount ? `${lifecycle.managementFailureCount} beheerfouten` : ""].filter(Boolean), "Normale runtime-state")}</div></div>
             <div class="note-line"><span class="kicker">Nieuws</span><div class="tag-list">${renderTagList(headlines, "Geen recente headlines")}</div></div>
           </div>
         </details>
@@ -1175,6 +1177,8 @@ function renderTradeReplays(snapshot) {
                 </div>
                 <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList([trade.whyOpened].filter(Boolean), "Geen entry-uitleg")}</div></div>
                 <div class="note-line"><span class="kicker">Waarom dicht</span><div class="tag-list">${renderTagList([trade.whyClosed].filter(Boolean), "Geen exit-reden")}</div></div>
+                <div class="note-line"><span class="kicker">Veto chain</span><div class="tag-list">${renderTagList((trade.vetoChain || []).slice(0, 3), "Geen blockers bij entry")}</div></div>
+                <div class="note-line"><span class="kicker">Alt exits</span><div class="tag-list">${renderTagList((trade.alternateExits || []).map((item) => `${normalizeReasonLabel(item.label)} ${formatNumber(item.price || 0, 6)}`).slice(0, 3), "Geen alternate exits")}</div></div>
                 <div class="note-line"><span class="kicker">Nieuws</span><div class="tag-list">${renderTagList((trade.headlines || []).slice(0, 2), "Geen nieuws-overlay")}</div></div>
                 ${renderDetailSection("Timeline", "Open, schaal uit en sluit", renderTimelineRows(trade.timeline || [], "Nog geen replay-timeline."), false, `replay-timeline:${trade.symbol || "trade"}:${trade.entryAt || index}`)}
               </div>
@@ -1345,20 +1349,47 @@ function renderOperations(snapshot) {
   const backups = snapshot.dashboard.safety?.backups || {};
   const recovery = snapshot.dashboard.safety?.recovery || {};
   const modelRegistry = snapshot.dashboard.ai?.modelRegistry || {};
+  const ops = snapshot.dashboard.ops || {};
+  const exchangeTruth = snapshot.dashboard.safety?.exchangeTruth || {};
+  const orderLifecycle = snapshot.dashboard.safety?.orderLifecycle || {};
+  const service = ops.service || {};
+  const incidentLead = (ops.incidentTimeline || [])[0] || {};
+  const leadRunbook = (ops.runbooks || [])[0] || {};
   elements.opsSummary.innerHTML = [
     insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0}`),
     insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
     insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.latestSnapshotAt ? `laatst ${formatDate(modelRegistry.latestSnapshotAt)}` : "Nog geen modelsnapshot"),
-    insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive")
+    insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive"),
+    insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
+    insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
+    insightCard("Service", service.watchdogStatus || "idle", service.lastHeartbeatAt ? `heartbeat ${formatDate(service.lastHeartbeatAt)}` : "Nog geen heartbeat", healthTone(service.watchdogStatus || "idle")),
+    insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
   ].join("");
 
   const notes = [
+    ...(ops.performanceChange?.notes || []),
+    ...(ops.runbooks || []).map((item) => `${item.title}: ${item.action}`),
+    ...(exchangeTruth.notes || []),
+    ...(ops.shadowTrading?.notes || []),
     ...(modelRegistry.notes || []),
     backups.lastReason ? `Laatste backup reden: ${backups.lastReason}` : "",
-    recorder.rootDir ? `Feature store: ${recorder.rootDir}` : ""
+    recorder.rootDir ? `Feature store: ${recorder.rootDir}` : "",
+    service.statusFile ? `Service statusfile: ${service.statusFile}` : ""
   ].filter(Boolean);
-  elements.opsList.innerHTML = notes.length
-    ? notes.map((note) => `<div class="event-row"><div>${escapeHtml(note)}</div></div>`).join("")
+  elements.opsList.innerHTML = notes.length || (ops.incidentTimeline || []).length
+    ? [
+        ...(ops.incidentTimeline || []).slice(0, 6).map((item) => `
+          <div class="event-row">
+            <div>
+              <strong>${escapeHtml(normalizeReasonLabel(item.type || "incident"))}</strong>
+              <div class="meta">${item.symbol ? `${escapeHtml(item.symbol)} | ` : ""}${item.at ? formatDate(item.at) : "-"}</div>
+              <div>${escapeHtml(item.detail || "Geen extra detail")}</div>
+            </div>
+            <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.severity || "neutral")}</div>
+          </div>
+        `),
+        ...notes.map((note) => `<div class="event-row"><div>${escapeHtml(note)}</div></div>`)
+      ].join("")
     : `<div class="empty">Nog geen operations-notities.</div>`;
 }
 function renderGovernance(snapshot) {
@@ -1370,11 +1401,19 @@ function renderGovernance(snapshot) {
   const offlineTrainer = snapshot.dashboard.offlineTrainer || {};
   const topBlocker = (offlineTrainer.blockerScorecards || [])[0] || {};
   const topRegime = (offlineTrainer.regimeScorecards || [])[0] || {};
+  const thresholdPolicy = offlineTrainer.thresholdPolicy || {};
+  const topThresholdRecommendation = (thresholdPolicy.recommendations || [])[0] || {};
+  const exitLearning = offlineTrainer.exitLearning || {};
+  const topExitReason = (offlineTrainer.exitScorecards || [])[0] || {};
+  const featureDecay = offlineTrainer.featureDecay || {};
   elements.governanceSummary.innerHTML = [
     insightCard("Research runs", `${registry.runCount || 0}`, registry.lastRunAt ? `laatst ${formatDate(registry.lastRunAt)}` : "Nog geen run"),
     insightCard("Promo kandidaten", `${(governance.promotionCandidates || []).length}`, leader.symbol ? `${leader.symbol} leidt` : "Nog geen kandidaat", (governance.promotionCandidates || []).length ? "positive" : "neutral"),
     insightCard("Regimes", `${promotionPolicy.strongRegimeScorecardCount || 0}/${promotionPolicy.regimeScorecardCount || 0}`, (promotionPolicy.readyRegimes || [])[0] ? `${promotionPolicy.readyRegimes[0]} klaar` : "Nog geen sterk regime"),
-    insightCard("Veto feedback", `${offlineTrainer.vetoFeedback?.badVetoCount || 0}/${offlineTrainer.vetoFeedback?.goodVetoCount || 0}`, topBlocker.id ? `${normalizeReasonLabel(topBlocker.id)} ${topBlocker.status || "observe"}` : "Nog geen blocker-patroon")
+    insightCard("Veto feedback", `${offlineTrainer.vetoFeedback?.badVetoCount || 0}/${offlineTrainer.vetoFeedback?.goodVetoCount || 0}`, topBlocker.id ? `${normalizeReasonLabel(topBlocker.id)} ${topBlocker.status || "observe"}` : "Nog geen blocker-patroon"),
+    insightCard("Threshold tuning", `${(thresholdPolicy.recommendations || []).length}`, topThresholdRecommendation.id ? `${normalizeReasonLabel(topThresholdRecommendation.id)} ${topThresholdRecommendation.action || "observe"}` : "Geen threshold-aanpassing"),
+    insightCard("Exit learning", `${exitLearning.lateExitCount || 0}/${exitLearning.prematureExitCount || 0}`, topExitReason.id ? `${normalizeReasonLabel(topExitReason.id)} ${topExitReason.status || "observe"}` : "Nog geen exit-leider"),
+    insightCard("Feature decay", `${featureDecay.degradedFeatureCount || 0}/${featureDecay.weakFeatureCount || 0}`, featureDecay.weakestFeature ? `${normalizeReasonLabel(featureDecay.weakestFeature)} zwakst` : "Nog geen decay-signaal", healthTone(featureDecay.status))
   ].join("");
 
   const advisoryCards = [
@@ -1427,6 +1466,58 @@ function renderGovernance(snapshot) {
           <div class="mini-stat"><span class="kicker">Winrate</span><strong>${formatPct(topRegime.winRate || 0, 1)}</strong></div>
           <div class="mini-stat"><span class="kicker">PnL</span><strong class="${toneClass(topRegime.realizedPnl || 0)}">${formatMoney(topRegime.realizedPnl || 0)}</strong></div>
           <div class="mini-stat"><span class="kicker">Gov</span><strong>${formatPct(topRegime.governanceScore || 0, 1)}</strong></div>
+        </div>
+      </article>
+    ` : "",
+    topThresholdRecommendation.id ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">threshold tuning</div>
+            <h3>${escapeHtml(normalizeReasonLabel(topThresholdRecommendation.id))}</h3>
+          </div>
+          <div class="pill ${healthTone(topThresholdRecommendation.action)}">${escapeHtml(topThresholdRecommendation.action || "observe")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Shift</span><strong>${formatNumber(topThresholdRecommendation.adjustment || 0, 4)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Confidence</span><strong>${formatPct(topThresholdRecommendation.confidence || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Samples</span><strong>${topThresholdRecommendation.total || 0}</strong></div>
+          <div class="mini-stat"><span class="kicker">Scope</span><strong>${(topThresholdRecommendation.affectedStrategies || []).length}</strong><div class="meta">${escapeHtml(((topThresholdRecommendation.affectedRegimes || []).slice(0, 2).join(", ")) || "regimes")}</div></div>
+        </div>
+        <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList([topThresholdRecommendation.rationale].filter(Boolean), "Geen extra context")}</div></div>
+      </article>
+    ` : "",
+    topExitReason.id ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">exit learning</div>
+            <h3>${escapeHtml(normalizeReasonLabel(topExitReason.id))}</h3>
+          </div>
+          <div class="pill ${healthTone(topExitReason.status)}">${escapeHtml(topExitReason.status || "observe")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Exit score</span><strong>${formatPct(topExitReason.averageExitScore || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Capture</span><strong>${formatPct(topExitReason.averageCapture || 0, 1)}</strong></div>
+          <div class="mini-stat"><span class="kicker">Late exits</span><strong>${topExitReason.lateExitCount || 0}</strong></div>
+          <div class="mini-stat"><span class="kicker">Te vroeg</span><strong>${topExitReason.prematureExitCount || 0}</strong></div>
+        </div>
+      </article>
+    ` : "",
+    featureDecay.weakestFeature ? `
+      <article class="registry-card">
+        <div class="section-head compact">
+          <div>
+            <div class="kicker">feature decay</div>
+            <h3>${escapeHtml(normalizeReasonLabel(featureDecay.weakestFeature))}</h3>
+          </div>
+          <div class="pill ${healthTone(featureDecay.status)}">${escapeHtml(featureDecay.status || "watch")}</div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat"><span class="kicker">Tracked</span><strong>${featureDecay.trackedFeatureCount || 0}</strong></div>
+          <div class="mini-stat"><span class="kicker">Weak</span><strong>${featureDecay.weakFeatureCount || 0}</strong></div>
+          <div class="mini-stat"><span class="kicker">Decayed</span><strong>${featureDecay.degradedFeatureCount || 0}</strong></div>
+          <div class="mini-stat"><span class="kicker">Gem.</span><strong>${formatPct(featureDecay.averagePredictiveScore || 0, 1)}</strong></div>
         </div>
       </article>
     ` : ""

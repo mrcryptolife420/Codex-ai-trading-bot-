@@ -172,6 +172,12 @@ export class LiveBroker {
     position.protectiveOrders = orderList.orders || [];
     position.protectiveOrderStatus = orderList.listStatusType || orderList.listOrderStatus || "NEW";
     position.protectiveOrderPlacedAt = nowIso();
+    position.reconcileRequired = false;
+    position.lifecycleState = position.manualReviewRequired
+      ? "manual_review"
+      : position.operatorMode === "protect_only"
+        ? "protect_only"
+        : "protected";
     return orderList;
   }
 
@@ -188,6 +194,13 @@ export class LiveBroker {
     position.protectiveOrders = [];
     position.protectiveOrderStatus = status;
     position.protectiveOrderPlacedAt = null;
+    if (position.quantity > 0) {
+      position.lifecycleState = position.manualReviewRequired
+        ? "manual_review"
+        : position.operatorMode === "protect_only"
+          ? "protect_only"
+          : "protection_pending";
+    }
   }
 
   buildOrderRequestMeta(plan, rules, responseType = "RESULT") {
@@ -490,7 +503,12 @@ export class LiveBroker {
       scaleOutTrailOffsetPct: decision.scaleOutPlan?.trailOffsetPct || this.config.scaleOutTrailOffsetPct,
       scaleOutCompletedAt: null,
       scaleOutCount: 0,
-      brokerMode: "live"
+      brokerMode: "live",
+      lifecycleState: this.config.enableExchangeProtection ? "protection_pending" : "open",
+      operatorMode: "normal",
+      managementFailureCount: 0,
+      manualReviewRequired: false,
+      reconcileRequired: false
     };
   }
 
@@ -655,6 +673,8 @@ export class LiveBroker {
         if (flattenError?.preventFurtherEntries) {
           throw flattenError;
         }
+        position.reconcileRequired = true;
+        position.lifecycleState = "reconcile_required";
         runtime.openPositions.push(position);
         const exposureError = new Error(`Live entry for ${symbol} opened exchange exposure and remains under runtime management after failure: ${error.message}. Recovery failed: ${flattenError.message}`);
         exposureError.preventFurtherEntries = true;
@@ -820,6 +840,8 @@ export class LiveBroker {
         try {
           await this.ensureProtectiveOrder(position, rules);
         } catch (error) {
+          position.reconcileRequired = true;
+          position.lifecycleState = "reconcile_required";
           warnings.push({ symbol: position.symbol, issue: "protective_order_rebuild_failed", error: error.message });
         }
       }
@@ -866,21 +888,76 @@ export class LiveBroker {
         committeeDecision: null,
         executionPolicyDecision: null,
         brokerMode: "live",
-        recovered: true
+        recovered: true,
+        lifecycleState: this.config.enableExchangeProtection ? "protection_pending" : "recovered_open",
+        operatorMode: "normal",
+        managementFailureCount: 0,
+        manualReviewRequired: false,
+        reconcileRequired: false
       };
       runtime.openPositions.push(recoveredPosition);
       recoveredPositions.push(recoveredPosition);
       try {
         await this.ensureProtectiveOrder(recoveredPosition, rules);
       } catch (error) {
+        recoveredPosition.reconcileRequired = true;
+        recoveredPosition.lifecycleState = "reconcile_required";
         warnings.push({ symbol, issue: "protective_order_for_recovered_position_failed", error: error.message });
       }
     }
+
+    const runtimeSymbols = new Set((runtime.openPositions || []).map((position) => position.symbol));
+    const exchangeSymbols = Object.entries(this.symbolRules)
+      .filter(([, rules]) => (assetMap[rules.baseAsset]?.total || 0) >= Math.max(rules.minQty || 0, 0))
+      .map(([symbol]) => symbol);
+    const orphanedSymbols = exchangeSymbols.filter((symbol) => !runtimeSymbols.has(symbol));
+    const missingRuntimeSymbols = warnings
+      .filter((warning) => warning.issue === "runtime_position_missing_on_exchange")
+      .map((warning) => warning.symbol)
+      .filter(Boolean);
+    const mismatchCount = [...new Set([
+      ...orphanedSymbols,
+      ...missingRuntimeSymbols,
+      ...warnings
+        .filter((warning) => [
+          "protective_order_rebuild_failed",
+          "protective_order_for_recovered_position_failed",
+          "unmanaged_balance_detected"
+        ].includes(warning.issue))
+        .map((warning) => warning.symbol)
+        .filter(Boolean)
+    ])].length;
+    const freezeEntries = mismatchCount >= (this.config.exchangeTruthFreezeMismatchCount || 2);
+    const truthAt = nowIso();
+    const exchangeTruth = {
+      status: freezeEntries ? "blocked" : mismatchCount ? "degraded" : "healthy",
+      freezeEntries,
+      mismatchCount,
+      runtimePositionCount: runtime.openPositions.length,
+      exchangePositionCount: exchangeSymbols.length,
+      lastReconciledAt: truthAt,
+      lastHealthyAt: mismatchCount === 0 ? truthAt : runtime.exchangeTruth?.lastHealthyAt || null,
+      orphanedSymbols,
+      missingRuntimeSymbols,
+      warnings: warnings.slice(0, 8),
+      notes: [
+        mismatchCount
+          ? `${mismatchCount} exchange/runtime mismatches vragen operator-aandacht.`
+          : "Exchange en runtime inventory zijn in sync.",
+        orphanedSymbols.length
+          ? `Onbeheerde exchange-symbolen: ${orphanedSymbols.join(", ")}.`
+          : "Geen onbeheerde exchange-balansen gedetecteerd.",
+        missingRuntimeSymbols.length
+          ? `Runtime-posities missen op de exchange: ${missingRuntimeSymbols.join(", ")}.`
+          : "Geen runtime-posities missen op de exchange."
+      ]
+    };
 
     return {
       closedTrades,
       recoveredPositions,
       warnings,
+      exchangeTruth,
       account: {
         canTrade: account.canTrade,
         accountType: account.accountType,
@@ -937,6 +1014,8 @@ export class LiveBroker {
       protectionWarning = error.message;
       this.logger?.warn?.("Protective order rebuild after scale-out failed", { symbol: position.symbol, error: error.message });
       this.clearProtectiveOrderState(position);
+      position.reconcileRequired = true;
+      position.lifecycleState = "reconcile_required";
     }
 
     return {

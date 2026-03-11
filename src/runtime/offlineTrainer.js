@@ -257,6 +257,354 @@ function buildBlockerScorecards(counterfactuals = []) {
     .slice(0, 10);
 }
 
+function correlation(values = [], outcomes = []) {
+  const length = Math.min(values.length, outcomes.length);
+  if (length < 3) {
+    return 0;
+  }
+  const x = values.slice(-length);
+  const y = outcomes.slice(-length);
+  const meanX = average(x);
+  const meanY = average(y);
+  let numerator = 0;
+  let varianceX = 0;
+  let varianceY = 0;
+  for (let index = 0; index < length; index += 1) {
+    const dx = x[index] - meanX;
+    const dy = y[index] - meanY;
+    numerator += dx * dy;
+    varianceX += dx ** 2;
+    varianceY += dy ** 2;
+  }
+  if (!varianceX || !varianceY) {
+    return 0;
+  }
+  return clamp(numerator / Math.sqrt(varianceX * varianceY), -1, 1);
+}
+
+function buildThresholdPolicy(blockerScorecards = [], config = {}) {
+  const recommendations = blockerScorecards
+    .filter((item) => (item.total || 0) >= 2)
+    .map((item) => {
+      const action = item.status === "relax"
+        ? "relax"
+        : item.status === "keep" && (item.goodVetoRate || 0) >= 0.58
+          ? "tighten"
+          : "observe";
+      const baseStep = action === "relax"
+        ? config.thresholdRelaxStep || 0.012
+        : config.thresholdTightenStep || 0.01;
+      const signalStrength = Math.max(item.badVetoRate || 0, item.goodVetoRate || 0);
+      const adjustment = action === "observe"
+        ? 0
+        : (action === "relax" ? -1 : 1) * Math.min(baseStep, Math.max(baseStep * 0.4, signalStrength * baseStep));
+      const confidence = clamp(
+        Math.min(1, (item.total || 0) / 8) * 0.44 +
+          Math.abs((item.badVetoRate || 0) - (item.goodVetoRate || 0)) * 0.56,
+        0,
+        1
+      );
+      return {
+        id: item.id,
+        action,
+        adjustment: num(adjustment),
+        confidence: num(confidence),
+        total: item.total || 0,
+        affectedStrategies: [...(item.affectedStrategies || [])].slice(0, 4),
+        affectedRegimes: [...(item.affectedRegimes || [])].slice(0, 4),
+        rationale: action === "relax"
+          ? `${item.id} blokkeert te vaak gemiste winnaars.`
+          : action === "tighten"
+            ? `${item.id} veto is meestal correct en mag iets zwaarder wegen.`
+            : `${item.id} heeft nog te weinig overtuigende feedback voor een threshold-wijziging.`
+      };
+    })
+    .filter((item) => item.action !== "observe")
+    .sort((left, right) => {
+      const confidenceDelta = (right.confidence || 0) - (left.confidence || 0);
+      return Math.abs(confidenceDelta) > 0.001
+        ? confidenceDelta
+        : Math.abs(right.adjustment || 0) - Math.abs(left.adjustment || 0);
+    })
+    .slice(0, config.thresholdTuningMaxRecommendations || 5);
+
+  const relaxCount = recommendations.filter((item) => item.action === "relax").length;
+  const tightenCount = recommendations.filter((item) => item.action === "tighten").length;
+  const netThresholdShift = clamp(
+    recommendations.reduce((total, item) => total + (item.adjustment || 0), 0),
+    -0.06,
+    0.06
+  );
+  const adjustThreshold = Math.max(
+    0.004,
+    Math.min(config.thresholdRelaxStep || 0.012, config.thresholdTightenStep || 0.01) * 0.55
+  );
+  const status = recommendations.length === 0
+    ? "stable"
+    : Math.abs(netThresholdShift) >= adjustThreshold
+      ? "adjust"
+      : "observe";
+
+  return {
+    status,
+    relaxCount,
+    tightenCount,
+    netThresholdShift: num(netThresholdShift),
+    topRecommendation: recommendations[0] || null,
+    recommendations,
+    notes: [
+      recommendations[0]
+        ? `${recommendations[0].id} is de sterkste threshold-kandidaat (${recommendations[0].action}).`
+        : "Thresholds blijven stabiel; er is nog geen duidelijke veto-aanpassing nodig.",
+      relaxCount
+        ? `${relaxCount} veto-blokkers vragen een lossere gate.`
+        : "Geen veto-blokkers vragen nu om een lossere gate.",
+      tightenCount
+        ? `${tightenCount} veto-blokkers mogen juist strakker worden bewaakt.`
+        : "Geen veto-blokkers vragen nu om een strakkere gate."
+    ]
+  };
+}
+
+function buildExitLearning(trades = []) {
+  const map = new Map();
+  let prematureExitCount = 0;
+  let lateExitCount = 0;
+  const exitScores = [];
+
+  for (const trade of trades) {
+    const reason = trade.reason || "unknown";
+    if (!map.has(reason)) {
+      map.set(reason, {
+        id: reason,
+        tradeCount: 0,
+        avgExitScore: 0,
+        prematureExitCount: 0,
+        lateExitCount: 0,
+        realizedPnl: 0,
+        averageCapture: 0
+      });
+    }
+    const bucket = map.get(reason);
+    const mfePct = Math.max(0, trade.mfePct || 0);
+    const captureRatio = mfePct > 0 ? clamp((trade.netPnlPct || 0) / mfePct, -1, 1.4) : (trade.netPnlPct || 0) > 0 ? 0.65 : 0.45;
+    const prematureExit = (trade.netPnlPct || 0) > 0 && mfePct >= 0.012 && captureRatio < 0.42;
+    const lateExit = (trade.netPnlPct || 0) <= 0 && mfePct >= 0.012 && captureRatio < 0.08;
+    const exitScore = clamp(
+      0.4 +
+        Math.max(0, Math.min(captureRatio, 1)) * 0.28 +
+        (trade.captureEfficiency || 0) * 0.16 +
+        (trade.executionQualityScore || 0) * 0.14 +
+        ((trade.exitIntelligenceSummary?.confidence || 0) * 0.08) -
+        (prematureExit ? 0.12 : 0) -
+        (lateExit ? 0.18 : 0),
+      0,
+      1
+    );
+
+    bucket.tradeCount += 1;
+    bucket.avgExitScore += exitScore;
+    bucket.realizedPnl += trade.pnlQuote || 0;
+    bucket.averageCapture += trade.captureEfficiency || Math.max(0, captureRatio);
+    if (prematureExit) {
+      bucket.prematureExitCount += 1;
+      prematureExitCount += 1;
+    }
+    if (lateExit) {
+      bucket.lateExitCount += 1;
+      lateExitCount += 1;
+    }
+    exitScores.push(exitScore);
+  }
+
+  const exitScorecards = [...map.values()]
+    .map((bucket) => {
+      const avgExitScore = bucket.tradeCount ? bucket.avgExitScore / bucket.tradeCount : 0;
+      const averageCapture = bucket.tradeCount ? bucket.averageCapture / bucket.tradeCount : 0;
+      const governanceScore = clamp(
+        avgExitScore * 0.6 +
+          clamp(0.5 + bucket.realizedPnl / Math.max(bucket.tradeCount * 60, 60), 0, 1) * 0.18 +
+          averageCapture * 0.12 -
+          Math.min(0.18, bucket.prematureExitCount / Math.max(bucket.tradeCount, 1) * 0.18) -
+          Math.min(0.22, bucket.lateExitCount / Math.max(bucket.tradeCount, 1) * 0.22),
+        0,
+        1
+      );
+      return {
+        id: bucket.id,
+        tradeCount: bucket.tradeCount,
+        averageExitScore: num(avgExitScore),
+        averageCapture: num(averageCapture),
+        realizedPnl: num(bucket.realizedPnl, 2),
+        prematureExitCount: bucket.prematureExitCount,
+        lateExitCount: bucket.lateExitCount,
+        governanceScore: num(governanceScore),
+        status: governanceScore >= 0.62
+          ? "ready"
+          : governanceScore <= 0.42
+            ? "blocked"
+            : "observe"
+      };
+    })
+    .sort((left, right) => right.governanceScore - left.governanceScore)
+    .slice(0, 8);
+
+  const averageExitScore = average(exitScores);
+  const status = averageExitScore >= 0.58 && lateExitCount <= Math.max(1, Math.round(trades.length * 0.28))
+    ? "ready"
+    : averageExitScore >= 0.46
+      ? "observe"
+      : "blocked";
+
+  return {
+    status,
+    averageExitScore: num(averageExitScore),
+    prematureExitCount,
+    lateExitCount,
+    topReason: exitScorecards[0]?.id || null,
+    scorecards: exitScorecards,
+    notes: [
+      exitScorecards[0]
+        ? `${exitScorecards[0].id} is momenteel de sterkste exit-route.`
+        : "Nog geen exit-scorecards beschikbaar.",
+      lateExitCount
+        ? `${lateExitCount} exits gaven winst terug en verdienen strakkere follow-through.`
+        : "Geen duidelijke late-exit patronen in de huidige set.",
+      prematureExitCount
+        ? `${prematureExitCount} exits waren waarschijnlijk te vroeg.`
+        : "Geen duidelijke premature exits in de huidige set."
+    ]
+  };
+}
+
+function buildFeatureDecay(trades = [], config = {}) {
+  const buckets = new Map();
+  for (const trade of trades) {
+    const rawFeatures = trade.rawFeatures || {};
+    const outcome = Number.isFinite(trade.labelScore)
+      ? trade.labelScore
+      : clamp(0.5 + (trade.netPnlPct || 0) * 12, 0, 1);
+    for (const [key, value] of Object.entries(rawFeatures)) {
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+      if (!buckets.has(key)) {
+        buckets.set(key, { id: key, values: [], outcomes: [] });
+      }
+      const bucket = buckets.get(key);
+      bucket.values.push(Number(value));
+      bucket.outcomes.push(outcome);
+    }
+  }
+
+  const minTrades = config.featureDecayMinTrades || 8;
+  const weakScore = config.featureDecayWeakScore || 0.18;
+  const blockedScore = config.featureDecayBlockedScore || 0.1;
+  const scorecards = [...buckets.values()]
+    .filter((bucket) => bucket.values.length >= minTrades)
+    .map((bucket) => {
+      const predictiveScore = Math.abs(correlation(bucket.values, bucket.outcomes));
+      const half = Math.max(1, Math.floor(bucket.values.length / 2));
+      const earlierMean = average(bucket.values.slice(0, half));
+      const recentMean = average(bucket.values.slice(-half));
+      const meanShift = Math.abs(recentMean - earlierMean);
+      return {
+        id: bucket.id,
+        count: bucket.values.length,
+        predictiveScore: num(predictiveScore),
+        meanShift: num(meanShift),
+        direction: correlation(bucket.values, bucket.outcomes) >= 0 ? "pro" : "inverse",
+        status: predictiveScore <= blockedScore
+          ? "decayed"
+          : predictiveScore <= weakScore
+            ? "watch"
+            : "healthy"
+      };
+    })
+    .sort((left, right) => {
+      const scoreDelta = (left.predictiveScore || 0) - (right.predictiveScore || 0);
+      return Math.abs(scoreDelta) > 0.001 ? scoreDelta : (right.meanShift || 0) - (left.meanShift || 0);
+    })
+    .slice(0, 12);
+
+  const degradedFeatureCount = scorecards.filter((item) => item.status === "decayed").length;
+  const weakFeatureCount = scorecards.filter((item) => item.status !== "healthy").length;
+  const strongestFeature = [...scorecards].sort((left, right) => (right.predictiveScore || 0) - (left.predictiveScore || 0))[0] || null;
+  const weakestFeature = scorecards[0] || null;
+  const averagePredictiveScore = average(scorecards.map((item) => item.predictiveScore || 0));
+  const status = degradedFeatureCount >= 2
+    ? "blocked"
+    : weakFeatureCount >= 3
+      ? "watch"
+      : scorecards.length
+        ? "healthy"
+        : "warmup";
+
+  return {
+    status,
+    trackedFeatureCount: scorecards.length,
+    weakFeatureCount,
+    degradedFeatureCount,
+    strongestFeature: strongestFeature?.id || null,
+    weakestFeature: weakestFeature?.id || null,
+    averagePredictiveScore: num(averagePredictiveScore),
+    scorecards,
+    notes: [
+      weakestFeature
+        ? `${weakestFeature.id} toont momenteel de meeste feature decay.`
+        : "Nog niet genoeg feature-data voor decay scoring.",
+      strongestFeature
+        ? `${strongestFeature.id} blijft de stabielste feature in de huidige set.`
+        : "Nog geen stabiele feature-leider zichtbaar."
+    ]
+  };
+}
+
+function buildCalibrationGovernance({ tradeCount = 0, falsePositiveCount = 0, falseNegativeCount = 0, readinessScore = 0 } = {}) {
+  const falsePositiveRate = tradeCount ? falsePositiveCount / tradeCount : 0;
+  const denominator = tradeCount + falseNegativeCount;
+  const falseNegativeRate = denominator ? falseNegativeCount / denominator : 0;
+  const governanceScore = clamp(
+    0.62 -
+      falsePositiveRate * 0.34 -
+      falseNegativeRate * 0.24 +
+      readinessScore * 0.12,
+    0,
+    1
+  );
+  return {
+    falsePositiveRate: num(falsePositiveRate),
+    falseNegativeRate: num(falseNegativeRate),
+    governanceScore: num(governanceScore),
+    status: governanceScore >= 0.58
+      ? "ready"
+      : governanceScore >= 0.42
+        ? "observe"
+        : "blocked",
+    note: governanceScore >= 0.58
+      ? "Calibration governance oogt stabiel genoeg voor promotiebesluiten."
+      : governanceScore >= 0.42
+        ? "Calibration governance is bruikbaar, maar vraagt nog toezicht."
+        : "Calibration governance is te zwak voor agressieve promotie."
+  };
+}
+
+function buildRegimeDeployment(regimeScorecards = []) {
+  const mature = regimeScorecards.filter((item) => (item.tradeCount || 0) >= 2);
+  const readyRegimes = mature.filter((item) => (item.governanceScore || 0) >= 0.56).map((item) => item.id).slice(0, 4);
+  const observeRegimes = mature.filter((item) => (item.governanceScore || 0) < 0.56 && (item.governanceScore || 0) >= 0.42).map((item) => item.id).slice(0, 4);
+  const cooldownRegimes = mature.filter((item) => (item.governanceScore || 0) < 0.42).map((item) => item.id).slice(0, 4);
+  return {
+    status: readyRegimes.length ? "segmented" : mature.length ? "observe" : "warmup",
+    readyRegimes,
+    observeRegimes,
+    cooldownRegimes,
+    note: readyRegimes.length
+      ? `${readyRegimes.length} regimes kunnen apart worden behandeld in deployment-governance.`
+      : "Nog geen duidelijke regime-specifieke champions beschikbaar."
+  };
+}
+
 export class OfflineTrainer {
   constructor(config) {
     this.config = config;
@@ -288,6 +636,17 @@ export class OfflineTrainer {
       0,
       1
     );
+    const thresholdPolicy = buildThresholdPolicy(blockerScorecards, this.config);
+    const exitLearning = buildExitLearning(learningReadyTrades);
+    const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
+    const calibrationGovernance = buildCalibrationGovernance({
+      tradeCount: learningReadyTrades.length,
+      falsePositiveCount: falsePositives.length,
+      falseNegativeCount: falseNegatives.length,
+      readinessScore
+    });
+    const regimeDeployment = buildRegimeDeployment(regimeScorecards);
+
     return {
       generatedAt: nowIso,
       learningReadyTrades: learningReadyTrades.length,
@@ -316,6 +675,13 @@ export class OfflineTrainer {
       strategyScorecards,
       regimeScorecards,
       blockerScorecards,
+      thresholdPolicy,
+      exitLearning,
+      exitScorecards: exitLearning.scorecards || [],
+      featureDecay,
+      featureDecayScorecards: featureDecay.scorecards || [],
+      calibrationGovernance,
+      regimeDeployment,
       falsePositiveByStrategy: falsePositiveByStrategy.slice(0, 6),
       falseNegativeByStrategy: falseNegativeByStrategy.slice(0, 6),
       readinessScore: num(readinessScore),
@@ -333,6 +699,16 @@ export class OfflineTrainer {
         blockerScorecards[0]
           ? `${blockerScorecards[0].id} vraagt momenteel veto-aandacht (${blockerScorecards[0].status}).`
           : "Nog geen veto-feedback met duidelijke blocker-patronen.",
+        thresholdPolicy.topRecommendation
+          ? `${thresholdPolicy.topRecommendation.id} geeft threshold-advies: ${thresholdPolicy.topRecommendation.action}.`
+          : "Threshold-tuning ziet momenteel geen harde aanpassing nodig.",
+        exitLearning.topReason
+          ? `${exitLearning.topReason} leidt momenteel in exit learning (${exitLearning.status}).`
+          : "Nog geen volwassen exit-learning patroon zichtbaar.",
+        featureDecay.weakestFeature
+          ? `${featureDecay.weakestFeature} toont momenteel de meeste feature decay.`
+          : "Feature-decay tracking warmt nog op.",
+        calibrationGovernance.note,
         regimeScorecards[0]
           ? `${regimeScorecards[0].id} is het sterkste regime in offline trainer governance.`
           : "Nog geen duidelijke regime-leider in offline trainer.",

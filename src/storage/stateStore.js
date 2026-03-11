@@ -1,7 +1,7 @@
 import path from "node:path";
 import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
-const RUNTIME_SCHEMA_VERSION = 2;
+const RUNTIME_SCHEMA_VERSION = 3;
 const JOURNAL_SCHEMA_VERSION = 2;
 
 const DEFAULT_MODEL = {
@@ -50,6 +50,40 @@ const DEFAULT_RUNTIME = {
   researchRegistry: {},
   modelRegistry: {},
   dataRecorder: {},
+  shadowTrading: {},
+  thresholdTuning: {},
+  exchangeTruth: {
+    status: "unknown",
+    freezeEntries: false,
+    mismatchCount: 0,
+    runtimePositionCount: 0,
+    exchangePositionCount: 0,
+    lastReconciledAt: null,
+    lastHealthyAt: null,
+    orphanedSymbols: [],
+    missingRuntimeSymbols: [],
+    warnings: [],
+    notes: []
+  },
+  orderLifecycle: {
+    lastUpdatedAt: null,
+    positions: {},
+    recentTransitions: [],
+    pendingActions: []
+  },
+  ops: {
+    lastUpdatedAt: null,
+    incidentTimeline: [],
+    runbooks: [],
+    performanceChange: null
+  },
+  service: {
+    lastHeartbeatAt: null,
+    watchdogStatus: "idle",
+    restartBackoffSeconds: null,
+    lastExitCode: null,
+    statusFile: null
+  },
   qualityQuorum: {},
   stateBackups: {},
   recovery: {
@@ -117,6 +151,12 @@ function migrateRuntime(runtime) {
   merged.latestBlockedSetups = Array.isArray(merged.latestBlockedSetups) ? merged.latestBlockedSetups : [];
   merged.counterfactualQueue = Array.isArray(merged.counterfactualQueue) ? merged.counterfactualQueue : [];
   merged.qualityQuorum = merged.qualityQuorum && typeof merged.qualityQuorum === "object" ? merged.qualityQuorum : {};
+  merged.shadowTrading = mergeDefaultShape(clone(DEFAULT_RUNTIME.shadowTrading), merged.shadowTrading);
+  merged.thresholdTuning = mergeDefaultShape(clone(DEFAULT_RUNTIME.thresholdTuning), merged.thresholdTuning);
+  merged.exchangeTruth = mergeDefaultShape(clone(DEFAULT_RUNTIME.exchangeTruth), merged.exchangeTruth);
+  merged.orderLifecycle = mergeDefaultShape(clone(DEFAULT_RUNTIME.orderLifecycle), merged.orderLifecycle);
+  merged.ops = mergeDefaultShape(clone(DEFAULT_RUNTIME.ops), merged.ops);
+  merged.service = mergeDefaultShape(clone(DEFAULT_RUNTIME.service), merged.service);
   merged.health = mergeDefaultShape(clone(DEFAULT_RUNTIME.health), merged.health);
   merged.recovery = mergeDefaultShape(clone(DEFAULT_RUNTIME.recovery), merged.recovery);
   merged.lifecycle = mergeDefaultShape(clone(DEFAULT_RUNTIME.lifecycle), merged.lifecycle);

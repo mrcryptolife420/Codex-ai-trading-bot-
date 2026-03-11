@@ -239,6 +239,16 @@ function makeConfig(overrides = {}) {
     researchStepCandles: 72,
     researchMaxWindows: 6,
     researchMaxSymbols: 4,
+    exchangeTruthFreezeMismatchCount: 2,
+    positionFailureProtectOnlyCount: 2,
+    positionFailureManualReviewCount: 4,
+    shadowTradeDecisionLimit: 3,
+    thresholdRelaxStep: 0.012,
+    thresholdTightenStep: 0.01,
+    thresholdTuningMaxRecommendations: 5,
+    featureDecayMinTrades: 8,
+    featureDecayWeakScore: 0.18,
+    featureDecayBlockedScore: 0.1,
     paperLatencyMs: 220,
     paperMakerFillFloor: 0.22,
     paperPartialFillMinRatio: 0.35,
@@ -253,6 +263,9 @@ function makeConfig(overrides = {}) {
     stateBackupIntervalMinutes: 30,
     stateBackupRetention: 6,
     serviceRestartDelaySeconds: 8,
+    serviceRestartBackoffMultiplier: 1.8,
+    serviceRestartMaxDelaySeconds: 180,
+    serviceStatusFilename: "service-status.json",
     serviceMaxRestartsPerHour: 20,
     gitShortClonePath: "C:\\code\\Codex-ai-trading-bot",
     ...overrides
@@ -2073,8 +2086,11 @@ await runCheck("state store migrates runtime and journal schemas forward", async
     const store = new StateStore(tempDir);
     const runtime = await store.loadRuntime();
     const journal = await store.loadJournal();
-    assert.equal(runtime.schemaVersion, 2);
+    assert.equal(runtime.schemaVersion, 3);
     assert.deepEqual(runtime.qualityQuorum, {});
+    assert.equal(runtime.exchangeTruth.status, "unknown");
+    assert.deepEqual(runtime.orderLifecycle.positions, {});
+    assert.ok(Array.isArray(runtime.ops.incidentTimeline));
     assert.equal(runtime.health.consecutiveFailures, 1);
     assert.equal(journal.schemaVersion, 2);
     assert.equal(journal.trades.length, 1);
@@ -2535,12 +2551,18 @@ await runCheck("model registry surfaces regime-ready promotion hints", async () 
     divergenceSummary: { averageScore: 0.14 },
     offlineTrainer: {
       readinessScore: 0.62,
+      thresholdPolicy: { status: "adjust", recommendations: [{ id: "provider_ops", action: "relax" }] },
+      featureDecay: { status: "healthy" },
+      exitLearning: { status: "ready" },
+      calibrationGovernance: { status: "ready" },
       strategyScorecards: [{ id: "ema_trend", tradeCount: 8, governanceScore: 0.66 }, { id: "vwap_reversion", tradeCount: 6, governanceScore: 0.54 }],
       regimeScorecards: [{ id: "trend", tradeCount: 7, governanceScore: 0.64 }, { id: "range", tradeCount: 5, governanceScore: 0.57 }]
     },
     nowIso: "2026-03-10T12:00:00.000Z"
   });
   assert.ok(snapshot.promotionPolicy.readyRegimes.includes("trend"));
+  assert.equal(snapshot.promotionPolicy.thresholdRecommendationCount, 1);
+  assert.equal(snapshot.promotionPolicy.exitLearningStatus, "ready");
   assert.ok(snapshot.notes.some((note) => note.includes("regimes")));
 });
 
@@ -2791,8 +2813,14 @@ await runCheck("offline trainer builds blocker and regime veto scorecards", asyn
   const summary = trainer.buildSummary({
     journal: {
       trades: [
-        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 18, netPnlPct: 0.014, executionQualityScore: 0.7, labelScore: 0.78, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
-        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -7, netPnlPct: -0.006, executionQualityScore: 0.52, labelScore: 0.4, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" }
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 18, netPnlPct: 0.014, executionQualityScore: 0.7, labelScore: 0.78, captureEfficiency: 0.66, mfePct: 0.024, rawFeatures: { momentum_5: 1.2, breakout_pct: 0.4 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -7, netPnlPct: -0.006, executionQualityScore: 0.52, labelScore: 0.4, captureEfficiency: 0.12, mfePct: 0.019, rawFeatures: { momentum_5: -0.2, breakout_pct: -0.1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "SOLUSDT", exitAt: "2026-03-09T16:00:00.000Z", pnlQuote: 8, netPnlPct: 0.009, executionQualityScore: 0.64, labelScore: 0.67, captureEfficiency: 0.44, mfePct: 0.028, rawFeatures: { momentum_5: 0.9, breakout_pct: 0.35 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "AVAXUSDT", exitAt: "2026-03-09T18:00:00.000Z", pnlQuote: -4, netPnlPct: -0.004, executionQualityScore: 0.49, labelScore: 0.43, captureEfficiency: 0.18, mfePct: 0.014, rawFeatures: { momentum_5: -0.4, breakout_pct: -0.06 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "BNBUSDT", exitAt: "2026-03-09T20:00:00.000Z", pnlQuote: 11, netPnlPct: 0.011, executionQualityScore: 0.69, labelScore: 0.71, captureEfficiency: 0.59, mfePct: 0.022, rawFeatures: { momentum_5: 1.05, breakout_pct: 0.31 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "DOGEUSDT", exitAt: "2026-03-09T21:00:00.000Z", pnlQuote: -3, netPnlPct: -0.003, executionQualityScore: 0.46, labelScore: 0.44, captureEfficiency: 0.16, mfePct: 0.012, rawFeatures: { momentum_5: -0.35, breakout_pct: -0.05 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "XRPUSDT", exitAt: "2026-03-09T22:00:00.000Z", pnlQuote: 7, netPnlPct: 0.008, executionQualityScore: 0.61, labelScore: 0.65, captureEfficiency: 0.41, mfePct: 0.024, rawFeatures: { momentum_5: 0.88, breakout_pct: 0.28 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "ADAUSDT", exitAt: "2026-03-09T23:00:00.000Z", pnlQuote: -5, netPnlPct: -0.005, executionQualityScore: 0.48, labelScore: 0.41, captureEfficiency: 0.14, mfePct: 0.016, rawFeatures: { momentum_5: -0.45, breakout_pct: -0.08 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper", reason: "time_stop" }
       ]
     },
     dataRecorder: { learningFrames: 10, decisionFrames: 18 },
@@ -2806,6 +2834,13 @@ await runCheck("offline trainer builds blocker and regime veto scorecards", asyn
   assert.equal(summary.vetoFeedback.badVetoCount, 2);
   assert.ok(summary.blockerScorecards.some((item) => item.id === "provider_ops" && item.status === "relax"));
   assert.ok(summary.regimeScorecards.some((item) => item.id === "trend"));
+  assert.equal(summary.thresholdPolicy.status, "adjust");
+  assert.ok(summary.thresholdPolicy.recommendations.some((item) => item.id === "provider_ops" && item.action === "relax"));
+  assert.ok(summary.exitLearning.averageExitScore > 0);
+  assert.ok(summary.exitScorecards.some((item) => item.id === "take_profit"));
+  assert.ok(summary.featureDecay.trackedFeatureCount >= 2);
+  assert.ok(summary.calibrationGovernance.governanceScore > 0);
+  assert.ok(summary.regimeDeployment.readyRegimes.includes("trend"));
 });
 
 await runCheck("adaptive model exposes expert mix and neural overlays", async () => {

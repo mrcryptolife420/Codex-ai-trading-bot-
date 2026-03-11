@@ -163,6 +163,16 @@ export function validateConfig(config) {
   assertRange("DIVERGENCE_ALERT_SLIP_GAP_BPS", config.divergenceAlertSlipGapBps, 0.1, 250, errors);
   assertRange("OFFLINE_TRAINER_MIN_READINESS", config.offlineTrainerMinReadiness, 0, 1, errors);
   assertRange("MODEL_PROMOTION_PROBATION_LIVE_TRADES", config.modelPromotionProbationLiveTrades, 1, 100, errors);
+  assertRange("EXCHANGE_TRUTH_FREEZE_MISMATCH_COUNT", config.exchangeTruthFreezeMismatchCount, 1, 20, errors);
+  assertRange("POSITION_FAILURE_PROTECT_ONLY_COUNT", config.positionFailureProtectOnlyCount, 1, 20, errors);
+  assertRange("POSITION_FAILURE_MANUAL_REVIEW_COUNT", config.positionFailureManualReviewCount, 1, 30, errors);
+  assertRange("SHADOW_TRADE_DECISION_LIMIT", config.shadowTradeDecisionLimit, 1, 20, errors);
+  assertRange("THRESHOLD_RELAX_STEP", config.thresholdRelaxStep, 0.001, 0.05, errors);
+  assertRange("THRESHOLD_TIGHTEN_STEP", config.thresholdTightenStep, 0.001, 0.05, errors);
+  assertRange("THRESHOLD_TUNING_MAX_RECOMMENDATIONS", config.thresholdTuningMaxRecommendations, 1, 20, errors);
+  assertRange("FEATURE_DECAY_MIN_TRADES", config.featureDecayMinTrades, 3, 100, errors);
+  assertRange("FEATURE_DECAY_WEAK_SCORE", config.featureDecayWeakScore, 0, 1, errors);
+  assertRange("FEATURE_DECAY_BLOCKED_SCORE", config.featureDecayBlockedScore, 0, 1, errors);
   assertRange("COUNTERFACTUAL_LOOKAHEAD_MINUTES", config.counterfactualLookaheadMinutes, 5, 1440, errors);
   assertRange("COUNTERFACTUAL_QUEUE_LIMIT", config.counterfactualQueueLimit, 5, 500, errors);
   assertRange("MIN_BOOK_PRESSURE_FOR_ENTRY", config.minBookPressureForEntry, -1, 1, errors);
@@ -210,6 +220,8 @@ export function validateConfig(config) {
   assertRange("STATE_BACKUP_INTERVAL_MINUTES", config.stateBackupIntervalMinutes, 1, 1440, errors);
   assertRange("STATE_BACKUP_RETENTION", config.stateBackupRetention, 1, 100, errors);
   assertRange("SERVICE_RESTART_DELAY_SECONDS", config.serviceRestartDelaySeconds, 1, 3600, errors);
+  assertRange("SERVICE_RESTART_BACKOFF_MULTIPLIER", config.serviceRestartBackoffMultiplier, 1, 10, errors);
+  assertRange("SERVICE_RESTART_MAX_DELAY_SECONDS", config.serviceRestartMaxDelaySeconds, 1, 7200, errors);
   assertRange("SERVICE_MAX_RESTARTS_PER_HOUR", config.serviceMaxRestartsPerHour, 1, 500, errors);
 
   if (config.maxPositionFraction > config.maxTotalExposureFraction) {
@@ -293,6 +305,15 @@ export function validateConfig(config) {
   }
   if (config.divergenceBlockScore <= config.divergenceAlertScore) {
     errors.push("DIVERGENCE_BLOCK_SCORE must be larger than DIVERGENCE_ALERT_SCORE.");
+  }
+  if (config.positionFailureManualReviewCount < config.positionFailureProtectOnlyCount) {
+    errors.push("POSITION_FAILURE_MANUAL_REVIEW_COUNT cannot be smaller than POSITION_FAILURE_PROTECT_ONLY_COUNT.");
+  }
+  if (config.featureDecayBlockedScore >= config.featureDecayWeakScore) {
+    errors.push("FEATURE_DECAY_BLOCKED_SCORE must be smaller than FEATURE_DECAY_WEAK_SCORE.");
+  }
+  if (config.serviceRestartMaxDelaySeconds < config.serviceRestartDelaySeconds) {
+    errors.push("SERVICE_RESTART_MAX_DELAY_SECONDS cannot be smaller than SERVICE_RESTART_DELAY_SECONDS.");
   }
   if (config.researchPromotionMaxDrawdownPct <= 0) {
     errors.push("RESEARCH_PROMOTION_MAX_DRAWDOWN_PCT must be positive.");

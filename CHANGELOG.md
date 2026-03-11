@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased - 2026-03-11
+
+### Added
+- Persisted order-lifecycle, exchange-truth, shadow-trading, service, and operator-ops state in the runtime schema so restarts and dashboards can reason about position state instead of only raw open positions.
+- Threshold-tuning recommendations, exit-learning scorecards, feature-decay tracking, calibration governance, and regime-deployment summaries in the offline trainer.
+- Exchange-truth mismatch summaries that count runtime-vs-exchange inventory drift and can freeze new live entries when reconcile risk is too high.
+- Position-level failure budgets that degrade repeated management failures into `protect_only` and `manual_review` states instead of retrying the same risky automation every cycle.
+- Dashboard/operator views for lifecycle state, incident timeline, runbooks, performance-delta notes, shadow entries, threshold tuning, exit learning, and feature decay.
+- Watchdog status-file output plus exponential restart backoff in `Run-BotService.ps1`.
+
+### Improved
+- Deepened model-promotion governance so regime readiness now sits beside threshold, exit, calibration, and feature-health feedback instead of only paper/live scorecards.
+- Extended replay cards with veto-chain and alternate-exit context so post-trade review shows more than entry/exit prices alone.
+- Refreshed status serialization so live runtime output now includes lifecycle and operator layers end-to-end.
+- Documented the new tuning and watchdog knobs in `.env.example`.
+
+### Fixed
+- Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.
+- Prevented `openBestCandidate()` from crashing in lightweight prototype-based tests when `this.config` is absent.
+- Kept recovered/rebuilt live positions explicitly marked as `reconcile_required` or `protected` so lifecycle state no longer goes stale after broker recovery paths.
+- Fixed scale-out protection recovery so failed protective rebuilds now leave a clear reconcile state instead of silently falling back to a generic open position.
+
+### Verified
+- `node --check src/runtime/tradingBot.js`
+- `node --check src/runtime/offlineTrainer.js`
+- `node --check src/runtime/modelRegistry.js`
+- `node --check src/execution/liveBroker.js`
+- `node --check src/dashboard/public/app.js`
+- `node --check test/run.js`
+- `node test/run.js`
+- `node src/cli.js status`
+
 ## Unreleased - 2026-03-10
 
 ### Added

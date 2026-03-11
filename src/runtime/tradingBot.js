@@ -545,10 +545,23 @@ function summarizeModelRegistry(registry = {}) {
           paperQualityScore: num(registry.promotionPolicy.paperQualityScore || 0, 4),
           liveTradeCount: registry.promotionPolicy.liveTradeCount || 0,
           liveQualityScore: registry.promotionPolicy.liveQualityScore == null ? null : num(registry.promotionPolicy.liveQualityScore || 0, 4),
+          strategyScorecardCount: registry.promotionPolicy.strategyScorecardCount || 0,
+          strongStrategyScorecardCount: registry.promotionPolicy.strongStrategyScorecardCount || 0,
           regimeScorecardCount: registry.promotionPolicy.regimeScorecardCount || 0,
           strongRegimeScorecardCount: registry.promotionPolicy.strongRegimeScorecardCount || 0,
+          calibrationGovernanceStatus: registry.promotionPolicy.calibrationGovernanceStatus || "warmup",
+          exitLearningStatus: registry.promotionPolicy.exitLearningStatus || "warmup",
+          featureDecayStatus: registry.promotionPolicy.featureDecayStatus || "warmup",
+          thresholdPolicyStatus: registry.promotionPolicy.thresholdPolicyStatus || "stable",
+          thresholdRecommendationCount: registry.promotionPolicy.thresholdRecommendationCount || 0,
           readyRegimes: [...(registry.promotionPolicy.readyRegimes || [])],
           observeRegimes: [...(registry.promotionPolicy.observeRegimes || [])],
+          regimePolicies: arr(registry.promotionPolicy.regimePolicies || []).slice(0, 6).map((item) => ({
+            id: item.id || null,
+            governanceScore: num(item.governanceScore || 0, 4),
+            tradeCount: item.tradeCount || 0,
+            status: item.status || "observe"
+          })),
           blockerReasons: [...(registry.promotionPolicy.blockerReasons || [])]
         }
       : null,
@@ -1345,9 +1358,176 @@ function summarizeOfflineTrainer(summary = {}) {
       affectedRegimes: [...(item.affectedRegimes || [])],
       status: item.status || "observe"
     })),
+    thresholdPolicy: {
+      status: summary.thresholdPolicy?.status || "stable",
+      relaxCount: summary.thresholdPolicy?.relaxCount || 0,
+      tightenCount: summary.thresholdPolicy?.tightenCount || 0,
+      netThresholdShift: num(summary.thresholdPolicy?.netThresholdShift || 0, 4),
+      topRecommendation: summary.thresholdPolicy?.topRecommendation
+        ? {
+            id: summary.thresholdPolicy.topRecommendation.id || null,
+            action: summary.thresholdPolicy.topRecommendation.action || "observe",
+            adjustment: num(summary.thresholdPolicy.topRecommendation.adjustment || 0, 4),
+            confidence: num(summary.thresholdPolicy.topRecommendation.confidence || 0, 4),
+            total: summary.thresholdPolicy.topRecommendation.total || 0,
+            affectedStrategies: [...(summary.thresholdPolicy.topRecommendation.affectedStrategies || [])],
+            affectedRegimes: [...(summary.thresholdPolicy.topRecommendation.affectedRegimes || [])],
+            rationale: summary.thresholdPolicy.topRecommendation.rationale || null
+          }
+        : null,
+      recommendations: arr(summary.thresholdPolicy?.recommendations || []).slice(0, 6).map((item) => ({
+        id: item.id || null,
+        action: item.action || "observe",
+        adjustment: num(item.adjustment || 0, 4),
+        confidence: num(item.confidence || 0, 4),
+        total: item.total || 0,
+        affectedStrategies: [...(item.affectedStrategies || [])],
+        affectedRegimes: [...(item.affectedRegimes || [])],
+        rationale: item.rationale || null
+      })),
+      notes: [...(summary.thresholdPolicy?.notes || [])]
+    },
+    exitLearning: {
+      status: summary.exitLearning?.status || "warmup",
+      averageExitScore: num(summary.exitLearning?.averageExitScore || 0, 4),
+      prematureExitCount: summary.exitLearning?.prematureExitCount || 0,
+      lateExitCount: summary.exitLearning?.lateExitCount || 0,
+      topReason: summary.exitLearning?.topReason || null,
+      notes: [...(summary.exitLearning?.notes || [])]
+    },
+    exitScorecards: arr(summary.exitScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      tradeCount: item.tradeCount || 0,
+      averageExitScore: num(item.averageExitScore || 0, 4),
+      averageCapture: num(item.averageCapture || 0, 4),
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      prematureExitCount: item.prematureExitCount || 0,
+      lateExitCount: item.lateExitCount || 0,
+      governanceScore: num(item.governanceScore || 0, 4),
+      status: item.status || "observe"
+    })),
+    featureDecay: {
+      status: summary.featureDecay?.status || "warmup",
+      trackedFeatureCount: summary.featureDecay?.trackedFeatureCount || 0,
+      weakFeatureCount: summary.featureDecay?.weakFeatureCount || 0,
+      degradedFeatureCount: summary.featureDecay?.degradedFeatureCount || 0,
+      strongestFeature: summary.featureDecay?.strongestFeature || null,
+      weakestFeature: summary.featureDecay?.weakestFeature || null,
+      averagePredictiveScore: num(summary.featureDecay?.averagePredictiveScore || 0, 4),
+      notes: [...(summary.featureDecay?.notes || [])]
+    },
+    featureDecayScorecards: arr(summary.featureDecayScorecards || []).slice(0, 8).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0,
+      predictiveScore: num(item.predictiveScore || 0, 4),
+      meanShift: num(item.meanShift || 0, 4),
+      direction: item.direction || "pro",
+      status: item.status || "watch"
+    })),
+    calibrationGovernance: {
+      falsePositiveRate: num(summary.calibrationGovernance?.falsePositiveRate || 0, 4),
+      falseNegativeRate: num(summary.calibrationGovernance?.falseNegativeRate || 0, 4),
+      governanceScore: num(summary.calibrationGovernance?.governanceScore || 0, 4),
+      status: summary.calibrationGovernance?.status || "warmup",
+      note: summary.calibrationGovernance?.note || null
+    },
+    regimeDeployment: {
+      status: summary.regimeDeployment?.status || "warmup",
+      readyRegimes: [...(summary.regimeDeployment?.readyRegimes || [])],
+      observeRegimes: [...(summary.regimeDeployment?.observeRegimes || [])],
+      cooldownRegimes: [...(summary.regimeDeployment?.cooldownRegimes || [])],
+      note: summary.regimeDeployment?.note || null
+    },
     falsePositiveByStrategy: arr(summary.falsePositiveByStrategy || []).slice(0, 5),
     falseNegativeByStrategy: arr(summary.falseNegativeByStrategy || []).slice(0, 5),
     notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeExchangeTruth(summary = {}) {
+  return {
+    status: summary.status || "unknown",
+    freezeEntries: Boolean(summary.freezeEntries),
+    mismatchCount: summary.mismatchCount || 0,
+    runtimePositionCount: summary.runtimePositionCount || 0,
+    exchangePositionCount: summary.exchangePositionCount || 0,
+    lastReconciledAt: summary.lastReconciledAt || null,
+    lastHealthyAt: summary.lastHealthyAt || null,
+    orphanedSymbols: [...(summary.orphanedSymbols || [])],
+    missingRuntimeSymbols: [...(summary.missingRuntimeSymbols || [])],
+    warnings: arr(summary.warnings || []).slice(0, 8).map((item) => ({
+      symbol: item.symbol || null,
+      issue: item.issue || null,
+      error: item.error || null,
+      quantity: item.quantity == null ? null : num(item.quantity || 0, 8)
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeOrderLifecycle(summary = {}) {
+  const positions = Object.values(summary.positions || {}).map((item) => ({
+    id: item.id || null,
+    symbol: item.symbol || null,
+    state: item.state || "unknown",
+    brokerMode: item.brokerMode || "paper",
+    entryAt: item.entryAt || null,
+    lastTransitionAt: item.lastTransitionAt || null,
+    protectiveOrderListId: item.protectiveOrderListId || null,
+    operatorMode: item.operatorMode || "normal",
+    failureCount: item.failureCount || 0,
+    manualReviewRequired: Boolean(item.manualReviewRequired),
+    reconcileRequired: Boolean(item.reconcileRequired)
+  }));
+  return {
+    lastUpdatedAt: summary.lastUpdatedAt || null,
+    positions,
+    pendingActions: arr(summary.pendingActions || []).slice(0, 12).map((item) => ({
+      id: item.id || null,
+      symbol: item.symbol || null,
+      action: item.action || null,
+      state: item.state || null,
+      reason: item.reason || null,
+      severity: item.severity || "neutral"
+    })),
+    recentTransitions: arr(summary.recentTransitions || []).slice(0, 20).map((item) => ({
+      at: item.at || null,
+      symbol: item.symbol || null,
+      state: item.state || null,
+      previousState: item.previousState || null,
+      detail: item.detail || null,
+      severity: item.severity || "neutral"
+    }))
+  };
+}
+
+function summarizeShadowTrading(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    enabled: Boolean(summary.enabled),
+    mode: summary.mode || "observe",
+    candidateCount: summary.candidateCount || 0,
+    simulatedEntries: arr(summary.simulatedEntries || []).slice(0, 6).map((item) => ({
+      symbol: item.symbol || null,
+      probability: num(item.probability || 0, 4),
+      threshold: num(item.threshold || 0, 4),
+      quoteAmount: num(item.quoteAmount || 0, 2),
+      fillPrice: num(item.fillPrice || 0, 6),
+      expectedSlippageBps: num(item.expectedSlippageBps || 0, 2),
+      executionStyle: item.executionStyle || null,
+      status: item.status || "observe"
+    })),
+    notes: [...(summary.notes || [])]
+  };
+}
+
+function summarizeServiceState(summary = {}) {
+  return {
+    lastHeartbeatAt: summary.lastHeartbeatAt || null,
+    watchdogStatus: summary.watchdogStatus || "idle",
+    restartBackoffSeconds: summary.restartBackoffSeconds == null ? null : num(summary.restartBackoffSeconds || 0, 1),
+    lastExitCode: summary.lastExitCode == null ? null : summary.lastExitCode,
+    statusFile: summary.statusFile || null
   };
 }
 
@@ -1577,6 +1757,12 @@ export class TradingBot {
     this.runtime.pairHealth = this.runtime.pairHealth || summarizePairHealth({});
     this.runtime.divergence = this.runtime.divergence || summarizeDivergenceSummary({});
     this.runtime.offlineTrainer = this.runtime.offlineTrainer || summarizeOfflineTrainer({});
+    this.runtime.shadowTrading = this.runtime.shadowTrading || {};
+    this.runtime.thresholdTuning = this.runtime.thresholdTuning || {};
+    this.runtime.exchangeTruth = this.runtime.exchangeTruth || {};
+    this.runtime.orderLifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [] };
+    this.runtime.ops = this.runtime.ops || { lastUpdatedAt: null, incidentTimeline: [], runbooks: [], performanceChange: null };
+    this.runtime.service = this.runtime.service || { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, lastExitCode: null, statusFile: null };
     this.runtime.counterfactualQueue = arr(this.runtime.counterfactualQueue);
     this.runtime.session = this.runtime.session || {};
     this.runtime.drift = this.runtime.drift || {};
@@ -1724,6 +1910,8 @@ export class TradingBot {
       getMarketSnapshot: this.getMarketSnapshot.bind(this)
     });
     await this.applyReconciliation(reconciliation);
+    this.syncOrderLifecycleState("init_reconciliation");
+    this.refreshOperationalViews({ report: buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config }), nowIso: nowIso() });
     await this.persist();
   }
 
@@ -1787,6 +1975,11 @@ export class TradingBot {
     this.runtime.lifecycle = this.runtime.lifecycle || {};
     this.runtime.lifecycle.activeRun = false;
     this.runtime.lifecycle.lastShutdownAt = nowIso();
+    this.runtime.service = {
+      ...(this.runtime.service || {}),
+      lastHeartbeatAt: nowIso(),
+      watchdogStatus: "stopped"
+    };
     this.runtime.recovery = {
       ...(this.runtime.recovery || {}),
       uncleanShutdownDetected: false,
@@ -1800,6 +1993,8 @@ export class TradingBot {
       modelRegistry: this.runtime.modelRegistry
     }, { reason: "shutdown", force: true, nowIso: nowIso() }).catch(() => {});
     this.runtime.stateBackups = this.backupManager.getSummary();
+    this.syncOrderLifecycleState("shutdown");
+    this.refreshOperationalViews({ nowIso: nowIso() });
     await this.persist().catch(() => {});
     await this.stream.close().catch(() => {});
   }
@@ -1886,7 +2081,326 @@ export class TradingBot {
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
+    this.runtime.thresholdTuning = this.runtime.offlineTrainer?.thresholdPolicy || {};
+    this.syncOrderLifecycleState("governance_refresh");
+    this.refreshOperationalViews({ report, nowIso: referenceNow });
     return { report, rawResearchRegistry, divergenceSummary, offlineTrainerSummary };
+  }
+
+  syncOrderLifecycleState(reason = "runtime_sync") {
+    const lifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [] };
+    const previousPositions = lifecycle.positions && typeof lifecycle.positions === "object" ? lifecycle.positions : {};
+    const nextPositions = {};
+    const transitions = arr(lifecycle.recentTransitions);
+    const tradeIndex = new Map(arr(this.journal.trades).slice(-120).map((trade) => [trade.id, trade]));
+    const transitionAt = nowIso();
+
+    const pushTransition = ({ symbol, id, state, previousState = null, detail = null, severity = "neutral" } = {}) => {
+      transitions.unshift({
+        at: transitionAt,
+        id: id || null,
+        symbol: symbol || null,
+        state: state || null,
+        previousState,
+        detail,
+        severity
+      });
+    };
+
+    for (const position of arr(this.runtime.openPositions)) {
+      const previous = previousPositions[position.id] || {};
+      const state = position.manualReviewRequired
+        ? "manual_review"
+        : position.operatorMode === "protect_only"
+          ? "protect_only"
+          : position.reconcileRequired
+            ? "reconcile_required"
+            : position.lifecycleState || (
+              (position.brokerMode || this.config.botMode) === "live"
+                ? (position.protectiveOrderListId ? "protected" : "open")
+                : "simulated_open"
+            );
+      const view = {
+        id: position.id,
+        symbol: position.symbol,
+        state,
+        brokerMode: position.brokerMode || this.config.botMode,
+        entryAt: position.entryAt || null,
+        lastTransitionAt: previous.state !== state ? transitionAt : previous.lastTransitionAt || position.entryAt || transitionAt,
+        protectiveOrderListId: position.protectiveOrderListId || null,
+        operatorMode: position.operatorMode || "normal",
+        failureCount: position.managementFailureCount || 0,
+        manualReviewRequired: Boolean(position.manualReviewRequired),
+        reconcileRequired: Boolean(position.reconcileRequired)
+      };
+      nextPositions[position.id] = view;
+      if (previous.state !== state) {
+        pushTransition({
+          symbol: position.symbol,
+          id: position.id,
+          state,
+          previousState: previous.state || null,
+          detail: reason,
+          severity: ["manual_review", "reconcile_required"].includes(state)
+            ? "negative"
+            : ["protect_only", "protection_pending"].includes(state)
+              ? "neutral"
+              : "positive"
+        });
+      }
+    }
+
+    for (const [id, previous] of Object.entries(previousPositions)) {
+      if (nextPositions[id]) {
+        continue;
+      }
+      const trade = tradeIndex.get(id) || null;
+      pushTransition({
+        symbol: previous.symbol || trade?.symbol || null,
+        id,
+        state: trade ? "closed" : "removed",
+        previousState: previous.state || null,
+        detail: trade?.reason || reason,
+        severity: trade && (trade.pnlQuote || 0) < 0 ? "negative" : "neutral"
+      });
+    }
+
+    lifecycle.positions = nextPositions;
+    lifecycle.lastUpdatedAt = transitionAt;
+    lifecycle.recentTransitions = transitions.slice(0, 60);
+    lifecycle.pendingActions = Object.values(nextPositions)
+      .filter((item) => ["protect_only", "manual_review", "reconcile_required", "protection_pending"].includes(item.state))
+      .map((item) => ({
+        id: item.id,
+        symbol: item.symbol,
+        state: item.state,
+        action: item.state === "manual_review"
+          ? "manual_review"
+          : item.state === "reconcile_required"
+            ? "reconcile_exchange_position"
+            : item.state === "protect_only"
+              ? "protect_only_monitoring"
+              : "rebuild_protection",
+        reason: item.state === "protection_pending"
+          ? "protective_order_missing"
+          : item.state,
+        severity: ["manual_review", "reconcile_required"].includes(item.state) ? "negative" : "neutral"
+      }))
+      .slice(0, 12);
+    this.runtime.orderLifecycle = lifecycle;
+    return lifecycle;
+  }
+
+  buildIncidentTimeline(referenceNow = nowIso()) {
+    const referenceMs = new Date(referenceNow).getTime();
+    const cutoffMs = referenceMs - 48 * 3_600_000;
+    const eventEntries = arr(this.journal.events || []).map((event) => ({
+      at: event.at || null,
+      type: event.type || "event",
+      symbol: event.symbol || null,
+      detail: event.error || event.rationale || event.reason || event.issue || null,
+      severity: /fail|error|blocked|warning|reconcile|stale|freeze/i.test(event.type || "")
+        ? "negative"
+        : /scaled|opened|restored|snapshot|research/i.test(event.type || "")
+          ? "positive"
+          : "neutral"
+    }));
+    const warningEntries = arr(this.runtime.health?.warnings || []).map((warning) => ({
+      at: warning.at || null,
+      type: (warning.issues || [])[0] || "health_warning",
+      symbol: warning.symbol || null,
+      detail: warning.error || (warning.issues || []).join(", "),
+      severity: "negative"
+    }));
+    return [...eventEntries, ...warningEntries]
+      .filter((item) => {
+        const atMs = new Date(item.at || 0).getTime();
+        return Number.isFinite(atMs) && atMs >= cutoffMs;
+      })
+      .sort((left, right) => new Date(right.at || 0).getTime() - new Date(left.at || 0).getTime())
+      .slice(0, 16);
+  }
+
+  buildOperatorRunbooks(report) {
+    const runbooks = [];
+    const exchangeTruth = this.runtime.exchangeTruth || {};
+    const lifecycle = this.runtime.orderLifecycle || {};
+    const health = this.runtime.health || {};
+    const selfHeal = this.runtime.selfHeal || {};
+    const qualityQuorum = this.runtime.qualityQuorum || {};
+    const drift = this.runtime.drift || {};
+
+    if (exchangeTruth.freezeEntries) {
+      runbooks.push({
+        id: "exchange_truth_freeze",
+        severity: "negative",
+        title: "Nieuwe entries bevriezen",
+        reason: exchangeTruth.notes?.[0] || "Exchange/runtime inventory mismatch.",
+        action: "Laat alleen reconcile, beschermingsherstel en exits lopen tot de inventory weer matcht."
+      });
+    }
+    if ((lifecycle.pendingActions || []).some((item) => item.state === "manual_review")) {
+      runbooks.push({
+        id: "manual_review_positions",
+        severity: "negative",
+        title: "Positie in manual review",
+        reason: "Een open positie had meerdere management-fouten.",
+        action: "Controleer exchange orders, protective orders en open exposure voordat normale automation terug mag sturen."
+      });
+    }
+    if ((lifecycle.pendingActions || []).some((item) => item.state === "reconcile_required")) {
+      runbooks.push({
+        id: "reconcile_required",
+        severity: "negative",
+        title: "Exchange reconcile nodig",
+        reason: "Een positie heeft runtime-management maar mist een schone protective state.",
+        action: "Draai reconcile/status, bevestig quantity en herbouw bescherming of flatten handmatig."
+      });
+    }
+    if (health.circuitOpen) {
+      runbooks.push({
+        id: "health_circuit_open",
+        severity: "negative",
+        title: "Trading circuit open",
+        reason: health.reason || "Te veel opeenvolgende runtime failures.",
+        action: "Onderzoek de laatste cycle failures en heropen entries pas na een schone run."
+      });
+    }
+    if (["paused", "paper_fallback"].includes(selfHeal.mode)) {
+      runbooks.push({
+        id: "self_heal_active",
+        severity: "neutral",
+        title: "Self-heal actief",
+        reason: selfHeal.reason || "De bot draait in een defensieve modus.",
+        action: "Gebruik doctor/status om de trigger te bevestigen en herstel alleen na stabiele telemetry."
+      });
+    }
+    if (qualityQuorum.observeOnly) {
+      runbooks.push({
+        id: "quality_quorum_observe_only",
+        severity: "neutral",
+        title: "Observe-only data modus",
+        reason: (qualityQuorum.blockerReasons || [])[0] || "Kwaliteitsquorum blokkeert nieuwe entries.",
+        action: "Wacht op lokale book, provider of pair-health herstel voordat nieuwe trades worden geopend."
+      });
+    }
+    if (arr(drift.blockerReasons || []).length) {
+      runbooks.push({
+        id: "drift_blockers",
+        severity: "neutral",
+        title: "Drift guard actief",
+        reason: drift.blockerReasons[0] || "Drift-monitor blokkeert agressievere entries.",
+        action: "Vergelijk recente fills, calibration en feature drift voordat thresholds weer worden verruimd."
+      });
+    }
+    if (!runbooks.length && (report?.tradeQualityReview?.notes || []).length) {
+      runbooks.push({
+        id: "healthy_runtime",
+        severity: "positive",
+        title: "Runtime oogt stabiel",
+        reason: report.tradeQualityReview.notes[0],
+        action: "Blijf vooral counterfactuals, exit quality en exchange reconcile volgen."
+      });
+    }
+    return runbooks.slice(0, 8);
+  }
+
+  buildPerformanceChangeView(report) {
+    const today = report?.windows?.today || {};
+    const days7 = report?.windows?.days7 || {};
+    const todayAvgPnl = (today.tradeCount || 0) ? (today.realizedPnl || 0) / today.tradeCount : 0;
+    const days7AvgPnl = (days7.tradeCount || 0) ? (days7.realizedPnl || 0) / days7.tradeCount : 0;
+    const pnlDeltaPerTrade = todayAvgPnl - days7AvgPnl;
+    const winRateDelta = (today.winRate || 0) - (days7.winRate || 0);
+    const topStrategy = report?.attribution?.strategies?.[0] || null;
+    const weakestStyle = [...arr(report?.executionSummary?.styles || [])]
+      .sort((left, right) => (left.realizedPnl || 0) - (right.realizedPnl || 0))[0] || null;
+    const tradeQuality = report?.tradeQualityReview || {};
+    const status = pnlDeltaPerTrade > 5 || winRateDelta > 0.08
+      ? "positive"
+      : pnlDeltaPerTrade < -5 || winRateDelta < -0.08
+        ? "negative"
+        : "neutral";
+
+    return {
+      status,
+      headline: status === "positive"
+        ? "Recente performance ligt boven het 7-daags tempo."
+        : status === "negative"
+          ? "Recente performance ligt onder het 7-daags tempo."
+          : "Performance beweegt rond het recente gemiddelde.",
+      pnlDeltaPerTrade: num(pnlDeltaPerTrade, 2),
+      winRateDelta: num(winRateDelta, 4),
+      topStrategy: topStrategy?.id || null,
+      weakestExecutionStyle: weakestStyle?.style || null,
+      leadDriver: tradeQuality.notes?.[1] || tradeQuality.notes?.[0] || null,
+      notes: [
+        tradeQuality.notes?.[0] || "Nog geen trade-quality context beschikbaar.",
+        topStrategy ? `${topStrategy.id} draagt nu het meeste bij.` : "Nog geen leidende strategie zichtbaar.",
+        weakestStyle ? `${weakestStyle.style} is de zwakste execution-style in recente trades.` : "Nog geen duidelijke execution-stijl zwakker dan de rest."
+      ]
+    };
+  }
+
+  buildShadowTradingView(decisionSummaries = arr(this.runtime.latestDecisions), referenceNow = nowIso()) {
+    const eligible = arr(decisionSummaries).filter((item) => item.allow);
+    const simulatedEntries = eligible
+      .slice(0, this.config.shadowTradeDecisionLimit || 3)
+      .map((decision) => {
+        const marketSnapshot = this.marketCache[decision.symbol] || null;
+        const fill = marketSnapshot
+          ? this.execution.simulatePaperFill({
+              marketSnapshot,
+              side: "BUY",
+              requestedQuoteAmount: decision.quoteAmount || 0,
+              latencyMs: this.config.paperLatencyMs,
+              plan: decision.executionPlan || { entryStyle: decision.executionStyle || "market", fallbackStyle: "none" }
+            })
+          : null;
+        return {
+          symbol: decision.symbol,
+          probability: num(decision.probability || 0, 4),
+          threshold: num(decision.threshold || 0, 4),
+          quoteAmount: num(decision.quoteAmount || 0, 2),
+          fillPrice: num(fill?.fillPrice || marketSnapshot?.book?.mid || 0, 6),
+          expectedSlippageBps: num(fill?.expectedImpactBps || 0, 2),
+          executionStyle: decision.executionStyle || decision.executionPlan?.entryStyle || null,
+          status: this.config.botMode === "live" ? "shadow_live" : "shadow_paper"
+        };
+      });
+    return {
+      generatedAt: referenceNow,
+      enabled: true,
+      mode: this.config.botMode === "live" ? "shadow_live" : "shadow_paper",
+      candidateCount: arr(decisionSummaries).length,
+      simulatedEntries,
+      notes: [
+        simulatedEntries.length
+          ? `${simulatedEntries.length} shadow entries volgen de live marktfase zonder echte orderplaatsing.`
+          : "Nog geen tradebare setups beschikbaar voor shadow mode.",
+        this.config.botMode === "live"
+          ? "Gebruik shadow fills om echte live entries met paper gedrag te vergelijken."
+          : "In paper mode laat shadow trading zien wat een extra live-achtige routing zou doen."
+      ]
+    };
+  }
+
+  refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
+    const evaluation = report || buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
+    this.runtime.thresholdTuning = this.runtime.offlineTrainer?.thresholdPolicy || this.runtime.thresholdTuning || {};
+    this.runtime.ops = {
+      lastUpdatedAt: referenceNow,
+      incidentTimeline: this.buildIncidentTimeline(referenceNow),
+      runbooks: this.buildOperatorRunbooks(evaluation),
+      performanceChange: this.buildPerformanceChangeView(evaluation)
+    };
+    this.runtime.service = {
+      ...(this.runtime.service || {}),
+      lastHeartbeatAt: referenceNow,
+      watchdogStatus: this.runtime.lifecycle?.activeRun ? "running" : (this.runtime.service?.watchdogStatus || "idle")
+    };
+    return this.runtime.ops;
   }
 
   updateSafetyState({ now = new Date(), candidateSummaries = arr(this.runtime.latestDecisions) } = {}) {
@@ -2015,6 +2529,7 @@ export class TradingBot {
   }
 
   async applyReconciliation(reconciliation) {
+    const previousFreeze = Boolean(this.runtime.exchangeTruth?.freezeEntries);
     for (const warning of reconciliation.warnings || []) {
       this.logger.warn("Broker reconciliation warning", warning);
       this.recordEvent("broker_reconciliation_warning", warning);
@@ -2026,6 +2541,21 @@ export class TradingBot {
       this.journal.trades.push(trade);
       await this.learnFromTrade(trade, "Reconciled closed position");
     }
+    if (reconciliation.exchangeTruth) {
+      this.runtime.exchangeTruth = {
+        ...(this.runtime.exchangeTruth || {}),
+        ...reconciliation.exchangeTruth
+      };
+      const currentFreeze = Boolean(this.runtime.exchangeTruth.freezeEntries);
+      if (currentFreeze !== previousFreeze) {
+        this.recordEvent("exchange_truth_state_changed", {
+          freezeEntries: currentFreeze,
+          mismatchCount: this.runtime.exchangeTruth.mismatchCount || 0,
+          status: this.runtime.exchangeTruth.status || "unknown"
+        });
+      }
+    }
+    this.syncOrderLifecycleState("broker_reconciliation");
   }
 
   async getMarketSnapshot(symbol) {
@@ -2926,7 +3456,21 @@ export class TradingBot {
         position.replayCheckpoints.push({ at: nowIso(), price: num(marketSnapshot.book.mid, 6), spreadBps: num(marketSnapshot.book.spreadBps || 0, 2), bookPressure: num(marketSnapshot.book.bookPressure || 0, 3), newsRisk: num(newsSummary.riskScore || 0, 3), tfAlignment: num(timeframeSummary.alignmentScore || 0, 4), onChainStress: num(onChainLiteSummary.stressScore || 0, 4) });
         position.replayCheckpoints = position.replayCheckpoints.slice(-24);
         position.lastReviewedAt = nowIso();
+        if (!position.manualReviewRequired && !position.reconcileRequired) {
+          position.managementFailureCount = 0;
+          position.operatorMode = "normal";
+          if (!position.lifecycleState || ["protect_only", "manual_review", "reconcile_required"].includes(position.lifecycleState)) {
+            position.lifecycleState = position.protectiveOrderListId ? "protected" : ((position.brokerMode || this.config.botMode) === "live" ? "open" : "simulated_open");
+          }
+        }
         if (exitDecision.shouldScaleOut) {
+          if (position.manualReviewRequired || position.operatorMode === "protect_only") {
+            this.recordEvent("position_scale_out_skipped", {
+              symbol: position.symbol,
+              reason: position.manualReviewRequired ? "manual_review" : "protect_only"
+            });
+            continue;
+          }
           const scaleOut = await this.broker.scaleOutPosition({
             position,
             rules: this.symbolRules[position.symbol],
@@ -2966,10 +3510,27 @@ export class TradingBot {
         this.journal.trades.push(trade);
         await this.learnFromTrade(trade, "Closed position");
       } catch (error) {
+        position.managementFailureCount = (position.managementFailureCount || 0) + 1;
+        position.lastManagementError = error.message;
+        position.lastManagementErrorAt = nowIso();
+        if ((position.managementFailureCount || 0) >= (this.config.positionFailureManualReviewCount || 4)) {
+          position.operatorMode = "manual_review";
+          position.manualReviewRequired = true;
+          position.lifecycleState = "manual_review";
+        } else if ((position.managementFailureCount || 0) >= (this.config.positionFailureProtectOnlyCount || 2)) {
+          position.operatorMode = "protect_only";
+          position.lifecycleState = "protect_only";
+        }
         this.logger.warn("Position management failed", { symbol: position.symbol, error: error.message });
-        this.recordEvent("position_management_failed", { symbol: position.symbol, error: error.message });
+        this.recordEvent("position_management_failed", {
+          symbol: position.symbol,
+          error: error.message,
+          failureCount: position.managementFailureCount || 0,
+          operatorMode: position.operatorMode || "normal"
+        });
       }
     }
+    this.syncOrderLifecycleState("position_review");
     return mids;
   }
 
@@ -3212,6 +3773,7 @@ export class TradingBot {
   }
 
   async openBestCandidate(candidates, { executionBlockers = [] } = {}) {
+    const botMode = this.config?.botMode || this.runtime?.mode || "paper";
     const attempt = {
       status: "idle",
       selectedSymbol: null,
@@ -3223,6 +3785,11 @@ export class TradingBot {
     if (!this.health.canEnterNewPositions(this.runtime)) {
       attempt.status = "health_blocked";
       attempt.blockedReasons.push("health_circuit_open");
+      return attempt;
+    }
+    if (botMode === "live" && this.runtime.exchangeTruth?.freezeEntries) {
+      attempt.status = "runtime_blocked";
+      attempt.blockedReasons.push("exchange_truth_freeze");
       return attempt;
     }
     if (attempt.blockedReasons.length) {
@@ -3402,6 +3969,8 @@ export class TradingBot {
       this.runtime.lastPortfolioUpdateAt = nowIso();
       this.runtime.lastAnalysisAt = nowIso();
       this.runtime.lastAnalysisError = null;
+      this.syncOrderLifecycleState("analysis_refresh");
+      this.refreshGovernanceViews(this.runtime.lastAnalysisAt);
       this.trimJournal();
       await this.persist();
       return { quoteFree: balance.quoteFree, equity, topCandidates: candidates.slice(0, 5) };
@@ -3459,6 +4028,7 @@ export class TradingBot {
     const entryAttempt = await this.openBestCandidate(candidates, { executionBlockers });
     const openedPosition = entryAttempt.openedPosition || null;
     this.applyEntryAttemptToDecisions(entryAttempt);
+    this.syncOrderLifecycleState("entry_attempt");
     const portfolio = await this.updatePortfolioSnapshot(markedPrices);
     this.journal.equitySnapshots.push({
       at: cycleAt,
@@ -3485,6 +4055,11 @@ export class TradingBot {
     this.runtime.lastCycleAt = cycleAt;
     this.runtime.lastAnalysisAt = cycleAt;
     this.runtime.lastAnalysisError = null;
+    this.runtime.service = {
+      ...(this.runtime.service || {}),
+      lastHeartbeatAt: cycleAt,
+      watchdogStatus: "running"
+    };
     this.refreshGovernanceViews(cycleAt);
     await this.dataRecorder.recordDecisions({ at: cycleAt, candidates });
     await this.dataRecorder.recordCycle({
@@ -3538,13 +4113,25 @@ export class TradingBot {
       const result = await this.runCycleCore();
       this.health.recordSuccess(this.runtime);
       this.updateSafetyState({ now: new Date(), candidateSummaries: arr(this.runtime.latestDecisions) });
+      this.runtime.service = {
+        ...(this.runtime.service || {}),
+        lastHeartbeatAt: nowIso(),
+        watchdogStatus: "running"
+      };
+      this.refreshOperationalViews({ nowIso: nowIso() });
       this.trimJournal();
       await this.persist();
       return result;
     } catch (error) {
       this.health.recordFailure(this.runtime, error);
       this.runtime.lastAnalysisError = { at: nowIso(), message: error.message };
+      this.runtime.service = {
+        ...(this.runtime.service || {}),
+        lastHeartbeatAt: nowIso(),
+        watchdogStatus: "degraded"
+      };
       this.recordEvent("cycle_failure", { error: error.message });
+      this.refreshOperationalViews({ nowIso: nowIso() });
       this.trimJournal();
       await this.persist();
       throw error;
@@ -3582,6 +4169,11 @@ export class TradingBot {
       probabilityAtEntry: position.probabilityAtEntry == null ? null : num(position.probabilityAtEntry, 4),
       regimeAtEntry: position.regimeAtEntry || null,
       strategyAtEntry: position.strategyAtEntry || position.entryRationale?.strategy?.activeStrategy || null,
+      lifecycleState: position.lifecycleState || ((position.brokerMode || this.config.botMode) === "live" ? (position.protectiveOrderListId ? "protected" : "open") : "simulated_open"),
+      operatorMode: position.operatorMode || "normal",
+      managementFailureCount: position.managementFailureCount || 0,
+      manualReviewRequired: Boolean(position.manualReviewRequired),
+      reconcileRequired: Boolean(position.reconcileRequired),
       executionPlan: summarizePlan(position.executionPlan),
       entryExecutionAttribution: summarizeExecutionAttribution(position.entryExecutionAttribution || {}),
       protectiveOrderListId: position.protectiveOrderListId || null,
@@ -3680,6 +4272,13 @@ export class TradingBot {
       unrealizedPnlPct: positionView.unrealizedPnlPct,
       regimeAtEntry: positionView.regimeAtEntry || null,
       strategyAtEntry: positionView.strategyAtEntry || null,
+      lifecycle: {
+        state: positionView.lifecycleState || "unknown",
+        operatorMode: positionView.operatorMode || "normal",
+        managementFailureCount: positionView.managementFailureCount || 0,
+        manualReviewRequired: Boolean(positionView.manualReviewRequired),
+        reconcileRequired: Boolean(positionView.reconcileRequired)
+      },
       latestExitIntelligence: {
         action: exitIntelligence.action || "hold",
         confidence: num(exitIntelligence.confidence || 0, 4),
@@ -3867,7 +4466,19 @@ export class TradingBot {
     const rationale = trade.entryRationale || {};
     const headlines = arr(rationale.headlines || []).slice(0, 3).map((item) => item.title || item);
     const committee = rationale.committee || {};
+    const exitIntelligence = trade.exitIntelligenceSummary || {};
     const gateDetail = `model ${num(rationale.probability || trade.probabilityAtEntry || 0, 3)} | gate ${num(rationale.threshold || 0, 3)} | conf ${num(rationale.confidence || 0, 3)}`;
+    const alternateExits = [
+      rationale.takeProfitPct != null
+        ? { label: "take_profit", price: num((trade.entryPrice || 0) * (1 + (rationale.takeProfitPct || 0)), 6), source: "entry_plan" }
+        : null,
+      rationale.stopLossPct != null
+        ? { label: "stop_loss", price: num((trade.entryPrice || 0) * (1 - (rationale.stopLossPct || 0)), 6), source: "entry_plan" }
+        : null,
+      exitIntelligence.suggestedStopLossPrice
+        ? { label: "ai_trail", price: num(exitIntelligence.suggestedStopLossPrice || 0, 6), source: "exit_ai" }
+        : null
+    ].filter(Boolean);
     return {
       id: trade.id,
       symbol: trade.symbol,
@@ -3891,6 +4502,7 @@ export class TradingBot {
       sequence: summarizeSequence(rationale.sequence || {}),
       expertMix: summarizeExpertMix(rationale.expertMix || {}),
       blockersAtEntry: arr(rationale.blockerReasons || []).slice(0, 5),
+      vetoChain: arr(rationale.blockerReasons || []).slice(0, 5),
       headlines,
       candleContext: arr(rationale.candleContext || []).slice(0, 24),
       pnlAttribution: {
@@ -3899,6 +4511,7 @@ export class TradingBot {
         captureEfficiency: num(trade.captureEfficiency || 0, 4)
       },
       review: buildTradeQualityReview(trade),
+      alternateExits,
       replayCheckpoints: arr(trade.replayCheckpoints || []).slice(-12),
       timeline: [
         { at: trade.entryAt, type: "analysis", label: "Gate", detail: gateDetail },
@@ -4073,9 +4686,18 @@ export class TradingBot {
         session: topDecision.session || this.runtime.session || leadPosition?.entryRationale?.session || summarizeSession({}),
         drift: summarizeDrift(this.runtime.drift || {}),
         selfHeal: summarizeSelfHeal(this.runtime.selfHeal || {}),
+        exchangeTruth: summarizeExchangeTruth(this.runtime.exchangeTruth || {}),
+        orderLifecycle: summarizeOrderLifecycle(this.runtime.orderLifecycle || {}),
         stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
         backups: this.runtime.stateBackups || this.backupManager.getSummary(),
         recovery: this.runtime.recovery || {}
+      },
+      ops: {
+        incidentTimeline: arr(this.runtime.ops?.incidentTimeline || []).slice(0, 16),
+        runbooks: arr(this.runtime.ops?.runbooks || []).slice(0, 8),
+        performanceChange: this.runtime.ops?.performanceChange || null,
+        shadowTrading: summarizeShadowTrading(this.runtime.shadowTrading || {}),
+        service: summarizeServiceState(this.runtime.service || {})
       },
       portfolio: this.buildPortfolioView(),
       exchange: exchangeOverview,
@@ -4174,25 +4796,15 @@ export class TradingBot {
       exchange: dashboard.exchange,
       marketStructure: dashboard.marketStructure,
       qualityQuorum: dashboard.qualityQuorum,
+      offlineTrainer: dashboard.offlineTrainer,
       calendar: dashboard.calendar,
       safety: dashboard.safety,
+      ops: dashboard.ops,
       report: dashboard.report,
       modelWeights: dashboard.modelWeights
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
