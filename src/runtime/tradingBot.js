@@ -3147,6 +3147,7 @@ export class TradingBot {
       strategyFamily: candidate.strategySummary?.family || null,
       regime: candidate.regimeSummary?.regime || null,
       marketPhase: candidate.marketStateSummary?.phase || null,
+      sessionAtEntry: candidate.sessionSummary?.session || null,
       blockerReasons: [...(candidate.decision?.reasons || [])].slice(0, 6),
       learningLane: candidate.decision?.learningLane || null,
       learningValueScore: num(candidate.decision?.learningValueScore || 0, 4),
@@ -4357,13 +4358,44 @@ export class TradingBot {
       .slice(-6)
       .reverse()
       .map((item) => summarizeCounterfactualReview(item));
+    const shadowLearningEvidence = [
+      ...counterfactuals
+        .filter((item) => isShadowReviewCase(item))
+        .slice(-20)
+        .map((item) => ({
+          symbol: item.symbol || null,
+          learningValueScore: clamp(num(item.learningValueScore || 0.48, 4), 0, 1),
+          paperLearning: {
+            noveltyScore: clamp(num(item.learningValueScore || 0.52, 4), 0.3, 1),
+            activeLearning: {
+              score: clamp(num((item.learningValueScore || 0.42) + Math.min(0.18, arr(item.branches || []).length * 0.06), 4), 0, 1),
+              focusReason: item.outcome ? `${item.outcome}_review` : "shadow_review"
+            }
+          }
+        })),
+      ...arr(this.runtime?.counterfactualQueue || [])
+        .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
+        .slice(-20)
+        .map((item) => ({
+          symbol: item.symbol || null,
+          learningValueScore: clamp(num(item.learningValueScore || 0.46, 4), 0, 1),
+          paperLearning: {
+            noveltyScore: clamp(num(item.learningValueScore || 0.5, 4), 0.3, 1),
+            activeLearning: {
+              score: clamp(num((item.learningValueScore || 0.4) + Math.min(0.16, arr(item.branchScenarios || []).length * 0.05), 4), 0, 1),
+              focusReason: "shadow_review"
+            }
+          }
+        }))
+    ];
+    const scoredLearningEntries = learningEntries.length ? learningEntries : shadowLearningEvidence;
     const probeGoodCount = recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
     const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
     const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
     const rollbackRisk = recentProbeTrades.length >= 3 && probeWeakCount >= Math.ceil(recentProbeTrades.length * 0.5);
-    const avgLearningValue = average(learningEntries.map((item) => item.learningValueScore || 0), 0);
-    const avgNovelty = average(learningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0);
-    const avgActiveLearning = average(learningEntries.map((item) => item.paperLearning?.activeLearning?.score || 0), 0);
+    const avgLearningValue = average(scoredLearningEntries.map((item) => item.learningValueScore || 0), 0);
+    const avgNovelty = average(scoredLearningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0);
+    const avgActiveLearning = average(scoredLearningEntries.map((item) => item.paperLearning?.activeLearning?.score || 0), 0);
     const recencyFreshnessScore = weightedAverage(
       recentPaperTrades,
       () => 1,
@@ -4443,7 +4475,7 @@ export class TradingBot {
             ? "Recente probe-trades tonen zwakke uitkomsten; rollback of strakkere gating is verstandig."
           : "Paper-probation loopt nog; verzamel extra gesloten probe-trades."
     };
-    const rankedActiveCandidates = learningEntries
+    const rankedActiveCandidates = scoredLearningEntries
       .map((item) => ({
         symbol: item.symbol || null,
         score: item.paperLearning?.activeLearning?.score || 0,
@@ -4589,7 +4621,9 @@ export class TradingBot {
     };
     return {
       generatedAt: referenceNow,
-      status: learningEntries.length ? "active" : "observe",
+      status: laneCounts.safe + laneCounts.probe + laneCounts.shadow > 0 || recentProbeReviews.length || recentShadowReviews.length
+        ? "active"
+        : "observe",
       readinessStatus,
       readinessScore,
       safeCount: laneCounts.safe || 0,

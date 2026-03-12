@@ -30,13 +30,18 @@ function isSoftPaperReason(reason) {
   return [
     "model_confidence_too_low",
     "model_uncertainty_abstain",
+    "committee_veto",
     "committee_confidence_too_low",
     "committee_low_agreement",
     "strategy_fit_too_low",
+    "strategy_context_mismatch",
     "orderbook_sell_pressure",
     "meta_gate_caution",
     "execution_cost_budget_exceeded",
     "strategy_cooldown",
+    "strategy_budget_cooled",
+    "cluster_budget_cooled",
+    "regime_budget_cooled",
     "capital_governor_blocked",
     "capital_governor_recovery",
     "trade_size_below_minimum"

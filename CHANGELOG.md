@@ -272,3 +272,5 @@ Initial public release of the Binance AI trading bot workspace.
 - added `paper roadmap v3` features: active learning scoring, benchmark lanes, confidence miscalibration tracking, counterfactual branching, failure library, and recency-weighted paper readiness
 - extended paper counterfactual queue resolution with alternative execution/size/exit branches
 - preserved `probabilityAtEntry` on closed paper trades so paper-learning calibration can compare predicted conviction with realized outcomes
+- paper recovery probes can now stay active through soft governance and learning blockers like `committee_veto`, strategy-context mismatch, and cooled strategy/cluster/regime budgets instead of being shut down too early
+- paper learning now treats branchable shadow review evidence as first-class activity for readiness, active-learning focus, and session/family/regime coverage even when the current cycle has no explicit probe decisions
