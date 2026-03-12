@@ -3349,12 +3349,12 @@ export class TradingBot {
         const regimeId = trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || null;
         const strategyMatch = !strategies.length || (strategyId && strategies.includes(strategyId));
         const regimeMatch = !regimes.length || (regimeId && regimes.includes(regimeId));
-        return strategyMatch || regimeMatch;
+        return strategyMatch && regimeMatch;
       });
   }
 
   buildThresholdExperimentSnapshot(scope = {}, options = {}) {
-    const sampleSize = this.config.thresholdProbationMinTrades || 6;
+    const sampleSize = this.config?.thresholdProbationMinTrades || 6;
     const trades = this.collectScopedThresholdTrades(scope, options).slice(-sampleSize);
     const tradeCount = trades.length;
     const winRate = tradeCount ? trades.filter((trade) => (trade.pnlQuote || 0) > 0).length / tradeCount : 0;
@@ -3382,7 +3382,7 @@ export class TradingBot {
       appliedRecommendation: previous.appliedRecommendation || null,
       activeThresholdShift: num(previous.activeThresholdShift || 0, 4)
     };
-    const probationTrades = this.config.thresholdProbationMinTrades || 6;
+    const probationTrades = this.config?.thresholdProbationMinTrades || 6;
     const probationWindowMs = (this.config.thresholdProbationWindowDays || 7) * 86_400_000;
     const active = next.appliedRecommendation;
 
@@ -7099,7 +7099,11 @@ export class TradingBot {
         const blockerMatch = itemBlockers.some((itemBlocker) => blockerSet.has(itemBlocker));
         const strategyMatch = strategyId && (item.strategy === strategyId || item.strategyAtEntry === strategyId);
         const regimeMatch = decision.marketState?.phase && item.marketPhase === decision.marketState.phase;
-        return blockerMatch || strategyMatch || regimeMatch;
+        return (
+          (blockerSet.size ? blockerMatch : true) &&
+          (strategyId ? strategyMatch : true) &&
+          (decision.marketState?.phase ? regimeMatch : true)
+        );
       })
       .slice(-12);
     const badVetoCount = recentCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome)).length;

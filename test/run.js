@@ -5556,7 +5556,7 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
   };
   bot.journal = {
     counterfactuals: [
-      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", realizedMovePct: 0.024 }
+      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", marketPhase: "range_acceptance", realizedMovePct: 0.024 }
     ]
   };
   const view = bot.buildDashboardDecisionView({
@@ -6041,6 +6041,24 @@ await runCheck("trading bot applies historical bootstrap warm start", async () =
   assert.equal(bot.runtime.paperLearning.notes[0], "Warm start vanuit recorder.");
 });
 
+await runCheck("trading bot threshold experiment snapshot respects combined strategy and regime scope", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.journal = {
+    trades: [
+      { exitAt: "2026-03-11T10:00:00.000Z", strategyAtEntry: "ema_trend", regimeAtEntry: "trend", netPnlPct: 0.01, pnlQuote: 10 },
+      { exitAt: "2026-03-11T11:00:00.000Z", strategyAtEntry: "ema_trend", regimeAtEntry: "range", netPnlPct: -0.02, pnlQuote: -5 },
+      { exitAt: "2026-03-11T12:00:00.000Z", strategyAtEntry: "mean_reversion", regimeAtEntry: "trend", netPnlPct: 0.03, pnlQuote: 7 }
+    ]
+  };
+  const snapshot = TradingBot.prototype.buildThresholdExperimentSnapshot.call(bot, {
+    affectedStrategies: ["ema_trend"],
+    affectedRegimes: ["trend"]
+  });
+  assert.equal(snapshot.tradeCount, 1);
+  assert.equal(snapshot.winRate, 1);
+  assert.equal(snapshot.avgPnlPct, 0.01);
+});
+
 await runCheck("trading bot paper learning summary surfaces probe probation candidates", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper" });
@@ -6069,6 +6087,38 @@ await runCheck("trading bot paper learning summary surfaces probe probation cand
   assert.equal(summary.probation.status, "promote_candidate");
   assert.equal(summary.probation.promotionReady, true);
   assert.equal(summary.probation.rollbackRisk, false);
+});
+
+await runCheck("trading bot missed trade analysis narrows recent matches by blocker strategy and phase", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    offlineTrainer: {
+      blockerScorecards: [
+        { id: "committee_veto", status: "observe", badVetoRate: 0.4, goodVetoRate: 0.2, averageMovePct: 0.01, count: 4 }
+      ],
+      strategyScorecards: [
+        { id: "ema_trend", status: "observe", falseNegativeRate: 0.5 }
+      ],
+      counterfactuals: { total: 4, averageMissedMovePct: 0.01 }
+    }
+  };
+  bot.journal = {
+    counterfactuals: [
+      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", marketPhase: "healthy_continuation", realizedMovePct: 0.02 },
+      { outcome: "good_veto", blockerReasons: ["committee_veto"], strategy: "mean_reversion", marketPhase: "healthy_continuation", realizedMovePct: 0.001 },
+      { outcome: "bad_veto", blockerReasons: ["other_blocker"], strategy: "ema_trend", marketPhase: "range_acceptance", realizedMovePct: 0.03 }
+    ]
+  };
+  const analysis = TradingBot.prototype.buildMissedTradeAnalysis.call(
+    bot,
+    { marketState: { phase: "healthy_continuation" } },
+    ["committee_veto"],
+    { activeStrategy: "ema_trend" }
+  );
+  assert.equal(analysis.recentMatches, 1);
+  assert.equal(analysis.recentBadVetoCount, 1);
+  assert.equal(analysis.recentGoodVetoCount, 0);
+  assert.equal(analysis.recentAverageMovePct, 0.02);
 });
 
 await runCheck("trading bot paper learning summary exposes scope readiness and sandbox", async () => {
