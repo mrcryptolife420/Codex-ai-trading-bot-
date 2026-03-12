@@ -1783,12 +1783,31 @@ function summarizePaperLearning(summary = {}) {
       weakestProbe: summary.reviewPacks.weakestProbe || null,
       topMissedSetup: summary.reviewPacks.topMissedSetup || null
     } : null,
+    paperToLiveReadiness: summary.paperToLiveReadiness ? {
+      status: summary.paperToLiveReadiness.status || "warmup",
+      score: num(summary.paperToLiveReadiness.score || 0, 4),
+      topScope: summary.paperToLiveReadiness.topScope || null,
+      blocker: summary.paperToLiveReadiness.blocker || null,
+      note: summary.paperToLiveReadiness.note || null
+    } : null,
+    counterfactualTuning: summary.counterfactualTuning ? {
+      status: summary.counterfactualTuning.status || "observe",
+      blocker: summary.counterfactualTuning.blocker || null,
+      action: summary.counterfactualTuning.action || null,
+      adjustment: num(summary.counterfactualTuning.adjustment || 0, 4),
+      confidence: num(summary.counterfactualTuning.confidence || 0, 4),
+      note: summary.counterfactualTuning.note || null
+    } : null,
     dailyBudget: summary.dailyBudget || null,
     topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
       id: item.id || null,
       count: item.count || 0
     })),
     topRegimes: arr(summary.topRegimes || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    topSessions: arr(summary.topSessions || []).slice(0, 4).map((item) => ({
       id: item.id || null,
       count: item.count || 0
     })),
@@ -3739,6 +3758,8 @@ export class TradingBot {
           sampleSize: sandboxStates[0].sampleSize || 0
         }
       : null;
+    const offlineTrainer = summarizeOfflineTrainer(this.runtime?.offlineTrainer || {});
+    const tuningRecommendation = offlineTrainer.thresholdPolicy?.topRecommendation || null;
     const replayPacks = this.runtime?.ops?.replayChaos?.replayPacks || this.runtime?.replayChaos?.replayPacks || {};
     const reviewPacks = {
       bestProbeWinner: replayPacks.probeWinners?.[0]?.symbol || null,
@@ -3767,6 +3788,41 @@ export class TradingBot {
       : readinessScore >= 0.54
         ? "building"
         : "warmup";
+    const paperToLiveReadiness = {
+      status: scopeReadiness[0]?.status || readinessStatus,
+      score: clamp(
+        readinessScore * 0.52 +
+        (scopeReadiness[0]?.readinessScore || 0) * 0.28 +
+        (promotionReady ? 0.12 : 0) -
+        ((topBlockers[0]?.count || 0) >= 3 ? 0.08 : 0),
+        0,
+        1
+      ),
+      topScope: scopeReadiness[0]?.id || null,
+      blocker: topBlockers[0]?.id || null,
+      note: scopeReadiness[0]
+        ? `${scopeReadiness[0].id} is momenteel de beste paper-scope voor een volgende probationstap.`
+        : "Nog geen duidelijke paper-scope klaar voor een volgende stap."
+    };
+    const counterfactualTuning = tuningRecommendation
+      ? {
+          status: tuningRecommendation.action || "observe",
+          blocker: tuningRecommendation.id || offlineTrainer.vetoFeedback?.topBlocker || null,
+          action: tuningRecommendation.action || "observe",
+          adjustment: tuningRecommendation.adjustment || 0,
+          confidence: tuningRecommendation.confidence || 0,
+          note: tuningRecommendation.rationale || `Counterfactual learning geeft nu vooral aandacht aan ${tuningRecommendation.id || "de huidige blocker-set"}.`
+        }
+      : {
+          status: "observe",
+          blocker: offlineTrainer.vetoFeedback?.topBlocker || null,
+          action: "observe",
+          adjustment: 0,
+          confidence: 0,
+          note: offlineTrainer.vetoFeedback?.topBlocker
+            ? `Counterfactual learning volgt ${offlineTrainer.vetoFeedback.topBlocker} nog op, maar ziet nog geen harde aanpassing nodig.`
+            : "Nog geen duidelijke counterfactual tuning-richting zichtbaar."
+        };
     const probation = {
       status: recentProbeTrades.length < 3
         ? "warmup"
@@ -3801,6 +3857,8 @@ export class TradingBot {
       scopeReadiness,
       thresholdSandbox,
       reviewPacks,
+      paperToLiveReadiness,
+      counterfactualTuning,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)
         .sort((left, right) => right[1] - left[1])
@@ -3833,6 +3891,12 @@ export class TradingBot {
         scopeReadiness[0]
           ? `Sterkste paper-scope: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
           : "Nog geen paper-scope readiness zichtbaar.",
+        paperToLiveReadiness.topScope
+          ? `Paper-to-live readiness focust nu op ${paperToLiveReadiness.topScope}.`
+          : "Paper-to-live readiness heeft nog geen duidelijke focus-scope.",
+        counterfactualTuning.blocker
+          ? `Counterfactual tuning kijkt nu vooral naar ${counterfactualTuning.blocker}.`
+          : "Counterfactual tuning heeft nog geen dominante blocker.",
         topBlockers[0]
           ? `${topBlockers[0].id} blokkeert momenteel het vaakst in paper learning.`
           : "Nog geen dominante paper blocker zichtbaar.",

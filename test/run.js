@@ -5628,6 +5628,18 @@ await runCheck("trading bot paper learning summary surfaces probe probation cand
 await runCheck("trading bot paper learning summary exposes scope readiness and sandbox", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {
+    offlineTrainer: {
+      vetoFeedback: { topBlocker: "committee_veto" },
+      thresholdPolicy: {
+        topRecommendation: {
+          id: "committee_veto",
+          action: "relax",
+          adjustment: -0.006,
+          confidence: 0.64,
+          rationale: "Gemiste winnaars stapelen zich op voor deze blocker."
+        }
+      }
+    },
     latestDecisions: [
       {
         allow: true,
@@ -5667,6 +5679,9 @@ await runCheck("trading bot paper learning summary exposes scope readiness and s
   assert.equal(summary.thresholdSandbox.status, "relax");
   assert.equal(summary.reviewPacks.bestProbeWinner, "BTCUSDT");
   assert.equal(summary.blockerGroups.learning, 1);
+  assert.equal(summary.paperToLiveReadiness.topScope, "trend_following");
+  assert.equal(summary.counterfactualTuning.blocker, "committee_veto");
+  assert.equal(summary.counterfactualTuning.status, "relax");
 });
 
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {

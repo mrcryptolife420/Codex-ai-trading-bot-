@@ -529,6 +529,13 @@ In de huidige versie zit nu al:
 10. `Operator visibility`
 - Toon paper readiness, sandbox, review-packs en gemiste-trade analyse duidelijk in runtime/dashboard.
 
+### Verder afgewerkt
+
+De paper-roadmap toont nu ook:
+- `paper-to-live readiness` per sterkste scope
+- `counterfactual tuning` met top blocker en eventuele threshold-richting
+- extra dashboardcontext voor welke scope nu het dichtst bij een volgende probationstap zit
+
 ## Projectstructuur
 
 - `src/binance`: REST-client, signing, clock sync en exchange data

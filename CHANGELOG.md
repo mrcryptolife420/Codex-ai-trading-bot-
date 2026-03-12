@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper-learning summaries now expose `paper-to-live readiness` and a compact `counterfactual tuning` view, so the strongest paper scope and the current blocker/tuning direction are visible in runtime and dashboard output.
 - Paper learning now exposes blocker groups (`safety`, `governance`, `learning`, `market`) plus per-scope readiness across strategy families, regimes, and sessions.
 - A paper-only threshold sandbox now applies small, bounded scope-level threshold shifts in paper based on recent closed paper outcomes instead of changing the main policy globally.
 - The dashboard paper-learning card now shows strongest paper scope, active threshold sandbox context, and automatic review-pack hints.

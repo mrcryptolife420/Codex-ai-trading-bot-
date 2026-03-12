@@ -677,8 +677,16 @@ function renderOps(snapshot) {
             <span class="reason-copy">${escapeHtml(paperLearning.scopeReadiness?.[0]?.id ? `${titleize(paperLearning.scopeReadiness[0].id)} (${titleize(paperLearning.scopeReadiness[0].status)})` : "Nog geen sterke paper-scope zichtbaar.")}</span>
           </div>
           <div class="reason-row">
+            <strong>Ready</strong>
+            <span class="reason-copy">${escapeHtml(paperLearning.paperToLiveReadiness?.topScope ? `${titleize(paperLearning.paperToLiveReadiness.topScope)} · ${titleize(paperLearning.paperToLiveReadiness.status)} · ${formatPct(paperLearning.paperToLiveReadiness.score || 0, 0)}` : "Nog geen paper-to-live focus-scope.")}</span>
+          </div>
+          <div class="reason-row">
             <strong>Sandbox</strong>
             <span class="reason-copy">${escapeHtml(paperLearning.thresholdSandbox?.status ? `${titleize(paperLearning.thresholdSandbox.status)} · ${paperLearning.thresholdSandbox.scopeLabel || "scope onbekend"} · shift ${formatPct(paperLearning.thresholdSandbox.thresholdShift || 0, 1)}` : "Geen actieve threshold sandbox.")}</span>
+          </div>
+          <div class="reason-row">
+            <strong>Tuning</strong>
+            <span class="reason-copy">${escapeHtml(paperLearning.counterfactualTuning?.blocker ? `${titleize(paperLearning.counterfactualTuning.blocker)} · ${titleize(paperLearning.counterfactualTuning.action || paperLearning.counterfactualTuning.status)}${paperLearning.counterfactualTuning.adjustment ? ` · shift ${formatPct(paperLearning.counterfactualTuning.adjustment || 0, 1)}` : ""}` : "Nog geen duidelijke counterfactual tuning-richting.")}</span>
           </div>
           <div class="reason-row">
             <strong>Review</strong>
