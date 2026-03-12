@@ -175,6 +175,10 @@ function arr(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function isUsableCounterfactual(item = {}) {
+  return !item.resolutionFailed && item.outcome !== "resolution_failed";
+}
+
 function titleize(value) {
   return `${value || "-"}`
     .replaceAll("_", " ")
@@ -4207,7 +4211,7 @@ export class TradingBot {
       if ((item.brokerMode || "paper") !== "paper") {
         continue;
       }
-      if (!isShadowReviewCase(item)) {
+      if (!isShadowReviewCase(item) || !isUsableCounterfactual(item)) {
         continue;
       }
       const at = item.resolvedAt || item.queuedAt || item.at;
@@ -4278,7 +4282,7 @@ export class TradingBot {
         session: trade.sessionAtEntry || trade.entryRationale?.session?.session || null
       })),
       ...arr(this.journal?.counterfactuals || [])
-        .filter((item) => (item.brokerMode || "paper") === "paper")
+        .filter((item) => (item.brokerMode || "paper") === "paper" && isUsableCounterfactual(item))
         .map((item) => ({
         family: item.strategyFamily || null,
         regime: item.regime || null,
@@ -4394,7 +4398,7 @@ export class TradingBot {
     const offlineTrainer = summarizeOfflineTrainer(this.runtime?.offlineTrainer || {});
     const tuningRecommendation = offlineTrainer.thresholdPolicy?.topRecommendation || null;
     const counterfactuals = arr(this.journal?.counterfactuals || [])
-      .filter((item) => (item.brokerMode || "paper") === "paper")
+      .filter((item) => (item.brokerMode || "paper") === "paper" && isUsableCounterfactual(item))
       .slice(-80);
     const replayPacks = this.runtime?.ops?.replayChaos?.replayPacks || this.runtime?.replayChaos?.replayPacks || {};
     const reviewPacks = {
@@ -7298,6 +7302,7 @@ export class TradingBot {
     const recentCounterfactuals = arr(this.journal?.counterfactuals || [])
       .filter((item) => {
         const modeMatch = (item.brokerMode || "paper") === activeMode;
+        const usableMatch = isUsableCounterfactual(item);
         const itemBlockers = arr(item.blockerReasons || []);
         const blockerMatch = itemBlockers.some((itemBlocker) => blockerSet.has(itemBlocker));
         const strategyMatch = strategyId && (item.strategy === strategyId || item.strategyAtEntry === strategyId);
@@ -7305,6 +7310,7 @@ export class TradingBot {
         const phaseMatch = decision.marketState?.phase && item.marketPhase === decision.marketState.phase;
         return (
           modeMatch &&
+          usableMatch &&
           (blockerSet.size ? blockerMatch : true) &&
           (strategyId ? strategyMatch : true) &&
           (regimeId ? regimeMatch : true) &&

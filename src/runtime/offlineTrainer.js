@@ -1013,14 +1013,15 @@ export class OfflineTrainer {
   }
 
   buildSummary({ journal = {}, dataRecorder = {}, counterfactuals = [], nowIso = new Date().toISOString() } = {}) {
+    const usableCounterfactuals = (counterfactuals || []).filter((item) => !item?.resolutionFailed && item?.outcome !== "resolution_failed");
     const trades = (journal.trades || []).filter((trade) => trade.exitAt);
     const learningReadyTrades = trades.filter((trade) => Number.isFinite(trade.labelScore) && trade.rawFeatures && Object.keys(trade.rawFeatures).length > 0);
     const paperTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "paper");
     const liveTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "live");
-    const missedWinners = (counterfactuals || []).filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome));
-    const blockedCorrectly = (counterfactuals || []).filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome));
-    const lateVetoes = (counterfactuals || []).filter((item) => item.outcome === "late_veto");
-    const timingIssues = (counterfactuals || []).filter((item) => item.outcome === "right_direction_wrong_timing");
+    const missedWinners = usableCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome));
+    const blockedCorrectly = usableCounterfactuals.filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome));
+    const lateVetoes = usableCounterfactuals.filter((item) => item.outcome === "late_veto");
+    const timingIssues = usableCounterfactuals.filter((item) => item.outcome === "right_direction_wrong_timing");
     const falsePositives = learningReadyTrades.filter((trade) => (trade.labelScore || 0.5) < 0.45 && (trade.pnlQuote || 0) < 0);
     const falseNegatives = missedWinners.filter((item) => (item.realizedMovePct || 0) > 0.01);
     const strategies = buildBucketMap(learningReadyTrades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy);
@@ -1029,7 +1030,7 @@ export class OfflineTrainer {
     const falseNegativeByStrategy = buildBucketMap(falseNegatives, (item) => item.strategy || "blocked_setup", (item) => ({ pnl: 0, win: 1, quality: 0.5, label: 0.8, move: item.realizedMovePct || 0, mode: "paper" }));
     const strategyScorecards = buildStrategyScorecards(learningReadyTrades, falsePositives, falseNegatives);
     const regimeScorecards = buildRegimeScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const blockerScorecards = buildBlockerScorecards(counterfactuals);
+    const blockerScorecards = buildBlockerScorecards(usableCounterfactuals);
     const readinessScore = clamp(
       0.24 +
         Math.min(0.3, learningReadyTrades.length / 80) +
@@ -1083,7 +1084,7 @@ export class OfflineTrainer {
       learningFrames: dataRecorder.learningFrames || 0,
       decisionFrames: dataRecorder.decisionFrames || 0,
       counterfactuals: {
-        total: (counterfactuals || []).length,
+        total: usableCounterfactuals.length,
         missedWinners: missedWinners.length,
         blockedCorrectly: blockedCorrectly.length,
         lateVetoes: lateVetoes.length,
@@ -1092,7 +1093,7 @@ export class OfflineTrainer {
         averageMissedMovePct: num(average(missedWinners.map((item) => item.realizedMovePct || 0), 0))
       },
       vetoFeedback: {
-        total: (counterfactuals || []).length,
+        total: usableCounterfactuals.length,
         blockerCount: blockerScorecards.length,
         goodVetoCount: blockedCorrectly.length,
         badVetoCount: missedWinners.length,

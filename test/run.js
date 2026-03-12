@@ -6407,6 +6407,39 @@ await runCheck("trading bot missed trade analysis narrows recent matches by bloc
   assert.equal(analysis.recentAverageMovePct, 0.02);
 });
 
+await runCheck("trading bot missed trade analysis ignores resolution_failed counterfactuals", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    offlineTrainer: {
+      blockerScorecards: [],
+      strategyScorecards: [],
+      counterfactuals: { total: 1, averageMissedMovePct: 0.01 }
+    }
+  };
+  bot.journal = {
+    counterfactuals: [
+      {
+        outcome: "resolution_failed",
+        resolutionFailed: true,
+        blockerReasons: ["committee_veto"],
+        strategy: "ema_trend",
+        regime: "trend",
+        marketPhase: "healthy_continuation",
+        realizedMovePct: 0.05
+      }
+    ]
+  };
+  const analysis = TradingBot.prototype.buildMissedTradeAnalysis.call(
+    bot,
+    { regime: "trend", marketState: { phase: "healthy_continuation" } },
+    ["committee_veto"],
+    { activeStrategy: "ema_trend" }
+  );
+  assert.equal(analysis.recentMatches, 0);
+  assert.equal(analysis.recentBadVetoCount, 0);
+  assert.equal(analysis.recentAverageMovePct, 0);
+});
+
 await runCheck("trading bot paper learning summary exposes scope readiness and sandbox", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper" });
@@ -6869,6 +6902,37 @@ await runCheck("trading bot paper learning summary combines current cycle learni
   assert.ok(summary.activeLearning.topCandidates.some((item) => item.symbol === "AVAXUSDT"));
 });
 
+await runCheck("trading bot paper learning summary ignores resolution_failed counterfactuals", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    counterfactualQueue: [],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "failed-shadow",
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        learningLane: "shadow",
+        resolvedAt: "2026-03-12T06:45:00.000Z",
+        outcome: "resolution_failed",
+        resolutionFailed: true,
+        branches: [{ id: "maker_bias", outcome: "unresolved" }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.shadowCount, 0);
+  assert.equal(summary.recentShadowReviews.length, 0);
+  assert.equal(summary.benchmarkLanes.shadowTakeWinRate, 0);
+});
+
 await runCheck("trading bot retries unresolved counterfactual cases instead of dropping them immediately", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper", counterfactualQueueLimit: 40 });
@@ -7164,6 +7228,25 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.ok(summary.retrainFocusPlan.nextAction);
   assert.ok(summary.retrainExecutionPlan.batchType);
   assert.ok(Array.isArray(summary.retrainExecutionPlan.selectedScopes));
+});
+
+await runCheck("offline trainer ignores resolution_failed counterfactuals in learning summary", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 20, netPnlPct: 0.015, executionQualityScore: 0.71, labelScore: 0.82, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" }
+      ]
+    },
+    dataRecorder: { learningFrames: 2, decisionFrames: 4 },
+    counterfactuals: [
+      { outcome: "bad_veto", realizedMovePct: 0.018, blockerReasons: ["committee_veto"] },
+      { outcome: "resolution_failed", resolutionFailed: true, blockerReasons: ["committee_veto"] }
+    ],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.equal(summary.counterfactuals.total, 1);
+  assert.equal(summary.vetoFeedback.badVetoCount, 1);
 });
 
 await runCheck("offline trainer builds blocker and regime veto scorecards", async () => {
