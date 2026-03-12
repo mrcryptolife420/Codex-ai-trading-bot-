@@ -455,6 +455,7 @@ export class PaperBroker {
       regimeAtEntry: position.regimeAtEntry || "range",
       strategyAtEntry: position.strategyAtEntry || position.entryRationale?.strategy?.activeStrategy || null,
       strategyFamily: position.strategyFamily || position.entryRationale?.strategy?.family || null,
+      probabilityAtEntry: position.probabilityAtEntry == null ? null : position.probabilityAtEntry,
       entrySpreadBps: position.entrySpreadBps || 0,
       exitSpreadBps: marketSnapshot.book.spreadBps || 0,
       reason,

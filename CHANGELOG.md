@@ -248,3 +248,8 @@ Initial public release of the Binance AI trading bot workspace.
 - `node src/cli.js backtest BTCUSDT`
 - `node src/cli.js research BTCUSDT`
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
+## 2026-03-12
+
+- added `paper roadmap v3` features: active learning scoring, benchmark lanes, confidence miscalibration tracking, counterfactual branching, failure library, and recency-weighted paper readiness
+- extended paper counterfactual queue resolution with alternative execution/size/exit branches
+- preserved `probabilityAtEntry` on closed paper trades so paper-learning calibration can compare predicted conviction with realized outcomes

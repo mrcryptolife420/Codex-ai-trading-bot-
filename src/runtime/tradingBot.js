@@ -175,6 +175,12 @@ function arr(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function titleize(value) {
+  return `${value || "-"}`
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function isSnapshotCacheFresh(snapshot, cacheMinutes = 0, nowMs = Date.now()) {
   const ttlMs = Math.max(0, Number(cacheMinutes || 0)) * 60_000;
   const cachedAtMs = new Date(snapshot?.cachedAt || 0).getTime();
@@ -1853,6 +1859,8 @@ function summarizePaperLearning(summary = {}) {
     shadowCount: summary.shadowCount || 0,
     averageLearningValueScore: num(summary.averageLearningValueScore || 0, 4),
     averageNoveltyScore: num(summary.averageNoveltyScore || 0, 4),
+    averageActiveLearningScore: num(summary.averageActiveLearningScore || 0, 4),
+    recencyFreshnessScore: num(summary.recencyFreshnessScore || 0, 4),
     blockerGroups: Object.fromEntries(Object.entries(summary.blockerGroups || {}).map(([key, value]) => [key, value || 0])),
     scopeReadiness: arr(summary.scopeReadiness || []).slice(0, 6).map((item) => ({
       id: item.id || null,
@@ -1888,6 +1896,45 @@ function summarizePaperLearning(summary = {}) {
       adjustment: num(summary.counterfactualTuning.adjustment || 0, 4),
       confidence: num(summary.counterfactualTuning.confidence || 0, 4),
       note: summary.counterfactualTuning.note || null
+    } : null,
+    activeLearning: summary.activeLearning ? {
+      status: summary.activeLearning.status || "observe",
+      score: num(summary.activeLearning.score || 0, 4),
+      focusReason: summary.activeLearning.focusReason || null,
+      topCandidates: arr(summary.activeLearning.topCandidates || []).slice(0, 4).map((item) => ({
+        symbol: item.symbol || null,
+        score: num(item.score || 0, 4),
+        reason: item.reason || null
+      })),
+      note: summary.activeLearning.note || null
+    } : null,
+    benchmarkLanes: summary.benchmarkLanes ? {
+      actualProbeWinRate: num(summary.benchmarkLanes.actualProbeWinRate || 0, 4),
+      actualProbeAvgPnlPct: num(summary.benchmarkLanes.actualProbeAvgPnlPct || 0, 4),
+      safeLaneWinRate: num(summary.benchmarkLanes.safeLaneWinRate || 0, 4),
+      shadowTakeWinRate: num(summary.benchmarkLanes.shadowTakeWinRate || 0, 4),
+      shadowSkipWinRate: num(summary.benchmarkLanes.shadowSkipWinRate || 0, 4),
+      bestLane: summary.benchmarkLanes.bestLane || null,
+      note: summary.benchmarkLanes.note || null
+    } : null,
+    miscalibration: summary.miscalibration ? {
+      status: summary.miscalibration.status || "observe",
+      averageAbsoluteError: num(summary.miscalibration.averageAbsoluteError || 0, 4),
+      overconfidentCount: summary.miscalibration.overconfidentCount || 0,
+      underconfidentCount: summary.miscalibration.underconfidentCount || 0,
+      topIssue: summary.miscalibration.topIssue || null,
+      note: summary.miscalibration.note || null
+    } : null,
+    failureLibrary: arr(summary.failureLibrary || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0,
+      status: item.status || "observe",
+      note: item.note || null
+    })),
+    counterfactualBranches: summary.counterfactualBranches ? {
+      topBranch: summary.counterfactualBranches.topBranch || null,
+      branchCount: summary.counterfactualBranches.branchCount || 0,
+      note: summary.counterfactualBranches.note || null
     } : null,
     dailyBudget: summary.dailyBudget || null,
     topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
@@ -2984,6 +3031,33 @@ export class TradingBot {
       return;
     }
     const dueAt = new Date(new Date(queuedAt).getTime() + Math.max(5, this.config.counterfactualLookaheadMinutes || 90) * 60000).toISOString();
+    const entryStyle = candidate.decision?.executionPlan?.entryStyle || candidate.decision?.executionStyle || null;
+    const expectedSlippageBps = num(candidate.decision?.executionPlan?.expectedSlippageBps || 0, 2);
+    const branchScenarios = [
+      {
+        id: "base",
+        label: "Normale follow-up",
+        kind: "baseline"
+      },
+      {
+        id: "smaller_probe",
+        label: "Kleinere probe",
+        kind: "size",
+        sizeMultiplier: 0.5
+      },
+      {
+        id: "maker_bias",
+        label: "Maker-uitvoering",
+        kind: "execution",
+        slippageBps: Math.max(0, expectedSlippageBps - 3)
+      },
+      {
+        id: "earlier_take_profit",
+        label: "Snellere exit",
+        kind: "exit",
+        takeProfitFactor: 0.65
+      }
+    ];
     this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), {
       id: crypto.randomUUID(),
       symbol: candidate.symbol,
@@ -2999,10 +3073,12 @@ export class TradingBot {
       blockerReasons: [...(candidate.decision?.reasons || [])].slice(0, 6),
       learningLane: candidate.decision?.learningLane || null,
       learningValueScore: num(candidate.decision?.learningValueScore || 0, 4),
-      executionStyle: candidate.decision?.executionPlan?.entryStyle || null,
+      executionStyle: entryStyle,
       signalQuality: candidate.signalQualitySummary?.overallScore || 0,
       executionViability: candidate.signalQualitySummary?.executionViability || 0,
-      modelConfidence: candidate.confidenceBreakdown?.modelConfidence || 0
+      modelConfidence: candidate.confidenceBreakdown?.modelConfidence || 0,
+      expectedSlippageBps,
+      branchScenarios
     }].slice(-(this.config.counterfactualQueueLimit || 40));
   }
 
@@ -3038,12 +3114,37 @@ export class TradingBot {
             : realizedMovePct > 0 && realizedMovePct < winBar
               ? "late_veto"
               : "neutral";
+        const branches = arr(item.branchScenarios).map((branch) => {
+          let adjustedMovePct = realizedMovePct;
+          if (branch.kind === "size") {
+            adjustedMovePct *= branch.sizeMultiplier || 1;
+          } else if (branch.kind === "execution") {
+            adjustedMovePct += Math.max(0, (item.expectedSlippageBps || 0) - (branch.slippageBps || 0)) / 10000;
+          } else if (branch.kind === "exit") {
+            adjustedMovePct = Math.min(realizedMovePct, winBar * (branch.takeProfitFactor || 1));
+          }
+          const branchOutcome = adjustedMovePct >= winBar
+            ? "winner"
+            : adjustedMovePct <= lossBar
+              ? "loser"
+              : adjustedMovePct > 0
+                ? "small_winner"
+                : "flat";
+          return {
+            id: branch.id || branch.kind || "branch",
+            label: branch.label || branch.id || "Alternatief",
+            kind: branch.kind || "baseline",
+            adjustedMovePct: num(adjustedMovePct, 4),
+            outcome: branchOutcome
+          };
+        });
         this.journal.counterfactuals.push({
           ...item,
           resolvedAt: nowAt,
           currentPrice,
           realizedMovePct: num(realizedMovePct, 4),
-          outcome
+          outcome,
+          branches
         });
       } catch (error) {
         this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: error.message });
@@ -3912,6 +4013,29 @@ export class TradingBot {
   buildPaperLearningSummary(decisionSummaries = arr(this.runtime.latestDecisions), referenceNow = nowIso()) {
     const entries = arr(decisionSummaries);
     const learningEntries = entries.filter((item) => item.learningLane);
+    const recencyWeight = (at) => {
+      const timestamp = new Date(at || 0).getTime();
+      const nowMs = new Date(referenceNow).getTime();
+      if (!Number.isFinite(timestamp) || !Number.isFinite(nowMs)) {
+        return 0.35;
+      }
+      const ageHours = Math.max(0, (nowMs - timestamp) / 3_600_000);
+      return clamp(1 - Math.min(1, ageHours / (24 * 5)), 0.25, 1);
+    };
+    const weightedAverage = (records, valueFn, atFn, fallback = 0) => {
+      let weightedSum = 0;
+      let weightSum = 0;
+      for (const record of records) {
+        const value = Number(valueFn(record));
+        if (!Number.isFinite(value)) {
+          continue;
+        }
+        const weight = recencyWeight(atFn(record));
+        weightedSum += value * weight;
+        weightSum += weight;
+      }
+      return weightSum ? weightedSum / weightSum : fallback;
+    };
     const laneKeys = {
       safe: new Set(),
       probe: new Set(),
@@ -4040,7 +4164,8 @@ export class TradingBot {
         const weakCount = trades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
         const goodRate = goodCount / Math.max(trades.length, 1);
         const weakRate = weakCount / Math.max(trades.length, 1);
-        const readinessScore = clamp(0.3 + Math.min(0.28, trades.length / 10) + goodRate * 0.28 - weakRate * 0.22, 0, 1);
+        const freshness = weightedAverage(trades, () => 1, (trade) => trade.exitAt || trade.entryAt, 0.4);
+        const readinessScore = clamp(0.26 + Math.min(0.24, trades.length / 10) + goodRate * 0.26 - weakRate * 0.2 + freshness * 0.14, 0, 1);
         return {
           id,
           type,
@@ -4048,7 +4173,8 @@ export class TradingBot {
           readinessScore,
           status: readinessScore >= 0.72 ? "paper_ready" : readinessScore >= 0.54 ? "building" : "warmup",
           goodRate,
-          weakRate
+          weakRate,
+          freshness
         };
       })
       .sort((left, right) => right.readinessScore - left.readinessScore)
@@ -4084,16 +4210,25 @@ export class TradingBot {
     const rollbackRisk = recentProbeTrades.length >= 3 && probeWeakCount >= Math.ceil(recentProbeTrades.length * 0.5);
     const avgLearningValue = average(learningEntries.map((item) => item.learningValueScore || 0), 0);
     const avgNovelty = average(learningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0);
+    const avgActiveLearning = average(learningEntries.map((item) => item.paperLearning?.activeLearning?.score || 0), 0);
+    const recencyFreshnessScore = weightedAverage(
+      recentPaperTrades,
+      () => 1,
+      (trade) => trade.exitAt || trade.entryAt,
+      0.35
+    );
     const readinessScore = clamp(
       0.24 +
         Math.min(0.22, recentProbeTrades.length / 18) +
         avgLearningValue * 0.18 +
         avgNovelty * 0.12 +
+        avgActiveLearning * 0.08 +
+        recencyFreshnessScore * 0.08 +
         (promotionReady ? 0.12 : 0) -
         (rollbackRisk ? 0.14 : 0) -
         Math.min(0.08, (topBlockers[0]?.count || 0) / 10),
       0,
-      1
+    1
     );
     const readinessStatus = readinessScore >= 0.72
       ? "paper_ready"
@@ -4153,7 +4288,152 @@ export class TradingBot {
           ? "Recente probe-trades zijn sterk genoeg om paper-promotie te overwegen."
           : rollbackRisk
             ? "Recente probe-trades tonen zwakke uitkomsten; rollback of strakkere gating is verstandig."
-            : "Paper-probation loopt nog; verzamel extra gesloten probe-trades."
+          : "Paper-probation loopt nog; verzamel extra gesloten probe-trades."
+    };
+    const rankedActiveCandidates = learningEntries
+      .map((item) => ({
+        symbol: item.symbol || null,
+        score: item.paperLearning?.activeLearning?.score || 0,
+        reason: item.paperLearning?.activeLearning?.focusReason || null
+      }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 4);
+    const activeLearning = {
+      status: rankedActiveCandidates[0]?.score >= 0.65 ? "priority" : rankedActiveCandidates.length ? "observe" : "warmup",
+      score: rankedActiveCandidates[0]?.score || avgActiveLearning || 0,
+      focusReason: rankedActiveCandidates[0]?.reason || null,
+      topCandidates: rankedActiveCandidates,
+      note: rankedActiveCandidates[0]
+        ? `${rankedActiveCandidates[0].symbol || "De top candidate"} is nu het meest informatieve leergeval door ${titleize(rankedActiveCandidates[0].reason || "active learning")}.`
+        : "Nog geen uitgesproken active-learning kandidaat zichtbaar."
+    };
+    const safeTrades = recentPaperTrades.filter((trade) => trade.learningLane === "safe");
+    const actualProbeWinRate = recentProbeTrades.length
+      ? recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length / recentProbeTrades.length
+      : 0;
+    const actualProbeAvgPnlPct = average(recentProbeTrades.map((trade) => trade.netPnlPct || 0), 0);
+    const safeLaneWinRate = safeTrades.length
+      ? safeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length / safeTrades.length
+      : 0;
+    const counterfactuals = arr(this.journal?.counterfactuals || []).slice(-80);
+    const shadowTakeWinRate = counterfactuals.length
+      ? counterfactuals.filter((item) => ["bad_veto", "missed_winner", "right_direction_wrong_timing"].includes(item.outcome)).length / counterfactuals.length
+      : 0;
+    const shadowSkipWinRate = counterfactuals.length
+      ? counterfactuals.filter((item) => ["good_veto", "blocked_correctly"].includes(item.outcome)).length / counterfactuals.length
+      : 0;
+    const benchmarkLaneEntries = [
+      { id: "probe_lane", score: actualProbeWinRate + Math.max(0, actualProbeAvgPnlPct) * 8 },
+      { id: "safe_lane", score: safeLaneWinRate },
+      { id: "shadow_take", score: shadowTakeWinRate },
+      { id: "shadow_skip", score: shadowSkipWinRate }
+    ].sort((left, right) => right.score - left.score);
+    const benchmarkLanes = {
+      actualProbeWinRate,
+      actualProbeAvgPnlPct,
+      safeLaneWinRate,
+      shadowTakeWinRate,
+      shadowSkipWinRate,
+      bestLane: benchmarkLaneEntries[0]?.id || null,
+      note: benchmarkLaneEntries[0]?.id === "shadow_take"
+        ? "Shadow-cases tonen nu relatief vaak dat near-miss setups toch doorliepen."
+        : benchmarkLaneEntries[0]?.id === "safe_lane"
+          ? "De veilige lane presteert nu stabieler dan probes."
+          : benchmarkLaneEntries[0]?.id === "probe_lane"
+            ? "De probe-lane levert nu de beste leer- en resultaatmix."
+            : "Shadow-skip blijft voorlopig de veiligste benchmark."
+    };
+    const miscalibrationSamples = recentPaperTrades
+      .filter((trade) => Number.isFinite(trade.probabilityAtEntry))
+      .map((trade) => {
+        const predicted = clamp(trade.probabilityAtEntry || 0, 0, 1);
+        const actual = ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade)) ? 1 : 0;
+        return {
+          error: Math.abs(predicted - actual),
+          overconfident: predicted >= 0.6 && actual === 0,
+          underconfident: predicted <= 0.45 && actual === 1
+        };
+      });
+    const overconfidentCount = miscalibrationSamples.filter((item) => item.overconfident).length;
+    const underconfidentCount = miscalibrationSamples.filter((item) => item.underconfident).length;
+    const averageAbsoluteError = average(miscalibrationSamples.map((item) => item.error), 0);
+    const miscalibration = {
+      status: averageAbsoluteError >= 0.42 ? "elevated" : averageAbsoluteError >= 0.28 ? "watch" : "stable",
+      averageAbsoluteError,
+      overconfidentCount,
+      underconfidentCount,
+      topIssue: overconfidentCount > underconfidentCount
+        ? "overconfidence"
+        : underconfidentCount > overconfidentCount
+          ? "underconfidence"
+          : "balanced",
+      note: overconfidentCount > underconfidentCount
+        ? "De bot overschatte recent vaker paperkansen dan nodig."
+        : underconfidentCount > overconfidentCount
+          ? "De bot liet recent vaker winners liggen door te lage confidence."
+          : "Confidence en uitkomsten lopen voorlopig redelijk gelijk."
+    };
+    const failureCounts = {};
+    for (const trade of recentPaperTrades) {
+      const bucket = resolvePaperOutcomeBucket(trade);
+      if (["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(bucket)) {
+        failureCounts[bucket] = (failureCounts[bucket] || 0) + 1;
+      }
+      if ((trade.executionQualityScore || 0) < 0.42 && (trade.pnlQuote || 0) <= 0) {
+        failureCounts.execution_drag = (failureCounts.execution_drag || 0) + 1;
+      }
+      if ((trade.captureEfficiency || 0) < 0.25 && (trade.mfePct || 0) > 0.012) {
+        failureCounts.quality_trap = (failureCounts.quality_trap || 0) + 1;
+      }
+    }
+    for (const item of counterfactuals) {
+      if (["bad_veto", "right_direction_wrong_timing", "late_veto"].includes(item.outcome)) {
+        failureCounts[item.outcome] = (failureCounts[item.outcome] || 0) + 1;
+      }
+    }
+    const failureLibrary = Object.entries(failureCounts)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([id, count]) => ({
+        id,
+        count,
+        status: count >= 4 ? "priority" : count >= 2 ? "watch" : "observe",
+        note: id === "bad_veto"
+          ? "Blokkades waren hier vaker te streng."
+          : id === "execution_drag"
+            ? "Execution-kosten drukten deze papertrades weg."
+            : id === "quality_trap"
+              ? "Goede setup, maar de kwaliteit van uitvoering of follow-through bleef te zwak."
+              : `${titleize(id)} komt nu vaker terug in paper learning.`
+      }));
+    const branchStats = new Map();
+    for (const item of counterfactuals) {
+      for (const branch of arr(item.branches || [])) {
+        const key = branch.id || branch.kind || "branch";
+        if (!branchStats.has(key)) {
+          branchStats.set(key, { id: key, winnerCount: 0, total: 0 });
+        }
+        const bucket = branchStats.get(key);
+        bucket.total += 1;
+        if (["winner", "small_winner"].includes(branch.outcome)) {
+          bucket.winnerCount += 1;
+        }
+      }
+    }
+    const topBranch = [...branchStats.values()]
+      .map((item) => ({
+        id: item.id,
+        score: item.total ? item.winnerCount / item.total : 0,
+        total: item.total
+      }))
+      .sort((left, right) => right.score - left.score)[0] || null;
+    const counterfactualBranches = {
+      topBranch: topBranch?.id || null,
+      branchCount: branchStats.size,
+      note: topBranch
+        ? `${titleize(topBranch.id)} levert momenteel de beste alternatieve uitkomst op in counterfactuals.`
+        : "Nog geen vertakte counterfactual cases beschikbaar."
     };
     return {
       generatedAt: referenceNow,
@@ -4165,12 +4445,19 @@ export class TradingBot {
       shadowCount: laneCounts.shadow || 0,
       averageLearningValueScore: avgLearningValue,
       averageNoveltyScore: avgNovelty,
+      averageActiveLearningScore: avgActiveLearning,
+      recencyFreshnessScore,
       blockerGroups,
       scopeReadiness,
       thresholdSandbox,
       reviewPacks,
       paperToLiveReadiness,
       counterfactualTuning,
+      activeLearning,
+      benchmarkLanes,
+      miscalibration,
+      failureLibrary,
+      counterfactualBranches,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)
         .sort((left, right) => right[1] - left[1])
@@ -4209,6 +4496,21 @@ export class TradingBot {
         counterfactualTuning.blocker
           ? `Counterfactual tuning kijkt nu vooral naar ${counterfactualTuning.blocker}.`
           : "Counterfactual tuning heeft nog geen dominante blocker.",
+        activeLearning.focusReason
+          ? `Active learning focust nu vooral op ${activeLearning.focusReason}.`
+          : "Active learning heeft nog geen uitgesproken focus.",
+        benchmarkLanes.bestLane
+          ? `Benchmark lane nu sterkst: ${benchmarkLanes.bestLane}.`
+          : "Nog geen benchmark lane zichtbaar.",
+        miscalibration.topIssue && miscalibration.status !== "stable"
+          ? `Confidence-mismatch: ${miscalibration.topIssue}.`
+          : "Confidence en paper-uitkomsten liggen voorlopig redelijk op lijn.",
+        failureLibrary[0]
+          ? `${failureLibrary[0].id} is nu de grootste paper failure cluster.`
+          : "Nog geen duidelijke paper failure cluster zichtbaar.",
+        counterfactualBranches.topBranch
+          ? `Counterfactual branching wijst nu naar ${counterfactualBranches.topBranch} als sterkste alternatief.`
+          : "Nog geen sterke counterfactual branch zichtbaar.",
         topBlockers[0]
           ? `${topBlockers[0].id} blokkeert momenteel het vaakst in paper learning.`
           : "Nog geen dominante paper blocker zichtbaar.",
@@ -5998,6 +6300,13 @@ export class TradingBot {
         learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
         noveltyScore: num(candidate.decision.paperLearningSampling?.noveltyScore || 0, 4),
         rarityScore: num(candidate.decision.paperLearningSampling?.rarityScore || 0, 4),
+        activeLearning: candidate.decision.paperActiveLearning ? {
+          score: num(candidate.decision.paperActiveLearning.activeLearningScore || 0, 4),
+          focusReason: candidate.decision.paperActiveLearning.focusReason || null,
+          nearMissScore: num(candidate.decision.paperActiveLearning.nearMissScore || 0, 4),
+          disagreementScore: num(candidate.decision.paperActiveLearning.disagreementScore || 0, 4),
+          uncertaintyScore: num(candidate.decision.paperActiveLearning.uncertaintyScore || 0, 4)
+        } : null,
         scope: {
           family: candidate.decision.paperLearningSampling?.scope?.family || null,
           regime: candidate.decision.paperLearningSampling?.scope?.regime || null,

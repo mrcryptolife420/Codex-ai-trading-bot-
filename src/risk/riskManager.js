@@ -160,6 +160,57 @@ function getPaperLearningSamplingState({
   };
 }
 
+function buildPaperActiveLearningState({
+  score = {},
+  threshold = 0,
+  confidenceBreakdown = {},
+  signalQualitySummary = {},
+  dataQualitySummary = {},
+  reasons = [],
+  samplingState = {}
+} = {}) {
+  const thresholdBuffer = Math.max(0.0001, Math.abs(score.probability - threshold) + 0.02);
+  const nearMissScore = clamp(1 - Math.min(1, Math.abs((score.probability || 0) - threshold) / thresholdBuffer), 0, 1);
+  const disagreementScore = clamp(safeValue(score.disagreement) / 0.2, 0, 1);
+  const uncertaintyScore = clamp(1 - safeValue(confidenceBreakdown.overallConfidence, 0.5), 0, 1);
+  const signalScore = clamp(safeValue(signalQualitySummary.overallScore, 0.5), 0, 1);
+  const dataScore = clamp(safeValue(dataQualitySummary.overallScore, 0.5), 0, 1);
+  const blockerDensity = clamp(reasons.length / 5, 0, 1);
+  const noveltyScore = clamp(safeValue(samplingState.noveltyScore, 0.5), 0, 1);
+  const rarityScore = clamp(safeValue(samplingState.rarityScore, 0.5), 0, 1);
+  const activeLearningScore = clamp(
+    nearMissScore * 0.26 +
+    disagreementScore * 0.18 +
+    uncertaintyScore * 0.2 +
+    blockerDensity * 0.12 +
+    noveltyScore * 0.12 +
+    rarityScore * 0.08 +
+    signalScore * 0.02 +
+    dataScore * 0.02,
+    0,
+    1
+  );
+  const focusReason = disagreementScore >= 0.6
+    ? "model_disagreement"
+    : uncertaintyScore >= 0.48
+      ? "confidence_uncertainty"
+      : nearMissScore >= 0.7
+        ? "threshold_near_miss"
+        : blockerDensity >= 0.5
+          ? "multi_blocker_conflict"
+          : noveltyScore >= 0.7 || rarityScore >= 0.65
+            ? "rare_scope"
+            : "standard_learning";
+  return {
+    activeLearningScore,
+    focusReason,
+    nearMissScore,
+    disagreementScore,
+    uncertaintyScore,
+    blockerDensity
+  };
+}
+
 function isHardPaperLearningBlocker(reason) {
   return [
     "health_circuit_open",
@@ -305,7 +356,8 @@ function buildPaperLearningValueScore({
   dataQualitySummary = {},
   reasons = [],
   entryMode = "standard",
-  samplingState = {}
+  samplingState = {},
+  activeLearningState = {}
 } = {}) {
   const thresholdBuffer = Math.max(0.0001, Math.abs(score.probability - threshold) + 0.02);
   const nearMissScore = clamp(1 - Math.min(1, Math.abs((score.probability || 0) - threshold) / thresholdBuffer), 0, 1);
@@ -316,16 +368,18 @@ function buildPaperLearningValueScore({
   const blockerScore = clamp(reasons.length / 4, 0, 1);
   const noveltyScore = clamp(safeValue(samplingState.noveltyScore, 0.5), 0, 1);
   const rarityScore = clamp(safeValue(samplingState.rarityScore, 0.5), 0, 1);
+  const activeLearningScore = clamp(safeValue(activeLearningState.activeLearningScore, 0.5), 0, 1);
   const modeBoost = entryMode === "paper_recovery_probe" ? 0.08 : entryMode === "paper_exploration" ? 0.05 : 0;
   return clamp(
-    nearMissScore * 0.22 +
-    disagreementScore * 0.12 +
-    signalScore * 0.19 +
+    nearMissScore * 0.16 +
+    disagreementScore * 0.08 +
+    signalScore * 0.17 +
     dataScore * 0.15 +
-    confidenceScore * 0.1 +
+    confidenceScore * 0.08 +
     blockerScore * 0.08 +
     noveltyScore * 0.08 +
     rarityScore * 0.06 +
+    activeLearningScore * 0.14 +
     modeBoost,
     0,
     1
@@ -346,6 +400,15 @@ function resolvePaperLearningLane({
   botMode = "paper",
   samplingState = {}
 } = {}) {
+  const activeLearningState = buildPaperActiveLearningState({
+    score,
+    threshold,
+    confidenceBreakdown,
+    signalQualitySummary,
+    dataQualitySummary,
+    reasons,
+    samplingState
+  });
   const learningValueScore = buildPaperLearningValueScore({
     score,
     threshold,
@@ -354,18 +417,21 @@ function resolvePaperLearningLane({
     dataQualitySummary,
     reasons,
     entryMode,
-    samplingState
+    samplingState,
+    activeLearningState
   });
   if (botMode !== "paper") {
     return {
       lane: allow ? "safe" : null,
-      learningValueScore
+      learningValueScore,
+      activeLearningState
     };
   }
   if (allow) {
     return {
       lane: entryMode === "paper_exploration" || entryMode === "paper_recovery_probe" ? "probe" : "safe",
-      learningValueScore
+      learningValueScore,
+      activeLearningState
     };
   }
   const nearThreshold = (score.probability || 0) >= threshold - (config.paperLearningNearMissThresholdBuffer || 0.025);
@@ -376,12 +442,14 @@ function resolvePaperLearningLane({
   if (nearThreshold && qualityOkay && !hardBlocked && (paperLearningBudget.shadowRemaining || 0) > 0) {
     return {
       lane: "shadow",
-      learningValueScore
+      learningValueScore,
+      activeLearningState
     };
   }
   return {
     lane: null,
-    learningValueScore
+    learningValueScore,
+    activeLearningState
   };
 }
 
@@ -1430,7 +1498,7 @@ export class RiskManager {
         reasons.push("paper_learning_session_probe_cap_reached");
       }
     }
-    let { lane: learningLane, learningValueScore } = resolvePaperLearningLane({
+    let { lane: learningLane, learningValueScore, activeLearningState } = resolvePaperLearningLane({
       config: this.config,
       allow,
       entryMode,
@@ -1458,7 +1526,7 @@ export class RiskManager {
       if (!reasons.includes("paper_learning_novelty_too_low")) {
         reasons.push("paper_learning_novelty_too_low");
       }
-      ({ lane: learningLane, learningValueScore } = resolvePaperLearningLane({
+      ({ lane: learningLane, learningValueScore, activeLearningState } = resolvePaperLearningLane({
         config: this.config,
         allow,
         entryMode,
@@ -1483,6 +1551,7 @@ export class RiskManager {
       learningValueScore,
       paperLearningBudget,
       paperLearningSampling,
+      paperActiveLearning: activeLearningState,
       paperThresholdSandbox: {
         ...paperThresholdSandbox,
         thresholdBeforeSandbox,

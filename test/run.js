@@ -6119,6 +6119,106 @@ await runCheck("trading bot paper learning summary exposes scope readiness and s
   assert.equal(summary.counterfactualTuning.status, "relax");
 });
 
+await runCheck("trading bot paper learning summary exposes active learning benchmarks and failure clusters", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "BTCUSDT",
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.81,
+        paperLearning: {
+          noveltyScore: 0.66,
+          activeLearning: {
+            score: 0.78,
+            focusReason: "threshold_near_miss"
+          },
+          scope: { family: "trend_following", regime: "trend", session: "asia" }
+        }
+      },
+      {
+        symbol: "ETHUSDT",
+        allow: false,
+        blockerReasons: ["committee_veto"],
+        learningLane: "shadow",
+        learningValueScore: 0.74,
+        paperLearning: {
+          noveltyScore: 0.72,
+          activeLearning: {
+            score: 0.82,
+            focusReason: "model_disagreement"
+          },
+          scope: { family: "mean_reversion", regime: "range", session: "europe" }
+        }
+      }
+    ],
+    offlineTrainer: {},
+    ops: {
+      replayChaos: {
+        replayPacks: {}
+      }
+    }
+  };
+  bot.journal = {
+    trades: [
+      {
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        probabilityAtEntry: 0.74,
+        exitAt: "2026-03-11T10:00:00.000Z",
+        netPnlPct: -0.012,
+        pnlQuote: -8,
+        executionQualityScore: 0.33,
+        mfePct: 0.022,
+        captureEfficiency: 0.18,
+        paperLearningOutcome: { outcome: "early_exit" }
+      },
+      {
+        brokerMode: "paper",
+        learningLane: "safe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        probabilityAtEntry: 0.58,
+        exitAt: "2026-03-11T12:00:00.000Z",
+        netPnlPct: 0.011,
+        pnlQuote: 5,
+        executionQualityScore: 0.61,
+        mfePct: 0.012,
+        captureEfficiency: 0.58,
+        paperLearningOutcome: { outcome: "good_trade" }
+      }
+    ],
+    counterfactuals: [
+      {
+        outcome: "bad_veto",
+        branches: [
+          { id: "maker_bias", outcome: "winner" },
+          { id: "smaller_probe", outcome: "flat" }
+        ]
+      },
+      {
+        outcome: "good_veto",
+        branches: [
+          { id: "maker_bias", outcome: "small_winner" },
+          { id: "earlier_take_profit", outcome: "flat" }
+        ]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-11T15:00:00.000Z");
+  assert.equal(summary.activeLearning.topCandidates[0].symbol, "ETHUSDT");
+  assert.equal(summary.benchmarkLanes.bestLane, "safe_lane");
+  assert.equal(summary.failureLibrary[0].id, "early_exit");
+  assert.equal(summary.counterfactualBranches.topBranch, "maker_bias");
+  assert.equal(summary.miscalibration.topIssue, "overconfidence");
+});
+
 await runCheck("trading bot paper learning summary keeps daily lane counts after refresh with empty decisions", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });

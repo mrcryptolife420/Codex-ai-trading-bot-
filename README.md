@@ -714,6 +714,36 @@ De paper-roadmap toont nu ook:
 - `counterfactual tuning` met top blocker en eventuele threshold-richting
 - extra dashboardcontext voor welke scope nu het dichtst bij een volgende probationstap zit
 
+### Paper roadmap v3
+
+1. `Active learning`
+- Kies paper-cases niet alleen op kans, maar ook op informatiewaarde zoals near-miss, model-disagreement en onzekerheid.
+
+2. `Benchmark lanes`
+- Vergelijk `probe`, `safe` en `shadow` met eenvoudige benchmarkpaden zodat paper sneller ziet welke leerlane echt beter werkt.
+
+3. `Confidence miscalibration`
+- Meet waar confidence te hoog of te laag zat tegenover echte paper-uitkomsten.
+
+4. `Counterfactual branching`
+- Bekijk niet alleen "trade wel of niet", maar ook alternatieve grootte, execution en exit-varianten.
+
+5. `Failure library`
+- Bundel terugkerende paper-fouten zoals `bad_veto`, `early_exit`, `execution_drag` en `quality_trap`.
+
+6. `Learning freshness`
+- Laat recente paper-data zwaarder tellen dan oude samples in readiness en retrainfocus.
+
+### Nu ook toegevoegd
+
+- `active learning` score en focusreden per paper-candidate
+- richer `learning value` met active-learning gewicht
+- `benchmark lanes` voor probe/safe/shadow take/skip
+- `miscalibration` samenvatting voor over- en underconfidence
+- `counterfactual branching` met alternatieve size/execution/exit-paden
+- `failure library` voor terugkerende paper-fouttypes
+- recency-gewogen `freshness` in paper readiness
+
 ## Projectstructuur
 
 - `src/binance`: REST-client, signing, clock sync en exchange data
