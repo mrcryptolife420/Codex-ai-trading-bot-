@@ -1540,6 +1540,8 @@ function summarizeOfflineTrainer(summary = {}) {
         regimeCount: summary.retrainReadiness.paper.regimeCount || 0,
         winRate: num(summary.retrainReadiness.paper.winRate || 0, 4),
         avgExecutionQuality: num(summary.retrainReadiness.paper.avgExecutionQuality || 0, 4),
+        freshnessScore: num(summary.retrainReadiness.paper.freshnessScore || 0, 4),
+        latestTradeAt: summary.retrainReadiness.paper.latestTradeAt || null,
         recommendation: summary.retrainReadiness.paper.recommendation || null
       } : null,
       live: summary.retrainReadiness.live ? {
@@ -1550,6 +1552,8 @@ function summarizeOfflineTrainer(summary = {}) {
         regimeCount: summary.retrainReadiness.live.regimeCount || 0,
         winRate: num(summary.retrainReadiness.live.winRate || 0, 4),
         avgExecutionQuality: num(summary.retrainReadiness.live.avgExecutionQuality || 0, 4),
+        freshnessScore: num(summary.retrainReadiness.live.freshnessScore || 0, 4),
+        latestTradeAt: summary.retrainReadiness.live.latestTradeAt || null,
         recommendation: summary.retrainReadiness.live.recommendation || null
       } : null
     } : null,
@@ -1611,6 +1615,8 @@ function summarizeOfflineTrainer(summary = {}) {
       winRate: num(item.winRate || 0, 4),
       avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
       avgPnlPct: num(item.avgPnlPct || 0, 4),
+      freshnessScore: num(item.freshnessScore || 0, 4),
+      latestTradeAt: item.latestTradeAt || null,
       score: num(item.score || 0, 4),
       status: item.status || "warmup"
     })),

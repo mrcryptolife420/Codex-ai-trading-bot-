@@ -7222,12 +7222,53 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.equal(summary.retrainReadiness.bootstrapStatus, "ready");
   assert.ok(summary.retrainReadiness.paper.score > 0);
   assert.ok(summary.retrainReadiness.paper.score > summary.retrainReadiness.live.score);
+  assert.ok(summary.retrainReadiness.paper.freshnessScore > summary.retrainReadiness.live.freshnessScore);
   assert.equal(summary.scopeRetrainReadiness[0].type, "family");
   assert.equal(summary.retrainFocusPlan.status, summary.retrainReadiness.status);
   assert.equal(summary.retrainFocusPlan.topScope?.type, "family");
   assert.ok(summary.retrainFocusPlan.nextAction);
   assert.ok(summary.retrainExecutionPlan.batchType);
   assert.ok(Array.isArray(summary.retrainExecutionPlan.selectedScopes));
+});
+
+await runCheck("offline trainer freshness-aware retrain readiness penalizes stale tracks", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        {
+          symbol: "BTCUSDT",
+          exitAt: "2026-03-11T12:00:00.000Z",
+          pnlQuote: 8,
+          netPnlPct: 0.01,
+          executionQualityScore: 0.68,
+          labelScore: 0.74,
+          rawFeatures: { a: 1 },
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          brokerMode: "paper"
+        },
+        {
+          symbol: "ETHUSDT",
+          exitAt: "2026-01-05T12:00:00.000Z",
+          pnlQuote: 9,
+          netPnlPct: 0.011,
+          executionQualityScore: 0.69,
+          labelScore: 0.75,
+          rawFeatures: { a: 1 },
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          brokerMode: "live"
+        }
+      ]
+    },
+    dataRecorder: { learningFrames: 4, decisionFrames: 8, averageRecordQuality: 0.74, lineageCoverage: 0.8 },
+    counterfactuals: [],
+    nowIso: "2026-03-12T12:00:00.000Z"
+  });
+  assert.ok(summary.retrainReadiness.paper.freshnessScore > summary.retrainReadiness.live.freshnessScore);
+  assert.ok(summary.retrainReadiness.paper.score > summary.retrainReadiness.live.score);
+  assert.ok(summary.scopeRetrainReadiness.every((item) => item.freshnessScore >= 0));
 });
 
 await runCheck("offline trainer ignores resolution_failed counterfactuals in learning summary", async () => {

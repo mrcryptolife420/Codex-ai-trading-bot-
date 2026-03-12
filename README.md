@@ -179,6 +179,13 @@ Om volledige data beter te hergebruiken voor paper en live retraining, volgt de 
   - wat de meest logische volgende retrain-actie is
 - zo wordt het eenvoudiger om te beslissen of je eerst datasetkwaliteit moet verbeteren, meer paper/live trades moet verzamelen, of al een bredere retrain-run kunt plannen
 
+9. `Freshness-aware retrain`
+- retrain kijkt nu niet alleen naar hoeveel closed trades er zijn, maar ook hoe recent die data nog is
+- paper/live tracks krijgen daarom ook:
+  - `freshnessScore`
+  - `latestTradeAt`
+- scope-ranking gebruikt die versheid ook mee, zodat oude scopes niet te optimistisch `ready` lijken
+
 ## Codebase roadmap
 
 De volgende uitbreidingslijn is nu leidend voor de codebase en is ook doorgetrokken in runtime en dashboard:
@@ -217,6 +224,10 @@ De volgende uitbreidingslijn is nu leidend voor de codebase en is ook doorgetrok
   - calibration governance
   - exit learning
   - dataset quality
+
+6. `Data freshness discipline`
+- retrain readiness en scope-ranking laten recente data zwaarder meewegen dan oude closed trades
+- zo blijft de volgende retrain-batch beter afgestemd op de huidige marktcondities in plaats van op alleen oude history
 
 Deze roadmap is bewust production-safe gehouden: meer governancestructuur, betere replay-keuze en duidelijkere operatorcontext, zonder brede refactor van de runtime.
 

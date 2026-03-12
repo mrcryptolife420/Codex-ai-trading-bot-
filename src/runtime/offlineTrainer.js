@@ -8,6 +8,36 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function computeFreshnessScore(trades = [], nowIso = new Date().toISOString(), horizonHours = 24 * 21) {
+  const nowMs = new Date(nowIso).getTime();
+  if (!Number.isFinite(nowMs) || !trades.length) {
+    return {
+      freshnessScore: 0,
+      latestTradeAt: null
+    };
+  }
+  const timestamps = trades
+    .map((trade) => trade.exitAt || trade.entryAt || null)
+    .filter(Boolean)
+    .map((at) => new Date(at).getTime())
+    .filter(Number.isFinite);
+  if (!timestamps.length) {
+    return {
+      freshnessScore: 0,
+      latestTradeAt: null
+    };
+  }
+  const latestTradeMs = Math.max(...timestamps);
+  const freshnessScore = average(
+    timestamps.map((tradeMs) => clamp(1 - Math.max(0, nowMs - tradeMs) / Math.max(1, horizonHours * 60 * 60 * 1000), 0, 1)),
+    0
+  );
+  return {
+    freshnessScore: num(freshnessScore),
+    latestTradeAt: new Date(latestTradeMs).toISOString()
+  };
+}
+
 function buildBucketMap(items = [], keyFn, projector = null) {
   const map = new Map();
   for (const item of items) {
@@ -692,8 +722,10 @@ function buildRetrainTrack({
   bootstrap = {},
   learningFrames = 0,
   averageRecordQuality = 0,
-  lineageCoverage = 0
+  lineageCoverage = 0,
+  nowIso = new Date().toISOString()
 } = {}) {
+  const freshness = computeFreshnessScore(trades, nowIso, label === "live" ? 24 * 30 : 24 * 21);
   const strategyCount = new Set(trades.map((trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy).filter(Boolean)).size;
   const regimeCount = new Set(trades.map((trade) => trade.regimeAtEntry).filter(Boolean)).size;
   const winRate = trades.length ? trades.filter((trade) => (trade.pnlQuote || 0) > 0).length / trades.length : 0;
@@ -702,8 +734,9 @@ function buildRetrainTrack({
   const diversityScore = Math.min(0.18, strategyCount / 6 * 0.1 + regimeCount / 5 * 0.08);
   const qualityScore = Math.min(0.18, averageRecordQuality * 0.1 + lineageCoverage * 0.08);
   const executionScore = Math.min(0.14, avgExecutionQuality * 0.14);
+  const freshnessBias = Math.min(0.1, freshness.freshnessScore * 0.1);
   const bootstrapBias = label === "paper" && bootstrap?.paperLearningReady ? 0.08 : 0.03;
-  const score = clamp(0.12 + countScore + diversityScore + qualityScore + executionScore + bootstrapBias, 0, 1);
+  const score = clamp(0.12 + countScore + diversityScore + qualityScore + executionScore + freshnessBias + bootstrapBias, 0, 1);
   return {
     label,
     tradeCount: trades.length,
@@ -714,6 +747,8 @@ function buildRetrainTrack({
     learningFrames,
     averageRecordQuality: num(averageRecordQuality),
     lineageCoverage: num(lineageCoverage),
+    freshnessScore: freshness.freshnessScore,
+    latestTradeAt: freshness.latestTradeAt,
     score: num(score),
     status: score >= 0.72
       ? "ready"
@@ -723,8 +758,8 @@ function buildRetrainTrack({
     recommendation: score >= 0.72
       ? `${label} retrain kan frequenter en breder over scopes worden gebruikt.`
       : score >= 0.52
-        ? `${label} retrain is bruikbaar, maar vraagt nog meer scope-diversiteit of trade-count.`
-        : `${label} retrain is nog dun; verzamel eerst meer representatieve closed trades.`
+        ? `${label} retrain is bruikbaar, maar vraagt nog meer scope-diversiteit, trade-count of recentere data.`
+        : `${label} retrain is nog dun of te oud; verzamel eerst meer recente representatieve closed trades.`
   };
 }
 
@@ -732,7 +767,8 @@ function buildRetrainReadiness({
   paperTrades = [],
   liveTrades = [],
   dataRecorder = {},
-  bootstrap = {}
+  bootstrap = {},
+  nowIso = new Date().toISOString()
 } = {}) {
   const paper = buildRetrainTrack({
     label: "paper",
@@ -740,7 +776,8 @@ function buildRetrainReadiness({
     bootstrap: bootstrap.warmStart || {},
     learningFrames: dataRecorder.learningFrames || 0,
     averageRecordQuality: dataRecorder.averageRecordQuality || 0,
-    lineageCoverage: dataRecorder.lineageCoverage || 0
+    lineageCoverage: dataRecorder.lineageCoverage || 0,
+    nowIso
   });
   const live = buildRetrainTrack({
     label: "live",
@@ -748,7 +785,8 @@ function buildRetrainReadiness({
     bootstrap: bootstrap.warmStart || {},
     learningFrames: dataRecorder.learningFrames || 0,
     averageRecordQuality: dataRecorder.averageRecordQuality || 0,
-    lineageCoverage: dataRecorder.lineageCoverage || 0
+    lineageCoverage: dataRecorder.lineageCoverage || 0,
+    nowIso
   });
   const providerCoverage = countCoverage(dataRecorder.sourceCoverage || []);
   const contextCoverage = countCoverage(dataRecorder.contextCoverage || []);
@@ -797,7 +835,8 @@ function buildRetrainReadiness({
 
 function buildScopedRetrainReadiness({
   paperTrades = [],
-  liveTrades = []
+  liveTrades = [],
+  nowIso = new Date().toISOString()
 } = {}) {
   const buckets = new Map();
   const addTrade = (trade, mode, scopeType, scopeId) => {
@@ -814,16 +853,21 @@ function buildScopedRetrainReadiness({
         totalCount: 0,
         wins: 0,
         executionQuality: 0,
-        pnl: 0
+        pnl: 0,
+        latestTradeAt: null
       });
     }
     const bucket = buckets.get(key);
+    const tradeAt = trade.exitAt || trade.entryAt || null;
     bucket.totalCount += 1;
     bucket.paperCount += mode === "paper" ? 1 : 0;
     bucket.liveCount += mode === "live" ? 1 : 0;
     bucket.wins += (trade.pnlQuote || 0) > 0 ? 1 : 0;
     bucket.executionQuality += trade.executionQualityScore || 0;
     bucket.pnl += trade.netPnlPct || 0;
+    if (tradeAt && (!bucket.latestTradeAt || new Date(tradeAt).getTime() > new Date(bucket.latestTradeAt).getTime())) {
+      bucket.latestTradeAt = tradeAt;
+    }
   };
 
   for (const trade of paperTrades) {
@@ -841,12 +885,18 @@ function buildScopedRetrainReadiness({
       const avgExecutionQuality = bucket.totalCount ? bucket.executionQuality / bucket.totalCount : 0;
       const avgPnlPct = bucket.totalCount ? bucket.pnl / bucket.totalCount : 0;
       const diversityBias = bucket.paperCount > 0 && bucket.liveCount > 0 ? 0.08 : bucket.liveCount > 0 ? 0.05 : 0.03;
+      const freshness = computeFreshnessScore(
+        [{ exitAt: bucket.latestTradeAt }],
+        nowIso,
+        bucket.liveCount > 0 ? 24 * 30 : 24 * 21
+      );
       const score = clamp(
         0.16 +
           Math.min(0.32, bucket.totalCount / 12 * 0.32) +
           Math.min(0.18, winRate * 0.18) +
           Math.min(0.16, avgExecutionQuality * 0.16) +
           Math.max(-0.08, Math.min(0.1, avgPnlPct * 8)) +
+          Math.min(0.08, freshness.freshnessScore * 0.08) +
           diversityBias,
         0,
         1
@@ -860,6 +910,8 @@ function buildScopedRetrainReadiness({
         winRate: num(winRate),
         avgExecutionQuality: num(avgExecutionQuality),
         avgPnlPct: num(avgPnlPct),
+        freshnessScore: freshness.freshnessScore,
+        latestTradeAt: bucket.latestTradeAt,
         score: num(score),
         status: score >= 0.72
           ? "ready"
@@ -1047,13 +1099,15 @@ export class OfflineTrainer {
     const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
     const scopeRetrainReadiness = buildScopedRetrainReadiness({
       paperTrades,
-      liveTrades
+      liveTrades,
+      nowIso
     });
     const retrainReadiness = buildRetrainReadiness({
       paperTrades,
       liveTrades,
       dataRecorder,
-      bootstrap: dataRecorder.latestBootstrap || {}
+      bootstrap: dataRecorder.latestBootstrap || {},
+      nowIso
     });
     const calibrationGovernance = buildCalibrationGovernance({
       tradeCount: learningReadyTrades.length,

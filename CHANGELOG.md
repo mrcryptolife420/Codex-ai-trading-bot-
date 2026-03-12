@@ -277,3 +277,4 @@ Initial public release of the Binance AI trading bot workspace.
 - paper learning dashboards now build probe/shadow daily usage from runtime and journal truth instead of stale candidate snapshots, so refreshes stay consistent with actual queue/history activity
 - unresolved counterfactual shadow cases are now retried instead of disappearing immediately when a snapshot is temporarily missing or invalid
 - paper learning, missed-trade analysis and offline retrain summaries now ignore `resolution_failed` counterfactuals so temporary snapshot issues do not pollute learning quality, blocker scorecards or shadow benchmarks
+- retrain readiness and scope-ranking are now freshness-aware, so stale paper/live history weighs less heavily than recent closed trades when deciding whether a broader retrain run is actually mature enough
