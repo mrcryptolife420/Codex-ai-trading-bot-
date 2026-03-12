@@ -2602,7 +2602,13 @@ export class TradingBot {
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.model = new AdaptiveTradingModel(await this.store.loadModel(), this.config);
     this.rlPolicy = new ReinforcementExecutionPolicy(this.runtime.executionPolicyState, this.config);
-    this.news = new NewsService({ config: this.config, runtime: this.runtime, logger: this.logger, recordEvent: this.recordEvent.bind(this) });
+    this.news = new NewsService({
+      config: this.config,
+      runtime: this.runtime,
+      logger: this.logger,
+      recordEvent: this.recordEvent.bind(this),
+      recordHistory: this.dataRecorder.recordNewsHistory.bind(this.dataRecorder)
+    });
     this.exchangeNotices = new BinanceAnnouncementService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.calendar = new CalendarService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.marketStructure = new MarketStructureService({ client: this.client, config: this.config, runtime: this.runtime, logger: this.logger });
@@ -3092,6 +3098,15 @@ export class TradingBot {
       journal: this.journal,
       nowIso: referenceNow
     }));
+    void this.dataRecorder.recordDatasetCuration({
+      at: referenceNow,
+      journal: this.journal,
+      newsCache: this.runtime.newsCache || {},
+      sourceReliability: this.runtime.sourceReliability || {},
+      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
+    }).catch((error) => {
+      this.logger.warn("Dataset curation record failed", { error: error.message });
+    });
     this.runtime.capitalLadder = summarizeCapitalLadder(this.capitalLadder.buildSnapshot({
       botMode: this.config.botMode,
       modelRegistry: this.runtime.modelRegistry || {},
@@ -6148,6 +6163,13 @@ export class TradingBot {
         capitalGovernor: this.runtime.capitalGovernor || {}
       },
       report: governance.report || {}
+    });
+    await this.dataRecorder.recordDatasetCuration({
+      at: cycleAt,
+      journal: this.journal,
+      newsCache: this.runtime.newsCache || {},
+      sourceReliability: this.runtime.sourceReliability || {},
+      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
     });
     await this.dispatchOperatorAlerts(cycleAt);
     await this.backupManager.maybeBackup({

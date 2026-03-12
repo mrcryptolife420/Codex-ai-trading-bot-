@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
-const FEATURE_STORE_SCHEMA_VERSION = 3;
+const FEATURE_STORE_SCHEMA_VERSION = 4;
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -26,6 +26,19 @@ function pickTopNumericMap(values = {}, limit = 18, digits = 4) {
       .sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))
       .slice(0, limit)
   );
+}
+
+function arr(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function clamp(value, min = 0, max = 1) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function average(values = [], fallback = 0) {
+  const filtered = arr(values).filter((value) => Number.isFinite(value));
+  return filtered.length ? filtered.reduce((total, value) => total + value, 0) / filtered.length : fallback;
 }
 
 function makeIndicatorFrame(source = {}) {
@@ -71,7 +84,124 @@ function summarizeCandidateSnapshot(candidate = {}) {
       quorumStatus: candidate.qualityQuorumSummary?.status || null,
       capitalGovernor: candidate.decision?.capitalGovernorApplied?.status || null
     },
+    dataQuality: summarizeDataQualitySnapshot(candidate.dataQualitySummary || {}),
+    confidenceBreakdown: summarizeConfidenceBreakdown(candidate.confidenceBreakdown || {}),
     topRawFeatures: pickTopNumericMap(candidate.rawFeatures || {}, 8, 4)
+  };
+}
+
+function summarizeDataQualitySnapshot(summary = {}) {
+  const sources = arr(summary.sources || []).slice(0, 8);
+  const degraded = sources.filter((item) => item.status === "degraded");
+  const missing = sources.filter((item) => item.status === "missing");
+  return {
+    status: summary.status || "unknown",
+    overallScore: num(summary.overallScore || 0, 4),
+    freshnessScore: num(summary.freshnessScore || 0, 4),
+    trustScore: num(summary.trustScore || 0, 4),
+    coverageScore: num(summary.coverageScore || 0, 4),
+    degradedButAllowed: Boolean(summary.degradedButAllowed),
+    degradedCount: degraded.length,
+    missingCount: missing.length,
+    degradedSources: degraded.map((item) => item.label).slice(0, 4),
+    missingSources: missing.map((item) => item.label).slice(0, 4),
+    sources: sources.map((item) => ({
+      label: item.label || null,
+      status: item.status || "unknown",
+      coverage: num(item.coverage || 0, 3),
+      freshnessScore: num(item.freshnessScore || 0, 4),
+      trustScore: num(item.trustScore || 0, 4),
+      fallbackSource: item.fallbackSource || null
+    }))
+  };
+}
+
+function summarizeConfidenceBreakdown(summary = {}) {
+  return {
+    marketConfidence: num(summary.marketConfidence || 0, 4),
+    dataConfidence: num(summary.dataConfidence || 0, 4),
+    executionConfidence: num(summary.executionConfidence || 0, 4),
+    modelConfidence: num(summary.modelConfidence || 0, 4),
+    overallConfidence: num(summary.overallConfidence || 0, 4)
+  };
+}
+
+function buildDataLineageSnapshot({
+  dataQualitySummary = {},
+  confidenceBreakdown = {},
+  marketStateSummary = {},
+  newsSummary = {},
+  announcementSummary = {}
+} = {}) {
+  const sources = arr(dataQualitySummary.sources || []);
+  const fallbackCount = sources.filter((item) => item.fallbackSource).length;
+  const degradedCount = sources.filter((item) => item.status === "degraded").length;
+  const missingCount = sources.filter((item) => item.status === "missing").length;
+  return {
+    dataStatus: dataQualitySummary.status || "unknown",
+    featureCompleteness: num(marketStateSummary.featureCompleteness || 0, 4),
+    freshnessScore: num(dataQualitySummary.freshnessScore || 0, 4),
+    trustScore: num(dataQualitySummary.trustScore || 0, 4),
+    coverageScore: num(dataQualitySummary.coverageScore || 0, 4),
+    degradedButAllowed: Boolean(dataQualitySummary.degradedButAllowed),
+    fallbackCount,
+    degradedCount,
+    missingCount,
+    newsFreshnessHours: num(newsSummary.freshnessHours || 0, 2),
+    announcementCoverage: num(announcementSummary.coverage || 0, 2),
+    confidence: summarizeConfidenceBreakdown(confidenceBreakdown),
+    sources: sources.map((item) => ({
+      label: item.label || null,
+      status: item.status || "unknown",
+      coverage: num(item.coverage || 0, 3),
+      freshnessScore: num(item.freshnessScore || 0, 4),
+      trustScore: num(item.trustScore || 0, 4),
+      fallbackSource: item.fallbackSource || null
+    }))
+  };
+}
+
+function buildNewsHistoryPayload({
+  at,
+  symbol,
+  aliases = [],
+  summary = {},
+  items = [],
+  cacheState = "fresh_fetch"
+} = {}) {
+  return {
+    schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+    frameType: "news_history",
+    at,
+    symbol: symbol || null,
+    aliases: arr(aliases).slice(0, 8),
+    cacheState,
+    coverage: summary.coverage || 0,
+    confidence: num(summary.confidence || 0, 4),
+    reliabilityScore: num(summary.reliabilityScore || 0, 4),
+    riskScore: num(summary.riskScore || 0, 4),
+    freshnessScore: num(summary.freshnessScore || 0, 4),
+    dominantEventType: summary.dominantEventType || "general",
+    providerOperationalHealth: arr(summary.providerOperationalHealth || []).slice(0, 6).map((item) => ({
+      provider: item.provider || null,
+      score: num(item.score || 0, 4),
+      cooldownUntil: item.cooldownUntil || null
+    })),
+    items: arr(items).slice(0, 8).map((item) => ({
+      title: item.title || null,
+      provider: item.provider || null,
+      source: item.source || null,
+      channel: item.channel || "news",
+      publishedAt: item.publishedAt || null,
+      dominantEventType: item.event?.dominantType || item.dominantEventType || "general",
+      sentimentScore: num(item.score || 0, 4),
+      riskScore: num(item.riskScore || 0, 4),
+      reliabilityScore: num(item.reliability?.reliabilityScore || item.reliabilityScore || 0, 4),
+      sourceQuality: num(item.reliability?.sourceQuality || item.sourceQuality || 0, 4),
+      whitelisted: Boolean(item.reliability?.whitelisted || item.whitelisted),
+      engagementScore: num(item.engagementScore || 0, 2),
+      link: item.link || null
+    }))
   };
 }
 
@@ -105,7 +235,34 @@ function makeDecisionFrame(candidate = {}) {
     metaNeuralProbability: num(candidate.score?.metaNeural?.probability || 0, 4),
     metaNeuralConfidence: num(candidate.score?.metaNeural?.confidence || 0, 4),
     expertDominantRegime: candidate.score?.expertMix?.dominantRegime || null,
-    indicators: makeIndicatorFrame(candidate.marketSnapshot?.market || {})
+    indicators: makeIndicatorFrame(candidate.marketSnapshot?.market || {}),
+    marketState: {
+      direction: candidate.marketStateSummary?.direction || null,
+      phase: candidate.marketStateSummary?.phase || null,
+      trendMaturity: num(candidate.marketStateSummary?.trendMaturity || 0, 4),
+      trendExhaustion: num(candidate.marketStateSummary?.trendExhaustion || 0, 4),
+      rangeAcceptance: num(candidate.marketStateSummary?.rangeAcceptance || 0, 4),
+      trendFailure: num(candidate.marketStateSummary?.trendFailure || 0, 4),
+      dataConfidence: num(candidate.marketStateSummary?.dataConfidence || 0, 4),
+      featureCompleteness: num(candidate.marketStateSummary?.featureCompleteness || 0, 4)
+    },
+    dataQuality: summarizeDataQualitySnapshot(candidate.dataQualitySummary || {}),
+    signalQuality: {
+      overallScore: num(candidate.signalQualitySummary?.overallScore || 0, 4),
+      setupFit: num(candidate.signalQualitySummary?.setupFit || 0, 4),
+      structureQuality: num(candidate.signalQualitySummary?.structureQuality || 0, 4),
+      executionViability: num(candidate.signalQualitySummary?.executionViability || 0, 4),
+      newsCleanliness: num(candidate.signalQualitySummary?.newsCleanliness || 0, 4),
+      quorumQuality: num(candidate.signalQualitySummary?.quorumQuality || 0, 4)
+    },
+    confidenceBreakdown: summarizeConfidenceBreakdown(candidate.confidenceBreakdown || {}),
+    dataLineage: buildDataLineageSnapshot({
+      dataQualitySummary: candidate.dataQualitySummary,
+      confidenceBreakdown: candidate.confidenceBreakdown,
+      marketStateSummary: candidate.marketStateSummary,
+      newsSummary: candidate.newsSummary,
+      announcementSummary: candidate.announcementSummary
+    })
   };
 }
 
@@ -147,6 +304,16 @@ export class DataRecorder {
       learningFrames: 0,
       researchFrames: 0,
       snapshotFrames: 0,
+      newsFrames: 0,
+      datasetFrames: 0,
+      archivedFiles: 0,
+      lineageCoverage: 0,
+      datasetCuration: null,
+      retention: {
+        hotRetentionDays: config.dataRecorderRetentionDays || 21,
+        coldRetentionDays: config.dataRecorderColdRetentionDays || 90,
+        lastCompactionAt: null
+      },
       lastPruneAt: null
     };
   }
@@ -155,14 +322,19 @@ export class DataRecorder {
     if (!this.config.dataRecorderEnabled) {
       return;
     }
-    const buckets = ["cycles", "decisions", "trades", "learning", "research", "snapshots"];
+    const buckets = ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "datasets"];
     await Promise.all(buckets.map((bucket) => ensureDir(path.join(this.rootDir, bucket))));
+    await Promise.all(buckets.map((bucket) => ensureDir(path.join(this.rootDir, "archive", bucket))));
 
     const restored = previousState && typeof previousState === "object" ? previousState : {};
     const fileGroups = await Promise.all(
       buckets.map((bucket) => listFiles(path.join(this.rootDir, bucket)))
     );
+    const archiveGroups = await Promise.all(
+      buckets.map((bucket) => listFiles(path.join(this.rootDir, "archive", bucket)))
+    );
     const existingFiles = fileGroups.flat();
+    const archivedFiles = archiveGroups.flat();
 
     this.state = {
       ...this.state,
@@ -176,12 +348,23 @@ export class DataRecorder {
       learningFrames: safeStateNumber(restored.learningFrames, this.state.learningFrames),
       researchFrames: safeStateNumber(restored.researchFrames, this.state.researchFrames),
       snapshotFrames: safeStateNumber(restored.snapshotFrames, this.state.snapshotFrames),
+      newsFrames: safeStateNumber(restored.newsFrames, this.state.newsFrames),
+      datasetFrames: safeStateNumber(restored.datasetFrames, this.state.datasetFrames),
+      archivedFiles: safeStateNumber(restored.archivedFiles, this.state.archivedFiles),
+      lineageCoverage: num(restored.lineageCoverage || 0, 4),
+      datasetCuration: restored.datasetCuration || null,
+      retention: {
+        hotRetentionDays: safeStateNumber(restored.retention?.hotRetentionDays, this.config.dataRecorderRetentionDays || 21),
+        coldRetentionDays: safeStateNumber(restored.retention?.coldRetentionDays, this.config.dataRecorderColdRetentionDays || 90),
+        lastCompactionAt: restored.retention?.lastCompactionAt || null
+      },
       lastPruneAt: restored.lastPruneAt || this.state.lastPruneAt
     };
 
     this.state.filesWritten = Math.max(this.state.filesWritten, existingFiles.length);
+    this.state.archivedFiles = Math.max(this.state.archivedFiles, archivedFiles.length);
     if (!this.state.lastRecordAt) {
-      this.state.lastRecordAt = await resolveLatestTimestamp(existingFiles);
+      this.state.lastRecordAt = await resolveLatestTimestamp([...existingFiles, ...archivedFiles]);
     }
   }
 
@@ -235,6 +418,12 @@ export class DataRecorder {
     }
     this.touch(at, frames.length);
     this.state.decisionFrames += frames.length;
+    const lineaged = frames.filter((frame) => (frame.dataLineage?.sources || []).length > 0).length;
+    this.state.lineageCoverage = num(
+      ((this.state.lineageCoverage || 0) * Math.max(this.state.decisionFrames - frames.length, 0) + lineaged) /
+      Math.max(this.state.decisionFrames, 1),
+      4
+    );
     return frames.length;
   }
 
@@ -260,11 +449,19 @@ export class DataRecorder {
       provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
       executionQualityScore: num(trade.executionQualityScore || 0, 4),
       captureEfficiency: num(trade.captureEfficiency || 0, 4),
+      sessionAtEntry: trade.sessionAtEntry || null,
       rawFeatureCount: Object.keys(trade.rawFeatures || {}).length,
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 12, 4),
       indicators: makeIndicatorFrame(entryRationale.indicators || {}),
       headlines: (trade.entryRationale?.headlines || []).slice(0, 3).map((item) => item.title || item),
-      blockers: [...(trade.entryRationale?.blockerReasons || [])].slice(0, 6)
+      blockers: [...(trade.entryRationale?.blockerReasons || [])].slice(0, 6),
+      dataLineage: buildDataLineageSnapshot({
+        dataQualitySummary: entryRationale.dataQuality,
+        confidenceBreakdown: entryRationale.confidenceBreakdown,
+        marketStateSummary: entryRationale.marketState,
+        newsSummary: { freshnessHours: entryRationale.news?.freshnessHours || 0 },
+        announcementSummary: { coverage: arr(entryRationale.officialNotices || []).length }
+      })
     };
     await this.write("trades", at, payload);
     this.state.tradeFrames += 1;
@@ -335,6 +532,13 @@ export class DataRecorder {
         checks: (rationale.checks || []).slice(0, 8)
       },
       indicators: makeIndicatorFrame(rationale.indicators || {}),
+      dataLineage: buildDataLineageSnapshot({
+        dataQualitySummary: rationale.dataQuality,
+        confidenceBreakdown: rationale.confidenceBreakdown,
+        marketStateSummary: rationale.marketState,
+        newsSummary: { freshnessHours: rationale.news?.freshnessHours || 0 },
+        announcementSummary: { coverage: arr(rationale.officialNotices || []).length }
+      }),
       rawFeatures: normalizeNumericMap(trade.rawFeatures || {}, 4),
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 20, 4)
     };
@@ -383,6 +587,10 @@ export class DataRecorder {
       exchangeSafety: ops.exchangeSafety?.status || null,
       capitalGovernor: ops.capitalGovernor?.status || null,
       executionCost: report.executionCostSummary?.status || null,
+      dataRecorder: {
+        lineageCoverage: num(this.state.lineageCoverage || 0, 4),
+        archivedFiles: this.state.archivedFiles || 0
+      },
       topCandidates: candidates.slice(0, 5).map(summarizeCandidateSnapshot)
     };
     await this.write("snapshots", at, payload);
@@ -420,6 +628,13 @@ export class DataRecorder {
         threshold: num(rationale.threshold || 0, 4),
         confidence: num(rationale.confidence || 0, 4)
       },
+      dataLineage: buildDataLineageSnapshot({
+        dataQualitySummary: rationale.dataQuality,
+        confidenceBreakdown: rationale.confidenceBreakdown,
+        marketStateSummary: rationale.marketState,
+        newsSummary: { freshnessHours: rationale.news?.freshnessHours || 0 },
+        announcementSummary: { coverage: arr(rationale.officialNotices || []).length }
+      }),
       replayCheckpoints: (trade.replayCheckpoints || []).slice(-12),
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 10, 4)
     };
@@ -432,20 +647,138 @@ export class DataRecorder {
     if (!this.config.dataRecorderEnabled) {
       return;
     }
-    const keepCount = Math.max(3, this.config.dataRecorderRetentionDays || 21);
-    for (const bucket of ["cycles", "decisions", "trades", "learning", "research", "snapshots"]) {
-      const files = await listFiles(path.join(this.rootDir, bucket));
-      for (const file of pruneOldFiles(files, keepCount)) {
+    const hotKeepCount = Math.max(3, this.config.dataRecorderRetentionDays || 21);
+    const coldKeepCount = Math.max(hotKeepCount, this.config.dataRecorderColdRetentionDays || 90);
+    let archivedCount = 0;
+    for (const bucket of ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "datasets"]) {
+      const bucketDir = path.join(this.rootDir, bucket);
+      const archiveDir = path.join(this.rootDir, "archive", bucket);
+      await ensureDir(archiveDir);
+      const files = [...(await listFiles(bucketDir))].sort().reverse();
+      const hotFiles = files.slice(0, hotKeepCount);
+      const toArchive = files.slice(hotKeepCount, coldKeepCount);
+      const toDelete = files.slice(coldKeepCount);
+      for (const file of toArchive) {
+        const target = path.join(archiveDir, path.basename(file));
+        try {
+          await fs.rename(file, target);
+          archivedCount += 1;
+        } catch {
+          await removeFile(file);
+        }
+      }
+      for (const file of toDelete) {
+        await removeFile(file);
+      }
+      const archiveFiles = [...(await listFiles(archiveDir))].sort().reverse();
+      for (const file of pruneOldFiles(archiveFiles, coldKeepCount - hotFiles.length)) {
         await removeFile(file);
       }
     }
+    this.state.archivedFiles = archivedCount;
+    this.state.retention = {
+      hotRetentionDays: hotKeepCount,
+      coldRetentionDays: coldKeepCount,
+      lastCompactionAt: new Date().toISOString()
+    };
     this.state.lastPruneAt = new Date().toISOString();
+    const archiveBuckets = await Promise.all(
+      ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "datasets"].map((bucket) =>
+        listFiles(path.join(this.rootDir, "archive", bucket))
+      )
+    );
+    this.state.archivedFiles = archiveBuckets.flat().length;
+  }
+
+  async recordNewsHistory({ at, symbol, aliases = [], summary = {}, items = [], cacheState = "fresh_fetch" } = {}) {
+    if (!this.config.dataRecorderEnabled || !symbol || !at) {
+      return null;
+    }
+    const payload = buildNewsHistoryPayload({ at, symbol, aliases, summary, items, cacheState });
+    await this.write("news", at, payload);
+    this.state.newsFrames += 1;
+    return payload;
+  }
+
+  async recordDatasetCuration({ at, journal = {}, newsCache = {}, sourceReliability = {}, paperLearning = {} } = {}) {
+    if (!this.config.dataRecorderEnabled || !at) {
+      return null;
+    }
+    const trades = arr(journal.trades || []);
+    const blockedSetups = arr(journal.blockedSetups || []);
+    const counterfactuals = arr(journal.counterfactuals || []);
+    const newsEntries = Object.values(newsCache || {});
+    const recentOutcomes = trades.slice(-60).map((trade) => trade.paperLearningOutcome?.outcome).filter(Boolean);
+    const payload = {
+      schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      frameType: "dataset_curation",
+      at,
+      datasets: {
+        featureStore: {
+          decisionFrames: this.state.decisionFrames || 0,
+          learningFrames: this.state.learningFrames || 0,
+          tradeFrames: this.state.tradeFrames || 0,
+          newsFrames: this.state.newsFrames || 0,
+          snapshotFrames: this.state.snapshotFrames || 0
+        },
+        paperLearning: {
+          tradeCount: trades.filter((trade) => (trade.brokerMode || "paper") === "paper").length,
+          recentOutcomes: Object.fromEntries(
+            Object.entries(
+              recentOutcomes.reduce((acc, outcome) => {
+                acc[outcome] = (acc[outcome] || 0) + 1;
+                return acc;
+              }, {})
+            ).sort((left, right) => right[1] - left[1]).slice(0, 6)
+          ),
+          status: paperLearning.status || "unknown"
+        },
+        vetoReview: {
+          blockedSetups: blockedSetups.length,
+          counterfactuals: counterfactuals.length,
+          badVetoCount: counterfactuals.filter((item) => item.outcome === "bad_veto").length,
+          goodVetoCount: counterfactuals.filter((item) => item.outcome === "good_veto").length
+        },
+        exitLearning: {
+          earlyExitCount: trades.filter((trade) => trade.paperLearningOutcome?.outcome === "early_exit").length,
+          lateExitCount: trades.filter((trade) => trade.paperLearningOutcome?.outcome === "late_exit").length
+        },
+        executionLearning: {
+          executionDragCount: trades.filter((trade) => trade.paperLearningOutcome?.executionQuality === "weak" || trade.paperLearningOutcome?.outcome === "execution_drag").length,
+          avgExecutionQuality: num(average(trades.map((trade) => trade.executionQualityScore || 0), 0), 4)
+        },
+        regimeLearning: {
+          topRegimes: Object.entries(
+            trades.reduce((acc, trade) => {
+              const regime = trade.regimeAtEntry || "unknown";
+              acc[regime] = (acc[regime] || 0) + 1;
+              return acc;
+            }, {})
+          ).sort((left, right) => right[1] - left[1]).slice(0, 6).map(([regime, count]) => ({ regime, count }))
+        },
+        newsHistory: {
+          symbolCount: newsEntries.length,
+          freshCoverage: newsEntries.filter((entry) => (entry.summary?.coverage || 0) > 0).length,
+          avgReliability: num(average(newsEntries.map((entry) => entry.summary?.reliabilityScore || 0), 0), 4),
+          operationalReliability: num(sourceReliability.operationalReliability || 0, 4)
+        }
+      }
+    };
+    await this.write("datasets", at, payload);
+    this.state.datasetFrames += 1;
+    this.state.datasetCuration = payload.datasets;
+    return payload;
   }
 
   getSummary() {
     return {
       ...this.state,
       schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+      retention: {
+        hotRetentionDays: this.state.retention?.hotRetentionDays || this.config.dataRecorderRetentionDays || 21,
+        coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90,
+        lastCompactionAt: this.state.retention?.lastCompactionAt || null
+      },
       rootDir: this.rootDir
     };
   }

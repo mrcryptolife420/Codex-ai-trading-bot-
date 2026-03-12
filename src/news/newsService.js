@@ -45,11 +45,12 @@ function num(value, digits = 4) {
 }
 
 export class NewsService {
-  constructor({ config, runtime, logger, recordEvent = null }) {
+  constructor({ config, runtime, logger, recordEvent = null, recordHistory = null }) {
     this.config = config;
     this.runtime = runtime;
     this.logger = logger;
     this.recordEvent = typeof recordEvent === "function" ? recordEvent : null;
+    this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
     this.reliability = new SourceReliabilityEngine(config);
     this.providers = [
       { id: "google_news", client: new GoogleNewsProvider(logger) },
@@ -156,6 +157,23 @@ export class NewsService {
         summary: adjustedSummary,
         items
       };
+      if (this.recordHistory) {
+        try {
+          await this.recordHistory({
+            at: now,
+            symbol,
+            aliases,
+            summary: adjustedSummary,
+            items,
+            cacheState: "fresh_fetch"
+          });
+        } catch (error) {
+          this.logger.warn("News history record failed", {
+            symbol,
+            error: error.message
+          });
+        }
+      }
       this.runtime.sourceReliability = this.reliability.buildSummary(this.runtime);
       return adjustedSummary;
     } catch (error) {

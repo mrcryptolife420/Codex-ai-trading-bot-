@@ -259,6 +259,7 @@ export function validateConfig(config) {
   assertRange("RESEARCH_MAX_WINDOWS", config.researchMaxWindows, 1, 30, errors);
   assertRange("RESEARCH_MAX_SYMBOLS", config.researchMaxSymbols, 1, 20, errors);
   assertRange("DATA_RECORDER_RETENTION_DAYS", config.dataRecorderRetentionDays, 3, 365, errors);
+  assertRange("DATA_RECORDER_COLD_RETENTION_DAYS", config.dataRecorderColdRetentionDays, 7, 730, errors);
   assertRange("MODEL_REGISTRY_MIN_SCORE", config.modelRegistryMinScore, 0, 1, errors);
   assertRange("MODEL_REGISTRY_ROLLBACK_DRAWDOWN_PCT", config.modelRegistryRollbackDrawdownPct, 0.001, 0.5, errors);
   assertRange("MODEL_REGISTRY_MAX_ENTRIES", config.modelRegistryMaxEntries, 1, 100, errors);
@@ -387,6 +388,8 @@ export function validateConfig(config) {
   }
   if (!config.dataRecorderEnabled) {
     warnings.push("DATA_RECORDER_ENABLED=false disables the richer feature-store for replay and retraining.");
+  } else if ((config.dataRecorderColdRetentionDays || 0) < (config.dataRecorderRetentionDays || 0)) {
+    warnings.push("DATA_RECORDER_COLD_RETENTION_DAYS is lower than DATA_RECORDER_RETENTION_DAYS; archive compaction will behave like hot-only retention.");
   }
   if (!config.stateBackupEnabled) {
     warnings.push("STATE_BACKUP_ENABLED=false removes automatic runtime backups and crash-recovery snapshots.");

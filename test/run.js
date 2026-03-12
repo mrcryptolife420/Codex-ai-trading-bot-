@@ -4007,6 +4007,7 @@ await runCheck("config loader parses recorder and backup settings", async () => 
       "WATCHLIST=BTCUSDT",
       "DATA_RECORDER_ENABLED=true",
       "DATA_RECORDER_RETENTION_DAYS=17",
+      "DATA_RECORDER_COLD_RETENTION_DAYS=61",
       "MODEL_REGISTRY_MIN_SCORE=0.63",
       "MODEL_REGISTRY_ROLLBACK_DRAWDOWN_PCT=0.07",
       "MODEL_REGISTRY_MAX_ENTRIES=9",
@@ -4020,6 +4021,7 @@ await runCheck("config loader parses recorder and backup settings", async () => 
     const config = await loadConfig(tempDir);
     assert.equal(config.dataRecorderEnabled, true);
     assert.equal(config.dataRecorderRetentionDays, 17);
+    assert.equal(config.dataRecorderColdRetentionDays, 61);
     assert.equal(config.modelRegistryMinScore, 0.63);
     assert.equal(config.modelRegistryRollbackDrawdownPct, 0.07);
     assert.equal(config.modelRegistryMaxEntries, 9);
@@ -4185,7 +4187,7 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     });
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
-    assert.equal(payload.schemaVersion, 3);
+    assert.equal(payload.schemaVersion, 4);
     assert.equal(payload.frameType, "learning");
     assert.equal(payload.symbol, "BTCUSDT");
     assert.equal(payload.model.calibrationObservations, 18);
@@ -4256,6 +4258,103 @@ await runCheck("data recorder stores deterministic snapshot manifests and trade 
     assert.equal(lines[0].frameType, "snapshot_manifest");
     assert.equal(lines[1].frameType, "trade_replay");
     assert.equal(recorder.getSummary().snapshotFrames, 2);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder stores historical news frames and dataset curation summaries", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-news-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21, dataRecorderColdRetentionDays: 90 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordNewsHistory({
+      at: "2026-03-12T08:00:00.000Z",
+      symbol: "BTCUSDT",
+      aliases: ["BTC", "Bitcoin"],
+      summary: {
+        coverage: 3,
+        confidence: 0.62,
+        reliabilityScore: 0.71,
+        riskScore: 0.18,
+        freshnessScore: 0.84,
+        dominantEventType: "etf_flow",
+        providerOperationalHealth: [{ provider: "coindesk", score: 0.9 }]
+      },
+      items: [
+        {
+          title: "ETF inflows support Bitcoin",
+          provider: "coindesk",
+          source: "CoinDesk",
+          channel: "news",
+          publishedAt: "2026-03-12T07:15:00.000Z",
+          score: 0.48,
+          riskScore: 0.12,
+          reliability: { reliabilityScore: 0.82, sourceQuality: 0.8, whitelisted: true },
+          event: { dominantType: "etf_flow" },
+          link: "https://example.com/btc"
+        }
+      ]
+    });
+    await recorder.recordDatasetCuration({
+      at: "2026-03-12T08:05:00.000Z",
+      newsCache: {
+        BTCUSDT: { summary: { coverage: 3, reliabilityScore: 0.71 } },
+        ETHUSDT: { summary: { coverage: 1, reliabilityScore: 0.64 } }
+      },
+      sourceReliability: { operationalReliability: 0.77 },
+      paperLearning: { status: "building" },
+      journal: {
+        trades: [
+          { brokerMode: "paper", regimeAtEntry: "trend", executionQualityScore: 0.74, paperLearningOutcome: { outcome: "good_trade", executionQuality: "solid" } },
+          { brokerMode: "paper", regimeAtEntry: "range", executionQualityScore: 0.41, paperLearningOutcome: { outcome: "early_exit", executionQuality: "weak" } }
+        ],
+        blockedSetups: [{ symbol: "SOLUSDT" }],
+        counterfactuals: [{ outcome: "bad_veto" }, { outcome: "good_veto" }]
+      }
+    });
+    const newsStored = await fs.readFile(path.join(tempDir, "feature-store", "news", "2026-03-12.jsonl"), "utf8");
+    const datasetStored = await fs.readFile(path.join(tempDir, "feature-store", "datasets", "2026-03-12.jsonl"), "utf8");
+    const newsPayload = JSON.parse(newsStored.trim());
+    const datasetPayload = JSON.parse(datasetStored.trim());
+    assert.equal(newsPayload.frameType, "news_history");
+    assert.equal(newsPayload.symbol, "BTCUSDT");
+    assert.equal(newsPayload.items[0].dominantEventType, "etf_flow");
+    assert.equal(datasetPayload.frameType, "dataset_curation");
+    assert.equal(datasetPayload.datasets.paperLearning.status, "building");
+    assert.equal(datasetPayload.datasets.vetoReview.badVetoCount, 1);
+    assert.equal(recorder.getSummary().newsFrames, 1);
+    assert.equal(recorder.getSummary().datasetFrames, 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder compacts old files into archive before deletion", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-archive-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 3, dataRecorderColdRetentionDays: 5 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    const bucketDir = path.join(tempDir, "feature-store", "decisions");
+    for (const day of ["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"]) {
+      await fs.writeFile(path.join(bucketDir, `${day}.jsonl`), "{}\n");
+    }
+    await recorder.prune();
+    const hotFiles = (await fs.readdir(bucketDir)).sort();
+    const archiveDir = path.join(tempDir, "feature-store", "archive", "decisions");
+    const archivedFiles = (await fs.readdir(archiveDir)).sort();
+    assert.deepEqual(hotFiles, ["2026-03-04.jsonl", "2026-03-05.jsonl", "2026-03-06.jsonl"]);
+    assert.deepEqual(archivedFiles, ["2026-03-02.jsonl", "2026-03-03.jsonl"]);
+    assert.equal(recorder.getSummary().retention.hotRetentionDays, 3);
+    assert.equal(recorder.getSummary().retention.coldRetentionDays, 5);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

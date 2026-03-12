@@ -3,6 +3,11 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Data-recorder schema v4 with explicit `news_history` and `dataset_curation` frames, so historical news, datasource lineage, and curated training views are now stored alongside decision and replay data.
+- Hot/cold feature-store retention with automatic archive compaction, allowing recent recorder data to stay fast while older files move into an archive tier before deletion.
+- Recorder-level dataset curation summaries for paper learning, veto review, exit learning, execution learning, regime learning, and historical news coverage.
+- Decision, trade, learning, and replay frames now persist richer datasource-lineage context including data quality, confidence breakdown, feature completeness, and fallback/degraded source state.
+- A concrete data-storage roadmap in the README covering feature-store layers, lineage, historical news, dataset curation, retention, and replay-grade storage.
 - Paper-learning summaries now expose `paper-to-live readiness` and a compact `counterfactual tuning` view, so the strongest paper scope and the current blocker/tuning direction are visible in runtime and dashboard output.
 - Paper learning now exposes blocker groups (`safety`, `governance`, `learning`, `market`) plus per-scope readiness across strategy families, regimes, and sessions.
 - A paper-only threshold sandbox now applies small, bounded scope-level threshold shifts in paper based on recent closed paper outcomes instead of changing the main policy globally.
@@ -86,6 +91,7 @@
 - Expanded offline veto learning so blocker scorecards now track late-veto and timing-issue patterns alongside classic good/bad veto counts.
 
 ### Fixed
+- Wired the live `NewsService` into the recorder so fresh news fetches are actually written into historical storage instead of the new news-history path existing only on paper.
 - Removed the leftover Reddit RSS provider implementation and its dead config hooks so paper/live news collection no longer risks noisy `429` Reddit warnings from stale code paths.
 - Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
 - Fixed dashboard/operator alert actions so alerts can now be resolved explicitly instead of only acknowledged or silenced.

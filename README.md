@@ -42,6 +42,46 @@ De bot combineert meerdere lagen:
 - risk controls voor spread, volatility, order book quality, cooldowns en drawdown
 - paper en live execution met lifecycle-, protection- en reconcile-logica
 
+## Data-roadmap
+
+De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch onderzoek en replay:
+
+1. `Feature-store lagen`
+- aparte buckets voor cycles, decisions, trades, learning, research, snapshots, news-history en dataset-curation
+
+2. `Datasource lineage`
+- decision- en learning-frames bewaren nu ook:
+  - data quality
+  - confidence breakdown
+  - feature completeness
+  - fallback/degraded datasource context
+
+3. `Historische news-store`
+- nieuwsfetches worden nu als eigen frames opgeslagen met:
+  - symbol
+  - headlines
+  - provider/source
+  - event type
+  - betrouwbaarheid
+  - cache/fetch status
+
+4. `Dataset curation`
+- de recorder bouwt nu aparte curation-samenvattingen voor:
+  - paper learning
+  - veto review
+  - exit learning
+  - execution learning
+  - regime learning
+  - news-history dekking
+
+5. `Hot/cold retention`
+- recente recorderdata blijft direct in de hot store
+- oudere recorderdata schuift automatisch naar een archive-laag
+- te oude bestanden worden daarna verwijderd
+
+6. `Replay-grade opslag`
+- snapshot manifests, trade replay frames en news-history leveren samen een betere basis om te reconstrueren wat de bot wist op het moment van een beslissing
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).
