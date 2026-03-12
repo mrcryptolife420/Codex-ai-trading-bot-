@@ -620,6 +620,40 @@ async function countJsonlRecords(filePaths = []) {
   return count;
 }
 
+function summarizeQualityStateFromRecords(records = []) {
+  const qualityRecords = arr(records)
+    .map((item) => item?.recordQuality)
+    .filter((item) => item && item.score != null);
+  const total = qualityRecords.length;
+  const qualityByKind = {};
+  for (const item of qualityRecords) {
+    const kind = item.kind || "generic";
+    const previous = qualityByKind[kind] || {
+      kind,
+      count: 0,
+      averageScore: 0,
+      high: 0,
+      medium: 0,
+      low: 0
+    };
+    const nextCount = (previous.count || 0) + 1;
+    qualityByKind[kind] = {
+      kind,
+      count: nextCount,
+      averageScore: num((((previous.averageScore || 0) * (previous.count || 0)) + num(item.score || 0, 4)) / nextCount, 4),
+      high: (previous.high || 0) + (item.tier === "high" ? 1 : 0),
+      medium: (previous.medium || 0) + (item.tier === "medium" ? 1 : 0),
+      low: (previous.low || 0) + (item.tier === "low" ? 1 : 0)
+    };
+  }
+  return {
+    recordQualityCount: total,
+    averageRecordQuality: num(average(qualityRecords.map((item) => item.score || 0), 0), 4),
+    latestRecordQuality: qualityRecords.at(-1) || null,
+    qualityByKind
+  };
+}
+
 function topCounts(values = [], limit = 6) {
   return Object.entries(
     arr(values).reduce((acc, value) => {
@@ -734,6 +768,10 @@ export class DataRecorder {
 
     if (!this.state.lastRecordAt) {
       this.state.lastRecordAt = await resolveLatestTimestamp([...existingFiles, ...archivedFiles]);
+    }
+    await this.rebuildFileTruthState({ maxCoverageRecords: 800, preserveLastRecordAt: true });
+    if (restored.lastRecordAt) {
+      this.state.lastRecordAt = restored.lastRecordAt;
     }
   }
 
@@ -1317,7 +1355,7 @@ export class DataRecorder {
     };
   }
 
-  async rebuildFileTruthState({ maxCoverageRecords = 800 } = {}) {
+  async rebuildFileTruthState({ maxCoverageRecords = 800, preserveLastRecordAt = false } = {}) {
     if (!this.config.dataRecorderEnabled) {
       return this.getSummary();
     }
@@ -1331,13 +1369,26 @@ export class DataRecorder {
     const counts = Object.fromEntries(await Promise.all(
       buckets.map(async (bucket) => [bucket, await countJsonlRecords(allFiles[bucket] || [])])
     ));
-    const [newsRecords, contextRecords, datasetRecords] = await Promise.all([
+    const [qualityRecords, newsRecords, contextRecords, datasetRecords] = await Promise.all([
+      readAllJsonlFiles(
+        [
+          ...(allFiles.decisions || []),
+          ...(allFiles.trades || []),
+          ...(allFiles.learning || []),
+          ...(allFiles.research || []),
+          ...(allFiles.snapshots || []),
+          ...(allFiles.news || []),
+          ...(allFiles.contexts || []),
+          ...(allFiles.datasets || [])
+        ]
+      ),
       readAllJsonlFiles((allFiles.news || []).slice(-Math.max(1, maxCoverageRecords))),
       readAllJsonlFiles((allFiles.contexts || []).slice(-Math.max(1, maxCoverageRecords))),
       readAllJsonlFiles((allFiles.datasets || []).slice(-Math.max(1, maxCoverageRecords)))
     ]);
     const rebuiltSourceCoverage = newsRecords.reduce((current, payload) => updateSourceCoverage(current, payload), {});
     const rebuiltContextCoverage = contextRecords.reduce((current, payload) => updateContextCoverage(current, payload), {});
+    const rebuiltQualityState = summarizeQualityStateFromRecords(qualityRecords);
     this.state = {
       ...this.state,
       filesWritten: Object.values(counts).reduce((total, value) => total + (value || 0), 0),
@@ -1351,11 +1402,15 @@ export class DataRecorder {
       contextFrames: counts.contexts || 0,
       datasetFrames: counts.datasets || 0,
       archivedFiles: archiveFiles.flat().length,
+      recordQualityCount: rebuiltQualityState.recordQualityCount,
+      averageRecordQuality: rebuiltQualityState.averageRecordQuality,
+      latestRecordQuality: rebuiltQualityState.latestRecordQuality,
+      qualityByKind: rebuiltQualityState.qualityByKind,
       sourceCoverage: Object.keys(rebuiltSourceCoverage).length ? rebuiltSourceCoverage : this.state.sourceCoverage,
       contextCoverage: Object.keys(rebuiltContextCoverage).length ? rebuiltContextCoverage : this.state.contextCoverage,
       datasetCuration: datasetRecords.at(-1)?.datasets || this.state.datasetCuration
     };
-    if (!this.state.lastRecordAt) {
+    if (!preserveLastRecordAt || !this.state.lastRecordAt) {
       this.state.lastRecordAt = await resolveLatestTimestamp([...liveFiles.flat(), ...archiveFiles.flat()]);
     }
     return this.getSummary();
