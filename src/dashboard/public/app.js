@@ -759,27 +759,6 @@ function buildOpsEvents(snapshot) {
         }
       : null,
     ...alerts,
-    paperLearning.probation?.note
-      ? {
-          title: "Paper probation",
-          detail: paperLearning.probation.note,
-          tone: paperLearning.probation.rollbackRisk ? "negative" : paperLearning.probation.promotionReady ? "positive" : "neutral"
-        }
-      : null,
-    paperLearning.topBlockers?.[0]
-      ? {
-          title: "Paper blocker",
-          detail: titleize(paperLearning.topBlockers[0].id),
-          tone: "neutral"
-        }
-      : null,
-    paperLearning.recentOutcomes?.[0]
-      ? {
-          title: "Paper outcome",
-          detail: titleize(paperLearning.recentOutcomes[0].id),
-          tone: "neutral"
-        }
-      : null,
     retrainPlan.operatorAction
       ? {
           title: "Retrain batch",
@@ -818,61 +797,22 @@ function renderOps(snapshot) {
   if (elements.opsLearning) {
     elements.opsLearning.innerHTML = paperLearning.readinessStatus || paperLearning.probation
       ? `
-      <article class="learning-card">
+      <article class="ops-learning-bridge">
         <div class="card-header">
           <div>
             <p class="eyebrow">Paper learning</p>
-            <h3>Readiness ${escapeHtml(formatPct(paperLearning.readinessScore || 0, 0))}</h3>
+            <h3>${escapeHtml(titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"))}</h3>
           </div>
           <span class="pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}">${escapeHtml(titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"))}</span>
         </div>
-        <div class="quick-grid">
-          <div class="stat">
-            <span class="metric-label">Safe / Probe / Shadow</span>
-            <strong>${escapeHtml(`${paperLearning.safeCount || 0} / ${paperLearning.probeCount || 0} / ${paperLearning.shadowCount || 0}`)}</strong>
-          </div>
-          <div class="stat">
-            <span class="metric-label">Probation</span>
-            <strong>${escapeHtml(titleize(paperLearning.probation?.status || "warmup"))}</strong>
-          </div>
-          <div class="stat">
-            <span class="metric-label">Top blocker</span>
-            <strong>${escapeHtml(titleize(paperLearning.topBlockers?.[0]?.id || "geen"))}</strong>
-          </div>
-          <div class="stat">
-            <span class="metric-label">Top outcome</span>
-            <strong>${escapeHtml(titleize(paperLearning.recentOutcomes?.[0]?.id || "nog geen"))}</strong>
-          </div>
-        </div>
-        <div class="decision-reasons">
-          <div class="reason-row">
-            <strong>Scope</strong>
-            <span class="reason-copy">${escapeHtml(paperLearning.scopeReadiness?.[0]?.id ? `${titleize(paperLearning.scopeReadiness[0].id)} (${titleize(paperLearning.scopeReadiness[0].status)})` : "Nog geen sterke paper-scope zichtbaar.")}</span>
-          </div>
-          <div class="reason-row">
-            <strong>Ready</strong>
-            <span class="reason-copy">${escapeHtml(paperLearning.paperToLiveReadiness?.topScope ? `${titleize(paperLearning.paperToLiveReadiness.topScope)} · ${titleize(paperLearning.paperToLiveReadiness.status)} · ${formatPct(paperLearning.paperToLiveReadiness.score || 0, 0)}` : "Nog geen paper-to-live focus-scope.")}</span>
-          </div>
-          <div class="reason-row">
-            <strong>Sandbox</strong>
-            <span class="reason-copy">${escapeHtml(paperLearning.thresholdSandbox?.status ? `${titleize(paperLearning.thresholdSandbox.status)} · ${paperLearning.thresholdSandbox.scopeLabel || "scope onbekend"} · shift ${formatPct(paperLearning.thresholdSandbox.thresholdShift || 0, 1)}` : "Geen actieve threshold sandbox.")}</span>
-          </div>
-          <div class="reason-row">
-            <strong>Tuning</strong>
-            <span class="reason-copy">${escapeHtml(paperLearning.counterfactualTuning?.blocker ? `${titleize(paperLearning.counterfactualTuning.blocker)} · ${titleize(paperLearning.counterfactualTuning.action || paperLearning.counterfactualTuning.status)}${paperLearning.counterfactualTuning.adjustment ? ` · shift ${formatPct(paperLearning.counterfactualTuning.adjustment || 0, 1)}` : ""}` : "Nog geen duidelijke counterfactual tuning-richting.")}</span>
-          </div>
-          <div class="reason-row">
-            <strong>Review</strong>
-            <span class="reason-copy">${escapeHtml(paperLearning.reviewPacks?.topMissedSetup ? `Bekijk vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "geen zwakke probe"} als zwakke probe.` : "Nog geen automatische paper review-packs beschikbaar.")}</span>
-          </div>
-          <div class="reason-row">
-            <strong>Retrain</strong>
-            <span class="reason-copy">${escapeHtml(retrainPlan.selectedScopes?.[0]?.id ? `${titleize(retrainPlan.batchType || "scoped_retrain")} · ${titleize(retrainPlan.selectedScopes[0].type)} ${titleize(retrainPlan.selectedScopes[0].id)} · ${titleize(retrainPlan.status || "building")}` : "Nog geen actieve retrain-batch geselecteerd.")}</span>
-          </div>
-          <div class="reason-row">
-            <strong>Replay</strong>
-            <span class="reason-copy">${escapeHtml(replayPlan.nextPackType ? `${titleize(replayPlan.nextPackType)} · ${replayPlan.packCount || 0} cases` : "Nog geen replay-pack met prioriteit beschikbaar.")}</span>
-          </div>
+        <p class="learning-bridge-copy">${escapeHtml(
+          `Learning-details staan in het blok "Wat leert de bot nu". Hier zie je alleen de risico- en herstelkant.`
+        )}</p>
+        <div class="tag-list">
+          <span class="tag">${escapeHtml(`Readiness ${formatPct(paperLearning.readinessScore || 0, 0)}`)}</span>
+          <span class="tag">${escapeHtml(`Probation ${titleize(paperLearning.probation?.status || "warmup")}`)}</span>
+          <span class="tag">${escapeHtml(`Retrain ${titleize(retrainPlan.batchType || "observe")}`)}</span>
+          <span class="tag">${escapeHtml(`Replay ${titleize(replayPlan.nextPackType || "geen focus")}`)}</span>
         </div>
       </article>
     `
