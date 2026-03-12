@@ -11,7 +11,6 @@ const elements = {
   heroHeadline: document.querySelector("#heroHeadline"),
   heroSubline: document.querySelector("#heroSubline"),
   operatorSummary: document.querySelector("#operatorSummary"),
-  sidebarToggle: document.querySelector("#sidebarToggle"),
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   paperBtn: document.querySelector("#paperBtn"),
@@ -632,14 +631,6 @@ async function runAction(path, body = {}) {
 }
 
 function bindEvents() {
-  elements.sidebarToggle?.addEventListener("click", () => {
-    document.body.classList.toggle("sidebar-open");
-  });
-
-  document.querySelectorAll(".sidebar-nav a").forEach((link) => {
-    link.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
-  });
-
   elements.startBtn?.addEventListener("click", () => runAction("/api/start"));
   elements.stopBtn?.addEventListener("click", () => runAction("/api/stop"));
   elements.refreshBtn?.addEventListener("click", () => runAction("/api/refresh"));

@@ -8,39 +8,18 @@
   </head>
   <body>
     <div class="shell">
-      <aside class="sidebar" id="sidebar">
-        <div class="sidebar-head">
-          <p class="eyebrow">Codex AI crypto trading bot</p>
-          <h1>Trading Desk</h1>
-          <p class="sidebar-copy">Alleen de belangrijkste status, kansen, risico's en posities.</p>
-        </div>
-
-        <nav class="sidebar-nav" aria-label="Dashboard navigatie">
-          <a href="#overviewSection">Overzicht</a>
-          <a href="#positionsSection">Posities</a>
-          <a href="#signalsSection">Signalen</a>
-          <a href="#riskSection">Risico</a>
-          <a href="#historySection">Historie</a>
-        </nav>
-
-        <div class="sidebar-status">
-          <span class="status-chip" id="modeBadge">MODE</span>
-          <span class="status-chip muted" id="runStateBadge">STATUS</span>
-          <span class="status-chip muted" id="healthBadge">HEALTH</span>
-        </div>
-      </aside>
-
       <main class="main">
         <header class="topbar">
-          <button id="sidebarToggle" class="icon-button" type="button" aria-label="Navigatie tonen of verbergen">
-            <span></span>
-            <span></span>
-            <span></span>
-          </button>
+          <div class="brand-block">
+            <p class="eyebrow">Codex AI Crypto Trading Bot</p>
+            <h1>Trading Desk</h1>
+            <p id="controlHint" class="topbar-copy">Status wordt geladen...</p>
+          </div>
 
-          <div class="headline">
-            <p class="eyebrow">Live overzicht</p>
-            <h2 id="controlHint">Status wordt geladen...</h2>
+          <div class="status-strip" aria-label="Botstatus">
+            <span class="status-chip" id="modeBadge">MODE</span>
+            <span class="status-chip muted" id="runStateBadge">STATUS</span>
+            <span class="status-chip muted" id="healthBadge">HEALTH</span>
           </div>
 
           <div class="topbar-actions">
@@ -53,7 +32,7 @@
         </header>
 
         <section class="hero-grid" id="overviewSection">
-          <article class="hero-card">
+          <article class="hero-card hero-card-main">
             <div class="hero-copy">
               <p class="eyebrow">Directe samenvatting</p>
               <h3 id="heroHeadline">Botstatus wordt geladen...</h3>
