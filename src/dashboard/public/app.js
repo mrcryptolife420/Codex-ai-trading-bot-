@@ -5,14 +5,14 @@ const DENSITY_STORAGE_KEY = "dashboard-density-level";
 const FOCUS_MODE_STORAGE_KEY = "dashboard-focus-mode";
 const LAYOUT_STORAGE_KEY = "dashboard-layout-order";
 const PINNED_STORAGE_KEY = "dashboard-pinned-items";
-const TOP_DECISION_RENDER_LIMIT = 6;
+const TOP_DECISION_RENDER_LIMIT = 4;
 const BLOCKED_RENDER_LIMIT = 4;
-const REPLAY_RENDER_LIMIT = 3;
-const RECENT_TRADE_RENDER_LIMIT = 6;
-const UNIVERSE_RENDER_LIMIT = 6;
-const ATTRIBUTION_RENDER_LIMIT = 4;
-const PNL_ATTRIBUTION_RENDER_LIMIT = 6;
-const REGISTRY_RENDER_LIMIT = 4;
+const REPLAY_RENDER_LIMIT = 2;
+const RECENT_TRADE_RENDER_LIMIT = 5;
+const UNIVERSE_RENDER_LIMIT = 4;
+const ATTRIBUTION_RENDER_LIMIT = 3;
+const PNL_ATTRIBUTION_RENDER_LIMIT = 4;
+const REGISTRY_RENDER_LIMIT = 3;
 
 const elements = {
   modeBadge: document.querySelector("#modeBadge"),
@@ -828,16 +828,13 @@ function renderMetrics(snapshot) {
   const report = snapshot.dashboard.report || {};
   const windows = report.windows || {};
   const today = windows.today || {};
-  const days30 = windows.days30 || {};
-  const universe = snapshot.dashboard.universe || {};
-  const watchlist = snapshot.dashboard.watchlist || {};
+  const days7 = windows.days7 || {};
 
   elements.metrics.innerHTML = [
     metricCard("Mode", snapshot.manager.currentMode.toUpperCase(), `Loop ${snapshot.manager.runState} | ${overview.openPositionCount || 0} open`),
     metricCard("Equity", formatMoney(overview.equity), `Open P/L ${formatMoney(overview.totalUnrealizedPnl)} | cash ${formatMoney(overview.quoteFree)}`, toneClass(overview.totalUnrealizedPnl)),
     metricCard("Vandaag", formatMoney(today.realizedPnl), `${today.tradeCount || 0} trades | win ${formatPct(today.winRate || 0, 1)}`, toneClass(today.realizedPnl)),
-    metricCard("30 dagen", formatMoney(days30.realizedPnl), `${days30.tradeCount || 0} trades | win ${formatPct(days30.winRate || 0, 1)}`, toneClass(days30.realizedPnl)),
-    metricCard("Universe", `${watchlist.resolvedCount || universe.configuredSymbolCount || 0} pairs`, `focus ${universe.selectedCount || 0} | ${(universe.rotation?.focusClusters || []).slice(0, 1).join(" / ") || "neutraal"}`)
+    metricCard("7 dagen", formatMoney(days7.realizedPnl), `${days7.tradeCount || 0} trades | win ${formatPct(days7.winRate || 0, 1)}`, toneClass(days7.realizedPnl))
   ].join("");
 }
 function buildSparkline(series) {
@@ -1778,30 +1775,12 @@ function renderOperations(snapshot) {
   const leadCalibration = Object.entries(executionCalibration.styles || {})[0] || [];
   const leadGovernor = (parameterGovernor.strategyScopes || [])[0] || (parameterGovernor.regimeScopes || [])[0] || {};
   elements.opsSummary.innerHTML = [
-    insightCard("Recorder", `${recorder.filesWritten || 0} writes`, recorder.lastRecordAt ? `laatst ${formatDate(recorder.lastRecordAt)} | learn ${recorder.learningFrames || 0} | snap ${recorder.snapshotFrames || 0}` : `Nog geen recorder-run | learn ${recorder.learningFrames || 0} | snap ${recorder.snapshotFrames || 0}`),
-    insightCard("Backups", `${backups.backupCount || 0}`, backups.lastBackupAt ? `laatst ${formatDate(backups.lastBackupAt)}` : "Nog geen backup"),
-    insightCard("Registry", `${modelRegistry.registrySize || 0} snapshots`, modelRegistry.latestSnapshotAt ? `laatst ${formatDate(modelRegistry.latestSnapshotAt)}` : "Nog geen modelsnapshot"),
-    insightCard("Recovery", recovery.uncleanShutdownDetected ? "Unclean" : "Clean", recovery.restoredFromBackupAt ? `restore ${formatDate(recovery.restoredFromBackupAt)}` : recovery.latestBackupAt ? `backup ${formatDate(recovery.latestBackupAt)}` : "Geen herstel nodig", recovery.uncleanShutdownDetected ? "negative" : "positive"),
-    insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is operationeel klaar", healthTone(readiness.status || "ready")),
-    insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
-    insightCard("Safety audit", exchangeSafety.status || "ready", exchangeSafety.notes?.[0] || "Geen extra exchange-safety waarschuwing", healthTone(exchangeSafety.status || "ready")),
-    insightCard("Lifecycle invariants", lifecycleInvariants.status || "ready", lifecycleInvariants.notes?.[0] || `${lifecycleInvariants.blockerCount || 0} blocker(s)`, healthTone(lifecycleInvariants.status || "ready")),
-    insightCard("Venue check", `${venueConfirmation.venueCount || venueConfirmation.confirmedCount || 0} venues`, venueConfirmation.routeAdvice?.preferredEntryStyle ? `${venueConfirmation.routeAdvice.preferredEntryStyle} | div ${formatNumber(venueConfirmation.averageDivergenceBps || 0, 2)} bps` : (venueConfirmation.notes || [])[0] || "Nog geen externe confirmatie", healthTone(venueConfirmation.status)),
-    insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, leadRunbook.title || `${(orderLifecycle.positions || []).length} posities gevolgd`, (orderLifecycle.pendingActions || []).length ? "neutral" : "positive"),
-    insightCard("Exec calib", `${executionCalibration.liveTradeCount || 0} live`, leadCalibration[0] ? `${leadCalibration[0]} ${formatNumber(leadCalibration[1]?.slippageBiasBps || 0, 2)} bps` : "Nog geen style-calibratie", healthTone(executionCalibration.status || "warmup")),
-    insightCard("Exec budget", executionCost.status || "warmup", executionCost.worstStyle ? `${executionCost.worstStyle} | ${formatNumber(executionCost.averageTotalCostBps || 0, 2)} bps` : "Nog geen execution-cost budget", healthTone(executionCost.status || "warmup")),
-    insightCard("Threshold", thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable", thresholdTuning.appliedRecommendation?.id ? normalizeReasonLabel(thresholdTuning.appliedRecommendation.id) : "Geen actieve probation", healthTone(thresholdTuning.appliedRecommendation?.status || thresholdTuning.status || "stable")),
-    insightCard("Governor", leadGovernor.id || "-", leadGovernor.id ? `${leadGovernor.scopeType} | thr ${formatNumber(leadGovernor.thresholdShift || 0, 4)}` : "Nog geen scoped governor", healthTone(parameterGovernor.status || "warmup")),
-    insightCard("Tuning gov", tuningGovernance.status || "stable", tuningGovernance.thresholdRecommendationId ? normalizeReasonLabel(tuningGovernance.thresholdRecommendationId) : tuningGovernance.governorScope || "Geen actieve tuning-governance", healthTone(tuningGovernance.allowPromotion ? "positive" : tuningGovernance.status || "stable")),
-    insightCard("Retirement", `${strategyRetirement.retireCount || 0} retire`, strategyRetirement.policies?.[0]?.id ? `${strategyRetirement.policies[0].id} | ${strategyRetirement.policies[0].status}` : "Geen strategy retirement", healthTone(strategyRetirement.status || "ready")),
-    insightCard("Capital ladder", capitalLadder.stage || "paper", capitalLadder.notes?.[0] || "Nog geen ladder-notitie", healthTone(capitalLadder.stage || "paper")),
-    insightCard("Capital governor", capitalGovernor.status || "warmup", capitalGovernor.notes?.[0] || "Nog geen capital governor update", healthTone(capitalGovernor.status || "warmup")),
-    insightCard("Capital policy", capitalPolicy.status || "ready", capitalPolicy.notes?.[0] || "Nog geen portfolio-OS samenvatting", healthTone(capitalPolicy.status || "ready")),
+    insightCard("Readiness", readiness.status || "ready", (readiness.reasons || [])[0] ? normalizeReasonLabel(readiness.reasons[0]) : "Bot is klaar", healthTone(readiness.status || "ready")),
     insightCard("Alerts", `${alerts.activeCount || alerts.count || 0}`, alerts.alerts?.[0]?.title || "Geen operator alerts", healthTone(alerts.status || "clear")),
-    insightCard("Alert delivery", alertDelivery.status || "disabled", alertDelivery.lastDeliveryAt ? `laatst ${formatDate(alertDelivery.lastDeliveryAt)}` : alertDelivery.notes?.[0] || "Nog geen alert delivery", healthTone(alertDelivery.status || "disabled")),
-    insightCard("Chaos lab", replayChaos.status || "warmup", replayChaos.worstStrategy ? `${replayChaos.worstStrategy} | ${replayChaos.worstScenario || "-"}` : "Nog geen replay chaos data", healthTone(replayChaos.status || "warmup")),
-    insightCard("Service", service.watchdogStatus || "idle", service.lastHeartbeatAt ? `heartbeat ${formatDate(service.lastHeartbeatAt)}` : "Nog geen heartbeat", healthTone(service.watchdogStatus || "idle")),
-    insightCard("Incidenten", `${(ops.incidentTimeline || []).length}`, incidentLead.type ? `${normalizeReasonLabel(incidentLead.type)} ${incidentLead.symbol || ""}`.trim() : "Geen recente incidenten", healthTone(incidentLead.severity || "neutral"))
+    insightCard("Exchange truth", `${exchangeTruth.mismatchCount || 0} mismatches`, exchangeTruth.lastReconciledAt ? `laatst ${formatDate(exchangeTruth.lastReconciledAt)}` : "Nog geen reconcile", healthTone(exchangeTruth.status)),
+    insightCard("Lifecycle", `${(orderLifecycle.pendingActions || []).length} acties`, lifecycleInvariants.notes?.[0] || leadRunbook.title || "Normale runtime", healthTone(lifecycleInvariants.status || "ready")),
+    insightCard("Capital", capitalGovernor.status || capitalPolicy.status || "ready", capitalGovernor.notes?.[0] || capitalPolicy.notes?.[0] || "Geen kapitaalwaarschuwing", healthTone(capitalGovernor.status || capitalPolicy.status || "ready")),
+    insightCard("Execution", executionCost.status || "warmup", executionCost.worstStyle ? `${executionCost.worstStyle} | ${formatNumber(executionCost.averageTotalCostBps || 0, 2)} bps` : "Execution budget ok", healthTone(executionCost.status || "warmup"))
   ].join("");
 
   const notes = uniqueTextItems([
@@ -1831,7 +1810,7 @@ function renderOperations(snapshot) {
   ].filter(Boolean));
   elements.opsList.innerHTML = notes.length || (ops.incidentTimeline || []).length
     ? [
-        ...(orderLifecycle.activeActions || []).slice(0, 6).map((item) => `
+        ...(orderLifecycle.activeActions || []).slice(0, 4).map((item) => `
           <div class="event-row">
             <div>
               <strong>${escapeHtml(normalizeReasonLabel(item.type || "exchange_action"))}</strong>
@@ -1841,7 +1820,7 @@ function renderOperations(snapshot) {
             <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.stage || "pending")}</div>
           </div>
         `),
-        ...(alerts.alerts || []).slice(0, 6).map((item) => `
+        ...(alerts.alerts || []).slice(0, 4).map((item) => `
           <div class="event-row">
             <div>
               <strong>${escapeHtml(item.title || "Alert")}</strong>
@@ -1859,7 +1838,7 @@ function renderOperations(snapshot) {
             </div>
           </div>
         `),
-        ...(orderLifecycle.pendingActions || []).slice(0, 4).map((item) => `
+        ...(orderLifecycle.pendingActions || []).slice(0, 3).map((item) => `
           <div class="event-row">
             <div>
               <strong>${escapeHtml(normalizeReasonLabel(item.action || item.state || "pending_action"))}</strong>
@@ -1873,7 +1852,7 @@ function renderOperations(snapshot) {
             </div>
           </div>
         `),
-        ...(ops.incidentTimeline || []).slice(0, 6).map((item) => `
+        ...(ops.incidentTimeline || []).slice(0, 4).map((item) => `
           <div class="event-row">
             <div>
               <strong>${escapeHtml(normalizeReasonLabel(item.type || "incident"))}</strong>
@@ -1883,7 +1862,7 @@ function renderOperations(snapshot) {
             <div class="pill ${healthTone(item.severity || "neutral")}">${escapeHtml(item.severity || "neutral")}</div>
           </div>
         `),
-        ...(orderLifecycle.actionJournal || []).slice(0, 6).map((item) => `
+        ...(orderLifecycle.actionJournal || []).slice(0, 4).map((item) => `
           <div class="event-row">
             <div>
               <strong>${escapeHtml(normalizeReasonLabel(item.type || "action"))}</strong>
