@@ -3137,6 +3137,7 @@ export class TradingBot {
     this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), {
       id: crypto.randomUUID(),
       symbol: candidate.symbol,
+      brokerMode: this.config.botMode,
       queuedAt,
       dueAt,
       entryPrice,
@@ -4146,6 +4147,9 @@ export class TradingBot {
       recordLaneKey(position.learningLane || "safe", position.id || `${position.symbol || "position"}:${position.entryAt}`);
     }
     for (const item of arr(this.journal?.counterfactuals || [])) {
+      if ((item.brokerMode || "paper") !== "paper") {
+        continue;
+      }
       if (item.learningLane !== "shadow") {
         continue;
       }
@@ -4156,6 +4160,9 @@ export class TradingBot {
       recordLaneKey("shadow", item.id || `${item.symbol || "shadow"}:${at}`);
     }
     for (const item of arr(this.runtime?.counterfactualQueue || [])) {
+      if ((item.brokerMode || "paper") !== "paper") {
+        continue;
+      }
       if (item.learningLane !== "shadow") {
         continue;
       }
@@ -4187,12 +4194,16 @@ export class TradingBot {
         regime: trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || null,
         session: trade.sessionAtEntry || trade.entryRationale?.session?.session || null
       })),
-      ...arr(this.journal?.counterfactuals || []).map((item) => ({
+      ...arr(this.journal?.counterfactuals || [])
+        .filter((item) => (item.brokerMode || "paper") === "paper")
+        .map((item) => ({
         family: item.strategyFamily || null,
         regime: item.regime || null,
         session: item.sessionAtEntry || null
       })),
-      ...arr(this.runtime?.counterfactualQueue || []).map((item) => ({
+      ...arr(this.runtime?.counterfactualQueue || [])
+        .filter((item) => (item.brokerMode || "paper") === "paper")
+        .map((item) => ({
         family: item.strategyFamily || item.paperLearning?.scope?.family || null,
         regime: item.regime || item.paperLearning?.scope?.regime || null,
         session: item.sessionAtEntry || item.paperLearning?.scope?.session || null
@@ -4296,7 +4307,9 @@ export class TradingBot {
       : null;
     const offlineTrainer = summarizeOfflineTrainer(this.runtime?.offlineTrainer || {});
     const tuningRecommendation = offlineTrainer.thresholdPolicy?.topRecommendation || null;
-    const counterfactuals = arr(this.journal?.counterfactuals || []).slice(-80);
+    const counterfactuals = arr(this.journal?.counterfactuals || [])
+      .filter((item) => (item.brokerMode || "paper") === "paper")
+      .slice(-80);
     const replayPacks = this.runtime?.ops?.replayChaos?.replayPacks || this.runtime?.replayChaos?.replayPacks || {};
     const reviewPacks = {
       bestProbeWinner: replayPacks.probeWinners?.[0]?.symbol || null,
@@ -7116,15 +7129,18 @@ export class TradingBot {
     const blockerCard = offlineTrainer.blockerScorecards.find((item) => blockerSet.has(item.id));
     const strategyId = strategy.activeStrategy || strategy.id || strategy.strategyId || strategy.strategyLabel || null;
     const regimeId = decision.regime || decision.regimeAtEntry || null;
+    const activeMode = this.config?.botMode || "paper";
     const strategyCard = offlineTrainer.strategyScorecards.find((item) => item.id === strategyId);
     const recentCounterfactuals = arr(this.journal?.counterfactuals || [])
       .filter((item) => {
+        const modeMatch = (item.brokerMode || "paper") === activeMode;
         const itemBlockers = arr(item.blockerReasons || []);
         const blockerMatch = itemBlockers.some((itemBlocker) => blockerSet.has(itemBlocker));
         const strategyMatch = strategyId && (item.strategy === strategyId || item.strategyAtEntry === strategyId);
         const regimeMatch = regimeId && (item.regime === regimeId || item.regimeAtEntry === regimeId);
         const phaseMatch = decision.marketState?.phase && item.marketPhase === decision.marketState.phase;
         return (
+          modeMatch &&
           (blockerSet.size ? blockerMatch : true) &&
           (strategyId ? strategyMatch : true) &&
           (regimeId ? regimeMatch : true) &&
