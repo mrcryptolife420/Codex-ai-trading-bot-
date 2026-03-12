@@ -92,8 +92,8 @@ const DEFAULTS = {
   sourceReliabilityRateLimitCooldownMinutes: 30,
   sourceReliabilityTimeoutCooldownMinutes: 12,
   sourceReliabilityFailureCooldownMinutes: 8,
-  enableRedditSentiment: true,
-  redditSentimentSubreddits: ["CryptoCurrency", "CryptoMarkets", "Binance"],
+  enableRedditSentiment: false,
+  redditSentimentSubreddits: [],
   enableMarketSentimentContext: true,
   marketSentimentCacheMinutes: 15,
   alternativeApiBaseUrl: "https://api.alternative.me",
@@ -833,7 +833,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

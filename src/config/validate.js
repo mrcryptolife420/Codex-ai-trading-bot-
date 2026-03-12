@@ -18,10 +18,6 @@ export function validateConfig(config) {
   if (new Set(config.watchlist).size !== config.watchlist.length) {
     errors.push("WATCHLIST contains duplicate symbols.");
   }
-  if (!Array.isArray(config.redditSentimentSubreddits) || config.redditSentimentSubreddits.length === 0) {
-    warnings.push("REDDIT_SENTIMENT_SUBREDDITS is empty; Reddit sentiment is disabled even if ENABLE_REDDIT_SENTIMENT=true.");
-  }
-
   assertRange("MAX_OPEN_POSITIONS", config.maxOpenPositions, 1, 20, errors);
   assertRange("MAX_POSITION_FRACTION", config.maxPositionFraction, 0.001, 1, errors);
   assertRange("MAX_TOTAL_EXPOSURE_FRACTION", config.maxTotalExposureFraction, 0.01, 1, errors);

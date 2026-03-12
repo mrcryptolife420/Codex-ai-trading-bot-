@@ -5,7 +5,6 @@ import { CoinDeskProvider } from "./coindeskProvider.js";
 import { CointelegraphProvider } from "./cointelegraphProvider.js";
 import { DecryptProvider } from "./decryptProvider.js";
 import { GoogleNewsProvider } from "./googleNewsProvider.js";
-import { RedditProvider } from "./redditProvider.js";
 import { summarizeNews } from "./sentiment.js";
 import { mapWithConcurrency } from "../utils/async.js";
 
@@ -59,9 +58,6 @@ export class NewsService {
       { id: "decrypt", client: new DecryptProvider(logger) },
       { id: "blockworks", client: new BlockworksProvider(logger) }
     ];
-    if (config.enableRedditSentiment) {
-      this.providers.push({ id: "reddit_search", client: new RedditProvider({ logger, config }) });
-    }
   }
 
   isFresh(cacheEntry) {

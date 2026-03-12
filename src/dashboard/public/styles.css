@@ -114,6 +114,15 @@ th,
   color: var(--text-soft);
 }
 
+.panel-body {
+  display: grid;
+  gap: 10px;
+}
+
+.collapsible-panel.is-collapsed .panel-body {
+  display: none;
+}
+
 .status-strip,
 .topbar-actions,
 .toolbar,
@@ -189,6 +198,13 @@ button:disabled {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.ghost-small {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 0.76rem;
+}
+
 .danger {
   background: linear-gradient(135deg, #ff7b95, #f0516a);
 }
@@ -247,10 +263,41 @@ button:disabled {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.signal-card {
+  position: relative;
+}
+
 .card-summary {
   display: grid;
   gap: 10px;
   padding: 14px;
+}
+
+.card-copy {
+  color: var(--text-soft);
+  line-height: 1.45;
+  font-size: 0.92rem;
+}
+
+.decision-reasons {
+  display: grid;
+  gap: 6px;
+}
+
+.reason-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.reason-row strong {
+  min-width: 78px;
+  color: var(--text);
+  font-size: 0.76rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .card-header {
@@ -349,6 +396,10 @@ input[type="search"] {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
+}
+
+.collapse-btn[aria-expanded="false"] {
+  color: var(--muted);
 }
 
 @media (max-width: 1180px) {

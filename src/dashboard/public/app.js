@@ -17,11 +17,20 @@ const elements = {
   decisionSearch: document.querySelector("#decisionSearch"),
   decisionAllowedOnly: document.querySelector("#decisionAllowedOnly"),
   decisionMeta: document.querySelector("#decisionMeta"),
+  decisionShowMoreBtn: document.querySelector("#decisionShowMoreBtn"),
   decisionsList: document.querySelector("#decisionsList"),
   positionsList: document.querySelector("#positionsList"),
   opsSummary: document.querySelector("#opsSummary"),
   opsList: document.querySelector("#opsList"),
-  tradesBody: document.querySelector("#tradesBody")
+  tradesBody: document.querySelector("#tradesBody"),
+  signalsSection: document.querySelector("#signalsSection"),
+  positionsSection: document.querySelector("#positionsSection"),
+  riskSection: document.querySelector("#riskSection"),
+  historySection: document.querySelector("#historySection"),
+  signalsToggleBtn: document.querySelector("#signalsToggleBtn"),
+  positionsToggleBtn: document.querySelector("#positionsToggleBtn"),
+  riskToggleBtn: document.querySelector("#riskToggleBtn"),
+  historyToggleBtn: document.querySelector("#historyToggleBtn")
 };
 
 let latestSnapshot = null;
@@ -30,6 +39,13 @@ let pollTimer = null;
 let requestEpoch = 0;
 let searchQuery = "";
 let allowedOnly = false;
+let showAllDecisions = false;
+const panelState = {
+  signals: true,
+  positions: true,
+  risk: true,
+  history: true
+};
 
 function escapeHtml(value) {
   return `${value ?? ""}`
@@ -102,6 +118,29 @@ function titleize(value) {
   return `${value || "-"}`
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatDecisionType(decision) {
+  return titleize(
+    decision.setupStyle ||
+    decision.strategy?.familyLabel ||
+    decision.strategy?.strategyLabel ||
+    decision.marketState?.phase ||
+    "setup"
+  );
+}
+
+function whyTradeable(decision) {
+  if (!decision.allow) {
+    return null;
+  }
+  const style = decision.executionStyle ? titleize(decision.executionStyle) : "Standaard entry";
+  const market = decision.marketState?.phase ? titleize(decision.marketState.phase) : titleize(decision.regime || "regime");
+  return `${formatDecisionType(decision)} in ${market} met ${style.toLowerCase()}.`;
+}
+
+function whyBlocked(decision) {
+  return decision.operatorAction || titleize(decision.blockerReasons?.[0] || decision.reasons?.[0] || "geen directe reden");
 }
 
 function truncate(text, max = 120) {
@@ -249,7 +288,7 @@ function renderHero(snapshot) {
 }
 
 function filterDecisions(snapshot) {
-  const decisions = (snapshot?.dashboard?.topDecisions || []).slice(0, 8);
+  const decisions = (snapshot?.dashboard?.topDecisions || []).slice(0, 24);
   return decisions.filter((item) => {
     if (allowedOnly && !item.allow) {
       return false;
@@ -265,7 +304,7 @@ function filterDecisions(snapshot) {
       item.marketState?.direction
     ].join(" ").toLowerCase();
     return haystack.includes(searchQuery);
-  }).slice(0, SIGNAL_LIMIT);
+  });
 }
 
 function signalSummary(decision) {
@@ -278,19 +317,22 @@ function signalSummary(decision) {
 function renderSignals(snapshot) {
   const filtered = filterDecisions(snapshot);
   const total = snapshot?.dashboard?.topDecisions?.length || 0;
-  elements.decisionMeta.textContent = `${filtered.length} van ${total} zichtbaar`;
-  elements.decisionsList.innerHTML = filtered.length
-    ? filtered.map((decision) => `
+  const visible = showAllDecisions ? filtered : filtered.slice(0, SIGNAL_LIMIT);
+  elements.decisionMeta.textContent = `${visible.length} van ${total} zichtbaar`;
+  elements.decisionShowMoreBtn.textContent = showAllDecisions ? "Toon minder" : "Toon alles";
+  elements.decisionShowMoreBtn.hidden = filtered.length <= SIGNAL_LIMIT;
+  elements.decisionsList.innerHTML = visible.length
+    ? visible.map((decision) => `
         <article class="signal-card">
           <div class="card-summary">
             <div class="card-header">
               <div>
-                <p class="eyebrow">${escapeHtml(decision.marketState?.phase || decision.regime || "Setup")}</p>
+                <p class="eyebrow">${escapeHtml(formatDecisionType(decision))}</p>
                 <h3>${escapeHtml(decision.symbol || "-")}</h3>
               </div>
               <span class="pill ${decision.allow ? "positive" : "negative"}">${escapeHtml(decision.allow ? "Tradebaar" : "Geblokkeerd")}</span>
             </div>
-            <p>${escapeHtml(truncate(signalSummary(decision), 150))}</p>
+            <p class="card-copy">${escapeHtml(truncate(signalSummary(decision), 170))}</p>
             <div class="quick-grid">
               <div class="stat">
                 <span class="metric-label">Kans</span>
@@ -303,6 +345,20 @@ function renderSignals(snapshot) {
               <div class="stat">
                 <span class="metric-label">Risk</span>
                 <strong>${escapeHtml(titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))}</strong>
+              </div>
+            </div>
+            <div class="decision-reasons">
+              <div class="reason-row">
+                <strong>Type</strong>
+                <span>${escapeHtml(whyTradeable(decision) || formatDecisionType(decision))}</span>
+              </div>
+              <div class="reason-row">
+                <strong>${decision.allow ? "Waarom wel" : "Waarom niet"}</strong>
+                <span>${escapeHtml(truncate(decision.allow ? whyTradeable(decision) || decision.summary : whyBlocked(decision), 150))}</span>
+              </div>
+              <div class="reason-row">
+                <strong>Actie</strong>
+                <span>${escapeHtml(truncate(decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.", 150))}</span>
               </div>
             </div>
             <div class="tag-list">
@@ -470,6 +526,7 @@ function render(snapshot) {
   renderOps(snapshot);
   renderTrades(snapshot);
   syncControls(snapshot);
+  syncPanels();
 }
 
 function syncControls(snapshot) {
@@ -536,6 +593,40 @@ function bindEvents() {
       renderSignals(latestSnapshot);
     }
   });
+
+  elements.decisionShowMoreBtn?.addEventListener("click", () => {
+    showAllDecisions = !showAllDecisions;
+    if (latestSnapshot) {
+      renderSignals(latestSnapshot);
+    }
+  });
+
+  bindPanelToggle("signals", elements.signalsSection, elements.signalsToggleBtn);
+  bindPanelToggle("positions", elements.positionsSection, elements.positionsToggleBtn);
+  bindPanelToggle("risk", elements.riskSection, elements.riskToggleBtn);
+  bindPanelToggle("history", elements.historySection, elements.historyToggleBtn);
+}
+
+function bindPanelToggle(key, section, button) {
+  button?.addEventListener("click", () => {
+    panelState[key] = !panelState[key];
+    syncPanel(section, button, panelState[key]);
+  });
+}
+
+function syncPanel(section, button, expanded) {
+  section?.classList.toggle("is-collapsed", !expanded);
+  if (button) {
+    button.setAttribute("aria-expanded", String(expanded));
+    button.textContent = expanded ? "Inklappen" : "Uitklappen";
+  }
+}
+
+function syncPanels() {
+  syncPanel(elements.signalsSection, elements.signalsToggleBtn, panelState.signals);
+  syncPanel(elements.positionsSection, elements.positionsToggleBtn, panelState.positions);
+  syncPanel(elements.riskSection, elements.riskToggleBtn, panelState.risk);
+  syncPanel(elements.historySection, elements.historyToggleBtn, panelState.history);
 }
 
 async function init() {

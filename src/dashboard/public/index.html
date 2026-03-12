@@ -36,7 +36,7 @@
         </header>
 
         <section class="main-grid">
-          <article class="panel" id="signalsSection">
+          <article class="panel collapsible-panel" id="signalsSection">
               <div class="panel-head panel-head-split">
                 <div>
                   <p class="eyebrow">Beste kansen</p>
@@ -49,55 +49,68 @@
                     Alleen tradebaar
                   </label>
                   <span id="decisionMeta" class="panel-meta"></span>
+                  <button id="decisionShowMoreBtn" class="ghost ghost-small" type="button">Toon alles</button>
+                  <button id="signalsToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="signalsBody">Inklappen</button>
                 </div>
               </div>
-              <div id="decisionsList" class="list-stack"></div>
+              <div id="signalsBody" class="panel-body">
+                <div id="decisionsList" class="list-stack"></div>
+              </div>
           </article>
 
-          <article class="panel" id="positionsSection">
+          <article class="panel collapsible-panel" id="positionsSection">
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">Actieve exposure</p>
                   <h3>Open posities</h3>
                 </div>
+                <button id="positionsToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="positionsBody">Inklappen</button>
               </div>
-              <div id="positionsList" class="list-stack"></div>
+              <div id="positionsBody" class="panel-body">
+                <div id="positionsList" class="list-stack"></div>
+              </div>
           </article>
         </section>
 
         <section class="bottom-grid">
-          <article class="panel" id="riskSection">
+          <article class="panel collapsible-panel" id="riskSection">
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">Risico en herstel</p>
                   <h3>Systeemstatus</h3>
                 </div>
+                <button id="riskToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="riskBody">Inklappen</button>
               </div>
-              <div id="opsSummary" class="risk-grid"></div>
-              <div id="opsList" class="list-stack compact-list"></div>
+              <div id="riskBody" class="panel-body">
+                <div id="opsSummary" class="risk-grid"></div>
+                <div id="opsList" class="list-stack compact-list"></div>
+              </div>
           </article>
 
-          <article class="panel" id="historySection">
+          <article class="panel collapsible-panel" id="historySection">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Laatste afsluitingen</p>
                 <h3>Recente trades</h3>
               </div>
+              <button id="historyToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="historyBody">Inklappen</button>
             </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Coin</th>
-                    <th>Open</th>
-                    <th>Sluit</th>
-                    <th>Reden</th>
-                    <th>P/L</th>
-                    <th>Rendement</th>
-                  </tr>
-                </thead>
-                <tbody id="tradesBody"></tbody>
-              </table>
+            <div id="historyBody" class="panel-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Coin</th>
+                      <th>Open</th>
+                      <th>Sluit</th>
+                      <th>Reden</th>
+                      <th>P/L</th>
+                      <th>Rendement</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tradesBody"></tbody>
+                </table>
+              </div>
             </div>
           </article>
         </section>
