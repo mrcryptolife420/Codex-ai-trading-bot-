@@ -181,6 +181,29 @@ function actionText(decision) {
   return decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.";
 }
 
+function signalPrimaryReason(decision) {
+  if (decision.allow) {
+    return decision.summary || whyTradeable(decision) || "Setup is tradebaar volgens de huidige checks.";
+  }
+  return whyBlocked(decision);
+}
+
+function signalStatusText(decision) {
+  if (decision.allow) {
+    return `Klaar voor ${titleize(decision.executionStyle || "entry")}.`;
+  }
+  return decision.blockerReasons?.[0]
+    ? `Geblokkeerd door ${titleize(decision.blockerReasons[0])}.`
+    : "Nog niet tradebaar.";
+}
+
+function signalSupportText(decision) {
+  if (decision.allow) {
+    return actionText(decision);
+  }
+  return decision.autoRecovery || "Wacht op betere marktdata, minder blokkades of een sterkere score.";
+}
+
 function renderMissedTradeAnalysis(decision) {
   const analysis = decision.missedTradeAnalysis;
   if (decision.allow || !analysis?.available) {
@@ -408,10 +431,11 @@ function renderSignals(snapshot) {
               <div>
                 <p class="eyebrow">${escapeHtml(formatDecisionType(decision))}</p>
                 <h3>${escapeHtml(decision.symbol || "-")}</h3>
+                <p class="signal-status ${decision.allow ? "positive" : "negative"}">${escapeHtml(signalStatusText(decision))}</p>
               </div>
               <span class="pill ${decision.allow ? "positive" : "negative"}">${escapeHtml(decision.allow ? "Tradebaar" : "Geblokkeerd")}</span>
             </div>
-            <p class="card-copy">${escapeHtml(truncate(signalSummary(decision), 170))}</p>
+            <p class="card-copy">${escapeHtml(truncate(signalPrimaryReason(decision), 190))}</p>
             <div class="quick-grid">
               <div class="stat">
                 <span class="metric-label">Kans</span>
@@ -426,26 +450,27 @@ function renderSignals(snapshot) {
                 <strong>${escapeHtml(titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))}</strong>
               </div>
             </div>
+            <div class="signal-overview">
+              <span class="tag">${escapeHtml(titleize(decision.marketState?.phase || decision.regime || "setup"))}</span>
+              ${decision.strategy?.strategyLabel ? `<span class="tag">${escapeHtml(decision.strategy.strategyLabel)}</span>` : ""}
+              ${decision.executionStyle ? `<span class="tag">${escapeHtml(titleize(decision.executionStyle))}</span>` : ""}
+              ${decision.dataQuality?.status ? `<span class="tag ${statusTone(decision.dataQuality.status)}">${escapeHtml(titleize(decision.dataQuality.status))}</span>` : ""}
+            </div>
             <div class="decision-reasons">
               <div class="reason-row">
-                <strong>Type</strong>
-                <span>${escapeHtml(whyTradeable(decision) || formatDecisionType(decision))}</span>
+                <strong>Setup</strong>
+                <span class="reason-copy">${escapeHtml(whyTradeable(decision) || formatDecisionType(decision))}</span>
               </div>
               <div class="reason-row">
-                <strong>${decision.allow ? "Waarom wel" : "Waarom niet"}</strong>
-                <span class="reason-copy">${escapeHtml(decision.allow ? whyTradeable(decision) || decision.summary || "Tradebaar volgens huidige checks." : whyBlocked(decision))}</span>
+                <strong>${decision.allow ? "Waarom nu" : "Waarom niet"}</strong>
+                <span class="reason-copy">${escapeHtml(signalPrimaryReason(decision))}</span>
               </div>
               <div class="reason-row">
                 <strong>Actie</strong>
-                <span class="reason-copy">${escapeHtml(actionText(decision))}</span>
+                <span class="reason-copy">${escapeHtml(signalSupportText(decision))}</span>
               </div>
             </div>
-            <div class="tag-list">
-              ${(decision.marketState?.direction ? `<span class="tag">${escapeHtml(titleize(decision.marketState.direction))}</span>` : "")}
-              ${(decision.strategy?.strategyLabel ? `<span class="tag">${escapeHtml(decision.strategy.strategyLabel)}</span>` : "")}
-              ${(decision.dataQuality?.status ? `<span class="tag ${statusTone(decision.dataQuality.status)}">${escapeHtml(titleize(decision.dataQuality.status))}</span>` : "")}
-              ${(decision.executionStyle ? `<span class="tag">${escapeHtml(titleize(decision.executionStyle))}</span>` : "")}
-            </div>
+            <p class="signal-note">${escapeHtml(truncate(signalSummary(decision), 220))}</p>
             ${renderMissedTradeAnalysis(decision)}
           </div>
         </article>

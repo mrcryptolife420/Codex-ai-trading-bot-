@@ -290,6 +290,25 @@ button:disabled {
   font-size: 0.92rem;
 }
 
+.signal-status {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.signal-overview {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.signal-note {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 0.82rem;
+}
+
 .decision-reasons {
   display: grid;
   gap: 6px;
