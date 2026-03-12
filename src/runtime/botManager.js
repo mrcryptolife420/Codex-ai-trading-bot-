@@ -11,6 +11,20 @@ function summarizeError(error) {
   };
 }
 
+function requiresOperatorAck(alert = {}, mode = "paper") {
+  if (alert.resolvedAt || alert.acknowledgedAt) {
+    return false;
+  }
+  const severity = `${alert.severity || ""}`.toLowerCase();
+  if (!["negative", "critical", "high"].includes(severity)) {
+    return false;
+  }
+  if (mode !== "paper") {
+    return true;
+  }
+  return !["capital_governor_blocked", "capital_governor_recovery", "execution_cost_budget_blocked", "readiness_degraded"].includes(alert.id || "");
+}
+
 export class BotManager {
   constructor({ projectRoot = process.cwd(), logger }) {
     this.projectRoot = projectRoot;
@@ -305,7 +319,8 @@ export class BotManager {
       readiness.status = "blocked";
       readiness.reasons.push("capital_governor_blocked");
     }
-    if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => !item.resolvedAt && !item.acknowledgedAt && ["negative", "critical"].includes(item.severity || ""))) {
+    const mode = snapshot?.manager?.currentMode || this.config?.botMode || "paper";
+    if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, mode))) {
       readiness.ok = false;
       readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
       readiness.reasons.push("operator_ack_required");

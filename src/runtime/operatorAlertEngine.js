@@ -17,6 +17,15 @@ function makeAlert(id, severity, title, reason, action, extra = {}) {
   };
 }
 
+function isPaperGovernanceAlert(id) {
+  return [
+    "execution_cost_budget_blocked",
+    "capital_governor_blocked",
+    "capital_governor_recovery",
+    "readiness_degraded"
+  ].includes(id);
+}
+
 function resolveAlertState(id, alertState = {}, nowIso = new Date().toISOString()) {
   const acknowledgedAt = alertState.acknowledgedAtById?.[id] || null;
   const silencedUntil = alertState.silencedUntilById?.[id] || null;
@@ -55,6 +64,8 @@ export function buildOperatorAlerts({
   const selfHeal = runtime.selfHeal || {};
   const thresholdTuning = runtime.thresholdTuning || {};
   const alertState = runtime.ops?.alertState || {};
+  const botMode = `${config.botMode || runtime.botMode || "paper"}`.toLowerCase();
+  const paperMode = botMode === "paper";
 
   if (health.circuitOpen) {
     rawAlerts.push(makeAlert(
@@ -95,7 +106,7 @@ export function buildOperatorAlerts({
   if ((executionCost.status || "") === "blocked") {
     rawAlerts.push(makeAlert(
       "execution_cost_budget_blocked",
-      "high",
+      paperMode ? "medium" : "high",
       "Execution cost budget te duur",
       (executionCost.notes || [])[0] || "Recente slippage/fee kosten liggen boven budget.",
       "Verlaag aggressie, wacht op betere microstructuur of forceer shadow-only."
@@ -104,7 +115,7 @@ export function buildOperatorAlerts({
   if ((capitalGovernor.status || "") === "blocked") {
     rawAlerts.push(makeAlert(
       "capital_governor_blocked",
-      "critical",
+      paperMode ? "medium" : "critical",
       "Capital governor houdt entries tegen",
       (capitalGovernor.notes || [])[0] || "Dag- of weekverlies blijft boven het toegestane budget.",
       "Laat eerst recovery trades slagen of verlaag het risicoprofiel verder."
@@ -130,7 +141,7 @@ export function buildOperatorAlerts({
   if ((readiness.status || "") === "degraded" && (readiness.reasons || []).length) {
     rawAlerts.push(makeAlert(
       "readiness_degraded",
-      "medium",
+      paperMode && (readiness.reasons || []).every((reason) => ["operator_ack_required", "capital_governor_blocked"].includes(reason)) ? "info" : "medium",
       "Operationele readiness degraded",
       readiness.reasons[0],
       "Gebruik status/doctor en volg de actieve runbooks."
@@ -151,6 +162,7 @@ export function buildOperatorAlerts({
     ...resolveAlertState(item.id, alertState, nowIso)
   }));
   const activeAlerts = alerts.filter((item) => item.active);
+  const blockingAlerts = activeAlerts.filter((item) => !(paperMode && isPaperGovernanceAlert(item.id)));
   const maxItems = Math.max(4, safeNumber(config.operatorAlertMaxItems, 8) || 8);
   return {
     generatedAt: nowIso,
@@ -159,10 +171,10 @@ export function buildOperatorAlerts({
     mutedCount: alerts.filter((item) => item.muted).length,
     acknowledgedCount: alerts.filter((item) => item.acknowledgedAt).length,
     resolvedCount: alerts.filter((item) => item.resolvedAt).length,
-    criticalCount: activeAlerts.filter((item) => item.severity === "critical").length,
-    status: activeAlerts.some((item) => item.severity === "critical")
+    criticalCount: blockingAlerts.filter((item) => item.severity === "critical").length,
+    status: blockingAlerts.some((item) => item.severity === "critical")
       ? "critical"
-      : activeAlerts.some((item) => item.severity === "high")
+      : blockingAlerts.some((item) => item.severity === "high")
         ? "high"
         : activeAlerts.length
           ? "watch"

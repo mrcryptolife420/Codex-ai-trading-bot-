@@ -258,6 +258,20 @@ function getMomentum20(snapshot) {
   return Number.isFinite(snapshot?.market?.momentum20) ? snapshot.market.momentum20 : 0;
 }
 
+function requiresOperatorAck(alert = {}, mode = "paper") {
+  if (alert.resolvedAt || alert.acknowledgedAt) {
+    return false;
+  }
+  const severity = `${alert.severity || ""}`.toLowerCase();
+  if (!["negative", "critical", "high"].includes(severity)) {
+    return false;
+  }
+  if (mode !== "paper") {
+    return true;
+  }
+  return !["capital_governor_blocked", "capital_governor_recovery", "execution_cost_budget_blocked", "readiness_degraded"].includes(alert.id || "");
+}
+
 function buildRelativeStrengthMap(snapshotMap = {}, symbols = [], config = {}) {
   const profiles = Object.fromEntries(symbols.map((symbol) => [symbol, config.symbolProfiles?.[symbol] || defaultProfile(symbol)]));
   const clusterMomenta = new Map();
@@ -3466,7 +3480,7 @@ export class TradingBot {
     if (this.config.botMode === "live" && this.runtime.capitalGovernor?.allowEntries === false) {
       reasons.push("capital_governor_blocked");
     }
-    if (arr(this.runtime.ops?.alerts?.alerts || []).some((item) => !item.resolvedAt && !item.acknowledgedAt && ["negative", "critical"].includes(item.severity || ""))) {
+    if (arr(this.runtime.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, this.config.botMode))) {
       reasons.push("operator_ack_required");
     }
     return {

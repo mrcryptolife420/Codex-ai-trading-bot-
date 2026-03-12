@@ -3684,6 +3684,26 @@ await runCheck("bot manager requires ack for unresolved critical alerts", async 
   assert.ok(readiness.reasons.includes("operator_ack_required"));
 });
 
+await runCheck("bot manager does not require ack in paper for governance-only alerts", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  const readiness = manager.buildOperationalReadiness({
+    manager: { runState: "running", currentMode: "paper" },
+    dashboard: {
+      overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+      ops: {
+        alerts: {
+          alerts: [
+            { id: "capital_governor_blocked", severity: "critical", acknowledgedAt: null, resolvedAt: null },
+            { id: "execution_cost_budget_blocked", severity: "high", acknowledgedAt: null, resolvedAt: null }
+          ]
+        }
+      },
+      safety: { orderLifecycle: { pendingActions: [] } }
+    }
+  });
+  assert.equal(readiness.reasons.includes("operator_ack_required"), false);
+});
+
 await runCheck("config validation blocks inverted drift thresholds", async () => {
   const result = validateConfig(makeConfig({
     driftFeatureScoreAlert: 2,
@@ -4439,7 +4459,7 @@ await runCheck("operator alerts surface critical safety issues", async () => {
     strategyRetirement: { retireCount: 1, policies: [{ id: "donchian_breakout", status: "retire" }] },
     executionCost: { status: "blocked", notes: ["execution costs too high"] },
     capitalGovernor: { status: "blocked", notes: ["weekly drawdown exceeded"] },
-    config: makeConfig(),
+    config: makeConfig({ botMode: "live" }),
     nowIso: "2026-03-09T10:00:00.000Z"
   });
   assert.equal(alerts.criticalCount, 3);
@@ -4447,6 +4467,30 @@ await runCheck("operator alerts surface critical safety issues", async () => {
   assert.ok(alerts.alerts.some((item) => item.id === "health_circuit_open"));
   assert.ok(alerts.alerts.some((item) => item.id === "execution_cost_budget_blocked"));
   assert.ok(alerts.alerts.some((item) => item.id === "self_heal_paused" && item.acknowledgedAt && item.state === "acked"));
+});
+
+await runCheck("operator alerts soften governance-only blockers in paper mode", async () => {
+  const alerts = buildOperatorAlerts({
+    runtime: {
+      health: {},
+      orderLifecycle: { pendingActions: [] },
+      selfHeal: { mode: "paper_calibration_probe", reason: "calibration_break" },
+      thresholdTuning: {},
+      ops: { alertState: {} }
+    },
+    readiness: { status: "degraded", reasons: ["capital_governor_blocked", "operator_ack_required"] },
+    exchangeSafety: { status: "ready" },
+    strategyRetirement: { retireCount: 0, policies: [] },
+    executionCost: { status: "blocked", notes: ["execution costs too high"] },
+    capitalGovernor: { status: "blocked", notes: ["weekly drawdown exceeded"] },
+    config: makeConfig({ botMode: "paper" }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  const capitalAlert = alerts.alerts.find((item) => item.id === "capital_governor_blocked");
+  const executionAlert = alerts.alerts.find((item) => item.id === "execution_cost_budget_blocked");
+  assert.equal(capitalAlert.severity, "medium");
+  assert.equal(executionAlert.severity, "medium");
+  assert.equal(alerts.criticalCount, 0);
 });
 
 await runCheck("capital governor blocks entries after weekly drawdown breach", async () => {
