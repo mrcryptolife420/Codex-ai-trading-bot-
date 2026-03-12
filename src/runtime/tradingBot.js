@@ -2292,6 +2292,24 @@ function summarizeDataRecorder(summary = {}) {
       coldRetentionDays: summary.retention?.coldRetentionDays || 0,
       lastCompactionAt: summary.retention?.lastCompactionAt || null
     },
+    sourceCoverage: arr(summary.sourceCoverage || []).slice(0, 6).map((item) => ({
+      provider: item.provider || null,
+      count: item.count || 0,
+      avgReliability: num(item.avgReliability || 0, 4),
+      avgFreshnessScore: num(item.avgFreshnessScore || 0, 4),
+      lastSeenAt: item.lastSeenAt || null,
+      channels: arr(item.channels || []).slice(0, 3)
+    })),
+    contextCoverage: arr(summary.contextCoverage || []).slice(0, 4).map((item) => ({
+      kind: item.kind || null,
+      count: item.count || 0,
+      avgCoverage: num(item.avgCoverage || 0, 4),
+      avgConfidence: num(item.avgConfidence || 0, 4),
+      avgRiskScore: num(item.avgRiskScore || 0, 4),
+      highImpactCount: item.highImpactCount || 0,
+      lastSeenAt: item.lastSeenAt || null,
+      nextEventAt: item.nextEventAt || null
+    })),
     datasetCuration: summary.datasetCuration || null
   };
 }

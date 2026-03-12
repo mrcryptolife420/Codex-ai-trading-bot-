@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
-const FEATURE_STORE_SCHEMA_VERSION = 5;
+const FEATURE_STORE_SCHEMA_VERSION = 6;
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -198,6 +198,144 @@ function buildRecordQuality({
     score: num(score, 4),
     tier: score >= 0.78 ? "high" : score >= 0.58 ? "medium" : "low"
   };
+}
+
+function sortCoverageMap(entries = []) {
+  return arr(entries)
+    .sort((left, right) => {
+      if ((right.count || 0) !== (left.count || 0)) {
+        return (right.count || 0) - (left.count || 0);
+      }
+      return (right.avgReliability || right.avgCoverage || 0) - (left.avgReliability || left.avgCoverage || 0);
+    });
+}
+
+function updateSourceCoverage(current = {}, payload = {}) {
+  const next = { ...(current || {}) };
+  for (const item of arr(payload.items || [])) {
+    const key = item.provider || item.source || "unknown";
+    const previous = next[key] || {
+      provider: key,
+      count: 0,
+      avgReliability: 0,
+      avgFreshnessScore: 0,
+      lastSeenAt: null,
+      channels: {}
+    };
+    const total = (previous.count || 0) + 1;
+    const reliability = num(item.reliabilityScore || 0, 4);
+    const freshnessScore = num(payload.freshnessScore || 0, 4);
+    const channel = item.channel || "news";
+    next[key] = {
+      provider: key,
+      count: total,
+      avgReliability: num((((previous.avgReliability || 0) * (previous.count || 0)) + reliability) / total, 4),
+      avgFreshnessScore: num((((previous.avgFreshnessScore || 0) * (previous.count || 0)) + freshnessScore) / total, 4),
+      lastSeenAt: payload.at || previous.lastSeenAt || null,
+      channels: {
+        ...(previous.channels || {}),
+        [channel]: ((previous.channels || {})[channel] || 0) + 1
+      }
+    };
+  }
+  return Object.fromEntries(sortCoverageMap(Object.entries(next).map(([key, value]) => [key, value])));
+}
+
+function updateContextCoverage(current = {}, payload = {}) {
+  const kind = payload.contextType || payload.kind || "unknown";
+  const previous = current[kind] || {
+    kind,
+    count: 0,
+    avgCoverage: 0,
+    avgConfidence: 0,
+    avgRiskScore: 0,
+    highImpactCount: 0,
+    lastSeenAt: null,
+    nextEventAt: null
+  };
+  const total = (previous.count || 0) + 1;
+  return {
+    ...(current || {}),
+    [kind]: {
+      kind,
+      count: total,
+      avgCoverage: num((((previous.avgCoverage || 0) * (previous.count || 0)) + num(payload.summary?.coverage || 0, 4)) / total, 4),
+      avgConfidence: num((((previous.avgConfidence || 0) * (previous.count || 0)) + num(payload.summary?.confidence || 0, 4)) / total, 4),
+      avgRiskScore: num((((previous.avgRiskScore || 0) * (previous.count || 0)) + num(payload.summary?.riskScore || 0, 4)) / total, 4),
+      highImpactCount: (previous.highImpactCount || 0) + (payload.summary?.highImpactCount || 0),
+      lastSeenAt: payload.at || previous.lastSeenAt || null,
+      nextEventAt: payload.summary?.nextEventAt || previous.nextEventAt || null
+    }
+  };
+}
+
+function summarizeSourceCoverage(summary = {}, limit = 6) {
+  return sortCoverageMap(Object.values(summary || {}))
+    .slice(0, limit)
+    .map((item) => ({
+      provider: item.provider || null,
+      count: item.count || 0,
+      avgReliability: num(item.avgReliability || 0, 4),
+      avgFreshnessScore: num(item.avgFreshnessScore || 0, 4),
+      lastSeenAt: item.lastSeenAt || null,
+      channels: Object.entries(item.channels || {}).sort((left, right) => right[1] - left[1]).slice(0, 3)
+    }));
+}
+
+function summarizeContextCoverage(summary = {}, limit = 4) {
+  return arr(Object.values(summary || {}))
+    .sort((left, right) => (right.count || 0) - (left.count || 0))
+    .slice(0, limit)
+    .map((item) => ({
+      kind: item.kind || null,
+      count: item.count || 0,
+      avgCoverage: num(item.avgCoverage || 0, 4),
+      avgConfidence: num(item.avgConfidence || 0, 4),
+      avgRiskScore: num(item.avgRiskScore || 0, 4),
+      highImpactCount: item.highImpactCount || 0,
+      lastSeenAt: item.lastSeenAt || null,
+      nextEventAt: item.nextEventAt || null
+    }));
+}
+
+function restoreSourceCoverage(summary = {}) {
+  if (Array.isArray(summary)) {
+    return Object.fromEntries(
+      arr(summary).map((item) => [
+        item.provider || "unknown",
+        {
+          provider: item.provider || "unknown",
+          count: item.count || 0,
+          avgReliability: num(item.avgReliability || 0, 4),
+          avgFreshnessScore: num(item.avgFreshnessScore || 0, 4),
+          lastSeenAt: item.lastSeenAt || null,
+          channels: Object.fromEntries(arr(item.channels || []))
+        }
+      ])
+    );
+  }
+  return summary && typeof summary === "object" ? summary : {};
+}
+
+function restoreContextCoverage(summary = {}) {
+  if (Array.isArray(summary)) {
+    return Object.fromEntries(
+      arr(summary).map((item) => [
+        item.kind || "unknown",
+        {
+          kind: item.kind || "unknown",
+          count: item.count || 0,
+          avgCoverage: num(item.avgCoverage || 0, 4),
+          avgConfidence: num(item.avgConfidence || 0, 4),
+          avgRiskScore: num(item.avgRiskScore || 0, 4),
+          highImpactCount: item.highImpactCount || 0,
+          lastSeenAt: item.lastSeenAt || null,
+          nextEventAt: item.nextEventAt || null
+        }
+      ])
+    );
+  }
+  return summary && typeof summary === "object" ? summary : {};
 }
 
 function buildNewsHistoryPayload({
@@ -404,6 +542,8 @@ export class DataRecorder {
       recordQualityCount: 0,
       averageRecordQuality: 0,
       latestRecordQuality: null,
+      sourceCoverage: {},
+      contextCoverage: {},
       datasetCuration: null,
       retention: {
         hotRetentionDays: config.dataRecorderRetentionDays || 21,
@@ -452,6 +592,8 @@ export class DataRecorder {
       recordQualityCount: safeStateNumber(restored.recordQualityCount, this.state.recordQualityCount),
       averageRecordQuality: num(restored.averageRecordQuality || 0, 4),
       latestRecordQuality: restored.latestRecordQuality || null,
+      sourceCoverage: restoreSourceCoverage(restored.sourceCoverage),
+      contextCoverage: restoreContextCoverage(restored.contextCoverage),
       datasetCuration: restored.datasetCuration || null,
       retention: {
         hotRetentionDays: safeStateNumber(restored.retention?.hotRetentionDays, this.config.dataRecorderRetentionDays || 21),
@@ -830,6 +972,7 @@ export class DataRecorder {
     const payload = buildNewsHistoryPayload({ at, symbol, aliases, summary, items, cacheState });
     await this.write("news", at, payload);
     this.state.newsFrames += 1;
+    this.state.sourceCoverage = updateSourceCoverage(this.state.sourceCoverage || {}, payload);
     return payload;
   }
 
@@ -840,6 +983,7 @@ export class DataRecorder {
     const payload = buildContextHistoryPayload({ at, symbol, aliases, kind, summary, items, cacheState });
     await this.write("contexts", at, payload);
     this.state.contextFrames += 1;
+    this.state.contextCoverage = updateContextCoverage(this.state.contextCoverage || {}, payload);
     return payload;
   }
 
@@ -903,11 +1047,18 @@ export class DataRecorder {
           symbolCount: newsEntries.length,
           freshCoverage: newsEntries.filter((entry) => (entry.summary?.coverage || 0) > 0).length,
           avgReliability: num(average(newsEntries.map((entry) => entry.summary?.reliabilityScore || 0), 0), 4),
-          operationalReliability: num(sourceReliability.operationalReliability || 0, 4)
+          operationalReliability: num(sourceReliability.operationalReliability || 0, 4),
+          topSources: summarizeSourceCoverage(this.state.sourceCoverage || {}, 5)
+        },
+        contextHistory: {
+          frameCount: this.state.contextFrames || 0,
+          topContexts: summarizeContextCoverage(this.state.contextCoverage || {}, 4)
         },
         dataQuality: {
           lineageCoverage: num(this.state.lineageCoverage || 0, 4),
           archivedFiles: this.state.archivedFiles || 0,
+          averageRecordQuality: num(this.state.averageRecordQuality || 0, 4),
+          latestRecordQuality: this.state.latestRecordQuality || null,
           hotRetentionDays: this.state.retention?.hotRetentionDays || this.config.dataRecorderRetentionDays || 21,
           coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90
         }
@@ -928,6 +1079,8 @@ export class DataRecorder {
         coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90,
         lastCompactionAt: this.state.retention?.lastCompactionAt || null
       },
+      sourceCoverage: summarizeSourceCoverage(this.state.sourceCoverage || {}, 6),
+      contextCoverage: summarizeContextCoverage(this.state.contextCoverage || {}, 4),
       rootDir: this.rootDir
     };
   }

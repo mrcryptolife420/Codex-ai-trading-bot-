@@ -4054,13 +4054,21 @@ await runCheck("data recorder restores persisted summary across restarts", async
       tradeFrames: 2,
       learningFrames: 2,
       researchFrames: 1,
-      snapshotFrames: 4
+      snapshotFrames: 4,
+      sourceCoverage: [
+        { provider: "coindesk", count: 2, avgReliability: 0.81, avgFreshnessScore: 0.88, lastSeenAt: "2026-03-10T08:00:00.000Z", channels: [["news", 2]] }
+      ],
+      contextCoverage: [
+        { kind: "calendar", count: 1, avgCoverage: 0.7, avgConfidence: 0.66, avgRiskScore: 0.2, highImpactCount: 1, lastSeenAt: "2026-03-10T08:00:00.000Z", nextEventAt: "2026-03-10T13:30:00.000Z" }
+      ]
     });
     const summary = recorder.getSummary();
     assert.equal(summary.filesWritten, 9);
     assert.equal(summary.learningFrames, 2);
     assert.equal(summary.snapshotFrames, 4);
     assert.equal(summary.lastRecordAt, "2026-03-10T09:00:00.000Z");
+    assert.equal(summary.sourceCoverage[0].provider, "coindesk");
+    assert.equal(summary.contextCoverage[0].kind, "calendar");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -4187,7 +4195,7 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     });
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
-    assert.equal(payload.schemaVersion, 5);
+    assert.equal(payload.schemaVersion, 6);
     assert.equal(payload.frameType, "learning");
     assert.equal(payload.symbol, "BTCUSDT");
     assert.equal(payload.model.calibrationObservations, 18);
@@ -4331,6 +4339,8 @@ await runCheck("data recorder stores historical news frames and dataset curation
     assert.equal(datasetPayload.datasets.vetoReview.badVetoCount, 1);
     assert.equal(recorder.getSummary().newsFrames, 1);
     assert.equal(recorder.getSummary().datasetFrames, 1);
+    assert.equal(recorder.getSummary().sourceCoverage[0].provider, "coindesk");
+    assert.equal(datasetPayload.datasets.newsHistory.topSources[0].provider, "coindesk");
     assert.ok(recorder.getSummary().datasetCuration.dataQuality.hotRetentionDays >= 21);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -4386,6 +4396,8 @@ await runCheck("data recorder stores announcement and calendar context history f
     assert.equal(lines[0].contextType, "announcements");
     assert.equal(lines[1].contextType, "calendar");
     assert.equal(lines[1].summary.dominantEventType, "macro_cpi");
+    assert.equal(recorder.getSummary().contextCoverage[0].kind, "announcements");
+    assert.equal(recorder.getSummary().contextCoverage[1].kind, "calendar");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -5471,7 +5483,7 @@ await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local
   bot.offlineTrainer = { buildSummary: () => ({}) };
   bot.dataRecorder = {
     getSummary: () => ({
-      schemaVersion: 5,
+      schemaVersion: 6,
       enabled: true,
       learningFrames: 8,
       decisionFrames: 14,
@@ -5482,6 +5494,8 @@ await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local
       lineageCoverage: 0.81,
       averageRecordQuality: 0.74,
       latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+      sourceCoverage: [{ provider: "coindesk", count: 3, avgReliability: 0.82, avgFreshnessScore: 0.88, lastSeenAt: "2026-03-12T08:10:00.000Z", channels: [["news", 3]] }],
+      contextCoverage: [{ kind: "calendar", count: 2, avgCoverage: 0.71, avgConfidence: 0.66, avgRiskScore: 0.3, highImpactCount: 1, lastSeenAt: "2026-03-12T08:15:00.000Z", nextEventAt: "2026-03-12T13:30:00.000Z" }],
       retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" }
     })
   };
@@ -5688,7 +5702,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   bot.runtime = {
     mode: "paper",
     dataRecorder: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       enabled: true,
       learningFrames: 8,
       decisionFrames: 14,
@@ -5699,6 +5713,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
       lineageCoverage: 0.81,
       averageRecordQuality: 0.74,
       latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+      sourceCoverage: [{ provider: "coindesk", count: 3, avgReliability: 0.82, avgFreshnessScore: 0.88, lastSeenAt: "2026-03-12T08:10:00.000Z", channels: [["news", 3]] }],
+      contextCoverage: [{ kind: "calendar", count: 2, avgCoverage: 0.71, avgConfidence: 0.66, avgRiskScore: 0.3, highImpactCount: 1, lastSeenAt: "2026-03-12T08:15:00.000Z", nextEventAt: "2026-03-12T13:30:00.000Z" }],
       retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" }
     },
     lastKnownBalance: 1000,
@@ -5740,6 +5756,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
+  assert.equal(snapshot.dataRecorder.sourceCoverage[0].provider, "coindesk");
+  assert.equal(snapshot.dataRecorder.contextCoverage[0].kind, "calendar");
 });
 
 await runCheck("trading bot paper learning summary tracks blockers and recent outcomes", async () => {

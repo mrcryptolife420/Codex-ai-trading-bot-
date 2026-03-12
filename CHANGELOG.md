@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Data-recorder summary now tracks compact `sourceCoverage` and `contextCoverage` aggregates, so runtime, dashboard, and dataset curation can show which news providers and event context types actually dominate the stored history.
 - Recorder frames now carry a compact `recordQuality` score for decision, trade, learning, and replay records, so later training and review loops can filter by completeness/confidence instead of treating all records equally.
 - `status`, `doctor`, and dashboard snapshots now expose a cleaner recorder summary with average/latest record quality, lineage coverage, and hot/cold retention context instead of raw recorder state blobs.
 - Historical `context_history` recorder frames for Binance announcements and macro/calendar summaries, so replay and offline analysis can now reuse event context instead of only generic news history.

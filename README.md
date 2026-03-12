@@ -104,6 +104,14 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
   - hot/cold retention
   - laatste recordkwaliteit
 
+10. `Bron- en contextdekking`
+- de recorder houdt nu ook compacte aggregaten bij voor:
+  - top news/providers
+  - channel-verdeling
+  - announcement/calendar contexttypes
+  - high-impact eventdekking
+- zo zie je sneller of je historische dataset vooral op een paar bronnen leunt of breed genoeg gespreid is
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).
