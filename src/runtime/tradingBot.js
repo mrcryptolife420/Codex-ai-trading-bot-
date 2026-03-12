@@ -1769,6 +1769,14 @@ function summarizePaperLearning(summary = {}) {
       id: item.id || null,
       count: item.count || 0
     })),
+    topBlockers: arr(summary.topBlockers || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    recentOutcomes: arr(summary.recentOutcomes || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
     notes: arr(summary.notes || []).slice(0, 6)
   };
 }
@@ -1800,6 +1808,28 @@ function summarizeExecutionCalibration(summary = {}) {
     ),
     notes: [...(summary.notes || [])]
   };
+}
+
+function resolvePaperOutcomeBucket(trade = {}) {
+  if (trade.paperLearningOutcome?.outcome) {
+    return trade.paperLearningOutcome.outcome;
+  }
+  if ((trade.pnlQuote || 0) > 0 && (trade.captureEfficiency || 0) >= 0.5) {
+    return "good_trade";
+  }
+  if ((trade.pnlQuote || 0) > 0) {
+    return "acceptable_trade";
+  }
+  if ((trade.mfePct || 0) >= 0.018 && (trade.captureEfficiency || 0) < 0.32) {
+    return "early_exit";
+  }
+  if ((trade.maePct || 0) <= -0.02 && ["time_stop", "manual_exit", "stop_loss"].includes(trade.reason || "")) {
+    return "late_exit";
+  }
+  if ((trade.executionQualityScore || 0) < 0.42) {
+    return "execution_drag";
+  }
+  return "bad_trade";
 }
 
 function summarizeStrategyMeta(summary = {}) {
@@ -3597,7 +3627,30 @@ export class TradingBot {
         regimeCounts[regime] = (regimeCounts[regime] || 0) + 1;
       }
     }
+    const blockerCounts = {};
+    for (const item of entries.filter((entry) => !entry.allow)) {
+      const reasons = arr(item.blockerReasons || item.reasons || []);
+      for (const reason of reasons.slice(0, 3)) {
+        blockerCounts[reason] = (blockerCounts[reason] || 0) + 1;
+      }
+    }
+    const recentPaperTrades = arr(this.journal?.trades || [])
+      .filter((trade) => (trade.brokerMode || "paper") === "paper" && trade.exitAt)
+      .slice(-40);
+    const outcomeCounts = {};
+    for (const trade of recentPaperTrades) {
+      const outcome = resolvePaperOutcomeBucket(trade);
+      outcomeCounts[outcome] = (outcomeCounts[outcome] || 0) + 1;
+    }
     const budget = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || null;
+    const topBlockers = Object.entries(blockerCounts)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 4)
+      .map(([id, count]) => ({ id, count }));
+    const recentOutcomes = Object.entries(outcomeCounts)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([id, count]) => ({ id, count }));
     return {
       generatedAt: referenceNow,
       status: learningEntries.length ? "active" : "observe",
@@ -3615,6 +3668,8 @@ export class TradingBot {
         .sort((left, right) => right[1] - left[1])
         .slice(0, 4)
         .map(([id, count]) => ({ id, count })),
+      topBlockers,
+      recentOutcomes,
       notes: [
         laneCounts.probe
           ? `${laneCounts.probe} probe-setup(s) draaien in deze cycle voor sneller paper learning.`
@@ -3624,7 +3679,13 @@ export class TradingBot {
           : "Geen actieve shadow-learning setups in deze cycle.",
         budget
           ? `Dagbudget probes ${budget.probeUsed}/${budget.probeDailyLimit} en shadow ${budget.shadowUsed}/${budget.shadowDailyLimit}.`
-          : "Nog geen paper learning budget zichtbaar."
+          : "Nog geen paper learning budget zichtbaar.",
+        topBlockers[0]
+          ? `${topBlockers[0].id} blokkeert momenteel het vaakst in paper learning.`
+          : "Nog geen dominante paper blocker zichtbaar.",
+        recentOutcomes[0]
+          ? `${recentOutcomes[0].id} is momenteel de meest voorkomende paper-uitkomst.`
+          : "Nog geen gesloten paper trades om outcome-labels te tonen."
       ].filter(Boolean)
     };
   }

@@ -484,6 +484,8 @@ In de huidige versie zit nu al:
 - probe caps per strategy-family en regime
 - novelty scoring zodat paper minder snel in dezelfde scopes blijft hangen
 - paper learning summary in runtime/dashboard payloads
+- paper outcome labeling op gesloten paper trades
+- paper samenvattingen met vaakste blockers en meest voorkomende leeruitkomsten
 
 ## Projectstructuur
 

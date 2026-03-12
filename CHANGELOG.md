@@ -3,6 +3,9 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- A concrete paper-mode roadmap in the README, plus paper-learning diversification limits per strategy family and regime so probes collect broader training data instead of clustering in the same scopes.
+- Paper-learning runtime summaries now surface dominant blockers and the most common recent learning outcomes, making it easier to see why paper is blocked and what it is actually learning from.
+- Closed paper trades now carry explainable `paperLearningOutcome` labels with entry, exit, risk, and execution quality buckets for faster paper-only tuning and review.
 - A canonical `marketState` contract layered on top of the existing trend-state engine, with stable `direction`, `phase`, `trendMaturity`, `trendExhaustion`, `rangeAcceptance`, `trendFailure`, `dataConfidence`, and `featureCompleteness` fields for runtime, dashboard, backtest, and research consumers.
 - Explicit scan-mode wrappers for `scanCandidatesReadOnly()`, `scanCandidatesForCycle()`, and `scanCandidatesForResearch()` so observability and production paths can stay readable without duplicating scan logic.
 - A rate-limited exchange-truth refresh loop for non-cycle runtime paths, allowing `doctor`, `status`, and dashboard snapshots to refresh live reconcile truth without waiting for a full trading cycle.

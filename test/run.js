@@ -4297,6 +4297,9 @@ await runCheck("paper broker persists learning lanes on positions and closed tra
   });
   assert.equal(trade.learningLane, "probe");
   assert.equal(trade.learningValueScore, 0.73);
+  assert.equal(typeof trade.paperLearningOutcome?.outcome, "string");
+  assert.equal(typeof trade.paperLearningOutcome?.entryQuality, "string");
+  assert.equal(typeof trade.paperLearningOutcome?.exitQuality, "string");
 });
 
 await runCheck("research lab builds walk-forward windows and summary", async () => {
@@ -5422,6 +5425,46 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
   assert.equal(snapshot.ops.paperLearning.status, "active");
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
+});
+
+await runCheck("trading bot paper learning summary tracks blockers and recent outcomes", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    latestDecisions: [
+      {
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.72,
+        paperLearning: { noveltyScore: 0.64, scope: { family: "trend_following", regime: "trend" } },
+        paperLearningBudget: { probeDailyLimit: 4, probeUsed: 1, probeRemaining: 3, shadowDailyLimit: 6, shadowUsed: 1, shadowRemaining: 5 }
+      },
+      {
+        allow: false,
+        learningLane: "shadow",
+        blockerReasons: ["committee_veto", "execution_cost_budget_exceeded"],
+        learningValueScore: 0.68,
+        paperLearning: { noveltyScore: 0.58, scope: { family: "mean_reversion", regime: "range" } }
+      },
+      {
+        allow: false,
+        blockerReasons: ["committee_veto"],
+        paperLearning: { noveltyScore: 0.4, scope: { family: "trend_following", regime: "trend" } }
+      }
+    ]
+  };
+  bot.journal = {
+    trades: [
+      { brokerMode: "paper", exitAt: "2026-03-11T10:00:00.000Z", paperLearningOutcome: { outcome: "good_trade" } },
+      { brokerMode: "paper", exitAt: "2026-03-11T12:00:00.000Z", paperLearningOutcome: { outcome: "early_exit" } },
+      { brokerMode: "paper", exitAt: "2026-03-11T14:00:00.000Z", pnlQuote: -5, executionQualityScore: 0.35, reason: "time_stop", mfePct: 0.01, maePct: -0.01 }
+    ]
+  };
+  const summary = TradingBot.prototype.buildPaperLearningSummary.call(bot, bot.runtime.latestDecisions, "2026-03-11T15:00:00.000Z");
+  assert.equal(summary.probeCount, 1);
+  assert.equal(summary.shadowCount, 1);
+  assert.equal(summary.topBlockers[0].id, "committee_veto");
+  assert.ok(summary.recentOutcomes.some((item) => item.id === "good_trade"));
+  assert.ok(summary.recentOutcomes.some((item) => item.id === "early_exit"));
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {

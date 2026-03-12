@@ -85,6 +85,61 @@ function resolvePaperBuySize({ quoteAmount, executionPrice, fillEstimate, rules 
   };
 }
 
+function classifyExecutionQuality(score = 0) {
+  if (score >= 0.72) {
+    return "premium";
+  }
+  if (score >= 0.55) {
+    return "solid";
+  }
+  if (score >= 0.4) {
+    return "degraded";
+  }
+  return "poor";
+}
+
+function resolvePaperTradeLearningOutcome({ netPnlPct = 0, captureEfficiency = 0, mfePct = 0, maePct = 0, executionQualityScore = 0, reason = null } = {}) {
+  const earlyExit = netPnlPct >= 0 && mfePct >= 0.018 && captureEfficiency < 0.32;
+  const lateExit = netPnlPct < 0 && maePct <= -0.02 && ["time_stop", "manual_exit", "stop_loss"].includes(reason || "");
+  const executionDrag = executionQualityScore < 0.42 && netPnlPct <= 0;
+  const goodTrade = netPnlPct > 0 && captureEfficiency >= 0.5 && executionQualityScore >= 0.5;
+  const acceptableTrade = netPnlPct > 0;
+  const outcome = goodTrade
+    ? "good_trade"
+    : earlyExit
+      ? "early_exit"
+      : lateExit
+        ? "late_exit"
+        : executionDrag
+          ? "execution_drag"
+          : acceptableTrade
+            ? "acceptable_trade"
+            : "bad_trade";
+  return {
+    outcome,
+    entryQuality: captureEfficiency >= 0.62 || (netPnlPct > 0 && mfePct >= 0.015)
+      ? "strong"
+      : mfePct >= 0.008
+        ? "workable"
+        : "weak",
+    exitQuality: goodTrade
+      ? "disciplined"
+      : earlyExit
+        ? "premature"
+        : lateExit
+          ? "late"
+          : acceptableTrade
+            ? "acceptable"
+            : "mixed",
+    riskQuality: maePct >= -0.01
+      ? "controlled"
+      : maePct >= -0.025
+        ? "stretched"
+        : "breached",
+    executionQuality: classifyExecutionQuality(executionQualityScore)
+  };
+}
+
 export class PaperBroker {
   constructor(config, logger) {
     this.config = config;
@@ -336,6 +391,7 @@ export class PaperBroker {
     const netProceeds = grossProceeds - fee;
     const pnlQuote = netProceeds - position.totalCost;
     const netPnlPct = position.totalCost ? pnlQuote / position.totalCost : 0;
+    const captureEfficiency = position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0;
     const mfePct = position.entryPrice
       ? Math.max(0, (position.highestPrice - position.entryPrice) / position.entryPrice)
       : 0;
@@ -385,7 +441,7 @@ export class PaperBroker {
       mfePct,
       maePct,
       executionQualityScore,
-      captureEfficiency: position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0,
+      captureEfficiency,
       entryExecutionAttribution: position.entryExecutionAttribution || null,
       exitExecutionAttribution,
       regimeAtEntry: position.regimeAtEntry || "range",
@@ -404,7 +460,15 @@ export class PaperBroker {
       exitSource: "paper_market_exit",
       brokerMode: "paper",
       learningLane: position.learningLane || null,
-      learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null
+      learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
+      paperLearningOutcome: resolvePaperTradeLearningOutcome({
+        netPnlPct,
+        captureEfficiency,
+        mfePct,
+        maePct,
+        executionQualityScore,
+        reason
+      })
     };
   }
 }
