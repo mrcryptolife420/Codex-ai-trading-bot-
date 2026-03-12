@@ -6716,6 +6716,63 @@ await runCheck("trading bot paper learning summary counts branchable counterfact
   assert.equal(summary.recentShadowReviews[0].symbol, "ETHUSDT");
 });
 
+await runCheck("trading bot paper learning summary uses runtime journal truth for shadow budget instead of stale decision snapshots", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "BTCUSDT",
+        learningLane: "shadow",
+        learningValueScore: 0.22,
+        paperLearningBudget: {
+          probeDailyLimit: 4,
+          probeUsed: 0,
+          probeRemaining: 4,
+          shadowDailyLimit: 6,
+          shadowUsed: 0,
+          shadowRemaining: 6
+        },
+        paperLearning: {
+          noveltyScore: 0.2,
+          activeLearning: { score: 0.24, focusReason: "near_threshold" },
+          scope: { family: "trend_following", regime: "trend", session: "asia" }
+        },
+        strategy: { family: "trend_following" },
+        regime: "trend",
+        session: { session: "asia" }
+      }
+    ],
+    openPositions: [],
+    counterfactualQueue: [
+      {
+        id: "queued-shadow-budget",
+        symbol: "ETHUSDT",
+        brokerMode: "paper",
+        learningLane: "shadow",
+        queuedAt: "2026-03-12T07:20:00.000Z"
+      }
+    ],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "resolved-shadow-budget",
+        symbol: "SOLUSDT",
+        brokerMode: "paper",
+        learningLane: "shadow",
+        resolvedAt: "2026-03-12T06:45:00.000Z"
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.dailyBudget.shadowUsed, 2);
+  assert.equal(summary.dailyBudget.shadowRemaining, 4);
+});
+
 await runCheck("trading bot paper learning summary stays active from shadow review evidence and keeps session coverage", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });
@@ -6763,6 +6820,80 @@ await runCheck("trading bot paper learning summary stays active from shadow revi
   assert.ok(summary.topSessions.some((item) => item.id === "asia"));
   assert.ok(summary.topSessions.some((item) => item.id === "europe"));
   assert.equal(summary.activeLearning.status, "priority");
+});
+
+await runCheck("trading bot paper learning summary combines current cycle learning with shadow evidence for active learning", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "LTCUSDT",
+        learningLane: "shadow",
+        learningValueScore: 0.22,
+        paperLearning: {
+          noveltyScore: 0.18,
+          activeLearning: { score: 0.24, focusReason: "near_threshold" },
+          scope: { family: "trend_following", regime: "trend", session: "asia" }
+        },
+        strategy: { family: "trend_following" },
+        regime: "trend",
+        session: { session: "asia" }
+      }
+    ],
+    openPositions: [],
+    counterfactualQueue: [],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "rich-shadow",
+        symbol: "AVAXUSDT",
+        brokerMode: "paper",
+        strategyFamily: "breakout",
+        regime: "range",
+        sessionAtEntry: "europe",
+        learningValueScore: 0.8,
+        resolvedAt: "2026-03-12T06:45:00.000Z",
+        outcome: "bad_veto",
+        branches: [{ id: "maker_bias", outcome: "winner", adjustedMovePct: 0.02 }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T08:00:00.000Z");
+  assert.ok(summary.averageLearningValueScore > 0.45);
+  assert.ok(summary.averageActiveLearningScore > 0.4);
+  assert.ok(summary.activeLearning.topCandidates.some((item) => item.symbol === "AVAXUSDT"));
+});
+
+await runCheck("trading bot retries unresolved counterfactual cases instead of dropping them immediately", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", counterfactualQueueLimit: 40 });
+  bot.runtime = {
+    counterfactualQueue: [
+      {
+        id: "retry-shadow",
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        queuedAt: "2026-03-12T06:00:00.000Z",
+        dueAt: "2026-03-12T07:00:00.000Z",
+        entryPrice: 100,
+        branchScenarios: [{ id: "base", kind: "baseline" }]
+      }
+    ]
+  };
+  bot.journal = { counterfactuals: [] };
+  bot.marketCache = {};
+  bot.recordEvent = () => {};
+  bot.getMarketSnapshot = async () => ({ book: { mid: Number.NaN } });
+  await bot.resolveCounterfactualQueue("2026-03-12T08:00:00.000Z", {});
+  assert.equal(bot.runtime.counterfactualQueue.length, 1);
+  assert.equal(bot.runtime.counterfactualQueue[0].retryCount, 1);
+  assert.equal(bot.runtime.counterfactualQueue[0].lastError, "invalid_counterfactual_snapshot");
+  assert.equal(bot.journal.counterfactuals.length, 0);
 });
 
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {

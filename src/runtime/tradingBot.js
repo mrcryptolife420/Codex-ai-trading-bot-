@@ -3172,12 +3172,37 @@ export class TradingBot {
         pending.push(item);
       }
     }
-    this.runtime.counterfactualQueue = pending;
+    const retryPending = [...pending];
     for (const item of due) {
       try {
         const snapshot = snapshotMap[item.symbol] || this.marketCache[item.symbol] || await this.getMarketSnapshot(item.symbol);
         const currentPrice = Number(snapshot?.book?.mid || 0);
-        if (!Number.isFinite(currentPrice) || !Number.isFinite(item.entryPrice) || item.entryPrice <= 0) {
+        if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(item.entryPrice) || item.entryPrice <= 0) {
+          const retryCount = (item.retryCount || 0) + 1;
+          if (retryCount <= 3) {
+            retryPending.push({
+              ...item,
+              retryCount,
+              lastError: "invalid_counterfactual_snapshot",
+              dueAt: new Date(new Date(nowAt).getTime() + 5 * 60000).toISOString()
+            });
+            continue;
+          }
+          this.journal.counterfactuals.push({
+            ...item,
+            resolvedAt: nowAt,
+            outcome: "resolution_failed",
+            resolutionFailed: true,
+            error: "invalid_counterfactual_snapshot",
+            branches: arr(item.branchScenarios || []).map((branch) => ({
+              id: branch.id || branch.kind || "branch",
+              label: branch.label || branch.id || "Alternatief",
+              kind: branch.kind || "baseline",
+              outcome: "unresolved",
+              adjustedMovePct: null
+            }))
+          });
+          this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: "invalid_counterfactual_snapshot" });
           continue;
         }
         const realizedMovePct = currentPrice / item.entryPrice - 1;
@@ -3225,9 +3250,34 @@ export class TradingBot {
           branches
         });
       } catch (error) {
+        const retryCount = (item.retryCount || 0) + 1;
+        if (retryCount <= 3) {
+          retryPending.push({
+            ...item,
+            retryCount,
+            lastError: error.message,
+            dueAt: new Date(new Date(nowAt).getTime() + 5 * 60000).toISOString()
+          });
+          continue;
+        }
+        this.journal.counterfactuals.push({
+          ...item,
+          resolvedAt: nowAt,
+          outcome: "resolution_failed",
+          resolutionFailed: true,
+          error: error.message,
+          branches: arr(item.branchScenarios || []).map((branch) => ({
+            id: branch.id || branch.kind || "branch",
+            label: branch.label || branch.id || "Alternatief",
+            kind: branch.kind || "baseline",
+            outcome: "unresolved",
+            adjustedMovePct: null
+          }))
+        });
         this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: error.message });
       }
     }
+    this.runtime.counterfactualQueue = retryPending.slice(-(this.config.counterfactualQueueLimit || 40));
     if (this.journal.counterfactuals.length > 1000) {
       this.journal.counterfactuals = this.journal.counterfactuals.slice(-1000);
     }
@@ -4274,13 +4324,16 @@ export class TradingBot {
       const outcome = resolvePaperOutcomeBucket(trade);
       outcomeCounts[outcome] = (outcomeCounts[outcome] || 0) + 1;
     }
-    const budget = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || {
-      probeDailyLimit: this.config.paperLearningProbeDailyLimit || 0,
+    const budgetSeed = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || {};
+    const probeDailyLimit = budgetSeed.probeDailyLimit || this.config.paperLearningProbeDailyLimit || 0;
+    const shadowDailyLimit = budgetSeed.shadowDailyLimit || this.config.paperLearningShadowDailyLimit || 0;
+    const budget = {
+      probeDailyLimit,
       probeUsed: probeBudgetUsed,
-      probeRemaining: Math.max(0, (this.config.paperLearningProbeDailyLimit || 0) - probeBudgetUsed),
-      shadowDailyLimit: this.config.paperLearningShadowDailyLimit || 0,
+      probeRemaining: Math.max(0, probeDailyLimit - probeBudgetUsed),
+      shadowDailyLimit,
       shadowUsed: shadowBudgetUsed,
-      shadowRemaining: Math.max(0, (this.config.paperLearningShadowDailyLimit || 0) - shadowBudgetUsed)
+      shadowRemaining: Math.max(0, shadowDailyLimit - shadowBudgetUsed)
     };
     const topBlockers = Object.entries(blockerCounts)
       .sort((left, right) => right[1] - left[1])
@@ -4364,8 +4417,20 @@ export class TradingBot {
         .slice(-20)
         .map((item) => ({
           symbol: item.symbol || null,
+          strategy: {
+            family: item.strategyFamily || null
+          },
+          regime: item.regime || null,
+          session: {
+            session: item.sessionAtEntry || null
+          },
           learningValueScore: clamp(num(item.learningValueScore || 0.48, 4), 0, 1),
           paperLearning: {
+            scope: {
+              family: item.strategyFamily || null,
+              regime: item.regime || null,
+              session: item.sessionAtEntry || null
+            },
             noveltyScore: clamp(num(item.learningValueScore || 0.52, 4), 0.3, 1),
             activeLearning: {
               score: clamp(num((item.learningValueScore || 0.42) + Math.min(0.18, arr(item.branches || []).length * 0.06), 4), 0, 1),
@@ -4378,8 +4443,20 @@ export class TradingBot {
         .slice(-20)
         .map((item) => ({
           symbol: item.symbol || null,
+          strategy: {
+            family: item.strategyFamily || null
+          },
+          regime: item.regime || null,
+          session: {
+            session: item.sessionAtEntry || null
+          },
           learningValueScore: clamp(num(item.learningValueScore || 0.46, 4), 0, 1),
           paperLearning: {
+            scope: {
+              family: item.strategyFamily || null,
+              regime: item.regime || null,
+              session: item.sessionAtEntry || null
+            },
             noveltyScore: clamp(num(item.learningValueScore || 0.5, 4), 0.3, 1),
             activeLearning: {
               score: clamp(num((item.learningValueScore || 0.4) + Math.min(0.16, arr(item.branchScenarios || []).length * 0.05), 4), 0, 1),
@@ -4388,7 +4465,27 @@ export class TradingBot {
           }
         }))
     ];
-    const scoredLearningEntries = learningEntries.length ? learningEntries : shadowLearningEvidence;
+    const scoredLearningEntries = [...learningEntries, ...shadowLearningEvidence]
+      .filter((item) => item && (item.symbol || item.learningValueScore || item.paperLearning?.activeLearning?.score))
+      .filter((item, index, all) => {
+        const key = [
+          item.symbol || "",
+          item.paperLearning?.activeLearning?.focusReason || "",
+          item.paperLearning?.scope?.family || item.strategy?.family || "",
+          item.paperLearning?.scope?.regime || item.regime || "",
+          item.paperLearning?.scope?.session || item.session?.session || ""
+        ].join("|");
+        return all.findIndex((candidate) => {
+          const candidateKey = [
+            candidate.symbol || "",
+            candidate.paperLearning?.activeLearning?.focusReason || "",
+            candidate.paperLearning?.scope?.family || candidate.strategy?.family || "",
+            candidate.paperLearning?.scope?.regime || candidate.regime || "",
+            candidate.paperLearning?.scope?.session || candidate.session?.session || ""
+          ].join("|");
+          return candidateKey === key;
+        }) === index;
+      });
     const probeGoodCount = recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
     const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
     const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
