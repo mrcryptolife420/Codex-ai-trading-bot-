@@ -563,6 +563,11 @@ input[type="search"] {
   gap: 10px;
 }
 
+.learning-section-head {
+  display: grid;
+  gap: 4px;
+}
+
 .learning-list-item {
   display: grid;
   gap: 6px;
@@ -570,6 +575,43 @@ input[type="search"] {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.02);
+}
+
+.learning-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.learning-review-column {
+  display: grid;
+  gap: 10px;
+}
+
+.learning-review-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.learning-review-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.learning-review-head strong {
+  line-height: 1.35;
+}
+
+.learning-review-metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .learning-card .quick-grid {
@@ -583,7 +625,8 @@ input[type="search"] {
 @media (max-width: 1180px) {
   .topbar,
   .main-grid,
-  .bottom-grid {
+  .bottom-grid,
+  .learning-review-grid {
     grid-template-columns: 1fr;
   }
 }

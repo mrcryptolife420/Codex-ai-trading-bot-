@@ -605,6 +605,62 @@ function latestTradeSummary(snapshot) {
   };
 }
 
+function renderProbeReviews(reviews = []) {
+  if (!reviews.length) {
+    return `
+      <article class="learning-review-card">
+        <span class="metric-label">Probe review</span>
+        <p class="learning-note">Nog geen recente probe-trades om te tonen.</p>
+      </article>
+    `;
+  }
+  return reviews.map((review) => `
+    <article class="learning-review-card">
+      <div class="learning-review-head">
+        <strong>${escapeHtml(review.symbol || "Probe")}</strong>
+        <span class="pill ${statusTone(review.outcome)}">${escapeHtml(titleize(review.outcome || "observe"))}</span>
+      </div>
+      <div class="learning-review-metrics">
+        <span class="tag ${toneClass(review.pnlQuote)}">${escapeHtml(formatMoney(review.pnlQuote || 0))}</span>
+        <span class="tag ${toneClass(review.netPnlPct)}">${escapeHtml(formatSignedPct(review.netPnlPct || 0, 1))}</span>
+        <span class="tag">${escapeHtml(titleize(review.reason || review.learningLane || "probe"))}</span>
+      </div>
+      <p class="learning-note">${escapeHtml(review.lesson || "Deze probe voedt de paper-leerlus.")}</p>
+      <span class="metric-foot">${escapeHtml(`Gesloten ${formatDate(review.closedAt)}`)}</span>
+    </article>
+  `).join("");
+}
+
+function renderShadowReviews(reviews = []) {
+  if (!reviews.length) {
+    return `
+      <article class="learning-review-card">
+        <span class="metric-label">Shadow review</span>
+        <p class="learning-note">Nog geen recente shadow-cases om te tonen.</p>
+      </article>
+    `;
+  }
+  return reviews.map((review) => {
+    const branchText = review.bestBranch?.id
+      ? `${titleize(review.bestBranch.id)} · ${titleize(review.bestBranch.outcome || "observe")} · ${formatPct(review.bestBranch.adjustedMovePct || 0, 1)}`
+      : "Nog geen beste alternatieve branch.";
+    return `
+      <article class="learning-review-card">
+        <div class="learning-review-head">
+          <strong>${escapeHtml(review.symbol || "Shadow")}</strong>
+          <span class="pill ${statusTone(review.outcome)}">${escapeHtml(titleize(review.outcome || "observe"))}</span>
+        </div>
+        <div class="learning-review-metrics">
+          <span class="tag">${escapeHtml(`Move ${formatPct(review.realizedMovePct || 0, 1)}`)}</span>
+          <span class="tag">${escapeHtml(titleize(review.blocker || "geen blocker"))}</span>
+        </div>
+        <p class="learning-note">${escapeHtml(review.lesson || "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.")}</p>
+        <span class="metric-foot">${escapeHtml(branchText)}</span>
+      </article>
+    `;
+  }).join("");
+}
+
 function renderLearning(snapshot) {
   if (!elements.learningList) {
     return;
@@ -639,6 +695,8 @@ function renderLearning(snapshot) {
     paperLearning.notes?.[0] ||
     "Nog geen directe leeractie nodig.";
   const focusText = learningFocusText(snapshot);
+  const probeReviewMarkup = renderProbeReviews(paperLearning.recentProbeReviews || []);
+  const shadowReviewMarkup = renderShadowReviews(paperLearning.recentShadowReviews || []);
 
   elements.learningList.innerHTML = `
     <article class="learning-board">
@@ -706,6 +764,22 @@ function renderLearning(snapshot) {
               ? `Counterfactuals tonen waar ${titleize(paperLearning.counterfactualTuning.blocker)} mogelijk te streng of net terecht was.`
               : "Deze leerlus helpt de bot beter te begrijpen welke setups later meer of minder ruimte moeten krijgen."
           )}</p>
+        </article>
+      </section>
+      <section class="learning-review-grid">
+        <article class="learning-review-column">
+          <div class="learning-section-head">
+            <span class="metric-label">Probe trades</span>
+            <span class="metric-foot">Hoe echte paper-probes liepen</span>
+          </div>
+          ${probeReviewMarkup}
+        </article>
+        <article class="learning-review-column">
+          <div class="learning-section-head">
+            <span class="metric-label">Shadow cases</span>
+            <span class="metric-foot">Wat geblokkeerde setups waarschijnlijk deden</span>
+          </div>
+          ${shadowReviewMarkup}
         </article>
       </section>
     </article>

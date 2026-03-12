@@ -1882,6 +1882,31 @@ function summarizePaperLearning(summary = {}) {
       weakestProbe: summary.reviewPacks.weakestProbe || null,
       topMissedSetup: summary.reviewPacks.topMissedSetup || null
     } : null,
+    recentProbeReviews: arr(summary.recentProbeReviews || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      symbol: item.symbol || null,
+      outcome: item.outcome || "neutral",
+      reason: item.reason || null,
+      pnlQuote: num(item.pnlQuote || 0, 2),
+      netPnlPct: num(item.netPnlPct || 0, 4),
+      learningLane: item.learningLane || "safe",
+      closedAt: item.closedAt || null,
+      lesson: item.lesson || null
+    })),
+    recentShadowReviews: arr(summary.recentShadowReviews || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      symbol: item.symbol || null,
+      outcome: item.outcome || "neutral",
+      blocker: item.blocker || null,
+      realizedMovePct: num(item.realizedMovePct || 0, 4),
+      resolvedAt: item.resolvedAt || null,
+      bestBranch: item.bestBranch ? {
+        id: item.bestBranch.id || null,
+        outcome: item.bestBranch.outcome || null,
+        adjustedMovePct: num(item.bestBranch.adjustedMovePct || 0, 4)
+      } : null,
+      lesson: item.lesson || null
+    })),
     paperToLiveReadiness: summary.paperToLiveReadiness ? {
       status: summary.paperToLiveReadiness.status || "warmup",
       score: num(summary.paperToLiveReadiness.score || 0, 4),
@@ -2018,6 +2043,57 @@ function resolvePaperOutcomeBucket(trade = {}) {
     return "execution_drag";
   }
   return "bad_trade";
+}
+
+function summarizePaperTradeReview(trade = {}) {
+  const outcome = trade.paperLearningOutcome?.outcome || resolvePaperOutcomeBucket(trade);
+  const lesson = trade.paperLearningOutcome?.executionQuality === "weak"
+    ? "Execution was hier waarschijnlijk te duur of te traag."
+    : trade.paperLearningOutcome?.exitQuality === "weak"
+      ? "De exit kon hier waarschijnlijk slimmer of later."
+      : trade.paperLearningOutcome?.riskQuality === "weak"
+        ? "De risico-keuze was hier waarschijnlijk te ruim of te vroeg."
+        : trade.paperLearningOutcome?.entryQuality === "strong"
+          ? "De entry was goed; de les zit vooral in follow-through en exit."
+          : "Deze trade voedt de paper-leerlus voor entry, exit en risk.";
+  return {
+    id: trade.id || null,
+    symbol: trade.symbol || null,
+    outcome,
+    reason: trade.reason || null,
+    pnlQuote: num(trade.pnlQuote || 0, 2),
+    netPnlPct: num(trade.netPnlPct || 0, 4),
+    learningLane: trade.learningLane || "safe",
+    closedAt: trade.exitAt || null,
+    lesson
+  };
+}
+
+function summarizeCounterfactualReview(item = {}) {
+  const branch = arr(item.branches || []).find((entry) => ["winner", "small_winner"].includes(entry.outcome)) || arr(item.branches || [])[0] || null;
+  const lesson = item.outcome === "bad_veto"
+    ? "Deze blokkade lijkt te streng; vergelijkbare setups liepen vaker door."
+    : item.outcome === "good_veto"
+      ? "Deze blokkade was waarschijnlijk juist; skippen was hier veiliger."
+      : item.outcome === "right_direction_wrong_timing"
+        ? "De richting klopte, maar timing of uitvoering kon beter."
+        : item.outcome === "late_veto"
+          ? "De setup kwam laat op gang; extra timing-review is nuttig."
+          : "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.";
+  return {
+    id: item.id || null,
+    symbol: item.symbol || null,
+    outcome: item.outcome || "neutral",
+    blocker: arr(item.blockerReasons || [])[0] || item.reason || null,
+    realizedMovePct: num(item.realizedMovePct || 0, 4),
+    resolvedAt: item.resolvedAt || null,
+    bestBranch: branch ? {
+      id: branch.id || branch.kind || null,
+      outcome: branch.outcome || null,
+      adjustedMovePct: num(branch.adjustedMovePct || 0, 4)
+    } : null,
+    lesson
+  };
 }
 
 function summarizeStrategyMeta(summary = {}) {
@@ -4198,12 +4274,21 @@ export class TradingBot {
       : null;
     const offlineTrainer = summarizeOfflineTrainer(this.runtime?.offlineTrainer || {});
     const tuningRecommendation = offlineTrainer.thresholdPolicy?.topRecommendation || null;
+    const counterfactuals = arr(this.journal?.counterfactuals || []).slice(-80);
     const replayPacks = this.runtime?.ops?.replayChaos?.replayPacks || this.runtime?.replayChaos?.replayPacks || {};
     const reviewPacks = {
       bestProbeWinner: replayPacks.probeWinners?.[0]?.symbol || null,
       weakestProbe: replayPacks.paperMisses?.[0]?.symbol || null,
       topMissedSetup: replayPacks.nearMissSetups?.[0]?.symbol || null
     };
+    const recentProbeReviews = recentProbeTrades
+      .slice(-4)
+      .reverse()
+      .map((trade) => summarizePaperTradeReview(trade));
+    const recentShadowReviews = counterfactuals
+      .slice(-6)
+      .reverse()
+      .map((item) => summarizeCounterfactualReview(item));
     const probeGoodCount = recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
     const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
     const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
@@ -4316,7 +4401,6 @@ export class TradingBot {
     const safeLaneWinRate = safeTrades.length
       ? safeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length / safeTrades.length
       : 0;
-    const counterfactuals = arr(this.journal?.counterfactuals || []).slice(-80);
     const shadowTakeWinRate = counterfactuals.length
       ? counterfactuals.filter((item) => ["bad_veto", "missed_winner", "right_direction_wrong_timing"].includes(item.outcome)).length / counterfactuals.length
       : 0;
@@ -4451,6 +4535,8 @@ export class TradingBot {
       scopeReadiness,
       thresholdSandbox,
       reviewPacks,
+      recentProbeReviews,
+      recentShadowReviews,
       paperToLiveReadiness,
       counterfactualTuning,
       activeLearning,

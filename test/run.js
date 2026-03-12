@@ -6164,6 +6164,7 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   bot.journal = {
     trades: [
       {
+        symbol: "BTCUSDT",
         brokerMode: "paper",
         learningLane: "probe",
         strategyFamily: "trend_following",
@@ -6179,6 +6180,7 @@ await runCheck("trading bot paper learning summary exposes active learning bench
         paperLearningOutcome: { outcome: "early_exit" }
       },
       {
+        symbol: "ETHUSDT",
         brokerMode: "paper",
         learningLane: "safe",
         strategyFamily: "trend_following",
@@ -6196,6 +6198,7 @@ await runCheck("trading bot paper learning summary exposes active learning bench
     ],
     counterfactuals: [
       {
+        symbol: "SOLUSDT",
         outcome: "bad_veto",
         branches: [
           { id: "maker_bias", outcome: "winner" },
@@ -6203,6 +6206,7 @@ await runCheck("trading bot paper learning summary exposes active learning bench
         ]
       },
       {
+        symbol: "BNBUSDT",
         outcome: "good_veto",
         branches: [
           { id: "maker_bias", outcome: "small_winner" },
@@ -6217,6 +6221,10 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   assert.equal(summary.failureLibrary[0].id, "early_exit");
   assert.equal(summary.counterfactualBranches.topBranch, "maker_bias");
   assert.equal(summary.miscalibration.topIssue, "overconfidence");
+  assert.equal(summary.recentProbeReviews[0].outcome, "early_exit");
+  assert.equal(summary.recentProbeReviews[0].symbol, "BTCUSDT");
+  assert.equal(summary.recentShadowReviews[0].outcome, "good_veto");
+  assert.equal(summary.recentShadowReviews[0].bestBranch.id, "maker_bias");
 });
 
 await runCheck("trading bot paper learning summary keeps daily lane counts after refresh with empty decisions", async () => {
