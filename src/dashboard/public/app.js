@@ -302,7 +302,7 @@ function topBlocker(snapshot) {
     return pending.state;
   }
   const blocked = snapshot?.dashboard?.blockedSetups?.[0];
-  return blocked?.blockerReasons?.[0] || blocked?.operatorAction || null;
+  return blocked?.operatorAction || blocked?.blockerReasons?.[0] || null;
 }
 
 function buildHeroSummary(snapshot) {
