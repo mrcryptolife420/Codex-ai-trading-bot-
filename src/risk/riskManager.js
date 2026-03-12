@@ -101,10 +101,12 @@ function getPaperLearningSamplingState({
   nowIso,
   config = {},
   strategySummary = {},
-  regimeSummary = {}
+  regimeSummary = {},
+  sessionSummary = {}
 } = {}) {
   const familyCounts = {};
   const regimeCounts = {};
+  const sessionCounts = {};
   const records = [
     ...(journal?.trades || []).filter((trade) => trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
     ...(runtime?.openPositions || []).filter((position) => position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
@@ -112,22 +114,29 @@ function getPaperLearningSamplingState({
   for (const item of records) {
     incrementCounter(familyCounts, item.strategyFamily || item.family || item.strategy?.family || null);
     incrementCounter(regimeCounts, item.regimeAtEntry || item.regime || null);
+    incrementCounter(sessionCounts, item.sessionAtEntry || item.session || null);
   }
   const family = strategySummary.family || null;
   const regime = regimeSummary.regime || null;
+  const session = sessionSummary.session || null;
   const familyLimit = Math.max(0, Math.round(config.paperLearningMaxProbePerFamilyPerDay || 0));
   const regimeLimit = Math.max(0, Math.round(config.paperLearningMaxProbePerRegimePerDay || 0));
+  const sessionLimit = Math.max(0, Math.round(config.paperLearningMaxProbePerSessionPerDay || 0));
   const familyUsed = family ? (familyCounts[family] || 0) : 0;
   const regimeUsed = regime ? (regimeCounts[regime] || 0) : 0;
+  const sessionUsed = session ? (sessionCounts[session] || 0) : 0;
   const familyRemaining = familyLimit > 0 ? Math.max(0, familyLimit - familyUsed) : Infinity;
   const regimeRemaining = regimeLimit > 0 ? Math.max(0, regimeLimit - regimeUsed) : Infinity;
+  const sessionRemaining = sessionLimit > 0 ? Math.max(0, sessionLimit - sessionUsed) : Infinity;
   const familyNovelty = familyLimit > 0 ? clamp(1 - (familyUsed / familyLimit), 0, 1) : (familyUsed === 0 ? 1 : 0.5);
   const regimeNovelty = regimeLimit > 0 ? clamp(1 - (regimeUsed / regimeLimit), 0, 1) : (regimeUsed === 0 ? 1 : 0.5);
-  const noveltyScore = clamp(familyNovelty * 0.55 + regimeNovelty * 0.45, 0, 1);
+  const sessionNovelty = sessionLimit > 0 ? clamp(1 - (sessionUsed / sessionLimit), 0, 1) : (sessionUsed === 0 ? 1 : 0.5);
+  const noveltyScore = clamp(familyNovelty * 0.42 + regimeNovelty * 0.38 + sessionNovelty * 0.2, 0, 1);
   return {
     scope: {
       family,
-      regime
+      regime,
+      session
     },
     probeCaps: {
       familyLimit,
@@ -135,12 +144,16 @@ function getPaperLearningSamplingState({
       familyRemaining: Number.isFinite(familyRemaining) ? familyRemaining : null,
       regimeLimit,
       regimeUsed,
-      regimeRemaining: Number.isFinite(regimeRemaining) ? regimeRemaining : null
+      regimeRemaining: Number.isFinite(regimeRemaining) ? regimeRemaining : null,
+      sessionLimit,
+      sessionUsed,
+      sessionRemaining: Number.isFinite(sessionRemaining) ? sessionRemaining : null
     },
     noveltyScore,
     canOpenProbe:
       (familyLimit === 0 || familyUsed < familyLimit) &&
-      (regimeLimit === 0 || regimeUsed < regimeLimit)
+      (regimeLimit === 0 || regimeUsed < regimeLimit) &&
+      (sessionLimit === 0 || sessionUsed < sessionLimit)
   };
 }
 
@@ -1230,7 +1243,8 @@ export class RiskManager {
       nowIso,
       config: this.config,
       strategySummary,
-      regimeSummary
+      regimeSummary,
+      sessionSummary
     });
     if (allow && ["paper_exploration", "paper_recovery_probe"].includes(entryMode) && paperLearningBudget.probeRemaining <= 0) {
       allow = false;
@@ -1267,6 +1281,13 @@ export class RiskManager {
         !reasons.includes("paper_learning_regime_probe_cap_reached")
       ) {
         reasons.push("paper_learning_regime_probe_cap_reached");
+      }
+      if (
+        paperLearningSampling.probeCaps.sessionLimit > 0 &&
+        paperLearningSampling.probeCaps.sessionUsed >= paperLearningSampling.probeCaps.sessionLimit &&
+        !reasons.includes("paper_learning_session_probe_cap_reached")
+      ) {
+        reasons.push("paper_learning_session_probe_cap_reached");
       }
     }
     let { lane: learningLane, learningValueScore } = resolvePaperLearningLane({

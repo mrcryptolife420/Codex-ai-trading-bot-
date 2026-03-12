@@ -490,6 +490,8 @@ In de huidige versie zit nu al:
 - lichte paper probation-samenvatting voor probe-trades met promote/rollback watch
 - paper readiness score in runtime/dashboard
 - compacte paper learning kaart in het dashboard met lanes, readiness, probation, top blocker en top outcome
+- probe-diversificatie over sessies zodat paper niet te veel in dezelfde markturen blijft leren
+- automatische replay-packs met probe winners, paper misses en near-miss blocked setups
 
 ## Projectstructuur
 

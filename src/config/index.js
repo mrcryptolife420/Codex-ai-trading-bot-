@@ -221,6 +221,7 @@ const DEFAULTS = {
   paperLearningMinDataQuality: 0.52,
   paperLearningMaxProbePerFamilyPerDay: 2,
   paperLearningMaxProbePerRegimePerDay: 3,
+  paperLearningMaxProbePerSessionPerDay: 2,
   paperLearningMinNoveltyScore: 0.18,
   exitOnSpreadShockBps: 20,
   minVolTargetFraction: 0.4,
@@ -676,6 +677,7 @@ export async function loadConfig(projectRoot = process.cwd()) {
     paperLearningMinDataQuality: parseNumber(env.PAPER_LEARNING_MIN_DATA_QUALITY, DEFAULTS.paperLearningMinDataQuality),
     paperLearningMaxProbePerFamilyPerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_FAMILY_PER_DAY, DEFAULTS.paperLearningMaxProbePerFamilyPerDay),
     paperLearningMaxProbePerRegimePerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_REGIME_PER_DAY, DEFAULTS.paperLearningMaxProbePerRegimePerDay),
+    paperLearningMaxProbePerSessionPerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_SESSION_PER_DAY, DEFAULTS.paperLearningMaxProbePerSessionPerDay),
     paperLearningMinNoveltyScore: parseNumber(env.PAPER_LEARNING_MIN_NOVELTY_SCORE, DEFAULTS.paperLearningMinNoveltyScore),
     exitOnSpreadShockBps: parseNumber(env.EXIT_ON_SPREAD_SHOCK_BPS, DEFAULTS.exitOnSpreadShockBps),
     minVolTargetFraction: parseNumber(env.MIN_VOL_TARGET_FRACTION, DEFAULTS.minVolTargetFraction),
@@ -835,5 +837,4 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 

@@ -32,6 +32,28 @@ function buildCandidateFromTrade(trade = {}) {
   };
 }
 
+function mapReplayPackTrade(trade = {}) {
+  return {
+    symbol: trade.symbol || null,
+    strategy: trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null,
+    outcome: trade.paperLearningOutcome?.outcome || null,
+    pnlQuote: num(trade.pnlQuote || 0, 2),
+    netPnlPct: num(trade.netPnlPct || 0),
+    reason: trade.reason || null,
+    exitAt: trade.exitAt || null
+  };
+}
+
+function mapReplayPackSetup(item = {}) {
+  return {
+    symbol: item.symbol || null,
+    strategy: item.strategy || item.strategyAtEntry || item.entryRationale?.strategy?.activeStrategy || null,
+    outcome: item.counterfactualOutcome || item.outcome || null,
+    realizedMovePct: num(item.realizedMovePct || 0),
+    blockerReasons: arr(item.blockerReasons || []).slice(0, 3)
+  };
+}
+
 function collectScenarioTags(item = {}) {
   const tags = new Set();
   const reasons = [
@@ -142,6 +164,22 @@ export function buildReplayChaosSummary({
                 ? "Gebruik deze paper-missers als replay-cases en check of entry, exit of execution tuning moet bijsturen."
               : "Review dit chaos-scenario expliciet in replay voordat promotie doorgaat."
   }));
+  const replayPacks = {
+    probeWinners: trades
+      .filter((trade) => trade.learningLane === "probe" && ["good_trade", "acceptable_trade"].includes(trade.paperLearningOutcome?.outcome))
+      .sort((left, right) => (right.pnlQuote || 0) - (left.pnlQuote || 0))
+      .slice(0, 4)
+      .map(mapReplayPackTrade),
+    paperMisses: paperMisses
+      .sort((left, right) => Math.abs(right.pnlQuote || 0) - Math.abs(left.pnlQuote || 0))
+      .slice(0, 4)
+      .map(mapReplayPackTrade),
+    nearMissSetups: blockedSetups
+      .filter((item) => ["missed_winner", "bad_veto", "right_direction_wrong_timing"].includes(item.counterfactualOutcome || item.outcome))
+      .sort((left, right) => (right.realizedMovePct || 0) - (left.realizedMovePct || 0))
+      .slice(0, 4)
+      .map(mapReplayPackSetup)
+  };
   const status = worstScenario?.status === "blocked"
     ? "blocked"
     : worstScenario?.status === "observe"
@@ -162,6 +200,7 @@ export function buildReplayChaosSummary({
     worstScenario: worstScenario?.worstScenario || null,
     activeScenarios,
     recommendedActions,
+    replayPacks,
     scenarioCounts,
     scenarioLeaders,
     notes: [

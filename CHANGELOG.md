@@ -3,6 +3,8 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper probe-diversification now also tracks session usage, so probes can be spread across market hours instead of only strategy families and regimes.
+- Replay/chaos summaries now build automatic replay packs for probe winners, paper misses, and near-miss blocked setups to speed up paper review loops.
 - Paper-learning summaries now compute a dedicated readiness score/status, so paper can be read as `warmup`, `building`, or `paper_ready` instead of only lane counts.
 - The dashboard system-status area now includes a compact paper-learning card with readiness, probation, top blocker, and top outcome for faster operator review.
 - Paper replay/chaos summaries now count recent paper misses (`bad_trade`, `early_exit`, `late_exit`, `execution_drag`) as explicit replay review signals instead of only relying on blocked setups and trade stress.

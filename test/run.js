@@ -213,6 +213,7 @@ function makeConfig(overrides = {}) {
     paperLearningNearMissThresholdBuffer: 0.025,
     paperLearningMinSignalQuality: 0.4,
     paperLearningMinDataQuality: 0.52,
+    paperLearningMaxProbePerSessionPerDay: 2,
     exitOnSpreadShockBps: 20,
     minVolTargetFraction: 0.4,
     maxVolTargetFraction: 1.05,
@@ -3438,6 +3439,52 @@ await runCheck("risk manager spreads paper probes across strategy families and r
   assert.equal(decision.paperLearningSampling.probeCaps.regimeUsed, 1);
 });
 
+await runCheck("risk manager spreads paper probes across sessions", async () => {
+  const manager = new RiskManager(makeConfig({
+    paperLearningProbeDailyLimit: 4,
+    paperLearningMaxProbePerFamilyPerDay: 3,
+    paperLearningMaxProbePerRegimePerDay: 3,
+    paperLearningMaxProbePerSessionPerDay: 1
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: { probability: 0.56, disagreement: 0.04, confidence: 0.48, committeeConfidence: 0.5, modelConfidence: 0.48, uncertainty: 0.08 },
+    features: {},
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: -0.05, depthConfidence: 0.8 },
+      market: { realizedVolPct: 0.02 },
+      marketState: { phase: "trend" }
+    },
+    newsSummary: { riskScore: 0.1, confidence: 0.7 },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following" },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.62 },
+    sessionSummary: { session: "asia", blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, blockerReasons: [] },
+    driftSummary: { status: "ready", blockerReasons: [] },
+    capitalGovernorSummary: { allowEntries: true, status: "ready", sizeMultiplier: 1 },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.002 },
+    portfolioSummary: { allocatorScore: 0.55 },
+    exchangeCapabilities: { spotOnly: true, shortingEnabled: false },
+    nowIso: "2026-03-11T12:00:00.000Z",
+    journal: {
+      trades: [{
+        entryAt: "2026-03-11T09:00:00.000Z",
+        learningLane: "probe",
+        strategyFamily: "mean_reversion",
+        regimeAtEntry: "range",
+        sessionAtEntry: "asia"
+      }],
+      counterfactuals: []
+    },
+    runtime: { openPositions: [], counterfactualQueue: [] }
+  });
+  assert.equal(decision.paperLearningSampling.probeCaps.sessionUsed, 1);
+  assert.equal(decision.paperLearningSampling.canOpenProbe, false);
+  assert.equal(decision.paperLearningSampling.probeCaps.sessionLimit, 1);
+});
+
 await runCheck("risk manager blocks repetitive paper probes when novelty is too low", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningMinNoveltyScore: 0.95,
@@ -5508,6 +5555,24 @@ await runCheck("replay chaos summary counts paper misses as replay signals", asy
   });
   assert.equal(summary.paperMissCount, 1);
   assert.ok(summary.activeScenarios.some((item) => item.id === "paper_miss"));
+});
+
+await runCheck("replay chaos summary builds automatic replay packs", async () => {
+  const summary = buildReplayChaosSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", learningLane: "probe", exitAt: "2026-03-11T10:00:00.000Z", pnlQuote: 12, netPnlPct: 0.01, paperLearningOutcome: { outcome: "good_trade" } },
+        { symbol: "ETHUSDT", strategyAtEntry: "ema_trend", learningLane: "probe", exitAt: "2026-03-11T11:00:00.000Z", pnlQuote: -8, netPnlPct: -0.006, reason: "time_stop", paperLearningOutcome: { outcome: "early_exit" } }
+      ],
+      blockedSetups: [
+        { symbol: "SOLUSDT", strategy: "ema_trend", outcome: "missed_winner", realizedMovePct: 0.018, blockerReasons: ["committee_veto"] }
+      ]
+    },
+    nowIso: "2026-03-11T15:00:00.000Z"
+  });
+  assert.equal(summary.replayPacks.probeWinners[0].symbol, "BTCUSDT");
+  assert.equal(summary.replayPacks.paperMisses[0].symbol, "ETHUSDT");
+  assert.equal(summary.replayPacks.nearMissSetups[0].symbol, "SOLUSDT");
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {
