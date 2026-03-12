@@ -702,7 +702,7 @@ function buildRetrainTrack({
   const diversityScore = Math.min(0.18, strategyCount / 6 * 0.1 + regimeCount / 5 * 0.08);
   const qualityScore = Math.min(0.18, averageRecordQuality * 0.1 + lineageCoverage * 0.08);
   const executionScore = Math.min(0.14, avgExecutionQuality * 0.14);
-  const bootstrapBias = bootstrap?.paperLearningReady ? 0.08 : 0.03;
+  const bootstrapBias = label === "paper" && bootstrap?.paperLearningReady ? 0.08 : 0.03;
   const score = clamp(0.12 + countScore + diversityScore + qualityScore + executionScore + bootstrapBias, 0, 1);
   return {
     label,

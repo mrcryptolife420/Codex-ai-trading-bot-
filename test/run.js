@@ -6718,6 +6718,7 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.ok(summary.readinessScore > 0.24);
   assert.equal(summary.retrainReadiness.bootstrapStatus, "ready");
   assert.ok(summary.retrainReadiness.paper.score > 0);
+  assert.ok(summary.retrainReadiness.paper.score > summary.retrainReadiness.live.score);
   assert.equal(summary.scopeRetrainReadiness[0].type, "family");
   assert.equal(summary.retrainFocusPlan.status, summary.retrainReadiness.status);
   assert.equal(summary.retrainFocusPlan.topScope?.type, "family");
