@@ -2,11 +2,15 @@ const POLL_MS = 5000;
 const SIGNAL_LIMIT = 3;
 const POSITION_LIMIT = 4;
 const TRADE_LIMIT = 6;
+const STORAGE_KEYS = {
+  showAllDecisions: "dashboard.showAllDecisions"
+};
 
 const elements = {
   modeBadge: document.querySelector("#modeBadge"),
   runStateBadge: document.querySelector("#runStateBadge"),
   healthBadge: document.querySelector("#healthBadge"),
+  refreshBadge: document.querySelector("#refreshBadge"),
   controlHint: document.querySelector("#controlHint"),
   operatorSummary: document.querySelector("#operatorSummary"),
   startBtn: document.querySelector("#startBtn"),
@@ -39,7 +43,8 @@ let pollTimer = null;
 let requestEpoch = 0;
 let searchQuery = "";
 let allowedOnly = false;
-let showAllDecisions = false;
+let showAllDecisions = readStoredBoolean(STORAGE_KEYS.showAllDecisions, false);
+let lastSnapshotReceivedAt = null;
 const panelState = {
   signals: true,
   positions: true,
@@ -54,6 +59,26 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function readStoredBoolean(key, fallback = false) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) {
+      return fallback;
+    }
+    return raw === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredBoolean(key, value) {
+  try {
+    window.localStorage.setItem(key, value ? "true" : "false");
+  } catch {
+    // ignore storage failures
+  }
 }
 
 function number(value, digits = 2) {
@@ -272,6 +297,12 @@ function renderBadges(snapshot) {
   elements.modeBadge.textContent = titleize(mode);
   elements.runStateBadge.textContent = titleize(runState);
   elements.healthBadge.textContent = titleize(readiness);
+  const updatedAt = snapshot?.dashboard?.ops?.lastUpdatedAt || snapshot?.dashboard?.overview?.lastCycleAt || snapshot?.manager?.lastCycleAt || null;
+  const receivedLabel = lastSnapshotReceivedAt ? `Refresh ${formatDate(lastSnapshotReceivedAt)}` : "Refresh -";
+  const dataLabel = updatedAt ? `data ${formatDate(updatedAt)}` : "data -";
+  const pingLabel = `${receivedLabel} · ${dataLabel}`;
+  elements.refreshBadge.textContent = pingLabel;
+  elements.refreshBadge.className = `status-chip muted refresh-chip ${statusTone(runState)}`;
 }
 
 function renderHero(snapshot) {
@@ -519,6 +550,7 @@ function renderTrades(snapshot) {
 
 function render(snapshot) {
   latestSnapshot = snapshot;
+  lastSnapshotReceivedAt = new Date().toISOString();
   renderBadges(snapshot);
   renderHero(snapshot);
   renderSignals(snapshot);
@@ -596,6 +628,7 @@ function bindEvents() {
 
   elements.decisionShowMoreBtn?.addEventListener("click", () => {
     showAllDecisions = !showAllDecisions;
+    writeStoredBoolean(STORAGE_KEYS.showAllDecisions, showAllDecisions);
     if (latestSnapshot) {
       renderSignals(latestSnapshot);
     }

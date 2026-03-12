@@ -161,6 +161,11 @@ th,
   border-color: rgba(89, 216, 186, 0.2);
 }
 
+.refresh-chip {
+  justify-content: flex-start;
+  min-width: 210px;
+}
+
 .hero-pill {
   justify-content: flex-start;
   gap: 8px;
