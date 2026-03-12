@@ -5595,6 +5595,22 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
   assert.equal(view.missedTradeAnalysis.recentMatches, 1);
 });
 
+await runCheck("dashboard decision view translates common operator blockers into readable guidance", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
+  bot.journal = { counterfactuals: [] };
+  const view = bot.buildDashboardDecisionView({
+    symbol: "DOGEUSDT",
+    allow: false,
+    blockerReasons: ["capital_governor_blocked", "model_confidence_too_low"],
+    dataQuality: { status: "ready", overallScore: 0.72, freshnessScore: 0.7, trustScore: 0.68, coverageScore: 0.75, degradedButAllowed: false, sources: [] },
+    signalQuality: { overallScore: 0.58, setupFit: 0.61, structureQuality: 0.56, executionViability: 0.49, newsCleanliness: 0.64, quorumQuality: 0.71 },
+    confidenceBreakdown: { marketConfidence: 0.55, dataConfidence: 0.7, executionConfidence: 0.48, modelConfidence: 0.41, overallConfidence: 0.53 }
+  });
+  assert.ok(view.operatorAction.includes("Capital governor houdt entries nu tegen."));
+  assert.equal(view.missedTradeAnalysis.available, false);
+});
+
 await runCheck("doctor preview scan uses explicit read-only candidate scan mode", async () => {
   const bot = Object.create(TradingBot.prototype);
   let called = 0;

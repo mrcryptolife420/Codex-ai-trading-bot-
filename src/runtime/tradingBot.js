@@ -7182,13 +7182,21 @@ export class TradingBot {
       ? "Wacht op reconcile en bevestig exchange truth voordat entries terug mogen."
       : blockerReasons.includes("reconcile_required")
         ? "Controleer protective state en runtime/exchange inventory."
-        : blockerReasons.includes("local_book_quality_too_low")
-          ? "Wacht op gezonde local-book depth of schakel over op observe-only."
-          : blockerReasons.includes("quality_quorum_degraded")
-            ? "Review degraded datasources voordat je deze setup vertrouwt."
-            : blockerReasons.includes("committee_veto")
-              ? "Geblokkeerd door leer/governance: eerdere vergelijkbare setups scoorden te zwak of werden terecht gevetoed. Bekijk gemiste-trade analyse om te zien of deze blokkade te streng was."
-              : blockerReasons[0] || null;
+        : blockerReasons.includes("capital_governor_blocked")
+          ? "Capital governor houdt entries nu tegen. Laat paper vooral leren via probe/shadow tot de recovery verbetert."
+          : blockerReasons.includes("execution_cost_budget_exceeded")
+            ? "Execution is nu te duur. Wacht op betere spread/depth of laat alleen lichtere probes door."
+            : blockerReasons.includes("model_confidence_too_low")
+              ? "Modelconfidence is te laag voor een normale entry. Vergelijk vergelijkbare probe- en shadow-cases voordat je versoepelt."
+              : blockerReasons.includes("higher_tf_conflict")
+                ? "Hogere timeframes spreken deze setup tegen. Wacht op betere alignment of behandel dit alleen als leergeval."
+          : blockerReasons.includes("local_book_quality_too_low")
+                ? "Wacht op gezonde local-book depth of schakel over op observe-only."
+                : blockerReasons.includes("quality_quorum_degraded")
+                  ? "Review degraded datasources voordat je deze setup vertrouwt."
+                  : blockerReasons.includes("committee_veto")
+                    ? "Geblokkeerd door leer/governance: eerdere vergelijkbare setups scoorden te zwak of werden terecht gevetoed. Bekijk gemiste-trade analyse om te zien of deze blokkade te streng was."
+                    : blockerReasons[0] ? titleize(blockerReasons[0]).replace(/_/g, " ") : null;
     const autoRecovery = blockerReasons.some((item) => ["protection_pending", "protect_only"].includes(item))
       ? "Protective herstel of protect-only monitoring kan dit automatisch herstellen."
       : blockerReasons.includes("paper_calibration_probe")

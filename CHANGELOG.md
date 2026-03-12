@@ -250,6 +250,7 @@ Initial public release of the Binance AI trading bot workspace.
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
 ## 2026-03-12
 
+- dashboard/operator views now translate common blocker reasons like `capital_governor_blocked`, `model_confidence_too_low`, `higher_tf_conflict`, and `execution_cost_budget_exceeded` into readable action guidance instead of surfacing raw internal codes
 - paper-learning scope summaries now keep family/regime/session context across refreshes by rebuilding from recent paper trades and shadow history instead of only the latest visible decisions
 - fixed a dashboard action-tone bug where operator guidance could render as negative too eagerly because of boolean precedence in the top status cards
 - tightened scoped threshold and missed-trade matching so strategy+regime experiments and governance scorecards no longer overcount unrelated history
