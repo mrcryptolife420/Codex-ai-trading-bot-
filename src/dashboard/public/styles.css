@@ -637,6 +637,21 @@ body[data-theme="light"] .fold-card {
   align-items: center;
 }
 
+.density-select {
+  display: grid;
+  gap: 4px;
+  min-width: 146px;
+}
+
+.density-select select {
+  min-height: 36px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  padding: 0 10px;
+}
+
 .layout-tools {
   display: inline-flex;
   align-items: center;
@@ -648,6 +663,12 @@ body[data-theme="light"] .fold-card {
   min-width: 34px;
   min-height: 34px;
   padding: 0 10px;
+  border-radius: 999px;
+}
+
+.layout-pin-btn {
+  min-width: 44px;
+  min-height: 34px;
   border-radius: 999px;
 }
 
@@ -756,74 +777,217 @@ body[data-theme="light"] .fold-card {
   font-size: 0.72rem;
 }
 
-body.dashboard-compact .brand-block .subtle,
-body.dashboard-compact .section-head p,
-body.dashboard-compact .operator-strip .eyebrow,
-body.dashboard-compact .decision-blurb,
-body.dashboard-compact .metric-foot {
-  display: none;
+.operator-copy {
+  display: grid;
+  gap: 10px;
 }
 
-body.dashboard-compact .workspace {
-  gap: 12px;
-}
-
-body.dashboard-compact .topbar,
-body.dashboard-compact .panel,
-body.dashboard-compact .chart-panel,
-body.dashboard-compact .table-panel,
-body.dashboard-compact .operator-strip,
-body.dashboard-compact .advanced-panel {
-  padding: 11px 12px;
-}
-
-body.dashboard-compact .section-head {
-  margin-bottom: 8px;
-}
-
-body.dashboard-compact .topbar-actions,
-body.dashboard-compact .topbar-controls,
-body.dashboard-compact .advanced-stack {
+.operator-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
 }
 
-body.dashboard-compact .fold-summary {
+.summary-chip {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.summary-chip strong {
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.summary-chip.negative,
+.critical-card,
+.focus-card.critical {
+  border-color: rgba(255, 111, 140, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(255, 111, 140, 0.12);
+}
+
+.group-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+.group-banner strong {
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.group-banner.inline {
+  padding-top: 4px;
+}
+
+.focus-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.focus-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.focus-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.focus-card h3 {
+  font-size: 1rem;
+}
+
+.is-pinned {
+  position: relative;
+}
+
+.is-pinned::before {
+  content: "Vast";
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-3);
+}
+
+body.density-compact .brand-block .subtle,
+body.density-compact .section-head p,
+body.density-compact .operator-strip .eyebrow,
+body.density-compact .decision-blurb,
+body.density-compact .metric-foot,
+body.density-ultra .brand-block .subtle,
+body.density-ultra .section-head p,
+body.density-ultra .operator-strip .eyebrow,
+body.density-ultra .decision-blurb,
+body.density-ultra .metric-foot {
+  display: none;
+}
+
+body.density-compact .workspace,
+body.density-ultra .workspace {
+  gap: 12px;
+}
+
+body.density-compact .topbar,
+body.density-compact .panel,
+body.density-compact .chart-panel,
+body.density-compact .table-panel,
+body.density-compact .operator-strip,
+body.density-compact .advanced-panel,
+body.density-ultra .topbar,
+body.density-ultra .panel,
+body.density-ultra .chart-panel,
+body.density-ultra .table-panel,
+body.density-ultra .operator-strip,
+body.density-ultra .advanced-panel {
+  padding: 11px 12px;
+}
+
+body.density-compact .section-head,
+body.density-ultra .section-head {
+  margin-bottom: 8px;
+}
+
+body.density-compact .topbar-actions,
+body.density-compact .topbar-controls,
+body.density-compact .advanced-stack,
+body.density-ultra .topbar-actions,
+body.density-ultra .topbar-controls,
+body.density-ultra .advanced-stack {
+  gap: 8px;
+}
+
+body.density-compact .fold-summary,
+body.density-ultra .fold-summary {
   gap: 6px;
   padding: 10px 12px;
 }
 
-body.dashboard-compact .fold-body {
+body.density-compact .fold-body,
+body.density-ultra .fold-body {
   gap: 8px;
   padding: 0 12px 12px;
 }
 
-body.dashboard-compact .summary-strip {
+body.density-compact .summary-strip,
+body.density-ultra .summary-strip {
   padding-top: 6px;
 }
 
-body.dashboard-compact .mini-stat {
+body.density-compact .mini-stat,
+body.density-ultra .mini-stat {
   padding: 8px 10px;
 }
 
-body.dashboard-compact .metrics,
-body.dashboard-compact .window-cards,
-body.dashboard-compact .insight-grid {
+body.density-compact .metrics,
+body.density-compact .window-cards,
+body.density-compact .insight-grid,
+body.density-ultra .metrics,
+body.density-ultra .window-cards,
+body.density-ultra .insight-grid {
   grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
 }
 
-body.dashboard-compact .note-line {
+body.density-compact .note-line,
+body.density-ultra .note-line {
   grid-template-columns: 110px minmax(0, 1fr);
   gap: 8px;
 }
 
-body.dashboard-compact .note-pill {
+body.density-compact .note-pill,
+body.density-ultra .note-pill {
   min-height: 24px;
   padding: 4px 8px;
   font-size: 0.68rem;
 }
 
-body.dashboard-compact .operator-strip {
+body.density-compact .operator-strip,
+body.density-ultra .operator-strip {
   min-height: 0;
+}
+
+body.density-ultra .summary-strip,
+body.density-ultra .tag-list,
+body.density-ultra .note-line,
+body.density-ultra .meta:not(.fold-header .meta),
+body.density-ultra .detail-meta {
+  display: none;
+}
+
+body.density-ultra .compact-data-grid {
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+}
+
+body.focus-mode #setupsSection,
+body.focus-mode #primaryTradesSection,
+body.focus-mode #advancedSection,
+body.focus-mode .group-banner[data-group-label],
+body.focus-mode .section-nav {
+  display: none;
+}
+
+body.focus-mode #focusSection,
+body.focus-mode .group-banner[data-group-label="now"] {
+  display: flex;
+}
+
+body.focus-mode .operator-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .decision-blurb {

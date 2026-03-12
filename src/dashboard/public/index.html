@@ -40,7 +40,15 @@
                 <button id="themeLightBtn" class="theme-option secondary" type="button" aria-pressed="false">Light</button>
               </div>
               <div class="control-cluster layout-controls">
-                <button id="compactToggleBtn" class="secondary" type="button">Compact: uit</button>
+                <label class="density-select" for="densitySelect">
+                  <span class="kicker">Dichtheid</span>
+                  <select id="densitySelect">
+                    <option value="comfortable">Comfortabel</option>
+                    <option value="compact">Compact</option>
+                    <option value="ultra">Ultracompact</option>
+                  </select>
+                </label>
+                <button id="focusToggleBtn" class="secondary" type="button" aria-pressed="false">Focus: uit</button>
                 <button id="layoutResetBtn" class="secondary" type="button">Reset layout</button>
               </div>
               <div class="mode-cluster control-cluster">
@@ -63,8 +71,16 @@
             <p class="eyebrow">Nu</p>
             <h2>Alleen wat telt</h2>
           </div>
-          <p id="controlHint" class="hint">Status wordt geladen...</p>
+          <div class="operator-copy">
+            <p id="controlHint" class="hint">Status wordt geladen...</p>
+            <div id="operatorSummary" class="operator-summary"></div>
+          </div>
         </section>
+
+        <div class="group-banner" data-group-label="now">
+          <span class="eyebrow">Nu</span>
+          <strong>Live status en directe aandacht</strong>
+        </div>
 
         <section class="dashboard-section" id="metricsSection" data-layout-item="metrics-section">
           <div class="section-head flush">
@@ -74,6 +90,16 @@
             </div>
           </div>
           <div class="metrics" id="metrics"></div>
+        </section>
+
+        <section class="panel focus-panel" id="focusSection" hidden>
+          <div class="section-head flush">
+            <div>
+              <h2>Focus mode</h2>
+              <p>Alleen botstatus, open posities, top setups en kritieke acties.</p>
+            </div>
+          </div>
+          <div class="focus-grid" id="focusGrid"></div>
         </section>
 
         <section class="grid two-up" id="setupsSection" data-layout-item="setups-overview" data-layout-group="setups-overview">
@@ -97,6 +123,11 @@
             <div id="windowCards" class="window-cards"></div>
           </article>
         </section>
+
+        <div class="group-banner" data-group-label="trades">
+          <span class="eyebrow">Trades</span>
+          <strong>Open posities en beste kansen</strong>
+        </div>
 
         <section class="grid two-up" id="primaryTradesSection" data-layout-item="primary-trades" data-layout-group="primary-trades">
           <article class="panel collapsible" id="positionsPanel" data-default-collapsed="true" data-layout-item="positions-panel">
@@ -136,6 +167,10 @@
           </div>
 
           <div class="advanced-stack" data-layout-group="advanced-stack">
+            <div class="group-banner inline" data-group-label="risk">
+              <span class="eyebrow">Risico &amp; herstel</span>
+              <strong>Blockers, operations en runtime safety</strong>
+            </div>
             <section class="grid two-up" id="tradeIntelSection" data-layout-item="trade-intel" data-layout-group="trade-intel">
               <article class="panel collapsible" id="blockedPanel" data-default-collapsed="true" data-layout-item="blocked-panel">
                 <div class="section-head" data-collapsible="true">
@@ -180,6 +215,10 @@
               </article>
             </section>
 
+            <div class="group-banner inline" data-group-label="research">
+              <span class="eyebrow">Research &amp; governance</span>
+              <strong>Universe, attributie, registry en intelligence</strong>
+            </div>
             <section class="grid two-up" id="researchSection" data-layout-item="research-section" data-layout-group="research-section">
               <article class="panel collapsible" id="universePanel" data-default-collapsed="true" data-layout-item="universe-panel">
                 <div class="section-head" data-collapsible="true">

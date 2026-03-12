@@ -1,8 +1,10 @@
 const POLL_MS = 5000;
 const THEME_STORAGE_KEY = "dashboard-theme";
 const DETAIL_STATE_STORAGE_KEY = "dashboard-detail-state";
-const COMPACT_MODE_STORAGE_KEY = "dashboard-compact-mode";
+const DENSITY_STORAGE_KEY = "dashboard-density-level";
+const FOCUS_MODE_STORAGE_KEY = "dashboard-focus-mode";
 const LAYOUT_STORAGE_KEY = "dashboard-layout-order";
+const PINNED_STORAGE_KEY = "dashboard-pinned-items";
 const TOP_DECISION_RENDER_LIMIT = 6;
 const BLOCKED_RENDER_LIMIT = 4;
 const REPLAY_RENDER_LIMIT = 3;
@@ -17,13 +19,17 @@ const elements = {
   runStateBadge: document.querySelector("#runStateBadge"),
   healthBadge: document.querySelector("#healthBadge"),
   controlHint: document.querySelector("#controlHint"),
+  operatorSummary: document.querySelector("#operatorSummary"),
   sidebarToggle: document.querySelector("#sidebarToggle"),
   sidebarScrim: document.querySelector("#sidebarScrim"),
   themeDarkBtn: document.querySelector("#themeDarkBtn"),
   themeLightBtn: document.querySelector("#themeLightBtn"),
-  compactToggleBtn: document.querySelector("#compactToggleBtn"),
+  densitySelect: document.querySelector("#densitySelect"),
+  focusToggleBtn: document.querySelector("#focusToggleBtn"),
   layoutResetBtn: document.querySelector("#layoutResetBtn"),
   workspaceBoard: document.querySelector("#workspaceBoard"),
+  focusSection: document.querySelector("#focusSection"),
+  focusGrid: document.querySelector("#focusGrid"),
   metrics: document.querySelector("#metrics"),
   equityChart: document.querySelector("#equityChart"),
   equityMeta: document.querySelector("#equityMeta"),
@@ -77,7 +83,8 @@ let transientMessage = "";
 let decisionSearchQuery = "";
 let decisionAllowedOnly = false;
 let snapshotEpoch = 0;
-let compactMode = window.localStorage.getItem(COMPACT_MODE_STORAGE_KEY) === "1";
+let densityLevel = window.localStorage.getItem(DENSITY_STORAGE_KEY) || "comfortable";
+let focusMode = window.localStorage.getItem(FOCUS_MODE_STORAGE_KEY) === "1";
 
 function readDetailState() {
   try {
@@ -204,14 +211,44 @@ function writeLayoutState(state) {
   window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(state));
 }
 
-function setCompactMode(enabled) {
-  compactMode = Boolean(enabled);
-  document.body.classList.toggle("dashboard-compact", compactMode);
-  window.localStorage.setItem(COMPACT_MODE_STORAGE_KEY, compactMode ? "1" : "0");
-  if (elements.compactToggleBtn) {
-    elements.compactToggleBtn.textContent = `Compact: ${compactMode ? "aan" : "uit"}`;
-    elements.compactToggleBtn.setAttribute("aria-pressed", String(compactMode));
+function setDensityLevel(level) {
+  densityLevel = ["comfortable", "compact", "ultra"].includes(level) ? level : "comfortable";
+  document.body.classList.remove("density-compact", "density-ultra");
+  if (densityLevel === "compact") {
+    document.body.classList.add("density-compact");
   }
+  if (densityLevel === "ultra") {
+    document.body.classList.add("density-ultra");
+  }
+  window.localStorage.setItem(DENSITY_STORAGE_KEY, densityLevel);
+  if (elements.densitySelect) {
+    elements.densitySelect.value = densityLevel;
+  }
+}
+
+function setFocusMode(enabled) {
+  focusMode = Boolean(enabled);
+  document.body.classList.toggle("focus-mode", focusMode);
+  window.localStorage.setItem(FOCUS_MODE_STORAGE_KEY, focusMode ? "1" : "0");
+  if (elements.focusToggleBtn) {
+    elements.focusToggleBtn.textContent = `Focus: ${focusMode ? "aan" : "uit"}`;
+    elements.focusToggleBtn.setAttribute("aria-pressed", String(focusMode));
+  }
+  if (elements.focusSection) {
+    elements.focusSection.hidden = !focusMode;
+  }
+}
+
+function readPinnedState() {
+  try {
+    return JSON.parse(window.localStorage.getItem(PINNED_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writePinnedState(state) {
+  window.localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(state));
 }
 
 function formatBreakdown(items = []) {
@@ -587,7 +624,7 @@ function renderNoteLine(label, items = [], emptyText = "Geen details") {
 }
 
 function compactNoteLines(lines = [], limit = 3) {
-  return compactMode ? lines.filter(Boolean).slice(0, limit) : lines.filter(Boolean);
+  return densityLevel === "comfortable" ? lines.filter(Boolean) : lines.filter(Boolean).slice(0, limit);
 }
 
 function moveLayoutItem(item, direction) {
@@ -642,6 +679,53 @@ function applyLayoutGroup(group) {
       group.appendChild(item);
     }
   });
+  applyPinnedWithinGroup(group);
+}
+
+function applyPinnedWithinGroup(group) {
+  const groupId = group?.dataset.layoutGroup;
+  if (!groupId) {
+    return;
+  }
+  const pinnedOrder = readPinnedState()[groupId];
+  if (!Array.isArray(pinnedOrder) || !pinnedOrder.length) {
+    [...group.querySelectorAll(":scope > [data-layout-item]")].forEach((item) => {
+      item.classList.remove("is-pinned");
+    });
+    return;
+  }
+  const byId = new Map(
+    [...group.querySelectorAll(":scope > [data-layout-item]")]
+      .map((item) => [item.dataset.layoutItem, item])
+  );
+  [...group.querySelectorAll(":scope > [data-layout-item]")].forEach((item) => {
+    item.classList.toggle("is-pinned", pinnedOrder.includes(item.dataset.layoutItem));
+  });
+  [...pinnedOrder].reverse().forEach((itemId) => {
+    const item = byId.get(itemId);
+    if (item) {
+      group.insertBefore(item, group.firstElementChild);
+    }
+  });
+}
+
+function togglePinnedLayoutItem(item, group) {
+  const groupId = group?.dataset.layoutGroup;
+  const itemId = item?.dataset.layoutItem;
+  if (!groupId || !itemId) {
+    return;
+  }
+  const state = readPinnedState();
+  const pinned = new Set(state[groupId] || []);
+  if (pinned.has(itemId)) {
+    pinned.delete(itemId);
+  } else {
+    pinned.add(itemId);
+  }
+  state[groupId] = [...pinned];
+  writePinnedState(state);
+  applyPinnedWithinGroup(group);
+  persistLayoutGroup(group);
 }
 
 function ensureLayoutControls(item, group) {
@@ -652,21 +736,42 @@ function ensureLayoutControls(item, group) {
   const tools = document.createElement("div");
   tools.className = "layout-tools";
   tools.innerHTML = `
+    <button class="layout-pin-btn secondary" type="button" data-pin="toggle" aria-label="Pin dit paneel">Pin</button>
     <button class="layout-move-btn secondary" type="button" data-move="up" aria-label="Verplaats omhoog">↑</button>
     <button class="layout-move-btn secondary" type="button" data-move="down" aria-label="Verplaats omlaag">↓</button>
   `;
   tools.addEventListener("click", (event) => {
     event.stopPropagation();
+    const pinButton = event.target.closest("[data-pin]");
+    if (pinButton) {
+      togglePinnedLayoutItem(item, group);
+      syncLayoutTools(item, tools, group);
+      return;
+    }
     const button = event.target.closest("[data-move]");
     if (!button) {
       return;
     }
     moveLayoutItem(item, button.dataset.move);
+    syncLayoutTools(item, tools, group);
   });
   head.appendChild(tools);
   head.classList.add("with-layout-tools");
   head.dataset.layoutBound = "true";
+  syncLayoutTools(item, tools, group);
   persistLayoutGroup(group);
+}
+
+function syncLayoutTools(item, tools, group) {
+  const groupId = group?.dataset.layoutGroup;
+  const itemId = item?.dataset.layoutItem;
+  const pinned = Boolean(groupId && itemId && (readPinnedState()[groupId] || []).includes(itemId));
+  item.classList.toggle("is-pinned", pinned);
+  const pinButton = tools.querySelector("[data-pin='toggle']");
+  if (pinButton) {
+    pinButton.textContent = pinned ? "Los" : "Pin";
+    pinButton.setAttribute("aria-label", pinned ? "Maak paneel los" : "Pin dit paneel");
+  }
 }
 
 function setupLayoutGroups() {
@@ -678,6 +783,7 @@ function setupLayoutGroups() {
 
 function resetLayoutGroups() {
   window.localStorage.removeItem(LAYOUT_STORAGE_KEY);
+  window.localStorage.removeItem(PINNED_STORAGE_KEY);
   window.location.reload();
 }
 
@@ -945,7 +1051,7 @@ function renderPositions(snapshot) {
 function renderDecisions(snapshot) {
   const decisions = snapshot.dashboard.topDecisions || [];
   const watchlist = snapshot.dashboard.watchlist || {};
-  const decisionLimit = snapshot.configSummary?.dashboardDecisionLimit || 12;
+  const decisionLimit = focusMode ? 3 : (snapshot.configSummary?.dashboardDecisionLimit || 12);
   const filtered = decisions.filter((decision) => {
     const searchIndex = [
       decision.symbol,
@@ -1002,6 +1108,9 @@ function renderDecisions(snapshot) {
       const dataQualityStatus = decision.dataQuality?.status || "ready";
       const entryStatus = decision.entryStatus || (decision.allow ? "eligible" : "blocked");
       const statusMeta = statusMap[entryStatus] || statusMap.blocked;
+      const isCritical = (decision.blockerReasons || decision.executionBlockers || []).some((reason) =>
+        ["capital_governor_blocked", "committee_veto", "local_book_quality_too_low", "quality_quorum_degraded"].includes(`${reason}`)
+      );
       let summary = `${strategyLabel} skip: ${leadBear}.`;
       if (entryStatus === "opened") {
         summary = `${strategyLabel} geopend: ${leadBull}.`;
@@ -1057,7 +1166,7 @@ function renderDecisions(snapshot) {
         ${decision.dataQuality?.degradedSourceLabels?.length ? `<div class="note-line"><span class="kicker">Degraded</span><div class="tag-list">${renderTagList((decision.dataQuality?.degradedSourceLabels || []).map(normalizeReasonLabel), "Geen degraded sources")}</div></div>` : ""}
       `;
       return `
-        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"}"${detailAttrs(`decision:${decision.symbol}:${entryStatus}`, false)}>
+        <details class="decision-card fold-card compact-fold ${decision.allow ? "allowed" : "blocked"} ${isCritical ? "critical-card" : ""}"${detailAttrs(`decision:${decision.symbol}:${entryStatus}`, false)}>
           <summary class="fold-summary">
             <div class="fold-header">
               <div>
@@ -1281,7 +1390,7 @@ function renderBlockedSetups(snapshot) {
   const blocked = snapshot.dashboard.blockedSetups || [];
   elements.blockedList.innerHTML = blocked.length
     ? blocked
-        .slice(0, BLOCKED_RENDER_LIMIT)
+        .slice(0, focusMode ? 3 : BLOCKED_RENDER_LIMIT)
         .map(
           (item, index) => {
             const mainReason = normalizeReasonLabel(item.blockerReasons?.[0] || item.reasons?.[0] || "geen duidelijke blocker");
@@ -1415,6 +1524,83 @@ function renderResearch(snapshot) {
       </div>
       <div class="note-line"><span class="kicker">Veiligheid</span><div class="tag-list">${renderTagList(leadCandidate.blockedReasons || [], leadCandidate.safe === false ? "Unsafe import" : "Veilige DSL")}</div></div>
       ${renderTimelineRows(candidateRows, "Nog geen import- of genome-kandidaten.")}
+    </article>
+  `;
+}
+
+function summarizeOperatorState(snapshot) {
+  const topDecision = (snapshot.dashboard.topDecisions || [])[0] || {};
+  const blockedDecision = (snapshot.dashboard.topDecisions || []).find((item) => !item.allow) || topDecision;
+  const alerts = snapshot.dashboard.ops?.alerts?.alerts || [];
+  const criticalAlert = alerts.find((item) => ["critical", "high", "failed"].includes(`${item.severity || ""}`.toLowerCase()) && !item.resolvedAt) || alerts[0] || {};
+  const readiness = snapshot.dashboard.ops?.readiness || {};
+  const leadBlocker = blockedDecision.blockerReasons?.[0] || blockedDecision.executionBlockers?.[0] || readiness.reasons?.[0] || "geen harde blocker";
+  const operatorAction = criticalAlert.action || blockedDecision.operatorAction || "Geen directe operator-actie nodig.";
+  const autoRecovery = blockedDecision.autoRecovery || (snapshot.dashboard.ops?.runbooks || [])[0]?.action || "Geen automatisch herstel actief.";
+  const whyNoTrade = blockedDecision.symbol
+    ? `${blockedDecision.symbol}: ${normalizeReasonLabel(leadBlocker)}`
+    : readiness.reasons?.[0]
+      ? normalizeReasonLabel(readiness.reasons[0])
+      : "Geen duidelijke trade-blocker.";
+  return {
+    whyNoTrade,
+    leadBlocker: normalizeReasonLabel(leadBlocker),
+    operatorAction,
+    autoRecovery,
+    severity: criticalAlert.severity || readiness.status || "neutral"
+  };
+}
+
+function renderOperatorSummary(snapshot) {
+  if (!elements.operatorSummary) {
+    return;
+  }
+  const summary = summarizeOperatorState(snapshot);
+  elements.operatorSummary.innerHTML = [
+    `<div class="summary-chip ${healthTone(summary.severity)}"><span class="kicker">Waarom geen trade</span><strong>${escapeHtml(summary.whyNoTrade)}</strong></div>`,
+    `<div class="summary-chip"><span class="kicker">Zwaarste blocker</span><strong>${escapeHtml(summary.leadBlocker)}</strong></div>`,
+    `<div class="summary-chip"><span class="kicker">Jouw actie</span><strong>${escapeHtml(summary.operatorAction)}</strong></div>`,
+    `<div class="summary-chip"><span class="kicker">Herstelt vanzelf</span><strong>${escapeHtml(summary.autoRecovery)}</strong></div>`
+  ].join("");
+}
+
+function renderFocusPanel(snapshot) {
+  if (!elements.focusGrid) {
+    return;
+  }
+  const positions = snapshot.dashboard.positions || [];
+  const decisions = (snapshot.dashboard.topDecisions || []).slice(0, 3);
+  const criticalBlockers = uniqueTextItems(
+    decisions.flatMap((item) => [...(item.blockerReasons || []), ...(item.executionBlockers || [])].slice(0, 2).map(normalizeReasonLabel))
+  ).slice(0, 4);
+  const operatorCards = uniqueTextItems(
+    decisions.flatMap((item) => [item.operatorAction, item.autoRecovery].filter(Boolean))
+  ).slice(0, 4);
+  const manager = snapshot.manager || {};
+  const health = summarizeHealth(snapshot.dashboard.health);
+
+  elements.focusGrid.innerHTML = `
+    <article class="focus-card">
+      <div class="kicker">Bot status</div>
+      <h3>${escapeHtml(manager.currentMode?.toUpperCase() || "-")} | ${escapeHtml(manager.runState || "-")}</h3>
+      <div class="meta">health ${escapeHtml(health)} | equity ${escapeHtml(formatMoney(snapshot.dashboard.overview?.equity || 0))}</div>
+    </article>
+    <article class="focus-card">
+      <div class="kicker">Open posities</div>
+      <h3>${positions.length}</h3>
+      <div class="tag-list">${renderTagList(positions.slice(0, 3).map((item) => `${item.symbol} ${formatPct(item.unrealizedPnlPct || 0, 2)}`), "Geen open posities")}</div>
+    </article>
+    <article class="focus-card">
+      <div class="kicker">Top 3 setups</div>
+      <div class="tag-list">${renderTagList(decisions.map((item) => `${item.symbol} ${item.allow ? "ready" : normalizeReasonLabel(item.entryStatus || "blocked")}`), "Geen setups")}</div>
+    </article>
+    <article class="focus-card critical">
+      <div class="kicker">Kritieke blockers</div>
+      <div class="tag-list">${renderTagList(criticalBlockers, "Geen kritieke blockers")}</div>
+    </article>
+    <article class="focus-card">
+      <div class="kicker">Operator acties</div>
+      <div class="tag-list">${renderTagList(operatorCards, "Geen directe operator-actie")}</div>
     </article>
   `;
 }
@@ -1933,12 +2119,14 @@ function renderStatus(snapshot) {
   elements.liveBtn.disabled = busy || manager.currentMode === "live";
   elements.decisionSearch.value = decisionSearchQuery;
   elements.decisionAllowedOnly.checked = decisionAllowedOnly;
+  renderOperatorSummary(snapshot);
 }
 
 function render(snapshot) {
   latestSnapshot = snapshot;
   renderStatus(snapshot);
   renderMetrics(snapshot);
+  renderFocusPanel(snapshot);
   renderChart(snapshot);
   renderWindowCards(snapshot);
   renderPositions(snapshot);
@@ -2015,8 +2203,14 @@ elements.cycleBtn.addEventListener("click", () => runAction("Losse cyclus draaie
 elements.refreshBtn.addEventListener("click", () => runAction("Analyse verversen", () => api("/api/refresh", "POST")));
 elements.researchBtn.addEventListener("click", () => runAction("Research lab draaien", () => api("/api/research", "POST", { symbols: [] })));
 elements.paperBtn.addEventListener("click", () => runAction("Naar paper trading schakelen", () => api("/api/mode", "POST", { mode: "paper" })));
-elements.compactToggleBtn?.addEventListener("click", () => {
-  setCompactMode(!compactMode);
+elements.densitySelect?.addEventListener("change", (event) => {
+  setDensityLevel(event.target.value);
+  if (latestSnapshot) {
+    render(latestSnapshot);
+  }
+});
+elements.focusToggleBtn?.addEventListener("click", () => {
+  setFocusMode(!focusMode);
   if (latestSnapshot) {
     render(latestSnapshot);
   }
@@ -2097,7 +2291,8 @@ elements.opsList.addEventListener("click", (event) => {
 });
 
 setupThemeToggle();
-setCompactMode(compactMode);
+setDensityLevel(densityLevel);
+setFocusMode(focusMode);
 setupCollapsiblePanels();
 setupLayoutGroups();
 bindPersistentDetails();
