@@ -419,6 +419,72 @@ Daar blijven onder meer hard:
 - reconcile-problemen
 - hard capital blocks
 
+## Paper mode roadmap
+
+De beste volgende uitbreidingen voor paper mode zijn:
+
+1. `Learning value scoring`
+- Niet alleen kijken naar winstkans, maar ook naar hoeveel nieuwe informatie een setup oplevert.
+- De bot weegt daarom beter mee of een setup:
+  - dicht bij de threshold zit
+  - nuttige disagreement heeft
+  - voldoende kwaliteit heeft
+  - in een nog weinig geziene scope valt
+
+2. `Probe sampling per family en regime`
+- Paper moet niet 10 keer dezelfde soort probe-trade openen.
+- Daarom is het nuttig om probe-learning te spreiden over:
+  - strategy families
+  - regimes
+- Zo leert de bot sneller en evenwichtiger.
+
+3. `Safe / probe / shadow lanes`
+- `safe`: normale paper entries
+- `probe`: kleine leerentries met beperkte sizing
+- `shadow`: geen echte positie, wel meekijken wat er gebeurd zou zijn
+
+4. `Learning budget per dag`
+- Een apart dagbudget voor probes en shadow-learning voorkomt dat paper te chaotisch wordt.
+
+5. `Novelty en diversity`
+- Als een family of regime vandaag al vaak aan bod kwam, levert nóg een gelijkaardige probe minder leerwaarde op.
+
+6. `Paper-only relaxed blockers`
+- Sommige governance-remmen mogen in paper zachter zijn dan in live, zolang echte safety-risico's hard blijven.
+
+7. `Outcome labeling`
+- Label paper-uitkomsten als:
+  - good trade
+  - bad trade
+  - good veto
+  - bad veto
+  - late entry
+  - early exit
+
+8. `Replay vanuit paper missers`
+- Sterke missers en near-miss setups automatisch opnemen in replay en chaos-scenario's.
+
+9. `Paper learning dashboard`
+- Aparte samenvatting van:
+  - safe/probe/shadow counts
+  - budgetgebruik
+  - novelty
+  - vaakst voorkomende blockers
+
+10. `Probation en promotie`
+- Sterke paper-probes niet meteen breed promoten, maar eerst via duidelijke probation- en rollbackregels.
+
+### Wat nu al is toegevoegd
+
+In de huidige versie zit nu al:
+
+- `safe / probe / shadow` lanes
+- daily learning budgets
+- learning value scoring
+- probe caps per strategy-family en regime
+- novelty scoring zodat paper minder snel in dezelfde scopes blijft hangen
+- paper learning summary in runtime/dashboard payloads
+
 ## Projectstructuur
 
 - `src/binance`: REST-client, signing, clock sync en exchange data

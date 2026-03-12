@@ -3,8 +3,8 @@ import { minutesBetween, sameUtcDay } from "../utils/time.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
 
-function safeValue(value) {
-  return Number.isFinite(value) ? value : 0;
+function safeValue(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function isWithinLookback(at, nowIso, lookbackMinutes) {
@@ -88,6 +88,62 @@ function getPaperLearningBudgetState({ journal = {}, runtime = {}, nowIso, confi
   };
 }
 
+function incrementCounter(map, key) {
+  if (!key) {
+    return;
+  }
+  map[key] = (map[key] || 0) + 1;
+}
+
+function getPaperLearningSamplingState({
+  journal = {},
+  runtime = {},
+  nowIso,
+  config = {},
+  strategySummary = {},
+  regimeSummary = {}
+} = {}) {
+  const familyCounts = {};
+  const regimeCounts = {};
+  const records = [
+    ...(journal?.trades || []).filter((trade) => trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
+    ...(runtime?.openPositions || []).filter((position) => position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
+  ];
+  for (const item of records) {
+    incrementCounter(familyCounts, item.strategyFamily || item.family || item.strategy?.family || null);
+    incrementCounter(regimeCounts, item.regimeAtEntry || item.regime || null);
+  }
+  const family = strategySummary.family || null;
+  const regime = regimeSummary.regime || null;
+  const familyLimit = Math.max(0, Math.round(config.paperLearningMaxProbePerFamilyPerDay || 0));
+  const regimeLimit = Math.max(0, Math.round(config.paperLearningMaxProbePerRegimePerDay || 0));
+  const familyUsed = family ? (familyCounts[family] || 0) : 0;
+  const regimeUsed = regime ? (regimeCounts[regime] || 0) : 0;
+  const familyRemaining = familyLimit > 0 ? Math.max(0, familyLimit - familyUsed) : Infinity;
+  const regimeRemaining = regimeLimit > 0 ? Math.max(0, regimeLimit - regimeUsed) : Infinity;
+  const familyNovelty = familyLimit > 0 ? clamp(1 - (familyUsed / familyLimit), 0, 1) : (familyUsed === 0 ? 1 : 0.5);
+  const regimeNovelty = regimeLimit > 0 ? clamp(1 - (regimeUsed / regimeLimit), 0, 1) : (regimeUsed === 0 ? 1 : 0.5);
+  const noveltyScore = clamp(familyNovelty * 0.55 + regimeNovelty * 0.45, 0, 1);
+  return {
+    scope: {
+      family,
+      regime
+    },
+    probeCaps: {
+      familyLimit,
+      familyUsed,
+      familyRemaining: Number.isFinite(familyRemaining) ? familyRemaining : null,
+      regimeLimit,
+      regimeUsed,
+      regimeRemaining: Number.isFinite(regimeRemaining) ? regimeRemaining : null
+    },
+    noveltyScore,
+    canOpenProbe:
+      (familyLimit === 0 || familyUsed < familyLimit) &&
+      (regimeLimit === 0 || regimeUsed < regimeLimit)
+  };
+}
+
 function isHardPaperLearningBlocker(reason) {
   return [
     "health_circuit_open",
@@ -109,7 +165,8 @@ function buildPaperLearningValueScore({
   confidenceBreakdown = {},
   dataQualitySummary = {},
   reasons = [],
-  entryMode = "standard"
+  entryMode = "standard",
+  samplingState = {}
 } = {}) {
   const thresholdBuffer = Math.max(0.0001, Math.abs(score.probability - threshold) + 0.02);
   const nearMissScore = clamp(1 - Math.min(1, Math.abs((score.probability || 0) - threshold) / thresholdBuffer), 0, 1);
@@ -118,14 +175,16 @@ function buildPaperLearningValueScore({
   const dataScore = clamp(safeValue(dataQualitySummary.overallScore, 0.5), 0, 1);
   const confidenceScore = clamp(1 - safeValue(confidenceBreakdown.overallConfidence, 0.5) * 0.55, 0, 1);
   const blockerScore = clamp(reasons.length / 4, 0, 1);
+  const noveltyScore = clamp(safeValue(samplingState.noveltyScore, 0.5), 0, 1);
   const modeBoost = entryMode === "paper_recovery_probe" ? 0.08 : entryMode === "paper_exploration" ? 0.05 : 0;
   return clamp(
-    nearMissScore * 0.3 +
-    disagreementScore * 0.14 +
-    signalScore * 0.2 +
-    dataScore * 0.16 +
-    confidenceScore * 0.12 +
+    nearMissScore * 0.24 +
+    disagreementScore * 0.12 +
+    signalScore * 0.19 +
+    dataScore * 0.15 +
+    confidenceScore * 0.1 +
     blockerScore * 0.08 +
+    noveltyScore * 0.12 +
     modeBoost,
     0,
     1
@@ -143,7 +202,8 @@ function resolvePaperLearningLane({
   confidenceBreakdown = {},
   dataQualitySummary = {},
   paperLearningBudget = {},
-  botMode = "paper"
+  botMode = "paper",
+  samplingState = {}
 } = {}) {
   const learningValueScore = buildPaperLearningValueScore({
     score,
@@ -152,7 +212,8 @@ function resolvePaperLearningLane({
     confidenceBreakdown,
     dataQualitySummary,
     reasons,
-    entryMode
+    entryMode,
+    samplingState
   });
   if (botMode !== "paper") {
     return {
@@ -1163,6 +1224,14 @@ export class RiskManager {
       nowIso,
       config: this.config
     });
+    const paperLearningSampling = getPaperLearningSamplingState({
+      journal,
+      runtime,
+      nowIso,
+      config: this.config,
+      strategySummary,
+      regimeSummary
+    });
     if (allow && ["paper_exploration", "paper_recovery_probe"].includes(entryMode) && paperLearningBudget.probeRemaining <= 0) {
       allow = false;
       entryMode = "standard";
@@ -1174,7 +1243,33 @@ export class RiskManager {
         reasons.push("paper_learning_probe_budget_reached");
       }
     }
-    const { lane: learningLane, learningValueScore } = resolvePaperLearningLane({
+    if (
+      allow &&
+      ["paper_exploration", "paper_recovery_probe"].includes(entryMode) &&
+      !paperLearningSampling.canOpenProbe
+    ) {
+      allow = false;
+      entryMode = "standard";
+      finalQuoteAmount = 0;
+      paperExploration = null;
+      suppressedReasons = [];
+      paperGuardrailRelief = [];
+      if (
+        paperLearningSampling.probeCaps.familyLimit > 0 &&
+        paperLearningSampling.probeCaps.familyUsed >= paperLearningSampling.probeCaps.familyLimit &&
+        !reasons.includes("paper_learning_family_probe_cap_reached")
+      ) {
+        reasons.push("paper_learning_family_probe_cap_reached");
+      }
+      if (
+        paperLearningSampling.probeCaps.regimeLimit > 0 &&
+        paperLearningSampling.probeCaps.regimeUsed >= paperLearningSampling.probeCaps.regimeLimit &&
+        !reasons.includes("paper_learning_regime_probe_cap_reached")
+      ) {
+        reasons.push("paper_learning_regime_probe_cap_reached");
+      }
+    }
+    let { lane: learningLane, learningValueScore } = resolvePaperLearningLane({
       config: this.config,
       allow,
       entryMode,
@@ -1185,8 +1280,38 @@ export class RiskManager {
       confidenceBreakdown,
       dataQualitySummary,
       paperLearningBudget,
-      botMode: this.config.botMode
+      botMode: this.config.botMode,
+      samplingState: paperLearningSampling
     });
+    const learningNoveltyTooLow = this.config.botMode === "paper" &&
+      ["paper_exploration", "paper_recovery_probe"].includes(entryMode) &&
+      learningLane === "probe" &&
+      safeValue(paperLearningSampling.noveltyScore, 0) < (this.config.paperLearningMinNoveltyScore || 0);
+    if (allow && learningNoveltyTooLow) {
+      allow = false;
+      entryMode = "standard";
+      finalQuoteAmount = 0;
+      paperExploration = null;
+      suppressedReasons = [];
+      paperGuardrailRelief = [];
+      if (!reasons.includes("paper_learning_novelty_too_low")) {
+        reasons.push("paper_learning_novelty_too_low");
+      }
+      ({ lane: learningLane, learningValueScore } = resolvePaperLearningLane({
+        config: this.config,
+        allow,
+        entryMode,
+        reasons,
+        score,
+        threshold,
+        signalQualitySummary,
+        confidenceBreakdown,
+        dataQualitySummary,
+        paperLearningBudget,
+        botMode: this.config.botMode,
+        samplingState: paperLearningSampling
+      }));
+    }
 
     return {
       allow,
@@ -1196,6 +1321,7 @@ export class RiskManager {
       learningLane,
       learningValueScore,
       paperLearningBudget,
+      paperLearningSampling,
       paperExploration,
       paperGuardrailRelief,
       baseThreshold,

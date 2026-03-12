@@ -1751,6 +1751,28 @@ function summarizeShadowTrading(summary = {}) {
   };
 }
 
+function summarizePaperLearning(summary = {}) {
+  return {
+    generatedAt: summary.generatedAt || null,
+    status: summary.status || "warmup",
+    safeCount: summary.safeCount || 0,
+    probeCount: summary.probeCount || 0,
+    shadowCount: summary.shadowCount || 0,
+    averageLearningValueScore: num(summary.averageLearningValueScore || 0, 4),
+    averageNoveltyScore: num(summary.averageNoveltyScore || 0, 4),
+    dailyBudget: summary.dailyBudget || null,
+    topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    topRegimes: arr(summary.topRegimes || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    notes: arr(summary.notes || []).slice(0, 6)
+  };
+}
+
 function summarizeServiceState(summary = {}) {
   return {
     lastHeartbeatAt: summary.lastHeartbeatAt || null,
@@ -3555,6 +3577,58 @@ export class TradingBot {
     };
   }
 
+  buildPaperLearningSummary(decisionSummaries = arr(this.runtime.latestDecisions), referenceNow = nowIso()) {
+    const entries = arr(decisionSummaries);
+    const learningEntries = entries.filter((item) => item.learningLane);
+    const laneCounts = learningEntries.reduce((acc, item) => {
+      const lane = item.learningLane || "safe";
+      acc[lane] = (acc[lane] || 0) + 1;
+      return acc;
+    }, {});
+    const familyCounts = {};
+    const regimeCounts = {};
+    for (const item of learningEntries) {
+      const family = item.paperLearning?.scope?.family || item.strategy?.family || null;
+      const regime = item.paperLearning?.scope?.regime || item.regime || null;
+      if (family) {
+        familyCounts[family] = (familyCounts[family] || 0) + 1;
+      }
+      if (regime) {
+        regimeCounts[regime] = (regimeCounts[regime] || 0) + 1;
+      }
+    }
+    const budget = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || null;
+    return {
+      generatedAt: referenceNow,
+      status: learningEntries.length ? "active" : "observe",
+      safeCount: laneCounts.safe || 0,
+      probeCount: laneCounts.probe || 0,
+      shadowCount: laneCounts.shadow || 0,
+      averageLearningValueScore: average(learningEntries.map((item) => item.learningValueScore || 0), 0),
+      averageNoveltyScore: average(learningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0),
+      dailyBudget: budget,
+      topFamilies: Object.entries(familyCounts)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4)
+        .map(([id, count]) => ({ id, count })),
+      topRegimes: Object.entries(regimeCounts)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4)
+        .map(([id, count]) => ({ id, count })),
+      notes: [
+        laneCounts.probe
+          ? `${laneCounts.probe} probe-setup(s) draaien in deze cycle voor sneller paper learning.`
+          : "Geen actieve probe-setups in deze cycle.",
+        laneCounts.shadow
+          ? `${laneCounts.shadow} shadow-setup(s) lopen mee als near-miss feedback.`
+          : "Geen actieve shadow-learning setups in deze cycle.",
+        budget
+          ? `Dagbudget probes ${budget.probeUsed}/${budget.probeDailyLimit} en shadow ${budget.shadowUsed}/${budget.shadowDailyLimit}.`
+          : "Nog geen paper learning budget zichtbaar."
+      ].filter(Boolean)
+    };
+  }
+
   refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
     const evaluation = report || buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     this.runtime.capitalPolicy = buildCapitalPolicySnapshot({
@@ -3581,6 +3655,7 @@ export class TradingBot {
       };
     }
     this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
+    this.runtime.paperLearning = this.buildPaperLearningSummary(arr(this.runtime.latestDecisions), referenceNow);
     const readiness = this.buildOperationalReadiness(referenceNow);
     const alerts = summarizeOperatorAlerts(buildOperatorAlerts({
       runtime: this.runtime,
@@ -3607,7 +3682,8 @@ export class TradingBot {
       alerts,
       alertState: this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
       alertDelivery,
-      replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {})
+      replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
+      paperLearning: summarizePaperLearning(this.runtime.paperLearning || {})
     };
     this.runtime.service = {
       ...(this.runtime.service || {}),
@@ -4343,6 +4419,7 @@ export class TradingBot {
       learningLane: candidate.decision.learningLane || null,
       learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
       paperLearningBudget: candidate.decision.paperLearningBudget || null,
+      paperLearningSampling: candidate.decision.paperLearningSampling || null,
       suppressedReasons: candidate.decision.suppressedReasons || [],
       paperExploration: candidate.decision.paperExploration || null,
       paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
@@ -5325,6 +5402,17 @@ export class TradingBot {
         })
       },
       executionBudget: summarizeExecutionCost(candidate.decision.executionCostBudgetApplied || this.runtime.executionCost || {}),
+      paperLearning: candidate.decision.paperLearningSampling ? {
+        lane: candidate.decision.learningLane || null,
+        learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
+        noveltyScore: num(candidate.decision.paperLearningSampling?.noveltyScore || 0, 4),
+        scope: {
+          family: candidate.decision.paperLearningSampling?.scope?.family || null,
+          regime: candidate.decision.paperLearningSampling?.scope?.regime || null
+        },
+        probeCaps: candidate.decision.paperLearningSampling?.probeCaps || null,
+        budget: candidate.decision.paperLearningBudget || null
+      } : null,
       onChainLite: summarizeOnChainLite(candidate.onChainLiteSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),
       patterns: summarizePatterns(candidate.marketSnapshot.market),
@@ -6129,6 +6217,17 @@ export class TradingBot {
         modelConfidence: num(decision.confidenceBreakdown?.modelConfidence || 0, 4),
         overallConfidence: num(decision.confidenceBreakdown?.overallConfidence || 0, 4)
       },
+      paperLearning: decision.paperLearning ? {
+        lane: decision.paperLearning.lane || null,
+        learningValueScore: num(decision.paperLearning.learningValueScore || 0, 4),
+        noveltyScore: num(decision.paperLearning.noveltyScore || 0, 4),
+        scope: {
+          family: decision.paperLearning.scope?.family || null,
+          regime: decision.paperLearning.scope?.regime || null
+        },
+        probeCaps: decision.paperLearning.probeCaps || null,
+        budget: decision.paperLearning.budget || null
+      } : null,
       selfHealIssues: arr(decision.selfHealIssues || decision.selfHeal?.issues || []).slice(0, 2),
       sessionBlockers: arr(decision.sessionBlockers || decision.session?.blockerReasons || []).slice(0, 2),
       driftBlockers: arr(decision.driftBlockers || decision.drift?.blockerReasons || []).slice(0, 2),
@@ -6518,7 +6617,8 @@ export class TradingBot {
           modelRegistry: this.runtime.modelRegistry || {},
           offlineTrainer: this.runtime.offlineTrainer || {}
         }),
-        alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {})
+        alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {}),
+        paperLearning: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {})
       },
       portfolio: this.buildPortfolioView(),
       exchange: exchangeOverview,

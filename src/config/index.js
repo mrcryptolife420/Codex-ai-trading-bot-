@@ -221,6 +221,9 @@ const DEFAULTS = {
   paperLearningNearMissThresholdBuffer: 0.025,
   paperLearningMinSignalQuality: 0.4,
   paperLearningMinDataQuality: 0.52,
+  paperLearningMaxProbePerFamilyPerDay: 2,
+  paperLearningMaxProbePerRegimePerDay: 3,
+  paperLearningMinNoveltyScore: 0.18,
   exitOnSpreadShockBps: 20,
   minVolTargetFraction: 0.4,
   maxVolTargetFraction: 1.05,
@@ -675,6 +678,9 @@ export async function loadConfig(projectRoot = process.cwd()) {
     paperLearningNearMissThresholdBuffer: parseNumber(env.PAPER_LEARNING_NEAR_MISS_THRESHOLD_BUFFER, DEFAULTS.paperLearningNearMissThresholdBuffer),
     paperLearningMinSignalQuality: parseNumber(env.PAPER_LEARNING_MIN_SIGNAL_QUALITY, DEFAULTS.paperLearningMinSignalQuality),
     paperLearningMinDataQuality: parseNumber(env.PAPER_LEARNING_MIN_DATA_QUALITY, DEFAULTS.paperLearningMinDataQuality),
+    paperLearningMaxProbePerFamilyPerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_FAMILY_PER_DAY, DEFAULTS.paperLearningMaxProbePerFamilyPerDay),
+    paperLearningMaxProbePerRegimePerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_REGIME_PER_DAY, DEFAULTS.paperLearningMaxProbePerRegimePerDay),
+    paperLearningMinNoveltyScore: parseNumber(env.PAPER_LEARNING_MIN_NOVELTY_SCORE, DEFAULTS.paperLearningMinNoveltyScore),
     exitOnSpreadShockBps: parseNumber(env.EXIT_ON_SPREAD_SHOCK_BPS, DEFAULTS.exitOnSpreadShockBps),
     minVolTargetFraction: parseNumber(env.MIN_VOL_TARGET_FRACTION, DEFAULTS.minVolTargetFraction),
     maxVolTargetFraction: parseNumber(env.MAX_VOL_TARGET_FRACTION, DEFAULTS.maxVolTargetFraction),
@@ -833,7 +839,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 
 

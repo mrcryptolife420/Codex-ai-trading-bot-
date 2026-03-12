@@ -977,7 +977,7 @@ await runCheck("risk manager applies threshold probation shifts and scoped exit 
         affectedRegimes: ["trend"]
       }
     },
-    nowIso: "2026-03-08T10:00:00.000Z"
+    nowIso: "2026-03-08T12:00:00.000Z"
   });
   assert.equal(entry.allow, true);
   assert.equal(entry.thresholdTuningApplied.id, "committee_low_agreement");
@@ -3377,6 +3377,138 @@ await runCheck("risk manager blocks extra paper probes after the daily learning 
   assert.equal(decision.paperLearningBudget.probeRemaining, 0);
 });
 
+await runCheck("risk manager spreads paper probes across strategy families and regimes", async () => {
+  const manager = new RiskManager(makeConfig({
+    paperLearningProbeDailyLimit: 4,
+    paperLearningMaxProbePerFamilyPerDay: 1,
+    paperLearningMaxProbePerRegimePerDay: 1
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.472,
+      calibrationConfidence: 0.24,
+      disagreement: 0.08,
+      shouldAbstain: false,
+      transformer: { probability: 0.49, confidence: 0.05 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: -0.26, microPriceEdgeBps: 0.2 },
+      market: { realizedVolPct: 0.018, atrPct: 0.01, bearishPatternScore: 0.08, bullishPatternScore: 0.22, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.14, signalScore: 0.06, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.32, contrarianScore: 0.18 },
+    volatilitySummary: { riskScore: 0.52, ivPremium: 5 },
+    calendarSummary: { riskScore: 0.1, bullishScore: 0, urgencyScore: 0.08 },
+    committeeSummary: { agreement: 0.31, probability: 0.46, netScore: -0.06, sizeMultiplier: 0.92, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.47,
+      confidence: 0.42,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.61, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: {
+      trades: [
+        {
+          learningLane: "probe",
+          entryAt: "2026-03-08T09:00:00.000Z",
+          strategyFamily: "trend_following",
+          regimeAtEntry: "trend"
+        }
+      ],
+      counterfactuals: []
+    },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.paperLearningSampling.canOpenProbe, false);
+  assert.equal(decision.paperLearningSampling.probeCaps.familyUsed, 1);
+  assert.equal(decision.paperLearningSampling.probeCaps.regimeUsed, 1);
+});
+
+await runCheck("risk manager blocks repetitive paper probes when novelty is too low", async () => {
+  const manager = new RiskManager(makeConfig({
+    paperLearningMinNoveltyScore: 0.95,
+    paperLearningMaxProbePerFamilyPerDay: 4,
+    paperLearningMaxProbePerRegimePerDay: 4
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.486,
+      calibrationConfidence: 0.3,
+      disagreement: 0.07,
+      shouldAbstain: false,
+      transformer: { probability: 0.5, confidence: 0.06 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: -0.18, microPriceEdgeBps: 0.14 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.06, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.06, sentimentScore: 0.05, eventBullishScore: 0.03, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.04, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.26, contrarianScore: 0.14 },
+    volatilitySummary: { riskScore: 0.44, ivPremium: 4 },
+    calendarSummary: { riskScore: 0.08, bullishScore: 0, urgencyScore: 0.05 },
+    committeeSummary: { agreement: 0.33, probability: 0.49, netScore: -0.04, sizeMultiplier: 0.95, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "vwap_trend",
+      family: "trend_following",
+      fitScore: 0.52,
+      confidence: 0.44,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: {
+      trades: [
+        {
+          learningLane: "probe",
+          entryAt: "2026-03-08T09:00:00.000Z",
+          strategyFamily: "trend_following",
+          regimeAtEntry: "range"
+        },
+        {
+          learningLane: "probe",
+          entryAt: "2026-03-08T10:00:00.000Z",
+          strategyFamily: "trend_following",
+          regimeAtEntry: "range"
+        }
+      ],
+      counterfactuals: []
+    },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.68 },
+    nowIso: "2026-03-08T14:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("paper_learning_novelty_too_low"));
+  assert.ok(decision.paperLearningSampling.noveltyScore < 0.95);
+});
+
 await runCheck("risk manager keeps health-circuit self heal as a hard paper block", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -5231,7 +5363,7 @@ await runCheck("capital policy engine summarizes budgets and family kill switche
   assert.ok(snapshot.factorBudgets.length >= 1);
 });
 
-await runCheck("dashboard snapshot exposes lifecycle invariants and tuning governance", async () => {
+await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governance and paper learning", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.model = {
     getCalibrationSummary: () => ({}),
@@ -5261,7 +5393,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants and tuning gover
     openPositions: [],
     latestDecisions: [],
     latestBlockedSetups: [],
-    ops: { incidentTimeline: [], runbooks: [], alerts: {}, replayChaos: {}, service: {}, thresholdTuning: {}, executionCalibration: {}, capitalLadder: {}, capitalGovernor: {}, alertDelivery: {} },
+    ops: { incidentTimeline: [], runbooks: [], alerts: {}, replayChaos: {}, service: {}, thresholdTuning: {}, executionCalibration: {}, capitalLadder: {}, capitalGovernor: {}, alertDelivery: {}, paperLearning: { status: "active", probeCount: 2, shadowCount: 1, notes: ["probe day"] } },
     thresholdTuning: { appliedRecommendation: { id: "trend_relax", status: "probation" } },
     parameterGovernor: { status: "active", strategyScopes: [{ scopeType: "strategy", id: "ema_trend", thresholdShift: -0.01 }], regimeScopes: [], notes: [] },
     modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: ["sample_size_low"] } },
@@ -5288,6 +5420,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants and tuning gover
   assert.equal(snapshot.safety.lifecycleInvariants.status, "blocked");
   assert.equal(snapshot.ops.tuningGovernance.thresholdRecommendationId, "trend_relax");
   assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
+  assert.equal(snapshot.ops.paperLearning.status, "active");
+  assert.equal(snapshot.ops.paperLearning.probeCount, 2);
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {
