@@ -317,6 +317,36 @@ button:disabled {
   -webkit-line-clamp: 4;
 }
 
+.analysis-box {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.analysis-box summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  list-style: none;
+}
+
+.analysis-box summary::-webkit-details-marker {
+  display: none;
+}
+
+.analysis-box p {
+  margin: 8px 0 0;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.analysis-note {
+  color: var(--text-dim);
+}
+
 .card-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

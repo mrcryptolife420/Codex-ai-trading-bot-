@@ -173,6 +173,27 @@ function actionText(decision) {
   return decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.";
 }
 
+function renderMissedTradeAnalysis(decision) {
+  const analysis = decision.missedTradeAnalysis;
+  if (decision.allow || !analysis?.available) {
+    return "";
+  }
+  const metrics = [
+    analysis.badVetoRate != null ? `Te streng ${formatPct(analysis.badVetoRate, 0)}` : null,
+    analysis.goodVetoRate != null ? `Terecht ${formatPct(analysis.goodVetoRate, 0)}` : null,
+    analysis.averageMissedMovePct != null ? `Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}` : null,
+    analysis.recentMatches ? `${analysis.recentMatches} vergelijkbare cases` : null
+  ].filter(Boolean);
+  return `
+    <details class="analysis-box">
+      <summary>Gemiste trade analyse</summary>
+      <p>${escapeHtml(analysis.summary || "Nog geen specifieke analyse beschikbaar.")}</p>
+      ${metrics.length ? `<div class="tag-list">${metrics.map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      <p class="analysis-note">${escapeHtml(analysis.recommendation || "Gebruik dit als extra context bij geblokkeerde setups.")}</p>
+    </details>
+  `;
+}
+
 function truncate(text, max = 120) {
   const value = `${text || ""}`.trim();
   if (!value) {
@@ -403,6 +424,7 @@ function renderSignals(snapshot) {
               ${(decision.dataQuality?.status ? `<span class="tag ${statusTone(decision.dataQuality.status)}">${escapeHtml(titleize(decision.dataQuality.status))}</span>` : "")}
               ${(decision.executionStyle ? `<span class="tag">${escapeHtml(titleize(decision.executionStyle))}</span>` : "")}
             </div>
+            ${renderMissedTradeAnalysis(decision)}
           </div>
         </article>
       `).join("")

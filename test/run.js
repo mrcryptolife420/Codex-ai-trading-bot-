@@ -5096,9 +5096,36 @@ await runCheck("research registry surfaces promotion candidates from walk-forwar
 
 await runCheck("dashboard decision view preserves blocked-setup safety context", async () => {
   const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    offlineTrainer: {
+      counterfactuals: { total: 4, averageMissedMovePct: 0.018 },
+      blockerScorecards: [
+        {
+          id: "committee_veto",
+          badVetoRate: 0.5,
+          goodVetoRate: 0.25,
+          averageMovePct: 0.021,
+          status: "review"
+        }
+      ],
+      strategyScorecards: [
+        {
+          id: "ema_trend",
+          falseNegativeRate: 0.33,
+          status: "watch"
+        }
+      ]
+    }
+  };
+  bot.journal = {
+    counterfactuals: [
+      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", realizedMovePct: 0.024 }
+    ]
+  };
   const view = bot.buildDashboardDecisionView({
     symbol: "BTCUSDT",
     allow: false,
+    blockerReasons: ["committee_veto"],
     probability: 0.58,
     threshold: 0.6,
     sessionBlockers: ["session_liquidity_guard"],
@@ -5126,6 +5153,9 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
   assert.equal(view.executionBudget.status, "watch");
   assert.ok(view.operatorAction);
   assert.ok(view.dataQuality.degradedSourceLabels.includes("news"));
+  assert.equal(view.missedTradeAnalysis.available, true);
+  assert.equal(view.missedTradeAnalysis.blockerId, "committee_veto");
+  assert.equal(view.missedTradeAnalysis.recentMatches, 1);
 });
 
 await runCheck("doctor preview scan uses explicit read-only candidate scan mode", async () => {

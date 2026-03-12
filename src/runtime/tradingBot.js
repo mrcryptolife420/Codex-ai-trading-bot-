@@ -6208,6 +6208,61 @@ export class TradingBot {
     };
   }
 
+  buildMissedTradeAnalysis(decision = {}, blockerReasons = [], strategy = {}) {
+    const offlineTrainer = summarizeOfflineTrainer(this.runtime?.offlineTrainer || {});
+    const blockerSet = new Set(blockerReasons.filter(Boolean));
+    const blockerCard = offlineTrainer.blockerScorecards.find((item) => blockerSet.has(item.id));
+    const strategyId = strategy.activeStrategy || strategy.id || strategy.strategyId || strategy.strategyLabel || null;
+    const strategyCard = offlineTrainer.strategyScorecards.find((item) => item.id === strategyId);
+    const recentCounterfactuals = arr(this.journal?.counterfactuals || [])
+      .filter((item) => {
+        const itemBlockers = arr(item.blockerReasons || []);
+        const blockerMatch = itemBlockers.some((itemBlocker) => blockerSet.has(itemBlocker));
+        const strategyMatch = strategyId && (item.strategy === strategyId || item.strategyAtEntry === strategyId);
+        const regimeMatch = decision.marketState?.phase && item.marketPhase === decision.marketState.phase;
+        return blockerMatch || strategyMatch || regimeMatch;
+      })
+      .slice(-12);
+    const badVetoCount = recentCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome)).length;
+    const goodVetoCount = recentCounterfactuals.filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome)).length;
+    const lateVetoCount = recentCounterfactuals.filter((item) => item.outcome === "late_veto").length;
+    const timingIssueCount = recentCounterfactuals.filter((item) => item.outcome === "right_direction_wrong_timing").length;
+    const averageRecentMovePct = num(average(recentCounterfactuals.map((item) => item.realizedMovePct || 0), 0), 4);
+    const summary = blockerCard
+      ? blockerCard.badVetoRate >= 0.45
+        ? `Historisch was deze blokkade vaker te streng (${Math.round((blockerCard.badVetoRate || 0) * 100)}% gemiste winnaars).`
+        : blockerCard.goodVetoRate >= 0.55
+          ? `Historisch was deze blokkade meestal terecht (${Math.round((blockerCard.goodVetoRate || 0) * 100)}% goede veto's).`
+          : "Deze blokkade is gemengd: bekijk recente gemiste trades en veto-uitkomsten."
+      : recentCounterfactuals.length
+        ? "Er zijn recente vergelijkbare gemiste-trade voorbeelden beschikbaar."
+        : offlineTrainer.counterfactuals.total
+          ? "Counterfactual learning is actief, maar er is nog weinig specifieke historie voor deze setup."
+          : "Nog te weinig gemiste-trade historie voor een sterke analyse.";
+    return {
+      available: Boolean(blockerCard || strategyCard || recentCounterfactuals.length || offlineTrainer.counterfactuals.total),
+      summary,
+      blockerId: blockerCard?.id || null,
+      blockerStatus: blockerCard?.status || null,
+      badVetoRate: blockerCard?.badVetoRate ?? null,
+      goodVetoRate: blockerCard?.goodVetoRate ?? null,
+      averageMissedMovePct: blockerCard?.averageMovePct ?? offlineTrainer.counterfactuals.averageMissedMovePct ?? null,
+      strategyStatus: strategyCard?.status || null,
+      strategyFalseNegativeRate: strategyCard?.falseNegativeRate ?? null,
+      recentMatches: recentCounterfactuals.length,
+      recentBadVetoCount: badVetoCount,
+      recentGoodVetoCount: goodVetoCount,
+      recentLateVetoCount: lateVetoCount,
+      recentTimingIssueCount: timingIssueCount,
+      recentAverageMovePct: averageRecentMovePct,
+      recommendation: badVetoCount > goodVetoCount
+        ? "Deze blokkade lijkt vaak te streng. Volg shadow/probe cases extra op."
+        : goodVetoCount > badVetoCount
+          ? "Deze blokkade lijkt meestal terecht. Gebruik dit vooral als bevestiging."
+          : "Gebruik deze analyse als context, niet als harde override."
+    };
+  }
+
   buildDashboardDecisionView(decision = {}) {
     const strategy = decision.strategy || decision.strategySummary || {};
     const blockerReasons = [
@@ -6258,6 +6313,7 @@ export class TradingBot {
       blockerReasons: blockerReasons.slice(0, 4),
       operatorAction,
       autoRecovery,
+      missedTradeAnalysis: this.buildMissedTradeAnalysis(decision, blockerReasons, strategy),
       bullishSignals: arr(decision.bullishSignals || []).slice(0, 2).map(summarizeSignal),
       bearishSignals: arr(decision.bearishSignals || []).slice(0, 2).map(summarizeSignal),
       bullishDrivers: arr(decision.bullishDrivers || []).slice(0, 2).map(summarizeDriver),
