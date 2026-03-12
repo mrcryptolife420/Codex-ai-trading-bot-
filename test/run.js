@@ -4187,7 +4187,7 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     });
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
-    assert.equal(payload.schemaVersion, 4);
+    assert.equal(payload.schemaVersion, 5);
     assert.equal(payload.frameType, "learning");
     assert.equal(payload.symbol, "BTCUSDT");
     assert.equal(payload.model.calibrationObservations, 18);
@@ -4329,6 +4329,60 @@ await runCheck("data recorder stores historical news frames and dataset curation
     assert.equal(datasetPayload.datasets.vetoReview.badVetoCount, 1);
     assert.equal(recorder.getSummary().newsFrames, 1);
     assert.equal(recorder.getSummary().datasetFrames, 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder stores announcement and calendar context history frames", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-context-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21, dataRecorderColdRetentionDays: 90 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordContextHistory({
+      at: "2026-03-12T09:00:00.000Z",
+      symbol: "BTCUSDT",
+      aliases: ["BTC"],
+      kind: "announcements",
+      summary: {
+        coverage: 2,
+        confidence: 0.77,
+        riskScore: 0.28,
+        dominantEventType: "maintenance",
+        blockerReasons: ["maintenance"],
+        highPriorityCount: 1,
+        latestNoticeAt: "2026-03-12T08:30:00.000Z"
+      },
+      items: [{ title: "Scheduled maintenance", publishedAt: "2026-03-12T08:30:00.000Z", category: "maintenance", source: "Binance", severity: 0.9 }]
+    });
+    await recorder.recordContextHistory({
+      at: "2026-03-12T09:02:00.000Z",
+      symbol: "BTCUSDT",
+      aliases: ["BTC"],
+      kind: "calendar",
+      summary: {
+        coverage: 1,
+        confidence: 0.68,
+        riskScore: 0.35,
+        nextEventType: "macro_cpi",
+        nextEventTitle: "US CPI",
+        nextEventAt: "2026-03-12T13:30:00.000Z",
+        blockerReasons: ["macro_cpi"],
+        highImpactCount: 1
+      },
+      items: [{ title: "US CPI", at: "2026-03-12T13:30:00.000Z", type: "macro_cpi", source: "BLS", impact: 0.92 }]
+    });
+    const stored = await fs.readFile(path.join(tempDir, "feature-store", "contexts", "2026-03-12.jsonl"), "utf8");
+    const lines = stored.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].frameType, "context_history");
+    assert.equal(lines[0].contextType, "announcements");
+    assert.equal(lines[1].contextType, "calendar");
+    assert.equal(lines[1].summary.dominantEventType, "macro_cpi");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

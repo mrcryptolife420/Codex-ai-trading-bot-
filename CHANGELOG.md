@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Historical `context_history` recorder frames for Binance announcements and macro/calendar summaries, so replay and offline analysis can now reuse event context instead of only generic news history.
 - Data-recorder schema v4 with explicit `news_history` and `dataset_curation` frames, so historical news, datasource lineage, and curated training views are now stored alongside decision and replay data.
 - Hot/cold feature-store retention with automatic archive compaction, allowing recent recorder data to stay fast while older files move into an archive tier before deletion.
 - Recorder-level dataset curation summaries for paper learning, veto review, exit learning, execution learning, regime learning, and historical news coverage.
@@ -54,6 +55,7 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Dataset curation summaries now also surface recorder data-quality state such as lineage coverage, archived file counts, and hot/cold retention windows.
 - Normalized operator alerts around explicit `new`, `acked`, `silenced`, and `resolved` states, and surfaced those states directly in dashboard actions and payloads.
 - Reused the canonical market-state wrapper in regime inference, strategy routing, risk, backtest, and research paths instead of leaving trend semantics implied by only raw trend-state fields.
 - Strengthened runtime explainability so decision payloads now carry market-state aliases even when older consumers still depend on `trendState`.

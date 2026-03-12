@@ -161,10 +161,11 @@ export function normalizeCmsArticles(payload, catalog) {
 }
 
 export class BinanceAnnouncementService {
-  constructor({ config, runtime, logger }) {
+  constructor({ config, runtime, logger, recordHistory = null }) {
     this.config = config;
     this.runtime = runtime;
     this.logger = logger;
+    this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
   }
 
   isFresh(cacheEntry) {
@@ -227,6 +228,24 @@ export class BinanceAnnouncementService {
         summary: enriched,
         items: filtered
       };
+      if (this.recordHistory) {
+        try {
+          await this.recordHistory({
+            at: nowIso(),
+            symbol,
+            aliases,
+            kind: "announcements",
+            summary: enriched,
+            items: filtered,
+            cacheState: "fresh_fetch"
+          });
+        } catch (error) {
+          this.logger.warn("Announcement history record failed", {
+            symbol,
+            error: error.message
+          });
+        }
+      }
       return enriched;
     } catch (error) {
       this.logger.warn("Binance announcement fetch failed", {

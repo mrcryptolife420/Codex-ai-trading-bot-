@@ -2609,8 +2609,18 @@ export class TradingBot {
       recordEvent: this.recordEvent.bind(this),
       recordHistory: this.dataRecorder.recordNewsHistory.bind(this.dataRecorder)
     });
-    this.exchangeNotices = new BinanceAnnouncementService({ config: this.config, runtime: this.runtime, logger: this.logger });
-    this.calendar = new CalendarService({ config: this.config, runtime: this.runtime, logger: this.logger });
+    this.exchangeNotices = new BinanceAnnouncementService({
+      config: this.config,
+      runtime: this.runtime,
+      logger: this.logger,
+      recordHistory: this.dataRecorder.recordContextHistory.bind(this.dataRecorder)
+    });
+    this.calendar = new CalendarService({
+      config: this.config,
+      runtime: this.runtime,
+      logger: this.logger,
+      recordHistory: this.dataRecorder.recordContextHistory.bind(this.dataRecorder)
+    });
     this.marketStructure = new MarketStructureService({ client: this.client, config: this.config, runtime: this.runtime, logger: this.logger });
     this.marketSentiment = new MarketSentimentService({ config: this.config, runtime: this.runtime, logger: this.logger });
     this.onChainLite = new OnChainLiteService({ config: this.config, runtime: this.runtime, logger: this.logger });

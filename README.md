@@ -65,7 +65,11 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
   - betrouwbaarheid
   - cache/fetch status
 
-4. `Dataset curation`
+4. `Historische event-store`
+- exchange announcements en macro/calendar samenvattingen worden nu ook als eigen context-frames opgeslagen
+- zo blijft later zichtbaar welke maintenance-, delisting- of macro-eventcontext meespeelde bij een beslissing
+
+5. `Dataset curation`
 - de recorder bouwt nu aparte curation-samenvattingen voor:
   - paper learning
   - veto review
@@ -74,12 +78,12 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
   - regime learning
   - news-history dekking
 
-5. `Hot/cold retention`
+6. `Hot/cold retention`
 - recente recorderdata blijft direct in de hot store
 - oudere recorderdata schuift automatisch naar een archive-laag
 - te oude bestanden worden daarna verwijderd
 
-6. `Replay-grade opslag`
+7. `Replay-grade opslag`
 - snapshot manifests, trade replay frames en news-history leveren samen een betere basis om te reconstrueren wat de bot wist op het moment van een beslissing
 
 ## Snelle start

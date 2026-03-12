@@ -210,11 +210,12 @@ export function summarizeCalendarEvents(events, symbol, aliases = [], lookbackDa
 }
 
 export class CalendarService {
-  constructor({ config, runtime, logger }) {
+  constructor({ config, runtime, logger, recordHistory = null }) {
     this.config = config;
     this.runtime = runtime;
     this.logger = logger;
     this.calendarFilePath = path.join(config.runtimeDir, "event-calendar.json");
+    this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
   }
 
   isFresh(cacheEntry) {
@@ -261,6 +262,25 @@ export class CalendarService {
 
   async getSymbolSummary(symbol, aliases = []) {
     const events = await this.getEvents();
-    return summarizeCalendarEvents(events, symbol, aliases, this.config.calendarLookbackDays, nowIso());
+    const summary = summarizeCalendarEvents(events, symbol, aliases, this.config.calendarLookbackDays, nowIso());
+    if (this.recordHistory) {
+      try {
+        await this.recordHistory({
+          at: nowIso(),
+          symbol,
+          aliases,
+          kind: "calendar",
+          summary,
+          items: summary.items || [],
+          cacheState: this.isFresh(this.runtime.calendarCache) ? "cached" : "fresh_fetch"
+        });
+      } catch (error) {
+        this.logger.warn("Calendar history record failed", {
+          symbol,
+          error: error.message
+        });
+      }
+    }
+    return summary;
   }
 }

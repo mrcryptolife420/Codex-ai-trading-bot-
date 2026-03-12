@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
-const FEATURE_STORE_SCHEMA_VERSION = 4;
+const FEATURE_STORE_SCHEMA_VERSION = 5;
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -205,6 +205,48 @@ function buildNewsHistoryPayload({
   };
 }
 
+function buildContextHistoryPayload({
+  at,
+  symbol,
+  aliases = [],
+  kind,
+  summary = {},
+  items = [],
+  cacheState = "fresh_fetch"
+} = {}) {
+  return {
+    schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
+    frameType: "context_history",
+    contextType: kind || "unknown",
+    at,
+    symbol: symbol || null,
+    aliases: arr(aliases).slice(0, 8),
+    cacheState,
+    summary: {
+      coverage: num(summary.coverage || 0, 3),
+      confidence: num(summary.confidence || 0, 4),
+      riskScore: num(summary.riskScore || 0, 4),
+      freshnessScore: num(summary.freshnessScore || 0, 4),
+      dominantEventType: summary.dominantEventType || summary.nextEventType || null,
+      blockerReasons: arr(summary.blockerReasons || []).slice(0, 6),
+      highImpactCount: summary.highImpactCount || summary.highPriorityCount || 0,
+      nextEventAt: summary.nextEventAt || summary.latestNoticeAt || null,
+      nextEventTitle: summary.nextEventTitle || summary.blockingNotice?.title || null
+    },
+    items: arr(items).slice(0, 8).map((item) => ({
+      title: item.title || null,
+      at: item.at || item.publishedAt || null,
+      type: item.type || item.category || item.dominantEventType || null,
+      source: item.source || null,
+      provider: item.provider || null,
+      impact: num(item.impact || item.severity || 0, 4),
+      bias: num(item.bias || item.score || 0, 4),
+      riskScore: num(item.riskScore || 0, 4),
+      link: item.link || null
+    }))
+  };
+}
+
 function makeDecisionFrame(candidate = {}) {
   return {
     symbol: candidate.symbol,
@@ -305,6 +347,7 @@ export class DataRecorder {
       researchFrames: 0,
       snapshotFrames: 0,
       newsFrames: 0,
+      contextFrames: 0,
       datasetFrames: 0,
       archivedFiles: 0,
       lineageCoverage: 0,
@@ -322,7 +365,7 @@ export class DataRecorder {
     if (!this.config.dataRecorderEnabled) {
       return;
     }
-    const buckets = ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "datasets"];
+    const buckets = ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "contexts", "datasets"];
     await Promise.all(buckets.map((bucket) => ensureDir(path.join(this.rootDir, bucket))));
     await Promise.all(buckets.map((bucket) => ensureDir(path.join(this.rootDir, "archive", bucket))));
 
@@ -349,6 +392,7 @@ export class DataRecorder {
       researchFrames: safeStateNumber(restored.researchFrames, this.state.researchFrames),
       snapshotFrames: safeStateNumber(restored.snapshotFrames, this.state.snapshotFrames),
       newsFrames: safeStateNumber(restored.newsFrames, this.state.newsFrames),
+      contextFrames: safeStateNumber(restored.contextFrames, this.state.contextFrames),
       datasetFrames: safeStateNumber(restored.datasetFrames, this.state.datasetFrames),
       archivedFiles: safeStateNumber(restored.archivedFiles, this.state.archivedFiles),
       lineageCoverage: num(restored.lineageCoverage || 0, 4),
@@ -650,7 +694,7 @@ export class DataRecorder {
     const hotKeepCount = Math.max(3, this.config.dataRecorderRetentionDays || 21);
     const coldKeepCount = Math.max(hotKeepCount, this.config.dataRecorderColdRetentionDays || 90);
     let archivedCount = 0;
-    for (const bucket of ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "datasets"]) {
+    for (const bucket of ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "contexts", "datasets"]) {
       const bucketDir = path.join(this.rootDir, bucket);
       const archiveDir = path.join(this.rootDir, "archive", bucket);
       await ensureDir(archiveDir);
@@ -683,7 +727,7 @@ export class DataRecorder {
     };
     this.state.lastPruneAt = new Date().toISOString();
     const archiveBuckets = await Promise.all(
-      ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "datasets"].map((bucket) =>
+      ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "contexts", "datasets"].map((bucket) =>
         listFiles(path.join(this.rootDir, "archive", bucket))
       )
     );
@@ -697,6 +741,16 @@ export class DataRecorder {
     const payload = buildNewsHistoryPayload({ at, symbol, aliases, summary, items, cacheState });
     await this.write("news", at, payload);
     this.state.newsFrames += 1;
+    return payload;
+  }
+
+  async recordContextHistory({ at, symbol, aliases = [], kind, summary = {}, items = [], cacheState = "fresh_fetch" } = {}) {
+    if (!this.config.dataRecorderEnabled || !symbol || !at || !kind) {
+      return null;
+    }
+    const payload = buildContextHistoryPayload({ at, symbol, aliases, kind, summary, items, cacheState });
+    await this.write("contexts", at, payload);
+    this.state.contextFrames += 1;
     return payload;
   }
 
@@ -761,6 +815,12 @@ export class DataRecorder {
           freshCoverage: newsEntries.filter((entry) => (entry.summary?.coverage || 0) > 0).length,
           avgReliability: num(average(newsEntries.map((entry) => entry.summary?.reliabilityScore || 0), 0), 4),
           operationalReliability: num(sourceReliability.operationalReliability || 0, 4)
+        },
+        dataQuality: {
+          lineageCoverage: num(this.state.lineageCoverage || 0, 4),
+          archivedFiles: this.state.archivedFiles || 0,
+          hotRetentionDays: this.state.retention?.hotRetentionDays || this.config.dataRecorderRetentionDays || 21,
+          coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90
         }
       }
     };
