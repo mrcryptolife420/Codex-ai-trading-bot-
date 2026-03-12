@@ -2,6 +2,10 @@ function safeDivide(numerator, denominator, fallback = 0) {
   return denominator ? numerator / denominator : fallback;
 }
 
+function safeNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function sortByPnlDesc(trades) {
   return [...trades].sort((left, right) => (right.pnlQuote || 0) - (left.pnlQuote || 0));
 }
@@ -611,7 +615,13 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   const equitySnapshots = [...(journal.equitySnapshots || [])];
   const lookbackTrades = trades.slice(-config.reportLookbackTrades);
   const openExposure = (runtime.openPositions || []).reduce(
-    (total, position) => total + (position.notional || position.quantity * position.entryPrice),
+    (total, position) => {
+      const notional = safeNumber(position?.notional, Number.NaN);
+      const quantity = safeNumber(position?.quantity, 0);
+      const entryPrice = safeNumber(position?.entryPrice, 0);
+      const fallbackNotional = quantity * entryPrice;
+      return total + (Number.isFinite(notional) ? notional : fallbackNotional);
+    },
     0
   );
   const nowMs = now.getTime();

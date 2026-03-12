@@ -587,7 +587,9 @@ function learningFocusText(snapshot) {
 }
 
 function latestTradeSummary(snapshot) {
-  const trade = snapshot?.dashboard?.report?.recentTrades?.[0];
+  const mode = snapshot?.dashboard?.mode || snapshot?.mode || "paper";
+  const trades = snapshot?.dashboard?.report?.recentTrades || [];
+  const trade = trades.find((item) => (item.brokerMode || mode) === mode) || trades[0];
   if (!trade) {
     return {
       title: "Nog geen recente trade",

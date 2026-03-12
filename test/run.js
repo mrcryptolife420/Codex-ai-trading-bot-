@@ -3722,6 +3722,26 @@ await runCheck("performance report summarizes journal metrics", async () => {
   assert.ok(report.executionSummary.avgEntryTouchSlippageBps >= 0);
 });
 
+await runCheck("performance report keeps open exposure finite with invalid positions", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [],
+      equitySnapshots: []
+    },
+    runtime: {
+      openPositions: [
+        { notional: 300 },
+        { notional: Number.NaN, quantity: 2, entryPrice: 15 },
+        { quantity: Number.NaN, entryPrice: 40 }
+      ]
+    },
+    config: {
+      reportLookbackTrades: 50
+    }
+  });
+  assert.equal(report.openExposure, 330);
+});
+
 await runCheck("performance report respects dashboard series limits", async () => {
   const report = buildPerformanceReport({
     journal: {
