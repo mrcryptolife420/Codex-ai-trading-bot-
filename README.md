@@ -1,130 +1,455 @@
 # Binance AI Trading Bot
 
-Een safety-first Binance Spot trading bot met een lokaal webdashboard voor paper trading, live trading, AI-uitleg per positie, multi-source crypto-news en portfolio-statistieken.
+Een safety-first crypto trading bot voor Binance Spot met:
 
-## Wat er nu in zit
+- paper trading als standaard
+- live trading met extra governance en protection
+- AI-gestuurde setup-selectie
+- lokaal dashboard voor operatorzicht
+- explainable beslissingen, risk gates en recovery-status
 
-- Paper trading als standaard met persistente state in `data/runtime`
-- Binance Spot REST-integratie met retries, `serverTime` sync, signed requests en symbol filters
-- Event-driven marktdata via Binance public streams, diff-depth local orderbook, futures liquidation stream en optionele user-data stream in live mode
-- Coin-specifieke news ingestie via Google News RSS, CoinDesk RSS, Cointelegraph RSS, Decrypt RSS, Blockworks RSS en Reddit search RSS
-- Officiele Binance announcements en maintenance notices als aparte event-feed
-- Strengere news reliability scoring met bron-whitelist, source-quality scoring, social weighting en event-type decay
-- Futures market-structure signalen via funding, basis, open interest, taker bias, global/top-trader long-short ratios, leverage buildup en live liquidation pressure
-- Event-calendar laag voor macro-events via BLS ICS plus eigen events via `data/runtime/event-calendar.json`
-- Technische features uit candles, orderboekdata, microstructure, pattern detection, trade flow en regime-detectie
-- Warm-start AI-model met champion/challenger logica, calibration en online updates na gesloten trades
-- Meerdere strategieen tegelijk: breakout, mean reversion en trend following, met een strategy-router die per marktregime de beste aanpak kiest
-- Transformer-style multi-horizon challenger, specialist multi-agent committee en RL execution policy voor slimmere entry/execution-beslissingen
-- Cross-timeframe consensus tussen 5m, 15m en 1h context zodat entries minder vaak tegen de hogere timeframe ingaan
-- Pair-health en quarantine scoring die symbols tijdelijk afremt bij infra-issues, zwakke market quality of bronproblemen
-- Live-vs-paper divergence monitoring per strategie zodat governance ziet wanneer paper en live gedrag te ver uit elkaar lopen
-- Offline trainer met counterfactual replay, strategy scorecards en governance-readiness op basis van gesloten trades
-- On-chain lite context via stablecoin-dominance en liquidity proxies als extra risk-on/risk-off laag
-- Harde risk gates voor spread, volatiliteit, cooldowns, exposure caps, loss streaks, orderbook pressure, calendar risk en official notice risk
-- Live broker met exchange-native OCO protectie, pegged maker-orders, keep-priority amends, STP-telemetry en runtime reconciliation
-- Dashboard met start/stop, live-paper switch, losse cyclus, rolling stats, session/drift/self-heal monitoring, stable-model backup zichtbaarheid, pair-search in Top AI setups, compactere why-trade uitleg, why-not-trade blockers, trade replay, strategy-keuze, transformer/committee/RL/meta-gate uitleg, scale-out context, universe focus, strategy attribution, research-registry governance, PnL attribution, operations/recovery panels en research-lab triggers
-- Windows 11 install-, dashboard- en watchdog/service-scripts
+De bot is gebouwd om eerst veilig en uitlegbaar te zijn, daarna pas agressief.
 
 ## Belangrijk
 
-Dit project garandeert geen winst. Het is gebouwd om risico's te beperken, niet om winst te beloven.
+Dit project garandeert geen winst.
 
-Live mode staat alleen toe als je expliciet bevestigt dat je het risico begrijpt:
+Live trading blijft risicovol. De bot probeert slechte situaties te vermijden, maar kan verlies niet uitsluiten.
+
+Live mode wordt alleen geactiveerd als je expliciet bevestigt dat je het risico begrijpt:
 
 ```env
 LIVE_TRADING_ACKNOWLEDGED=I_UNDERSTAND_LIVE_TRADING_RISK
 ```
 
-Daarnaast vereist live mode:
+Voor live mode zijn ook nodig:
 
-- geldige `BINANCE_API_KEY` en `BINANCE_API_SECRET`
+- geldige `BINANCE_API_KEY`
+- geldige `BINANCE_API_SECRET`
 - `ENABLE_EXCHANGE_PROTECTION=true`
-- een account dat `canTrade=true` en `SPOT` permission teruggeeft
+- een account dat `canTrade=true` en `SPOT` permissions teruggeeft
 
-## Dashboard
+## Wat de bot doet
 
-Start het dashboard met:
+De bot combineert meerdere lagen:
 
-```powershell
-node src/cli.js dashboard
-```
-
-Of op Windows 11 simpeler via:
-
-```powershell
-.\Start-Dashboard.cmd
-```
-
-Daarin kun je:
-
-- wisselen tussen `paper` en `live`
-- de bot starten en stoppen
-- een losse cyclus draaien
-- analyse handmatig verversen
-- open posities inclusief entry-redenen, bullish/bearish drivers, social sentiment, official notices, orderbook pressure, execution-attributie en kalender-events bekijken
-- winst/verlies per open en recente gesloten trade zien, inclusief execution-style, slippage en maker/taker-context
-- statistieken bekijken voor vandaag, 7 dagen, 15 dagen, 30 dagen en all-time
-- funding, basis, open interest, global/top-trader long-short ratios, liquidaties, fear/greed, option-vol context, social sentiment, pattern-context, lokale book-health, execution-stats en portfolio-exposure volgen
-- zien welke checks de AI per trade wel of niet haalde
-- geblokkeerde setups en why-not-trade redenen per pair bekijken
-- trade replay zien met entry-, exit- en scale-out context
-- vanuit het dashboard een research-run starten en walk-forward samenvattingen terugzien
-- current session-, drift- en self-heal status volgen inclusief low-liquidity, funding windows, cooldowns en rollback-backups
-- PnL attribution bekijken per strategie, regime, execution-style en nieuwsbron
-- operations/recovery volgen met feature-store activiteit, model registry en state backups
-
-Standaard draait het dashboard lokaal op `http://127.0.0.1:3011`. Pas dit aan met `DASHBOARD_PORT` in [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example).
-
-## Windows 11 installatie
-
-1. Zet Git long-path support aan: `git config --global core.longpaths true`.
-2. Clone de repo bij voorkeur naar een kort pad, bijvoorbeeld `C:\code\Codex-ai-trading-bot`.
-3. Installeer Node.js 22 of nieuwer.
-4. Voer [Install-Windows11.cmd](/C:/Users/highlife/Documents/Playground/Install-Windows11.cmd) uit.
-5. Vul daarna je Binance API keys in `.env` in als je live wilt traden.
-6. Start het dashboard met [Start-Dashboard.cmd](/C:/Users/highlife/Documents/Playground/Start-Dashboard.cmd) of de watchdog met [Start-BotService.cmd](/C:/Users/highlife/Documents/Playground/Start-BotService.cmd).
-
-Wil je met een enkele klik zowel dashboard als bot starten via dezelfde actuele codebase, gebruik dan [Start-Everything.cmd](/C:/Users/highlife/Documents/Playground/Start-Everything.cmd). Dat start het dashboard, wacht tot de lokale API klaar is en activeert daarna automatisch `Start bot`.
-
-Het installscript:
-
-- maakt automatisch een `.env` aan als die ontbreekt
-- zet `git config --global core.longpaths true` als Git aanwezig is
-- maakt `data/runtime`, `data/runtime/feature-store` en `data/runtime/backups` aan
-- draait `npm.cmd test`
-- draait `node src/cli.js doctor`
-
-Op Windows zijn de `.cmd` bestanden de bedoelde entrypoints. De PowerShell-bestanden zoals [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) en [Install-Windows11.ps1](/C:/Users/highlife/Documents/Playground/Install-Windows11.ps1) bevatten alleen de onderliggende implementatie waar de `.cmd` wrappers naartoe doorsturen.
+- technische indicatoren en candle-structuur
+- local order book en microstructure
+- regime-detectie zoals `trend`, `range`, `breakout`, `high_vol`
+- news, announcements en marktsentiment
+- market-structure data zoals funding, basis, open interest en liquidaties
+- AI- en governance-lagen voor threshold, calibration en position sizing
+- risk controls voor spread, volatility, order book quality, cooldowns en drawdown
+- paper en live execution met lifecycle-, protection- en reconcile-logica
 
 ## Snelle start
 
-1. Maak een `.env` op basis van [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example) als die nog niet bestaat.
+1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).
 2. Laat `BOT_MODE=paper` staan voor de eerste tests.
-3. Draai eerst de preflight:
+3. Draai:
 
 ```powershell
 node src/cli.js doctor
-```
-
-4. Bekijk actuele status:
-
-```powershell
 node src/cli.js status
-```
-
-5. Draai een enkele handelscyclus:
-
-```powershell
 node src/cli.js once
+node src/cli.js dashboard
 ```
 
-6. Start daarna het dashboard of de continue loop:
+Op Windows kun je ook gebruiken:
+
+- [Start-Dashboard.cmd](/mnt/c/Users/highlife/Documents/Playground/Start-Dashboard.cmd)
+- [Start-BotService.cmd](/mnt/c/Users/highlife/Documents/Playground/Start-BotService.cmd)
+- [Start-Everything.cmd](/mnt/c/Users/highlife/Documents/Playground/Start-Everything.cmd)
+
+## Dashboard
+
+Het dashboard draait standaard lokaal op:
+
+`http://127.0.0.1:3011`
+
+De huidige dashboard-opzet is bewust compact en toont alleen de kern:
+
+- boven: status en acties
+- midden links: top signalen
+- midden rechts: open posities
+- onder: risico en recente trades
+
+### Dashboard-acties
+
+- `Start`: start de bot-loop
+- `Stop`: stopt de bot-loop
+- `Paper`: zet de bot in paper mode
+- `Live`: zet de bot in live mode
+- `Refresh`: haalt direct een nieuwe snapshot op
+
+### Dashboard-topbalk
+
+De bovenste statuschips geven de globale toestand weer.
+
+`Paper` of `Live`
+- In welke mode de bot nu draait.
+
+`Running` of `Stopped`
+- Of de bot-loop actief is.
+
+`Ready`, `Degraded`, `Blocked`
+- De algemene readiness om nieuwe entries te nemen.
+
+`Refresh dd/mm/jj uu:mm · data dd/mm/jj uu:mm`
+- `Refresh`: wanneer het dashboard de laatste snapshot ontving.
+- `data`: wanneer de onderliggende runtime-data voor het laatst is bijgewerkt.
+
+### Operator-samenvatting bovenaan
+
+Bovenaan zie je korte pillen zoals:
+
+- `Equity`
+- `Beste kans`
+- `Blokkade`
+- `Actie`
+- `Herstelt vanzelf`
+
+Betekenis:
+
+`Equity`
+- Totale paper/live accountwaarde volgens de runtime-state.
+
+`Beste kans`
+- Het sterkste huidige signaal uit de topbeslissingen.
+
+`Blokkade`
+- De zwaarste reden waarom de bot nu geen entry opent.
+
+`Actie`
+- Wat jij of de operator idealiter nu moet doen.
+
+`Herstelt vanzelf`
+- Wat de bot waarschijnlijk zelf oplost zonder handmatige ingreep.
+
+## Dashboard-secties
+
+### 1. Top signalen
+
+Hier zie je de belangrijkste setups van de huidige scan.
+
+Per kaart zie je:
+
+`Tradebaar` of `Geblokkeerd`
+- Of de bot deze setup nu daadwerkelijk mag openen.
+
+`Type`
+- Wat voor soort setup dit is.
+- Voorbeelden: `Trend Following`, `Breakout`, `Mean Reversion`, `Liquidity Sweep`.
+
+`Kans`
+- De door de bot berekende kansscore voor deze setup.
+- Dit is niet hetzelfde als winstgarantie.
+
+`Confidence`
+- Hoe zeker de bot is over deze setup na model-, data-, market- en execution-checks.
+
+`Risk`
+- De dominante risk/governance-context.
+- Bijvoorbeeld `Normal`, `Blocked`, `Recovery`, `Observe Only`.
+
+`Waarom wel`
+- Korte uitleg waarom deze setup tradebaar is.
+
+`Waarom niet`
+- De voornaamste blocker waardoor deze setup niet wordt geopend.
+
+`Actie`
+- Wat de operator of de bot nu moet doen.
+
+#### Voorbeelduitleg
+
+`Type: Trend Following`
+- De bot ziet een setup die bedoeld is om met een bestaande trend mee te gaan.
+- Dat betekent meestal: trend bevestiging, continuation-karakter en minder mean-reversion logica.
+
+`Waarom niet: Controleer veto-feedback en counterfactual scorecards voor deze setup.`
+- Deze setup is waarschijnlijk door een governance- of committee-veto tegengehouden.
+- De bot zegt hier eigenlijk: kijk of deze veto historisch terecht was of dat dit type setup te vaak onterecht wordt geblokkeerd.
+- `counterfactual scorecards` betekenen: “wat was er gebeurd als we deze trade wél genomen hadden?”
+
+`Actie: Datasources in herstel: news, announcements.`
+- Een of meer databronnen zijn tijdelijk zwak, leeg, vertraagd of aan het herstellen.
+- In dit voorbeeld gaat het om:
+  - `news`: normale nieuwsfeeds
+  - `announcements`: exchange- of officiële notices
+- De bot kan soms nog doorgaan, maar doet dat voorzichtiger omdat de dataset niet volledig betrouwbaar is.
+
+### 2. Open posities
+
+Hier staan actieve posities.
+
+Per positie zie je:
+
+- `Entry`
+- `Nu`
+- `Rendement`
+- lifecycle-tags zoals `Manual review` of `Reconcile`
+
+Betekenis:
+
+`Entry`
+- De instapprijs.
+
+`Nu`
+- De actuele prijs die de runtime gebruikt voor markering.
+
+`Rendement`
+- Het huidige ongerealiseerde resultaat in procent.
+
+`Manual review`
+- Deze positie vraagt extra menselijke controle.
+- Meestal door een lifecycle-probleem, execution-afwijking of recovery-pad.
+
+`Reconcile`
+- Lokale state en verwachte exchange-truth moeten opnieuw vergeleken worden.
+
+### 3. Systeemstatus
+
+Hier zie je operationele gezondheid, risk en herstelstatus.
+
+Belangrijke labels:
+
+`Readiness`
+- De globale entry-status.
+
+`Ready`
+- Nieuwe entries zijn in principe toegestaan.
+
+`Degraded`
+- De bot draait nog, maar met actieve voorzichtigheid of blokkades.
+
+`Blocked`
+- Nieuwe entries zijn effectief geblokkeerd.
+
+`Operator Ack Required`
+- Er staat een alert open die eerst bevestigd moet worden.
+- In paper mode kan dit voor governance-alerts soms zachter zijn dan in live mode.
+
+`Alerts`
+- Aantal actieve waarschuwingen.
+
+`Lifecycle`
+- Aantal open pending actions of lifecycle-items.
+
+`Capital`
+- Samenvatting van capital-governor en capital-policy status.
+
+#### Veelvoorkomende meldingen
+
+`Capital Blocked`
+- De capital governor wil nieuwe entries afremmen of stoppen.
+- Vaak door recente drawdown, verliesritme of recovery-mode.
+
+`Entries toegestaan`
+- Ondanks een capital- of governance-status mogen nog beperkte entries of probes door.
+- In paper mode zie je dit vaker dan in live mode.
+
+`Paper Calibration Probe Actief`
+- De bot zit in een voorzichtige leerstand.
+- Kleine probe-trades mogen nog lopen om nieuwe data te verzamelen terwijl calibration herstelt.
+
+`Execution Cost Budget Te Duur`
+- De bot denkt dat spread, slippage of fill-kwaliteit te duur zijn voor een gezonde entry.
+
+`market heeft momenteel de duurste execution-cost profile`
+- De huidige marktcondities zijn ongunstig voor goedkope execution.
+- Zelfs een goede setup kan dan worden tegengehouden.
+
+`Capital governor blokkeert nieuwe entries tot het verliesritme afneemt`
+- De bot heeft recent te veel of te snel verlies gezien en wil eerst stabiliseren.
+
+`Datasources in herstel`
+- Een of meer datalagen zijn teruggevallen of aan het herstellen.
+- De bot blijft soms draaien, maar met lagere confidence of strengere gates.
+
+### 4. Recente trades
+
+Toont de laatste gesloten trades met:
+
+- `Coin`
+- `Open`
+- `Sluit`
+- `Reden`
+- `P/L`
+- `Rendement`
+
+`Reden`
+- Waarom de trade gesloten werd.
+- Voorbeelden:
+  - `time_stop`
+  - `stop_loss`
+  - `trailing_stop`
+  - `orderbook_reversal_pressure`
+
+## Betekenis van veelgebruikte dashboardtermen
+
+### Trade-status
+
+`Tradebaar`
+- De setup passeert de huidige gates en mag worden geopend.
+
+`Geblokkeerd`
+- De setup werd gezien, maar tegengehouden door risk, governance, market quality of execution.
+
+### Markt- en setuptermen
+
+`Trend Following`
+- Setup die met de trend mee probeert te gaan.
+
+`Breakout`
+- Setup die inzet op een uitbraak uit range of compressie.
+
+`Mean Reversion`
+- Setup die inzet op terugkeer naar gemiddelde of range-midden.
+
+`Liquidity Sweep`
+- Setup rond stop-hunts, wick-structuur of sweep/reclaim gedrag.
+
+`Range Acceptance`
+- Markt zit eerder in een zijwaartse, geaccepteerde range dan in een schone trend.
+
+`Healthy Continuation`
+- Trend is aanwezig en nog niet duidelijk uitgeput.
+
+`Late Crowded`
+- Trend lijkt laat in de move te zitten en mogelijk te druk of te duur.
+
+`Capitulation Bounce Risk`
+- Kans op harde bounce na neerwaartse capitulatie.
+
+### Confidence- en quality-termen
+
+`Data Confidence`
+- Hoe bruikbaar en compleet de databronnen zijn.
+
+`Feature Completeness`
+- Hoe volledig de feature-set voor deze setup was.
+
+`Signal Quality`
+- Samenvatting van setup fit, structuurkwaliteit, execution viability, news cleanliness en quorum quality.
+
+`Confidence Breakdown`
+- Opgesplitste zekerheid van:
+  - market confidence
+  - data confidence
+  - execution confidence
+  - model confidence
+
+### Risk- en governance-termen
+
+`Observe Only`
+- Bot mag observeren en leren, maar geen echte entry nemen.
+
+`Probe Only`
+- Alleen kleine proefentries toegestaan.
+
+`Recovery`
+- De bot zit in herstelmodus na slechte performance, calibration issues of governance-druk.
+
+`Manual Review`
+- Handmatige controle aanbevolen.
+
+`Reconcile Required`
+- Runtime-state en truth-state moeten opnieuw worden gesynchroniseerd.
+
+`Committee Veto`
+- Een governance- of modelcommittee heeft de setup tegengehouden.
+
+`Counterfactual`
+- Wat het resultaat geweest zou zijn als een geblokkeerde setup wel genomen was.
+
+## Waarom een trade niet opent
+
+Als de bot geen trade opent, is dat meestal een combinatie van:
+
+- market quality te zwak
+- spread of slippage te duur
+- capital governor actief
+- committee of meta-gate veto
+- timeframe conflict
+- data quorum degraded
+- self-heal of calibration probe actief
+
+In het dashboard zie je dat terug in:
+
+- `Blokkade`
+- `Waarom niet`
+- `Actie`
+- `Herstelt vanzelf`
+- `Systeemstatus`
+
+## Paper mode versus live mode
+
+### Paper mode
+
+Paper mode is bedoeld om:
+
+- veilig te testen
+- sneller te leren
+- nieuwe regimes of features te observeren
+- probe-entries toe te laten zonder echt kapitaalrisico
+
+Paper mode kan soms soepeler zijn bij:
+
+- governance-alerts
+- capital recovery
+- execution-cost caution
+
+Maar paper blijft hard blokkeren bij echte safety-risico's zoals:
+
+- lifecycle-problemen
+- health circuit open
+- exchange-truth mismatch
+- ernstige data-integrity issues
+
+### Live mode
+
+Live mode is veel strenger.
+
+Daar blijven onder meer hard:
+
+- unresolved critical alerts
+- protection issues
+- exchange-truth mismatches
+- reconcile-problemen
+- hard capital blocks
+
+## Projectstructuur
+
+- `src/binance`: REST-client, signing, clock sync en exchange data
+- `src/news`: news ingestie, parsing en reliability scoring
+- `src/events`: notices en kalenderlogica
+- `src/market`: market-structure, sentiment, volatility en on-chain-lite context
+- `src/strategy`: indicatoren, features en market/trend-state
+- `src/ai`: adaptive model, regime model, calibration en governance
+- `src/risk`: risk manager, portfolio logic en capital policies
+- `src/execution`: paper broker, live broker en execution engine
+- `src/runtime`: bot-loop, self-heal, replay, research, alerts, reports en state orchestration
+- `src/dashboard`: lokale dashboardserver en frontend
+- `src/storage`: runtime-, model- en journal-persistence
+
+## Windows 11 installatie
+
+1. Zet long paths aan:
 
 ```powershell
-node src/cli.js dashboard
-node src/cli.js run
+git config --global core.longpaths true
 ```
+
+2. Installeer Node.js 22 of nieuwer.
+3. Voer [Install-Windows11.cmd](/mnt/c/Users/highlife/Documents/Playground/Install-Windows11.cmd) uit.
+4. Vul je `.env` in.
+5. Start met:
+
+- [Start-Dashboard.cmd](/mnt/c/Users/highlife/Documents/Playground/Start-Dashboard.cmd)
+- of [Start-Everything.cmd](/mnt/c/Users/highlife/Documents/Playground/Start-Everything.cmd)
+
+De `.cmd` bestanden zijn op Windows de bedoelde entrypoints.
 
 ## Handige commando's
 
@@ -138,117 +463,10 @@ node src/cli.js backtest BTCUSDT
 node src/cli.js research BTCUSDT
 node src/cli.js dashboard
 node src/cli.js run
-npm.cmd run service:windows
+Start-Dashboard.cmd
 Start-BotService.cmd
 Start-Everything.cmd
 ```
-
-## Hoe de AI beslist
-
-- Het model combineert technische signalen, orderboekdruk, microprice/book pressure, candlestick patterns, trade flow, nieuws-sentiment, social sentiment, official notices, futures market-structure, macro/agendarisico en een transformer-style multi-horizon challenger.
-- Daarbovenop draait een specialistische multi-agent committee-laag (model, transformer, strategy-router, news, orderflow, structure, portfolio en execution) plus een RL execution policy voor maker/market, patience en sizing-advies.
-- Regime-detectie kiest tussen `trend`, `range`, `breakout`, `high_vol` en `event_risk`.
-- Probability calibration en een abstain-zone voorkomen dat zwakke of onzekere setups automatisch live worden uitgevoerd.
-- Een extra meta decision gate bewaakt dagelijkse risicobudgetten, canary live sizing, history-confidence en trade frequency voordat een setup echt door mag.
-- Een universe selector kiest eerst de sterkste watchlist-kandidaten op spread, depth, activity en volatility-fit voordat de volledige AI-scan draait.
-- Cross-timeframe consensus beoordeelt of de trigger op de lagere timeframe in lijn ligt met de hogere timeframe voordat de trade door mag.
-- Pair-health, source-reliability en on-chain-lite context temperen setups bij zwakke feeds, symbol-instabiliteit of risk-off stablecoin flows.
-- Exit intelligence beslist apart over hold, trim en exit, zodat winstneming en risicoreductie slimmer verlopen dan alleen vaste stops.
-- Strategy attribution, divergence monitoring en een research registry houden bij welke strategieen, families, regimes en symbols daadwerkelijk werken en welke modellen promotie of observatie verdienen.
-- Champion/challenger deployment zorgt dat online learning niet meteen blind live wordt gepromoveerd.
-- Counterfactual replay bewaart ook geblokkeerde setups, zodat de bot later kan evalueren of een veto terecht was of een goede trade heeft gemist.
-- Per trade bewaart de bot de sterkste bullish/bearish signalen, nieuwsdrivers, social context, notice-checks, orderbook/pattern reasons, market-structure reasons, kalender-events, scale-out plannen en execution-attributie.
-- In het dashboard zie je precies waarom een positie is geopend, waarom een kandidaattrade is geblokkeerd en hoe een replay/backtest of research-window uitpakte.
-
-## Officiele notices en agenda
-
-De bot gebruikt nu drie extra contextlagen naast normale nieuwsfeeds:
-
-- Officiele Binance CMS notices voor exchange-nieuws en maintenance-updates
-- Gratis futures market-structure data van Binance voor funding, OI, basis, taker bias en long-short crowding
-- Macro/agendadata via BLS ICS en optionele eigen JSON-events in `data/runtime/event-calendar.json`
-
-Je kunt handmatig eigen events toevoegen in [event-calendar.json](/C:/Users/highlife/Documents/Playground/data/runtime/event-calendar.json). Voorbeeld:
-
-```json
-[
-  {
-    "title": "ETH unlock",
-    "at": "2026-03-20T12:00:00.000Z",
-    "type": "unlock",
-    "impact": 0.8,
-    "bias": -0.35,
-    "symbols": ["ETH", "ETHUSDT"],
-    "scope": "symbol",
-    "source": "Manual"
-  }
-]
-```
-
-## Projectstructuur
-
-- `src/binance`: REST-client, signing, clock sync, symbol filters en futures public data
-- `src/news`: news ingestie, Reddit/news parsing, eventclassificatie en sentiment/reliability scoring
-- `src/events`: Binance notices en kalenderservices
-- `src/market`: market-structure samenvatting voor funding, OI, basis, liquidaties en on-chain-lite context
-- `src/strategy`: indicatoren en feature engineering
-- `src/ai`: online model, regime model, calibration en adaptive deployment
-- `src/risk`: risk rules, sizing, exposure caps en portfolio intelligence
-- `src/execution`: paper broker en live broker met OCO protectie
-- `src/runtime`: bot-loop, streams, doctor, rapportage, research, feature-store recorder, pair health, divergence, offline trainer, model registry, backups en manager
-- `src/dashboard`: lokale dashboardserver en frontend
-- `src/storage`: model, runtime en journal persistence
-
-## Runtime opslag en herstel
-
-Nieuwe productie-hardened lagen:
-
-- `data/runtime/feature-store`: JSONL-opslag van cycles, decisions, trades en research-runs voor replay en retraining
-- `data/runtime/backups`: automatische runtime-backups voor crash recovery en rollback
-- model registry: quality scoring per modelsnapshot met rollback-kandidaat in dashboard en doctor-output
-- counterfactual replay: bewaart geblokkeerde setups en vergelijkt ze later met de echte marktbeweging
-- divergence monitor: vergelijkt paper en live gedrag per strategie en kan promotie blokkeren als het gat te groot wordt
-- Windows watchdog: [Start-BotService.cmd](/C:/Users/highlife/Documents/Playground/Start-BotService.cmd) start de watchdog; de onderliggende logica zit in [Run-BotService.ps1](/C:/Users/highlife/Documents/Playground/Run-BotService.ps1) en herstart de bot-loop automatisch als die crasht, met restart-limiet per uur
-
-Start de watchdog lokaal met:
-
-```powershell
-Start-BotService.cmd
-npm.cmd run service:windows
-```
-
-## Belangrijkste extra env-keys
-
-Zie [`.env.example`](/C:/Users/highlife/Documents/Playground/.env.example) voor alle opties. De belangrijkste groepen zijn:
-
-- Adaptive AI: `CHALLENGER_*`, `MIN_CALIBRATION_CONFIDENCE`, `MIN_REGIME_CONFIDENCE`, `ABSTAIN_BAND`, `MAX_MODEL_DISAGREEMENT`
-- Cross-timeframe: `ENABLE_CROSS_TIMEFRAME_CONSENSUS`, `LOWER_TIMEFRAME_INTERVAL`, `HIGHER_TIMEFRAME_INTERVAL`, `LOWER_TIMEFRAME_LIMIT`, `HIGHER_TIMEFRAME_LIMIT`, `CROSS_TIMEFRAME_MIN_ALIGNMENT_SCORE`, `CROSS_TIMEFRAME_MAX_VOL_GAP_PCT`
-- Event-driven data: `ENABLE_EVENT_DRIVEN_DATA`, `ENABLE_LOCAL_ORDER_BOOK`, `STREAM_TRADE_BUFFER_SIZE`, `STREAM_DEPTH_LEVELS`, `STREAM_DEPTH_SNAPSHOT_LIMIT`, `MAX_DEPTH_EVENT_AGE_MS`, `LOCAL_BOOK_BOOTSTRAP_WAIT_MS`, `LOCAL_BOOK_WARMUP_MS`, `BINANCE_FUTURES_API_BASE_URL`
-- Smart execution: `ENABLE_SMART_EXECUTION`, `ENABLE_PEGGED_ORDERS`, `DEFAULT_PEG_OFFSET_LEVELS`, `MAX_PEGGED_IMPACT_BPS`, `ENABLE_STP_TELEMETRY_QUERY`, `STP_TELEMETRY_LIMIT`, `MAKER_MIN_SPREAD_BPS`, `BASE_MAKER_PATIENCE_MS`, `MAX_MAKER_PATIENCE_MS`
-- Social sentiment: `ENABLE_REDDIT_SENTIMENT`, `REDDIT_SENTIMENT_SUBREDDITS`
-- Market structure: `MARKET_STRUCTURE_CACHE_MINUTES`, `MARKET_STRUCTURE_LOOKBACK_POINTS`
-- Macro sentiment: `ENABLE_MARKET_SENTIMENT_CONTEXT`, `MARKET_SENTIMENT_CACHE_MINUTES`, `ALTERNATIVE_API_BASE_URL`, `COINGECKO_API_BASE_URL`, `ENABLE_ONCHAIN_LITE_CONTEXT`, `ONCHAIN_LITE_CACHE_MINUTES`, `ONCHAIN_LITE_STABLECOIN_IDS`
-- Volatility context: `ENABLE_VOLATILITY_CONTEXT`, `VOLATILITY_CACHE_MINUTES`, `DERIBIT_API_BASE_URL`
-- Official notices: `ANNOUNCEMENT_LOOKBACK_HOURS`, `ANNOUNCEMENT_CACHE_MINUTES`
-- Event calendar: `CALENDAR_LOOKBACK_DAYS`, `CALENDAR_CACHE_MINUTES`
-- News reliability: `NEWS_MIN_SOURCE_QUALITY`, `NEWS_MIN_RELIABILITY_SCORE`, `NEWS_STRICT_WHITELIST`, `SOURCE_RELIABILITY_*`
-- Risk guards: `MAX_LOSS_STREAK`, `MAX_SYMBOL_LOSS_STREAK`, `SYMBOL_LOSS_COOLDOWN_MINUTES`, `MAX_ENTRIES_PER_SYMBOL_PER_DAY`, `MIN_BOOK_PRESSURE_FOR_ENTRY`, `EXIT_ON_SPREAD_SHOCK_BPS`
-- Governance: `DIVERGENCE_*`, `OFFLINE_TRAINER_MIN_READINESS`, `MODEL_PROMOTION_PROBATION_LIVE_TRADES`, `COUNTERFACTUAL_*`
-- Pair health: `PAIR_HEALTH_LOOKBACK_HOURS`, `PAIR_HEALTH_MIN_SCORE`, `PAIR_HEALTH_QUARANTINE_MINUTES`, `PAIR_HEALTH_MAX_INFRA_ISSUES`
-- Session intelligence: `ENABLE_SESSION_LOGIC`, `SESSION_*`, `BLOCK_WEEKEND_HIGH_RISK_STRATEGIES`
-- Drift monitoring: `ENABLE_DRIFT_MONITORING`, `DRIFT_*`, `MAX_SERVER_TIME_DRIFT_MS`, `CLOCK_SYNC_SAMPLE_COUNT`, `CLOCK_SYNC_MAX_AGE_MS`, `CLOCK_SYNC_MAX_RTT_MS`
-- Self-heal and rollback: `SELF_HEAL_*`, `STABLE_MODEL_*`
-- Meta gate, canary en scale-out: `ENABLE_META_DECISION_GATE`, `META_*`, `ENABLE_CANARY_LIVE_MODE`, `CANARY_*`, `DAILY_RISK_BUDGET_FLOOR`, `MAX_ENTRIES_PER_DAY`, `MAX_ENTRIES_PER_SYMBOL_PER_DAY`, `SCALE_OUT_*`
-- Universe selector, exit AI en attribution: `ENABLE_UNIVERSE_SELECTOR`, `UNIVERSE_*`, `UNIVERSE_ROTATION_*`, `ENABLE_EXIT_INTELLIGENCE`, `EXIT_INTELLIGENCE_*`, `TRADE_QUALITY_*`, `STRATEGY_ATTRIBUTION_MIN_TRADES`
-- Research lab en governance: `RESEARCH_*`, `RESEARCH_PROMOTION_*`, `MODEL_PROMOTION_*`
-- Execution realism: `PAPER_LATENCY_MS`, `PAPER_MAKER_FILL_FLOOR`, `PAPER_PARTIAL_FILL_MIN_RATIO`, `BACKTEST_LATENCY_MS`, `BACKTEST_SYNTHETIC_DEPTH_USD`
-- Recorder / registry / backups: `DATA_RECORDER_*`, `MODEL_REGISTRY_*`, `STATE_BACKUP_*`
-- Windows watchdog: `SERVICE_RESTART_DELAY_SECONDS`, `SERVICE_MAX_RESTARTS_PER_HOUR`, `GIT_SHORT_CLONE_PATH`
-- Portfolio intelligence: `TARGET_ANNUALIZED_VOLATILITY`, `MAX_PAIR_CORRELATION`, `MAX_CLUSTER_POSITIONS`, `MAX_SECTOR_POSITIONS`
-
-## Arbitrage roadmap
-
-Cross-exchange arbitrage is bewust nog geen live feature. Daarvoor is een aparte execution-laag nodig met meerdere exchange-connectors, fee/netting-logica, inventory per venue, transfer/settlement awareness en latency-aware order routing.
 
 ## Verificatie
 
@@ -258,27 +476,3 @@ Lokaal geverifieerd met:
 - `node src/cli.js status`
 - `node src/cli.js doctor`
 - `node src/cli.js once`
-- `node src/cli.js backtest BTCUSDT`
-- `node src/cli.js research BTCUSDT`
-- dashboard smoke test op `http://127.0.0.1:3011/api/snapshot`
-
-## Officiele documentatie en publieke bronnen
-
-- [Binance Spot REST API](https://developers.binance.com/docs/binance-spot-api-docs/rest-api)
-- [Binance Trading endpoints](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints)
-- [Binance User Data Stream](https://developers.binance.com/docs/binance-spot-api-docs/user-data-stream)
-- [Binance WebSocket Streams](https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams)
-- [CoinDesk RSS](https://www.coindesk.com/arc/outboundfeeds/rss/)
-- [Cointelegraph RSS](https://cointelegraph.com/rss)
-- [Decrypt RSS](https://decrypt.co/feed)
-- [Blockworks RSS](https://blockworks.com/feed)
-- [BLS release calendar](https://www.bls.gov/schedule/news_release/)
-
-
-
-
-
-
-
-
-
