@@ -8,18 +8,12 @@ const elements = {
   runStateBadge: document.querySelector("#runStateBadge"),
   healthBadge: document.querySelector("#healthBadge"),
   controlHint: document.querySelector("#controlHint"),
-  heroHeadline: document.querySelector("#heroHeadline"),
-  heroSubline: document.querySelector("#heroSubline"),
   operatorSummary: document.querySelector("#operatorSummary"),
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   paperBtn: document.querySelector("#paperBtn"),
   liveBtn: document.querySelector("#liveBtn"),
   refreshBtn: document.querySelector("#refreshBtn"),
-  metrics: document.querySelector("#metrics"),
-  equityMeta: document.querySelector("#equityMeta"),
-  equityChart: document.querySelector("#equityChart"),
-  windowCards: document.querySelector("#windowCards"),
   decisionSearch: document.querySelector("#decisionSearch"),
   decisionAllowedOnly: document.querySelector("#decisionAllowedOnly"),
   decisionMeta: document.querySelector("#decisionMeta"),
@@ -181,17 +175,11 @@ function buildHeroSummary(snapshot) {
   const dashboard = snapshot?.dashboard || {};
   const readiness = dashboard.ops?.readiness || {};
   const leadDecision = dashboard.topDecisions?.[0] || null;
-  const blockers = dashboard.blockedSetups?.[0]?.blockerReasons || [];
   const topReason = topBlocker(snapshot);
   const unresolvedCritical = unresolvedAlerts(snapshot).filter((item) => !item.acknowledgedAt && ["critical", "negative"].includes(item.severity));
   const freezeEntries = Boolean(dashboard.safety?.exchangeTruth?.freezeEntries);
   const probeOnly = Boolean(dashboard.safety?.orderLifecycle?.probeOnly?.enabled || dashboard.ops?.readiness?.reasons?.includes("probe_only"));
-
-  const headline = manager.runState === "running"
-    ? "Bot draait en monitort live kansen"
-    : manager.runState === "stopping"
-      ? "Bot wordt netjes gestopt"
-      : "Bot staat stil";
+  const overview = dashboard.overview || {};
 
   const subline = leadDecision?.allow
     ? `${leadDecision.symbol} is momenteel de beste tradebare setup.`
@@ -201,7 +189,17 @@ function buildHeroSummary(snapshot) {
 
   const pills = [
     {
-      label: "Belangrijkste blocker",
+      label: "Equity",
+      value: formatMoney(overview.equity),
+      tone: "neutral"
+    },
+    {
+      label: "Beste kans",
+      value: leadDecision?.symbol || "Geen setup",
+      tone: leadDecision?.allow ? "positive" : "neutral"
+    },
+    {
+      label: "Blokkade",
       value: topReason ? titleize(topReason) : "Geen directe blocker",
       tone: topReason ? "negative" : "positive"
     },
@@ -218,7 +216,6 @@ function buildHeroSummary(snapshot) {
   ];
 
   return {
-    headline,
     subline,
     pills
   };
@@ -241,8 +238,6 @@ function renderBadges(snapshot) {
 function renderHero(snapshot) {
   const summary = buildHeroSummary(snapshot);
   elements.controlHint.textContent = summary.subline;
-  elements.heroHeadline.textContent = summary.headline;
-  elements.heroSubline.textContent = summary.subline;
   elements.operatorSummary.innerHTML = summary.pills
     .map((item) => `
       <span class="hero-pill ${item.tone}">
@@ -251,117 +246,6 @@ function renderHero(snapshot) {
       </span>
     `)
     .join("");
-}
-
-function renderMetrics(snapshot) {
-  const overview = snapshot?.dashboard?.overview || {};
-  const topDecision = snapshot?.dashboard?.topDecisions?.[0] || {};
-  const readiness = snapshot?.dashboard?.ops?.readiness || {};
-  const metrics = [
-    {
-      label: "Equity",
-      value: formatMoney(overview.equity),
-      foot: `Vrij ${formatMoney(overview.quoteFree)}`
-    },
-    {
-      label: "Open P/L",
-      value: formatMoney(overview.totalUnrealizedPnl),
-      foot: `${overview.openPositionCount || 0} posities`,
-      tone: toneClass(overview.totalUnrealizedPnl)
-    },
-    {
-      label: "Beste kans",
-      value: topDecision?.symbol || "Geen",
-      foot: topDecision?.allow ? "Tradebaar" : "Nog geblokkeerd",
-      tone: topDecision?.allow ? "positive" : "neutral"
-    },
-    {
-      label: "Readiness",
-      value: titleize(readiness.status || "unknown"),
-      foot: readiness.reasons?.[0] ? titleize(readiness.reasons[0]) : "Geen directe blokkade",
-      tone: statusTone(readiness.status)
-    }
-  ];
-
-  elements.metrics.innerHTML = metrics.map((item) => `
-    <article class="metric-card">
-      <span class="metric-label">${escapeHtml(item.label)}</span>
-      <strong class="metric-value ${item.tone || ""}">${escapeHtml(item.value)}</strong>
-      <span class="metric-foot">${escapeHtml(item.foot || "")}</span>
-    </article>
-  `).join("");
-}
-
-function buildEquitySvg(series = []) {
-  const clean = series.filter((item) => Number.isFinite(Number(item.equity)));
-  if (!clean.length) {
-    return `<div class="empty">Nog geen equity-reeks beschikbaar.</div>`;
-  }
-
-  const width = 640;
-  const height = 260;
-  const padding = 14;
-  const values = clean.map((item) => Number(item.equity));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = Math.max(max - min, 1);
-  const points = clean.map((item, index) => {
-    const x = padding + (index / Math.max(clean.length - 1, 1)) * (width - padding * 2);
-    const y = height - padding - ((Number(item.equity) - min) / span) * (height - padding * 2);
-    return `${x},${y}`;
-  }).join(" ");
-  const last = values.at(-1) || 0;
-  const first = values[0] || 0;
-  const delta = last - first;
-  const gradient = delta >= 0 ? "url(#lineUp)" : "url(#lineDown)";
-  const areaPoints = `${padding},${height - padding} ${points} ${width - padding},${height - padding}`;
-
-  return `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Equitygrafiek">
-      <defs>
-        <linearGradient id="lineUp" x1="0%" x2="100%" y1="0%" y2="0%">
-          <stop offset="0%" stop-color="#4dd3b3" />
-          <stop offset="100%" stop-color="#6f88ff" />
-        </linearGradient>
-        <linearGradient id="lineDown" x1="0%" x2="100%" y1="0%" y2="0%">
-          <stop offset="0%" stop-color="#ff728f" />
-          <stop offset="100%" stop-color="#f0b35f" />
-        </linearGradient>
-        <linearGradient id="fillFade" x1="0%" x2="0%" y1="0%" y2="100%">
-          <stop offset="0%" stop-color="rgba(111,136,255,0.28)" />
-          <stop offset="100%" stop-color="rgba(111,136,255,0.02)" />
-        </linearGradient>
-      </defs>
-      <path d="M ${padding} ${height - padding} L ${width - padding} ${height - padding}" stroke="rgba(147,166,193,0.18)" stroke-width="1" fill="none"></path>
-      <polygon points="${areaPoints}" fill="url(#fillFade)"></polygon>
-      <polyline points="${points}" fill="none" stroke="${gradient}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline>
-      <circle cx="${points.split(" ").at(-1)?.split(",")[0] || width - padding}" cy="${points.split(" ").at(-1)?.split(",")[1] || height - padding}" r="5" fill="#eef4ff"></circle>
-    </svg>
-  `;
-}
-
-function renderPerformance(snapshot) {
-  const report = snapshot?.dashboard?.report || {};
-  const overview = snapshot?.dashboard?.overview || {};
-  const series = report.equitySeries || [];
-  const latest = series.at(-1);
-  elements.equityMeta.textContent = latest?.at
-    ? `Laatst bijgewerkt ${formatDate(latest.at)}`
-    : overview.lastPortfolioUpdateAt
-      ? `Portfolio ${formatDate(overview.lastPortfolioUpdateAt)}`
-      : "Nog geen equitygeschiedenis";
-  elements.equityChart.innerHTML = buildEquitySvg(series);
-
-  const windows = Object.entries(report.windows || {}).slice(0, 4);
-  elements.windowCards.innerHTML = windows.length
-    ? windows.map(([label, value]) => `
-        <article class="window-card">
-          <span class="metric-label">${escapeHtml(label.toUpperCase())}</span>
-          <strong class="metric-value ${toneClass(value.realizedPnl)}">${escapeHtml(formatMoney(value.realizedPnl))}</strong>
-          <span class="meta">${value.tradeCount || 0} trades · winrate ${formatPct(value.winRate)}</span>
-        </article>
-      `).join("")
-    : `<div class="empty">Nog geen windowstatistieken beschikbaar.</div>`;
 }
 
 function filterDecisions(snapshot) {
@@ -581,8 +465,6 @@ function render(snapshot) {
   latestSnapshot = snapshot;
   renderBadges(snapshot);
   renderHero(snapshot);
-  renderMetrics(snapshot);
-  renderPerformance(snapshot);
   renderSignals(snapshot);
   renderPositions(snapshot);
   renderOps(snapshot);
@@ -611,8 +493,12 @@ async function refreshSnapshot() {
     render(pickSnapshot(payload));
   } catch (error) {
     elements.controlHint.textContent = error.message;
-    elements.heroHeadline.textContent = "Dashboard kon niet verversen";
-    elements.heroSubline.textContent = "Controleer of de dashboardserver nog draait.";
+    elements.operatorSummary.innerHTML = `
+      <span class="hero-pill negative">
+        <strong>Dashboard</strong>
+        <span>Controleer of de dashboardserver nog draait.</span>
+      </span>
+    `;
   }
 }
 

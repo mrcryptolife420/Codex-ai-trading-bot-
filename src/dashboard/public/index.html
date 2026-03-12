@@ -10,10 +10,14 @@
     <div class="shell">
       <main class="main">
         <header class="topbar">
-          <div class="brand-block">
+          <div class="topbar-main">
+            <div class="brand-block">
             <p class="eyebrow">Codex AI Crypto Trading Bot</p>
             <h1>Trading Desk</h1>
             <p id="controlHint" class="topbar-copy">Status wordt geladen...</p>
+            </div>
+
+            <div id="operatorSummary" class="status-strip status-summary" aria-label="Belangrijkste samenvatting"></div>
           </div>
 
           <div class="status-strip" aria-label="Botstatus">
@@ -31,44 +35,8 @@
           </div>
         </header>
 
-        <section class="hero-grid" id="overviewSection">
-          <article class="hero-card hero-card-main">
-            <div class="hero-copy">
-              <p class="eyebrow">Directe samenvatting</p>
-              <h3 id="heroHeadline">Botstatus wordt geladen...</h3>
-              <p id="heroSubline" class="hero-subline">Wachten op de eerste snapshot.</p>
-            </div>
-            <div id="operatorSummary" class="hero-pills"></div>
-          </article>
-
-          <article class="panel key-metrics-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Kerncijfers</p>
-                <h3>Overzicht</h3>
-              </div>
-            </div>
-            <div id="metrics" class="metric-grid"></div>
-          </article>
-        </section>
-
-        <section class="content-grid">
-          <section class="primary-column">
-            <article class="panel chart-panel" id="performancePanel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Performance</p>
-                  <h3>Equity en windows</h3>
-                </div>
-                <span id="equityMeta" class="panel-meta"></span>
-              </div>
-              <div class="chart-shell">
-                <div id="equityChart" class="chart"></div>
-                <div id="windowCards" class="window-grid"></div>
-              </div>
-            </article>
-
-            <article class="panel" id="signalsSection">
+        <section class="main-grid">
+          <article class="panel" id="signalsSection">
               <div class="panel-head panel-head-split">
                 <div>
                   <p class="eyebrow">Beste kansen</p>
@@ -84,35 +52,9 @@
                 </div>
               </div>
               <div id="decisionsList" class="list-stack"></div>
-            </article>
+          </article>
 
-            <article class="panel" id="historySection">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Laatste afsluitingen</p>
-                  <h3>Recente trades</h3>
-                </div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Coin</th>
-                      <th>Open</th>
-                      <th>Sluit</th>
-                      <th>Reden</th>
-                      <th>P/L</th>
-                      <th>Rendement</th>
-                    </tr>
-                  </thead>
-                  <tbody id="tradesBody"></tbody>
-                </table>
-              </div>
-            </article>
-          </section>
-
-          <aside class="secondary-column">
-            <article class="panel" id="positionsSection">
+          <article class="panel" id="positionsSection">
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">Actieve exposure</p>
@@ -120,9 +62,11 @@
                 </div>
               </div>
               <div id="positionsList" class="list-stack"></div>
-            </article>
+          </article>
+        </section>
 
-            <article class="panel" id="riskSection">
+        <section class="bottom-grid">
+          <article class="panel" id="riskSection">
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">Risico en herstel</p>
@@ -131,8 +75,31 @@
               </div>
               <div id="opsSummary" class="risk-grid"></div>
               <div id="opsList" class="list-stack compact-list"></div>
-            </article>
-          </aside>
+          </article>
+
+          <article class="panel" id="historySection">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Laatste afsluitingen</p>
+                <h3>Recente trades</h3>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Coin</th>
+                    <th>Open</th>
+                    <th>Sluit</th>
+                    <th>Reden</th>
+                    <th>P/L</th>
+                    <th>Rendement</th>
+                  </tr>
+                </thead>
+                <tbody id="tradesBody"></tbody>
+              </table>
+            </div>
+          </article>
         </section>
       </main>
     </div>
