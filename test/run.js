@@ -4568,6 +4568,32 @@ await runCheck("calendar service records a cached context use once per cache sna
   assert.equal(calls[0].kind, "calendar");
 });
 
+await runCheck("calendar service records cached context separately per symbol", async () => {
+  const runtime = {
+    calendarCache: {
+      fetchedAt: new Date(Date.now() - 60_000).toISOString(),
+      items: [
+        { title: "US CPI", at: "2026-03-12T12:30:00.000Z", impact: 0.9, type: "macro_cpi", source: "BLS" }
+      ]
+    }
+  };
+  const calls = [];
+  const service = new CalendarService({
+    config: makeConfig({ calendarCacheMinutes: 30 }),
+    runtime,
+    logger: { info() {}, warn() {} },
+    recordHistory: async (payload) => { calls.push(payload); }
+  });
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  await service.getSymbolSummary("ETHUSDT", ["ETH"]);
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].symbol, "BTCUSDT");
+  assert.equal(calls[1].symbol, "ETHUSDT");
+  assert.equal(calls[0].cacheState, "cached");
+  assert.equal(calls[1].cacheState, "cached");
+});
+
 await runCheck("calendar service records stale cached fallback as fallback history", async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => {

@@ -237,7 +237,8 @@ export class CalendarService {
       return;
     }
     entry.historyRecorded = entry.historyRecorded || {};
-    if (entry.historyRecorded[cacheState]) {
+    const historyKey = `${cacheState}:${symbol}`;
+    if (entry.historyRecorded[historyKey]) {
       return;
     }
     try {
@@ -250,7 +251,7 @@ export class CalendarService {
         items,
         cacheState
       });
-      entry.historyRecorded[cacheState] = true;
+      entry.historyRecorded[historyKey] = true;
     } catch (error) {
       this.logger.warn("Calendar history record failed", {
         symbol,
@@ -299,10 +300,10 @@ export class CalendarService {
         fetchedAt: nowIso(),
         items,
         historyRecorded: {
-          fresh_fetch: false,
-          cached: false,
-          fallback: false,
-          degraded: false
+          [`fresh_fetch:global`]: false,
+          [`cached:global`]: false,
+          [`fallback:global`]: false,
+          [`degraded:global`]: false
         }
       };
       return {
