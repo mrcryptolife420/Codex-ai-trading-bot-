@@ -25,6 +25,7 @@ const elements = {
   decisionsList: document.querySelector("#decisionsList"),
   positionsList: document.querySelector("#positionsList"),
   opsSummary: document.querySelector("#opsSummary"),
+  opsLearning: document.querySelector("#opsLearning"),
   opsList: document.querySelector("#opsList"),
   tradesBody: document.querySelector("#tradesBody"),
   signalsSection: document.querySelector("#signalsSection"),
@@ -449,6 +450,7 @@ function buildOpsCards(snapshot) {
   const lifecycle = pendingActions(snapshot);
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
+  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   return [
     {
       label: "Readiness",
@@ -473,12 +475,19 @@ function buildOpsCards(snapshot) {
       value: titleize(capitalPolicy.status || "normal"),
       foot: exchangeTruth.freezeEntries ? "Entries bevroren" : "Entries toegestaan",
       tone: exchangeTruth.freezeEntries || capitalPolicy.status === "blocked" ? "negative" : "neutral"
+    },
+    {
+      label: "Paper learning",
+      value: titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"),
+      foot: paperLearning.probation?.status ? titleize(paperLearning.probation.status) : "Nog geen probation",
+      tone: statusTone(paperLearning.readinessStatus || paperLearning.status)
     }
   ];
 }
 
 function buildOpsEvents(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
+  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
     title: titleize(item.type || item.severity || "alert"),
     detail: item.note || item.message || item.reason || "Alert vereist aandacht.",
@@ -504,6 +513,27 @@ function buildOpsEvents(snapshot) {
         }
       : null,
     ...alerts,
+    paperLearning.probation?.note
+      ? {
+          title: "Paper probation",
+          detail: paperLearning.probation.note,
+          tone: paperLearning.probation.rollbackRisk ? "negative" : paperLearning.probation.promotionReady ? "positive" : "neutral"
+        }
+      : null,
+    paperLearning.topBlockers?.[0]
+      ? {
+          title: "Paper blocker",
+          detail: titleize(paperLearning.topBlockers[0].id),
+          tone: "neutral"
+        }
+      : null,
+    paperLearning.recentOutcomes?.[0]
+      ? {
+          title: "Paper outcome",
+          detail: titleize(paperLearning.recentOutcomes[0].id),
+          tone: "neutral"
+        }
+      : null,
     ...lifecycle,
     ...runbooks
   ].filter(Boolean).slice(0, 5);
@@ -513,6 +543,7 @@ function buildOpsEvents(snapshot) {
 
 function renderOps(snapshot) {
   const cards = buildOpsCards(snapshot);
+  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   elements.opsSummary.innerHTML = cards.map((item) => `
     <article class="risk-card">
       <span class="metric-label">${escapeHtml(item.label)}</span>
@@ -520,6 +551,40 @@ function renderOps(snapshot) {
       <span class="metric-foot">${escapeHtml(item.foot)}</span>
     </article>
   `).join("");
+
+  if (elements.opsLearning) {
+    elements.opsLearning.innerHTML = paperLearning.readinessStatus || paperLearning.probation
+      ? `
+      <article class="learning-card">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Paper learning</p>
+            <h3>Readiness ${escapeHtml(formatPct(paperLearning.readinessScore || 0, 0))}</h3>
+          </div>
+          <span class="pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}">${escapeHtml(titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"))}</span>
+        </div>
+        <div class="quick-grid">
+          <div class="stat">
+            <span class="metric-label">Safe / Probe / Shadow</span>
+            <strong>${escapeHtml(`${paperLearning.safeCount || 0} / ${paperLearning.probeCount || 0} / ${paperLearning.shadowCount || 0}`)}</strong>
+          </div>
+          <div class="stat">
+            <span class="metric-label">Probation</span>
+            <strong>${escapeHtml(titleize(paperLearning.probation?.status || "warmup"))}</strong>
+          </div>
+          <div class="stat">
+            <span class="metric-label">Top blocker</span>
+            <strong>${escapeHtml(titleize(paperLearning.topBlockers?.[0]?.id || "geen"))}</strong>
+          </div>
+          <div class="stat">
+            <span class="metric-label">Top outcome</span>
+            <strong>${escapeHtml(titleize(paperLearning.recentOutcomes?.[0]?.id || "nog geen"))}</strong>
+          </div>
+        </div>
+      </article>
+    `
+      : "";
+  }
 
   const events = buildOpsEvents(snapshot);
   elements.opsList.innerHTML = events.length

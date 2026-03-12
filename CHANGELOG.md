@@ -3,6 +3,8 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper-learning summaries now compute a dedicated readiness score/status, so paper can be read as `warmup`, `building`, or `paper_ready` instead of only lane counts.
+- The dashboard system-status area now includes a compact paper-learning card with readiness, probation, top blocker, and top outcome for faster operator review.
 - Paper replay/chaos summaries now count recent paper misses (`bad_trade`, `early_exit`, `late_exit`, `execution_drag`) as explicit replay review signals instead of only relying on blocked setups and trade stress.
 - Paper-learning summaries now expose a lightweight probe probation state with `promote_candidate`, `rollback_watch`, or `observe`, so paper probes can be reviewed with clearer promotion intent.
 - A concrete paper-mode roadmap in the README, plus paper-learning diversification limits per strategy family and regime so probes collect broader training data instead of clustering in the same scopes.

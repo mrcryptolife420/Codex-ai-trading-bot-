@@ -1755,6 +1755,8 @@ function summarizePaperLearning(summary = {}) {
   return {
     generatedAt: summary.generatedAt || null,
     status: summary.status || "warmup",
+    readinessStatus: summary.readinessStatus || "warmup",
+    readinessScore: num(summary.readinessScore || 0, 4),
     safeCount: summary.safeCount || 0,
     probeCount: summary.probeCount || 0,
     shadowCount: summary.shadowCount || 0,
@@ -3664,6 +3666,24 @@ export class TradingBot {
     const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
     const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
     const rollbackRisk = recentProbeTrades.length >= 3 && probeWeakCount >= Math.ceil(recentProbeTrades.length * 0.5);
+    const avgLearningValue = average(learningEntries.map((item) => item.learningValueScore || 0), 0);
+    const avgNovelty = average(learningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0);
+    const readinessScore = clamp(
+      0.24 +
+        Math.min(0.22, recentProbeTrades.length / 18) +
+        avgLearningValue * 0.18 +
+        avgNovelty * 0.12 +
+        (promotionReady ? 0.12 : 0) -
+        (rollbackRisk ? 0.14 : 0) -
+        Math.min(0.08, (topBlockers[0]?.count || 0) / 10),
+      0,
+      1
+    );
+    const readinessStatus = readinessScore >= 0.72
+      ? "paper_ready"
+      : readinessScore >= 0.54
+        ? "building"
+        : "warmup";
     const probation = {
       status: recentProbeTrades.length < 3
         ? "warmup"
@@ -3687,11 +3707,13 @@ export class TradingBot {
     return {
       generatedAt: referenceNow,
       status: learningEntries.length ? "active" : "observe",
+      readinessStatus,
+      readinessScore,
       safeCount: laneCounts.safe || 0,
       probeCount: laneCounts.probe || 0,
       shadowCount: laneCounts.shadow || 0,
-      averageLearningValueScore: average(learningEntries.map((item) => item.learningValueScore || 0), 0),
-      averageNoveltyScore: average(learningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0),
+      averageLearningValueScore: avgLearningValue,
+      averageNoveltyScore: avgNovelty,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)
         .sort((left, right) => right[1] - left[1])

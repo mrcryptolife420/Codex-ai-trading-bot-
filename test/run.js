@@ -5488,6 +5488,8 @@ await runCheck("trading bot paper learning summary surfaces probe probation cand
     ]
   };
   const summary = TradingBot.prototype.buildPaperLearningSummary.call(bot, bot.runtime.latestDecisions, "2026-03-11T15:00:00.000Z");
+  assert.equal(summary.readinessStatus, "paper_ready");
+  assert.ok(summary.readinessScore > 0.72);
   assert.equal(summary.probation.status, "promote_candidate");
   assert.equal(summary.probation.promotionReady, true);
   assert.equal(summary.probation.rollbackRisk, false);

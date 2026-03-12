@@ -488,6 +488,8 @@ In de huidige versie zit nu al:
 - paper samenvattingen met vaakste blockers en meest voorkomende leeruitkomsten
 - replay/chaos gebruikt nu ook recente paper-missers als extra review-signaal
 - lichte paper probation-samenvatting voor probe-trades met promote/rollback watch
+- paper readiness score in runtime/dashboard
+- compacte paper learning kaart in het dashboard met lanes, readiness, probation, top blocker en top outcome
 
 ## Projectstructuur
 
