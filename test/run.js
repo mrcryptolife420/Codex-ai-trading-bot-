@@ -6217,6 +6217,9 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.equal(summary.retrainReadiness.bootstrapStatus, "ready");
   assert.ok(summary.retrainReadiness.paper.score > 0);
   assert.equal(summary.scopeRetrainReadiness[0].type, "family");
+  assert.equal(summary.retrainFocusPlan.status, summary.retrainReadiness.status);
+  assert.equal(summary.retrainFocusPlan.topScope?.type, "family");
+  assert.ok(summary.retrainFocusPlan.nextAction);
 });
 
 await runCheck("offline trainer builds blocker and regime veto scorecards", async () => {

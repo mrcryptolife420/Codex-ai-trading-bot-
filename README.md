@@ -170,6 +170,15 @@ Om volledige data beter te hergebruiken voor paper en live retraining, volgt de 
 - zo zie je sneller welke families/regimes al `ready`, `building` of nog `warmup` zijn
 - dat maakt bredere retrain-runs veiliger en beter uitlegbaar
 
+8. `Retrain focus plan`
+- bovenop paper/live readiness en scope-ranking bouwt de bot nu ook een compacte focuslaag
+- die toont:
+  - sterkste retrain-scope
+  - zwakste retrain-scope
+  - hoeveel scopes al `ready`, `building` of nog `warmup` zijn
+  - wat de meest logische volgende retrain-actie is
+- zo wordt het eenvoudiger om te beslissen of je eerst datasetkwaliteit moet verbeteren, meer paper/live trades moet verzamelen, of al een bredere retrain-run kunt plannen
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).

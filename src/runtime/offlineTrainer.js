@@ -872,6 +872,47 @@ function buildScopedRetrainReadiness({
     .slice(0, 10);
 }
 
+function buildRetrainFocusPlan({
+  retrainReadiness = {},
+  scopeRetrainReadiness = []
+} = {}) {
+  const topScope = scopeRetrainReadiness[0] || null;
+  const weakestScope = [...(scopeRetrainReadiness || [])]
+    .sort((left, right) => left.score - right.score)[0] || null;
+  const readyScopes = (scopeRetrainReadiness || []).filter((item) => item.status === "ready").length;
+  const buildingScopes = (scopeRetrainReadiness || []).filter((item) => item.status === "building").length;
+  const warmupScopes = (scopeRetrainReadiness || []).filter((item) => item.status === "warmup").length;
+  const nextAction = retrainReadiness.priority === "grow_live_dataset"
+    ? "Verzamel meer live closed trades in de sterkste paper-scopes voordat je breder retrained."
+    : retrainReadiness.priority === "grow_paper_dataset"
+      ? "Vergroot paperdekking in de zwakste scopes en hou live voorlopig secundair."
+      : retrainReadiness.priority === "improve_dataset_quality"
+        ? "Verbeter recorderkwaliteit en bron/contextdekking voordat je een grote retrain-run start."
+        : "Plan een bredere retrain-run, beginnend met de sterkste ready scopes.";
+  return {
+    status: retrainReadiness.status || "warmup",
+    topScope: topScope ? {
+      id: topScope.id,
+      type: topScope.type,
+      status: topScope.status,
+      score: num(topScope.score)
+    } : null,
+    weakestScope: weakestScope ? {
+      id: weakestScope.id,
+      type: weakestScope.type,
+      status: weakestScope.status,
+      score: num(weakestScope.score)
+    } : null,
+    readyScopes,
+    buildingScopes,
+    warmupScopes,
+    nextAction,
+    note: topScope
+      ? `${topScope.type}:${topScope.id} is nu de beste retrain-scope, terwijl ${weakestScope?.type || "scope"}:${weakestScope?.id || "n/a"} nog de meeste opbouw vraagt.`
+      : "Nog geen scope-level retrain focus zichtbaar."
+  };
+}
+
 export class OfflineTrainer {
   constructor(config) {
     this.config = config;
@@ -918,6 +959,10 @@ export class OfflineTrainer {
       liveTrades,
       dataRecorder,
       bootstrap: dataRecorder.latestBootstrap || {}
+    });
+    const retrainFocusPlan = buildRetrainFocusPlan({
+      retrainReadiness,
+      scopeRetrainReadiness
     });
     const calibrationGovernance = buildCalibrationGovernance({
       tradeCount: learningReadyTrades.length,
@@ -966,6 +1011,7 @@ export class OfflineTrainer {
       featureDecayScorecards: featureDecay.scorecards || [],
       scopeRetrainReadiness,
       retrainReadiness,
+      retrainFocusPlan,
       calibrationGovernance,
       regimeDeployment,
       falsePositiveByStrategy: falsePositiveByStrategy.slice(0, 6),
@@ -995,6 +1041,7 @@ export class OfflineTrainer {
           ? `${featureDecay.weakestFeature} toont momenteel de meeste feature decay.`
           : "Feature-decay tracking warmt nog op.",
         retrainReadiness.note,
+        retrainFocusPlan.note,
         scopeRetrainReadiness[0]
           ? `${scopeRetrainReadiness[0].type}:${scopeRetrainReadiness[0].id} is momenteel de sterkste retrain-scope.`
           : "Nog geen duidelijke retrain-scopeleider zichtbaar.",

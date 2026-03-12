@@ -1543,6 +1543,26 @@ function summarizeOfflineTrainer(summary = {}) {
         recommendation: summary.retrainReadiness.live.recommendation || null
       } : null
     } : null,
+    retrainFocusPlan: summary.retrainFocusPlan ? {
+      status: summary.retrainFocusPlan.status || "warmup",
+      readyScopes: summary.retrainFocusPlan.readyScopes || 0,
+      buildingScopes: summary.retrainFocusPlan.buildingScopes || 0,
+      warmupScopes: summary.retrainFocusPlan.warmupScopes || 0,
+      nextAction: summary.retrainFocusPlan.nextAction || null,
+      note: summary.retrainFocusPlan.note || null,
+      topScope: summary.retrainFocusPlan.topScope ? {
+        id: summary.retrainFocusPlan.topScope.id || null,
+        type: summary.retrainFocusPlan.topScope.type || null,
+        status: summary.retrainFocusPlan.topScope.status || "warmup",
+        score: num(summary.retrainFocusPlan.topScope.score || 0, 4)
+      } : null,
+      weakestScope: summary.retrainFocusPlan.weakestScope ? {
+        id: summary.retrainFocusPlan.weakestScope.id || null,
+        type: summary.retrainFocusPlan.weakestScope.type || null,
+        status: summary.retrainFocusPlan.weakestScope.status || "warmup",
+        score: num(summary.retrainFocusPlan.weakestScope.score || 0, 4)
+      } : null
+    } : null,
     scopeRetrainReadiness: arr(summary.scopeRetrainReadiness || []).slice(0, 8).map((item) => ({
       id: item.id || null,
       type: item.type || null,
