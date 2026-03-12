@@ -9,8 +9,9 @@ import { ExecutionEngine } from "../src/execution/executionEngine.js";
 import { BinanceClient } from "../src/binance/client.js";
 import { buildSymbolRules, resolveMarketBuyQuantity } from "../src/binance/symbolFilters.js";
 import { scoreHeadline, summarizeNews } from "../src/news/sentiment.js";
+import { NewsService } from "../src/news/newsService.js";
 import { parseProviderItems } from "../src/news/rssFeed.js";
-import { normalizeCmsArticles } from "../src/events/binanceAnnouncementService.js";
+import { BinanceAnnouncementService, normalizeCmsArticles } from "../src/events/binanceAnnouncementService.js";
 import { summarizeMarketStructure } from "../src/market/marketStructureService.js";
 import { summarizeMarketSentiment } from "../src/market/marketSentimentService.js";
 import { ReferenceVenueService } from "../src/market/referenceVenueService.js";
@@ -4040,7 +4041,9 @@ await runCheck("data recorder restores persisted summary across restarts", async
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-restore-"));
   try {
     await fs.mkdir(path.join(tempDir, "feature-store", "decisions"), { recursive: true });
-    await fs.writeFile(path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl"), "{}\n");
+    await fs.mkdir(path.join(tempDir, "feature-store", "trades"), { recursive: true });
+    await fs.writeFile(path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl"), "{}\n{}\n");
+    await fs.writeFile(path.join(tempDir, "feature-store", "trades", "2026-03-10.jsonl"), "{}\n");
     const recorder = new DataRecorder({
       runtimeDir: tempDir,
       config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
@@ -4063,9 +4066,11 @@ await runCheck("data recorder restores persisted summary across restarts", async
       ]
     });
     const summary = recorder.getSummary();
-    assert.equal(summary.filesWritten, 9);
-    assert.equal(summary.learningFrames, 2);
-    assert.equal(summary.snapshotFrames, 4);
+    assert.equal(summary.filesWritten, 3);
+    assert.equal(summary.decisionFrames, 2);
+    assert.equal(summary.tradeFrames, 1);
+    assert.equal(summary.learningFrames, 0);
+    assert.equal(summary.snapshotFrames, 0);
     assert.equal(summary.lastRecordAt, "2026-03-10T09:00:00.000Z");
     assert.equal(summary.sourceCoverage[0].provider, "coindesk");
     assert.equal(summary.contextCoverage[0].kind, "calendar");
@@ -4206,6 +4211,42 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     assert.ok(payload.rationale.topSignals.length >= 1);
     assert.equal(recorder.getSummary().qualityByKind[0].kind, "learning");
     assert.equal(recorder.getSummary().qualityByKind[0].count, 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder stores decision quality through the shared recorder path", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-decisions-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordDecisions({
+      at: "2026-03-10T11:00:00.000Z",
+      candidates: [{
+        symbol: "BTCUSDT",
+        score: { probability: 0.62, confidence: 0.58, calibrationConfidence: 0.54 },
+        decision: { allow: true, threshold: 0.55, rankScore: 0.13, reasons: [] },
+        regimeSummary: { regime: "trend" },
+        strategySummary: { activeStrategy: "ema_trend", family: "trend_following" },
+        marketSnapshot: { book: { bookPressure: 0.18, spreadBps: 2.2 }, market: { adx14: 25 } },
+        dataQualitySummary: { status: "ready", overallScore: 0.74, freshnessScore: 0.71, trustScore: 0.78, coverageScore: 0.81, sources: [{ label: "news", status: "ready", coverage: 1, freshnessScore: 0.7, trustScore: 0.8 }] },
+        confidenceBreakdown: { marketConfidence: 0.7, dataConfidence: 0.78, executionConfidence: 0.69, modelConfidence: 0.66, overallConfidence: 0.71 },
+        marketStateSummary: { direction: "uptrend", phase: "healthy_continuation", trendMaturity: 0.52, trendExhaustion: 0.21, rangeAcceptance: 0.18, trendFailure: 0.14, dataConfidence: 0.78, featureCompleteness: 1 },
+        newsSummary: { coverage: 2, freshnessHours: 2.4, reliabilityScore: 0.81 },
+        announcementSummary: { coverage: 1 },
+        rawFeatures: { momentum_5: 1.2 }
+      }]
+    });
+    const stored = await fs.readFile(path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl"), "utf8");
+    const payload = JSON.parse(stored.trim());
+    assert.equal(payload.recordQuality.kind, "decision");
+    assert.equal(recorder.getSummary().decisionFrames, 1);
+    assert.equal(recorder.getSummary().qualityByKind[0].kind, "decision");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -4404,6 +4445,53 @@ await runCheck("data recorder stores announcement and calendar context history f
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+await runCheck("news service records a cached history use once per cache snapshot", async () => {
+  const runtime = {
+    newsCache: {
+      BTCUSDT: {
+        fetchedAt: new Date(Date.now() - 60_000).toISOString(),
+        summary: { coverage: 2, confidence: 0.61, reliabilityScore: 0.72, freshnessScore: 0.8 },
+        items: [{ title: "Cached headline", provider: "coindesk" }]
+      }
+    }
+  };
+  const calls = [];
+  const service = new NewsService({
+    config: makeConfig({ newsCacheMinutes: 30 }),
+    runtime,
+    logger: { info() {}, warn() {} },
+    recordHistory: async (payload) => { calls.push(payload); }
+  });
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cacheState, "cached");
+});
+
+await runCheck("announcement service records a cached context use once per cache snapshot", async () => {
+  const runtime = {
+    exchangeNoticeCache: {
+      "notice:BTCUSDT": {
+        fetchedAt: new Date(Date.now() - 60_000).toISOString(),
+        summary: { coverage: 1, confidence: 0.74, riskScore: 0.2 },
+        items: [{ title: "Maintenance", type: "maintenance" }]
+      }
+    }
+  };
+  const calls = [];
+  const service = new BinanceAnnouncementService({
+    config: makeConfig({ announcementCacheMinutes: 30 }),
+    runtime,
+    logger: { info() {}, warn() {} },
+    recordHistory: async (payload) => { calls.push(payload); }
+  });
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cacheState, "cached");
+  assert.equal(calls[0].kind, "announcements");
 });
 
 await runCheck("data recorder builds historical bootstrap summary from stored frames", async () => {

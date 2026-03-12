@@ -346,14 +346,16 @@ function buildNewsHistoryPayload({
   items = [],
   cacheState = "fresh_fetch"
 } = {}) {
+  const fallbackState = `${cacheState || ""}`.includes("fallback");
+  const degradedState = cacheState === "degraded" || fallbackState;
   const dataLineage = {
     featureCompleteness: clamp(num(summary.coverage || 0, 4) / 4, 0, 1),
     freshnessScore: num(summary.freshnessScore || 0, 4),
     trustScore: num(summary.reliabilityScore || 0, 4),
     coverageScore: clamp(num(summary.coverage || 0, 4) / 4, 0, 1),
-    degradedButAllowed: cacheState !== "fresh_fetch",
-    fallbackCount: cacheState === "fallback" ? 1 : 0,
-    degradedCount: cacheState === "degraded" ? 1 : 0,
+    degradedButAllowed: degradedState,
+    fallbackCount: fallbackState ? 1 : 0,
+    degradedCount: degradedState && !fallbackState ? 1 : 0,
     missingCount: 0,
     confidence: {
       dataConfidence: num(summary.confidence || 0, 4),
@@ -411,14 +413,16 @@ function buildContextHistoryPayload({
   items = [],
   cacheState = "fresh_fetch"
 } = {}) {
+  const fallbackState = `${cacheState || ""}`.includes("fallback");
+  const degradedState = cacheState === "degraded" || fallbackState;
   const dataLineage = {
     featureCompleteness: clamp(num(summary.coverage || 0, 4), 0, 1),
     freshnessScore: num(summary.freshnessScore || 0, 4),
     trustScore: num(summary.confidence || 0, 4),
     coverageScore: clamp(num(summary.coverage || 0, 4), 0, 1),
-    degradedButAllowed: cacheState !== "fresh_fetch",
-    fallbackCount: cacheState === "fallback" ? 1 : 0,
-    degradedCount: cacheState === "degraded" ? 1 : 0,
+    degradedButAllowed: degradedState,
+    fallbackCount: fallbackState ? 1 : 0,
+    degradedCount: degradedState && !fallbackState ? 1 : 0,
     missingCount: 0,
     confidence: {
       dataConfidence: num(summary.confidence || 0, 4),
@@ -583,6 +587,39 @@ async function readRecentJsonlFiles(filePaths = [], maxRecords = 120) {
   return records;
 }
 
+async function readAllJsonlFiles(filePaths = []) {
+  const records = [];
+  for (const filePath of filePaths) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.trim().split("\n").filter(Boolean);
+      for (const line of lines) {
+        try {
+          records.push(JSON.parse(line));
+        } catch {
+          // Ignore malformed lines while rebuilding file-truth state.
+        }
+      }
+    } catch {
+      // Ignore files that disappear or cannot be read while recounting.
+    }
+  }
+  return records;
+}
+
+async function countJsonlRecords(filePaths = []) {
+  let count = 0;
+  for (const filePath of filePaths) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      count += content.split("\n").filter((line) => line.trim().length > 0).length;
+    } catch {
+      // Ignore files that disappear or cannot be read while recounting.
+    }
+  }
+  return count;
+}
+
 function topCounts(values = [], limit = 6) {
   return Object.entries(
     arr(values).reduce((acc, value) => {
@@ -654,23 +691,30 @@ export class DataRecorder {
     );
     const existingFiles = fileGroups.flat();
     const archivedFiles = archiveGroups.flat();
+    const fileTruthCounts = Object.fromEntries(await Promise.all(
+      buckets.map(async (bucket, index) => [
+        bucket,
+        await countJsonlRecords([...(fileGroups[index] || []), ...(archiveGroups[index] || [])])
+      ])
+    ));
+    const totalFrames = Object.values(fileTruthCounts).reduce((total, value) => total + (value || 0), 0);
 
     this.state = {
       ...this.state,
       schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
       enabled: true,
       lastRecordAt: restored.lastRecordAt || this.state.lastRecordAt,
-      filesWritten: safeStateNumber(restored.filesWritten, this.state.filesWritten),
-      cycleFrames: safeStateNumber(restored.cycleFrames, this.state.cycleFrames),
-      decisionFrames: safeStateNumber(restored.decisionFrames, this.state.decisionFrames),
-      tradeFrames: safeStateNumber(restored.tradeFrames, this.state.tradeFrames),
-      learningFrames: safeStateNumber(restored.learningFrames, this.state.learningFrames),
-      researchFrames: safeStateNumber(restored.researchFrames, this.state.researchFrames),
-      snapshotFrames: safeStateNumber(restored.snapshotFrames, this.state.snapshotFrames),
-      newsFrames: safeStateNumber(restored.newsFrames, this.state.newsFrames),
-      contextFrames: safeStateNumber(restored.contextFrames, this.state.contextFrames),
-      datasetFrames: safeStateNumber(restored.datasetFrames, this.state.datasetFrames),
-      archivedFiles: safeStateNumber(restored.archivedFiles, this.state.archivedFiles),
+      filesWritten: totalFrames,
+      cycleFrames: fileTruthCounts.cycles || 0,
+      decisionFrames: fileTruthCounts.decisions || 0,
+      tradeFrames: fileTruthCounts.trades || 0,
+      learningFrames: fileTruthCounts.learning || 0,
+      researchFrames: fileTruthCounts.research || 0,
+      snapshotFrames: fileTruthCounts.snapshots || 0,
+      newsFrames: fileTruthCounts.news || 0,
+      contextFrames: fileTruthCounts.contexts || 0,
+      datasetFrames: fileTruthCounts.datasets || 0,
+      archivedFiles: archivedFiles.length,
       lineageCoverage: num(restored.lineageCoverage || 0, 4),
       recordQualityCount: safeStateNumber(restored.recordQualityCount, this.state.recordQualityCount),
       averageRecordQuality: num(restored.averageRecordQuality || 0, 4),
@@ -688,8 +732,6 @@ export class DataRecorder {
       lastPruneAt: restored.lastPruneAt || this.state.lastPruneAt
     };
 
-    this.state.filesWritten = Math.max(this.state.filesWritten, existingFiles.length);
-    this.state.archivedFiles = Math.max(this.state.archivedFiles, archivedFiles.length);
     if (!this.state.lastRecordAt) {
       this.state.lastRecordAt = await resolveLatestTimestamp([...existingFiles, ...archivedFiles]);
     }
@@ -739,11 +781,9 @@ export class DataRecorder {
       rawFeatureCount: Object.keys(candidate.rawFeatures || {}).length,
       topRawFeatures: pickTopNumericMap(candidate.rawFeatures || {}, 12, 4)
     }));
-    const filePath = path.join(this.rootDir, "decisions", `${dayKey(at)}.jsonl`);
     for (const frame of frames) {
-      await appendJsonLine(filePath, frame);
+      await this.write("decisions", at, frame);
     }
-    this.touch(at, frames.length);
     this.state.decisionFrames += frames.length;
     const lineaged = frames.filter((frame) => (frame.dataLineage?.sources || []).length > 0).length;
     this.state.lineageCoverage = num(
@@ -1275,6 +1315,50 @@ export class DataRecorder {
       contextCoverage: summarizeContextCoverage(this.state.contextCoverage || {}, 4),
       rootDir: this.rootDir
     };
+  }
+
+  async rebuildFileTruthState({ maxCoverageRecords = 800 } = {}) {
+    if (!this.config.dataRecorderEnabled) {
+      return this.getSummary();
+    }
+    const buckets = ["cycles", "decisions", "trades", "learning", "research", "snapshots", "news", "contexts", "datasets"];
+    const liveFiles = await Promise.all(buckets.map((bucket) => listFiles(path.join(this.rootDir, bucket))));
+    const archiveFiles = await Promise.all(buckets.map((bucket) => listFiles(path.join(this.rootDir, "archive", bucket))));
+    const allFiles = buckets.reduce((acc, bucket, index) => {
+      acc[bucket] = [...(liveFiles[index] || []), ...(archiveFiles[index] || [])].sort();
+      return acc;
+    }, {});
+    const counts = Object.fromEntries(await Promise.all(
+      buckets.map(async (bucket) => [bucket, await countJsonlRecords(allFiles[bucket] || [])])
+    ));
+    const [newsRecords, contextRecords, datasetRecords] = await Promise.all([
+      readAllJsonlFiles((allFiles.news || []).slice(-Math.max(1, maxCoverageRecords))),
+      readAllJsonlFiles((allFiles.contexts || []).slice(-Math.max(1, maxCoverageRecords))),
+      readAllJsonlFiles((allFiles.datasets || []).slice(-Math.max(1, maxCoverageRecords)))
+    ]);
+    const rebuiltSourceCoverage = newsRecords.reduce((current, payload) => updateSourceCoverage(current, payload), {});
+    const rebuiltContextCoverage = contextRecords.reduce((current, payload) => updateContextCoverage(current, payload), {});
+    this.state = {
+      ...this.state,
+      filesWritten: Object.values(counts).reduce((total, value) => total + (value || 0), 0),
+      cycleFrames: counts.cycles || 0,
+      decisionFrames: counts.decisions || 0,
+      tradeFrames: counts.trades || 0,
+      learningFrames: counts.learning || 0,
+      researchFrames: counts.research || 0,
+      snapshotFrames: counts.snapshots || 0,
+      newsFrames: counts.news || 0,
+      contextFrames: counts.contexts || 0,
+      datasetFrames: counts.datasets || 0,
+      archivedFiles: archiveFiles.flat().length,
+      sourceCoverage: Object.keys(rebuiltSourceCoverage).length ? rebuiltSourceCoverage : this.state.sourceCoverage,
+      contextCoverage: Object.keys(rebuiltContextCoverage).length ? rebuiltContextCoverage : this.state.contextCoverage,
+      datasetCuration: datasetRecords.at(-1)?.datasets || this.state.datasetCuration
+    };
+    if (!this.state.lastRecordAt) {
+      this.state.lastRecordAt = await resolveLatestTimestamp([...liveFiles.flat(), ...archiveFiles.flat()]);
+    }
+    return this.getSummary();
   }
 
   touch(at, increment = 1) {

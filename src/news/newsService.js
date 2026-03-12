@@ -69,9 +69,44 @@ export class NewsService {
     return ageMs <= this.config.newsCacheMinutes * 60 * 1000;
   }
 
+  async maybeRecordHistory({ symbol, aliases, summary, items = [], cacheState, cacheEntry = null } = {}) {
+    if (!this.recordHistory || !symbol || !summary) {
+      return;
+    }
+    const entry = cacheEntry || this.runtime.newsCache?.[symbol];
+    entry.historyRecorded = entry.historyRecorded || {};
+    if (entry.historyRecorded[cacheState]) {
+      return;
+    }
+    try {
+      await this.recordHistory({
+        at: nowIso(),
+        symbol,
+        aliases,
+        summary,
+        items,
+        cacheState
+      });
+      entry.historyRecorded[cacheState] = true;
+    } catch (error) {
+      this.logger.warn("News history record failed", {
+        symbol,
+        error: error.message
+      });
+    }
+  }
+
   async getSymbolSummary(symbol, aliases) {
     const cached = this.runtime.newsCache?.[symbol];
     if (this.isFresh(cached)) {
+      await this.maybeRecordHistory({
+        symbol,
+        aliases,
+        summary: cached.summary,
+        items: cached.items || [],
+        cacheState: "cached",
+        cacheEntry: cached
+      });
       this.runtime.sourceReliability = this.reliability.buildSummary(this.runtime);
       return cached.summary;
     }
@@ -155,25 +190,21 @@ export class NewsService {
       this.runtime.newsCache[symbol] = {
         fetchedAt: nowIso(),
         summary: adjustedSummary,
-        items
-      };
-      if (this.recordHistory) {
-        try {
-          await this.recordHistory({
-            at: now,
-            symbol,
-            aliases,
-            summary: adjustedSummary,
-            items,
-            cacheState: "fresh_fetch"
-          });
-        } catch (error) {
-          this.logger.warn("News history record failed", {
-            symbol,
-            error: error.message
-          });
+        items,
+        historyRecorded: {
+          fresh_fetch: false,
+          cached: false,
+          fallback: false
         }
-      }
+      };
+      await this.maybeRecordHistory({
+        symbol,
+        aliases,
+        summary: adjustedSummary,
+        items,
+        cacheState: "fresh_fetch",
+        cacheEntry: this.runtime.newsCache[symbol]
+      });
       this.runtime.sourceReliability = this.reliability.buildSummary(this.runtime);
       return adjustedSummary;
     } catch (error) {
@@ -181,6 +212,16 @@ export class NewsService {
         symbol,
         error: error.message
       });
+      if (cached?.summary) {
+        await this.maybeRecordHistory({
+          symbol,
+          aliases,
+          summary: cached.summary,
+          items: cached.items || [],
+          cacheState: "fallback",
+          cacheEntry: cached
+        });
+      }
       this.runtime.sourceReliability = this.reliability.buildSummary(this.runtime);
       return cached?.summary || EMPTY_SUMMARY;
     }

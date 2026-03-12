@@ -63,6 +63,9 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Recorder frame counters now rebuild from actual feature-store files on disk instead of trusting persisted summary counters, so restores and manual recoveries stay aligned with file-truth state.
+- Decision records now flow through the shared recorder write path, which means `recordQuality`, `averageRecordQuality`, and `qualityByKind` finally include decision history instead of only trade/learning/replay-style frames.
+- Cached news and announcement/context reuses are now written once per cache snapshot to historical recorder storage, so offline review can distinguish fresh fetches from cached and fallback-backed runtime use.
 - Paper-learning lane counts now survive dashboard refreshes by rebuilding `safe / probe / shadow` from same-day trades, open positions, and shadow-history instead of only the latest cycle decisions.
 - Dataset curation summaries now also surface recorder data-quality state such as lineage coverage, archived file counts, and hot/cold retention windows.
 - Normalized operator alerts around explicit `new`, `acked`, `silenced`, and `resolved` states, and surfaced those states directly in dashboard actions and payloads.

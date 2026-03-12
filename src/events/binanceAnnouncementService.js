@@ -176,10 +176,49 @@ export class BinanceAnnouncementService {
     return ageMs <= this.config.announcementCacheMinutes * 60 * 1000;
   }
 
+  async maybeRecordHistory({ symbol, aliases, summary, items = [], cacheState, cacheEntry = null } = {}) {
+    if (!this.recordHistory || !symbol || !summary) {
+      return;
+    }
+    const entry = cacheEntry || this.runtime.exchangeNoticeCache?.[`notice:${symbol}`];
+    if (!entry) {
+      return;
+    }
+    entry.historyRecorded = entry.historyRecorded || {};
+    if (entry.historyRecorded[cacheState]) {
+      return;
+    }
+    try {
+      await this.recordHistory({
+        at: nowIso(),
+        symbol,
+        aliases,
+        kind: "announcements",
+        summary,
+        items,
+        cacheState
+      });
+      entry.historyRecorded[cacheState] = true;
+    } catch (error) {
+      this.logger.warn("Announcement history record failed", {
+        symbol,
+        error: error.message
+      });
+    }
+  }
+
   async getSymbolSummary(symbol, aliases = []) {
     const cacheKey = `notice:${symbol}`;
     const cached = this.runtime.exchangeNoticeCache?.[cacheKey];
     if (this.isFresh(cached)) {
+      await this.maybeRecordHistory({
+        symbol,
+        aliases,
+        summary: cached.summary,
+        items: cached.items || [],
+        cacheState: "cached",
+        cacheEntry: cached
+      });
       return cached.summary;
     }
 
@@ -226,32 +265,37 @@ export class BinanceAnnouncementService {
       this.runtime.exchangeNoticeCache[cacheKey] = {
         fetchedAt: nowIso(),
         summary: enriched,
-        items: filtered
-      };
-      if (this.recordHistory) {
-        try {
-          await this.recordHistory({
-            at: nowIso(),
-            symbol,
-            aliases,
-            kind: "announcements",
-            summary: enriched,
-            items: filtered,
-            cacheState: "fresh_fetch"
-          });
-        } catch (error) {
-          this.logger.warn("Announcement history record failed", {
-            symbol,
-            error: error.message
-          });
+        items: filtered,
+        historyRecorded: {
+          fresh_fetch: false,
+          cached: false,
+          fallback: false
         }
-      }
+      };
+      await this.maybeRecordHistory({
+        symbol,
+        aliases,
+        summary: enriched,
+        items: filtered,
+        cacheState: "fresh_fetch",
+        cacheEntry: this.runtime.exchangeNoticeCache[cacheKey]
+      });
       return enriched;
     } catch (error) {
       this.logger.warn("Binance announcement fetch failed", {
         symbol,
         error: error.message
       });
+      if (cached?.summary) {
+        await this.maybeRecordHistory({
+          symbol,
+          aliases,
+          summary: cached.summary,
+          items: cached.items || [],
+          cacheState: "fallback",
+          cacheEntry: cached
+        });
+      }
       return cached?.summary || EMPTY_SUMMARY;
     }
   }
