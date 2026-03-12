@@ -3,6 +3,8 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Recorder frames now carry a compact `recordQuality` score for decision, trade, learning, and replay records, so later training and review loops can filter by completeness/confidence instead of treating all records equally.
+- `status`, `doctor`, and dashboard snapshots now expose a cleaner recorder summary with average/latest record quality, lineage coverage, and hot/cold retention context instead of raw recorder state blobs.
 - Historical `context_history` recorder frames for Binance announcements and macro/calendar summaries, so replay and offline analysis can now reuse event context instead of only generic news history.
 - Data-recorder schema v4 with explicit `news_history` and `dataset_curation` frames, so historical news, datasource lineage, and curated training views are now stored alongside decision and replay data.
 - Hot/cold feature-store retention with automatic archive compaction, allowing recent recorder data to stay fast while older files move into an archive tier before deletion.

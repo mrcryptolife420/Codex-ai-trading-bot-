@@ -161,6 +161,45 @@ function buildDataLineageSnapshot({
   };
 }
 
+function buildRecordQuality({
+  dataLineage = {},
+  marketState = {},
+  kind = "generic"
+} = {}) {
+  const completeness = clamp(
+    average([
+      dataLineage.featureCompleteness,
+      dataLineage.coverageScore,
+      dataLineage.trustScore,
+      dataLineage.freshnessScore
+    ], 0.55),
+    0,
+    1
+  );
+  const confidence = clamp(
+    average([
+      dataLineage.confidence?.dataConfidence,
+      dataLineage.confidence?.marketConfidence,
+      dataLineage.confidence?.overallConfidence,
+      marketState.dataConfidence
+    ], 0.55),
+    0,
+    1
+  );
+  const fallbackPenalty = Math.min(0.28, (dataLineage.fallbackCount || 0) * 0.05 + (dataLineage.missingCount || 0) * 0.04);
+  const degradedPenalty = Math.min(0.22, (dataLineage.degradedCount || 0) * 0.05);
+  const score = clamp(completeness * 0.52 + confidence * 0.48 - fallbackPenalty - degradedPenalty, 0, 1);
+  return {
+    kind,
+    completeness: num(completeness, 4),
+    confidence: num(confidence, 4),
+    fallbackPenalty: num(fallbackPenalty, 4),
+    degradedPenalty: num(degradedPenalty, 4),
+    score: num(score, 4),
+    tier: score >= 0.78 ? "high" : score >= 0.58 ? "medium" : "low"
+  };
+}
+
 function buildNewsHistoryPayload({
   at,
   symbol,
@@ -304,6 +343,17 @@ function makeDecisionFrame(candidate = {}) {
       marketStateSummary: candidate.marketStateSummary,
       newsSummary: candidate.newsSummary,
       announcementSummary: candidate.announcementSummary
+    }),
+    recordQuality: buildRecordQuality({
+      dataLineage: buildDataLineageSnapshot({
+        dataQualitySummary: candidate.dataQualitySummary,
+        confidenceBreakdown: candidate.confidenceBreakdown,
+        marketStateSummary: candidate.marketStateSummary,
+        newsSummary: candidate.newsSummary,
+        announcementSummary: candidate.announcementSummary
+      }),
+      marketState: candidate.marketStateSummary || {},
+      kind: "decision"
     })
   };
 }
@@ -351,6 +401,9 @@ export class DataRecorder {
       datasetFrames: 0,
       archivedFiles: 0,
       lineageCoverage: 0,
+      recordQualityCount: 0,
+      averageRecordQuality: 0,
+      latestRecordQuality: null,
       datasetCuration: null,
       retention: {
         hotRetentionDays: config.dataRecorderRetentionDays || 21,
@@ -396,6 +449,9 @@ export class DataRecorder {
       datasetFrames: safeStateNumber(restored.datasetFrames, this.state.datasetFrames),
       archivedFiles: safeStateNumber(restored.archivedFiles, this.state.archivedFiles),
       lineageCoverage: num(restored.lineageCoverage || 0, 4),
+      recordQualityCount: safeStateNumber(restored.recordQualityCount, this.state.recordQualityCount),
+      averageRecordQuality: num(restored.averageRecordQuality || 0, 4),
+      latestRecordQuality: restored.latestRecordQuality || null,
       datasetCuration: restored.datasetCuration || null,
       retention: {
         hotRetentionDays: safeStateNumber(restored.retention?.hotRetentionDays, this.config.dataRecorderRetentionDays || 21),
@@ -505,6 +561,17 @@ export class DataRecorder {
         marketStateSummary: entryRationale.marketState,
         newsSummary: { freshnessHours: entryRationale.news?.freshnessHours || 0 },
         announcementSummary: { coverage: arr(entryRationale.officialNotices || []).length }
+      }),
+      recordQuality: buildRecordQuality({
+        dataLineage: buildDataLineageSnapshot({
+          dataQualitySummary: entryRationale.dataQuality,
+          confidenceBreakdown: entryRationale.confidenceBreakdown,
+          marketStateSummary: entryRationale.marketState,
+          newsSummary: { freshnessHours: entryRationale.news?.freshnessHours || 0 },
+          announcementSummary: { coverage: arr(entryRationale.officialNotices || []).length }
+        }),
+        marketState: entryRationale.marketState || {},
+        kind: "trade"
       })
     };
     await this.write("trades", at, payload);
@@ -582,6 +649,17 @@ export class DataRecorder {
         marketStateSummary: rationale.marketState,
         newsSummary: { freshnessHours: rationale.news?.freshnessHours || 0 },
         announcementSummary: { coverage: arr(rationale.officialNotices || []).length }
+      }),
+      recordQuality: buildRecordQuality({
+        dataLineage: buildDataLineageSnapshot({
+          dataQualitySummary: rationale.dataQuality,
+          confidenceBreakdown: rationale.confidenceBreakdown,
+          marketStateSummary: rationale.marketState,
+          newsSummary: { freshnessHours: rationale.news?.freshnessHours || 0 },
+          announcementSummary: { coverage: arr(rationale.officialNotices || []).length }
+        }),
+        marketState: rationale.marketState || {},
+        kind: "learning"
       }),
       rawFeatures: normalizeNumericMap(trade.rawFeatures || {}, 4),
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 20, 4)
@@ -678,6 +756,17 @@ export class DataRecorder {
         marketStateSummary: rationale.marketState,
         newsSummary: { freshnessHours: rationale.news?.freshnessHours || 0 },
         announcementSummary: { coverage: arr(rationale.officialNotices || []).length }
+      }),
+      recordQuality: buildRecordQuality({
+        dataLineage: buildDataLineageSnapshot({
+          dataQualitySummary: rationale.dataQuality,
+          confidenceBreakdown: rationale.confidenceBreakdown,
+          marketStateSummary: rationale.marketState,
+          newsSummary: { freshnessHours: rationale.news?.freshnessHours || 0 },
+          announcementSummary: { coverage: arr(rationale.officialNotices || []).length }
+        }),
+        marketState: rationale.marketState || {},
+        kind: "trade_replay"
       }),
       replayCheckpoints: (trade.replayCheckpoints || []).slice(-12),
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 10, 4)
@@ -851,6 +940,15 @@ export class DataRecorder {
   async write(bucket, at, payload) {
     const filePath = path.join(this.rootDir, bucket, `${dayKey(at)}.jsonl`);
     await appendJsonLine(filePath, payload);
+    if (payload?.recordQuality?.score != null) {
+      const totalFrames = (this.state.recordQualityCount || 0) + 1;
+      this.state.averageRecordQuality = num(
+        ((this.state.averageRecordQuality || 0) * (this.state.recordQualityCount || 0) + num(payload.recordQuality.score || 0, 4)) / totalFrames,
+        4
+      );
+      this.state.recordQualityCount = totalFrames;
+      this.state.latestRecordQuality = payload.recordQuality;
+    }
     this.touch(at);
   }
 }

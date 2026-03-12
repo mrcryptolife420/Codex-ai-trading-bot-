@@ -4193,6 +4193,8 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     assert.equal(payload.model.calibrationObservations, 18);
     assert.equal(payload.rawFeatures.momentum_5, 1.2);
     assert.equal(payload.indicators.supertrendDirection, 1);
+    assert.equal(payload.recordQuality.kind, "learning");
+    assert.ok(payload.recordQuality.score >= 0);
     assert.ok(payload.rationale.topSignals.length >= 1);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -4329,6 +4331,7 @@ await runCheck("data recorder stores historical news frames and dataset curation
     assert.equal(datasetPayload.datasets.vetoReview.badVetoCount, 1);
     assert.equal(recorder.getSummary().newsFrames, 1);
     assert.equal(recorder.getSummary().datasetFrames, 1);
+    assert.ok(recorder.getSummary().datasetCuration.dataQuality.hotRetentionDays >= 21);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -5466,7 +5469,22 @@ await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local
   bot.pairHealthMonitor = { buildSnapshot: () => ({}) };
   bot.divergenceMonitor = { buildSummary: () => ({}) };
   bot.offlineTrainer = { buildSummary: () => ({}) };
-  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.dataRecorder = {
+    getSummary: () => ({
+      schemaVersion: 5,
+      enabled: true,
+      learningFrames: 8,
+      decisionFrames: 14,
+      newsFrames: 3,
+      contextFrames: 2,
+      datasetFrames: 1,
+      archivedFiles: 4,
+      lineageCoverage: 0.81,
+      averageRecordQuality: 0.74,
+      latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+      retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" }
+    })
+  };
   bot.evaluateCandidate = async () => ({
     symbol: "BTCUSDT",
     decision: { allow: false, rankScore: 0.5 }
@@ -5669,6 +5687,20 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   bot.buildModelWeightsView = () => [];
   bot.runtime = {
     mode: "paper",
+    dataRecorder: {
+      schemaVersion: 5,
+      enabled: true,
+      learningFrames: 8,
+      decisionFrames: 14,
+      newsFrames: 3,
+      contextFrames: 2,
+      datasetFrames: 1,
+      archivedFiles: 4,
+      lineageCoverage: 0.81,
+      averageRecordQuality: 0.74,
+      latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+      retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" }
+    },
     lastKnownBalance: 1000,
     lastKnownEquity: 1000,
     lastCycleAt: null,
@@ -5706,6 +5738,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
   assert.equal(snapshot.ops.paperLearning.status, "active");
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
+  assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
+  assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
 });
 
 await runCheck("trading bot paper learning summary tracks blockers and recent outcomes", async () => {

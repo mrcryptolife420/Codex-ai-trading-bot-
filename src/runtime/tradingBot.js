@@ -2262,6 +2262,40 @@ function summarizeCapitalPolicy({ capitalLadder = {}, capitalGovernor = {} } = {
   };
 }
 
+function summarizeDataRecorder(summary = {}) {
+  return {
+    schemaVersion: summary.schemaVersion || null,
+    enabled: Boolean(summary.enabled),
+    lastRecordAt: summary.lastRecordAt || null,
+    filesWritten: summary.filesWritten || 0,
+    cycleFrames: summary.cycleFrames || 0,
+    decisionFrames: summary.decisionFrames || 0,
+    tradeFrames: summary.tradeFrames || 0,
+    learningFrames: summary.learningFrames || 0,
+    researchFrames: summary.researchFrames || 0,
+    snapshotFrames: summary.snapshotFrames || 0,
+    newsFrames: summary.newsFrames || 0,
+    contextFrames: summary.contextFrames || 0,
+    datasetFrames: summary.datasetFrames || 0,
+    archivedFiles: summary.archivedFiles || 0,
+    lineageCoverage: num(summary.lineageCoverage || 0, 4),
+    averageRecordQuality: num(summary.averageRecordQuality || 0, 4),
+    latestRecordQuality: summary.latestRecordQuality
+      ? {
+          kind: summary.latestRecordQuality.kind || null,
+          score: num(summary.latestRecordQuality.score || 0, 4),
+          tier: summary.latestRecordQuality.tier || "unknown"
+        }
+      : null,
+    retention: {
+      hotRetentionDays: summary.retention?.hotRetentionDays || 0,
+      coldRetentionDays: summary.retention?.coldRetentionDays || 0,
+      lastCompactionAt: summary.retention?.lastCompactionAt || null
+    },
+    datasetCuration: summary.datasetCuration || null
+  };
+}
+
 function resolveLifecycleRecoveryAction(state, position = {}, activeAction = null) {
   if (activeAction?.status === "failed") {
     return "force_reconcile";
@@ -6879,7 +6913,7 @@ export class TradingBot {
       onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
       volatility: summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT),
       stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
-      dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
+      dataRecorder: summarizeDataRecorder(this.runtime.dataRecorder || this.dataRecorder.getSummary()),
       report: {
         ...report,
         recentTrades: report.recentTrades.map((trade) => this.buildTradeView(trade)),
@@ -7015,7 +7049,7 @@ export class TradingBot {
       research: this.buildResearchView(),
       strategyResearch: summarizeStrategyResearch(this.runtime.strategyResearch || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
-      dataRecorder: this.runtime.dataRecorder || this.dataRecorder.getSummary(),
+      dataRecorder: summarizeDataRecorder(this.runtime.dataRecorder || this.dataRecorder.getSummary()),
       report: {
         tradeQualityReview: report.tradeQualityReview || null,
         recentReviews: arr(report.recentReviews || []).slice(0, 12),

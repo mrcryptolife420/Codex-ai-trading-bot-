@@ -86,6 +86,24 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
 7. `Replay-grade opslag`
 - snapshot manifests, trade replay frames en news-history leveren samen een betere basis om te reconstrueren wat de bot wist op het moment van een beslissing
 
+8. `Record quality`
+- elk decision-, trade-, learning- en replay-record krijgt nu ook een compacte `recordQuality`
+- die score vat samen:
+  - completeness
+  - confidence
+  - fallback-penalty
+  - degraded-penalty
+- zo kun je later trainingsdata filteren op kwaliteit in plaats van alles even zwaar te behandelen
+
+9. `Recorder-overzicht in runtime`
+- `status`, `doctor` en dashboard krijgen nu een compact recorder-overzicht met:
+  - schema-versie
+  - frame-aantallen
+  - lineage coverage
+  - gemiddelde recordkwaliteit
+  - hot/cold retention
+  - laatste recordkwaliteit
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).
