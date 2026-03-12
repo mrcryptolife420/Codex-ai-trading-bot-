@@ -5832,6 +5832,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
 
 await runCheck("trading bot paper learning summary tracks blockers and recent outcomes", async () => {
   const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
   bot.runtime = {
     latestDecisions: [
       {
@@ -5890,6 +5891,7 @@ await runCheck("trading bot applies historical bootstrap warm start", async () =
 
 await runCheck("trading bot paper learning summary surfaces probe probation candidates", async () => {
   const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
   bot.runtime = {
     latestDecisions: [
       {
@@ -5919,6 +5921,7 @@ await runCheck("trading bot paper learning summary surfaces probe probation cand
 
 await runCheck("trading bot paper learning summary exposes scope readiness and sandbox", async () => {
   const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
   bot.runtime = {
     offlineTrainer: {
       vetoFeedback: { topBlocker: "committee_veto" },
@@ -5974,6 +5977,38 @@ await runCheck("trading bot paper learning summary exposes scope readiness and s
   assert.equal(summary.paperToLiveReadiness.topScope, "trend_following");
   assert.equal(summary.counterfactualTuning.blocker, "committee_veto");
   assert.equal(summary.counterfactualTuning.status, "relax");
+});
+
+await runCheck("trading bot paper learning summary keeps daily lane counts after refresh with empty decisions", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [
+      { id: "safe-open", symbol: "BTCUSDT", brokerMode: "paper", learningLane: "safe", entryAt: "2026-03-11T09:00:00.000Z" },
+      { id: "probe-open", symbol: "ETHUSDT", brokerMode: "paper", learningLane: "probe", entryAt: "2026-03-11T09:30:00.000Z" }
+    ],
+    counterfactualQueue: [
+      { id: "shadow-queue", symbol: "SOLUSDT", learningLane: "shadow", queuedAt: "2026-03-11T10:30:00.000Z" }
+    ],
+    offlineTrainer: {}
+  };
+  bot.journal = {
+    trades: [
+      { id: "safe-trade", symbol: "ADAUSDT", brokerMode: "paper", learningLane: "safe", entryAt: "2026-03-11T08:00:00.000Z", exitAt: "2026-03-11T10:00:00.000Z", paperLearningOutcome: { outcome: "good_trade" } },
+      { id: "probe-trade", symbol: "XRPUSDT", brokerMode: "paper", learningLane: "probe", entryAt: "2026-03-11T08:30:00.000Z", exitAt: "2026-03-11T11:00:00.000Z", paperLearningOutcome: { outcome: "bad_trade" } }
+    ],
+    counterfactuals: [
+      { id: "shadow-1", symbol: "BNBUSDT", learningLane: "shadow", resolvedAt: "2026-03-11T09:15:00.000Z" },
+      { id: "shadow-2", symbol: "DOGEUSDT", learningLane: "shadow", resolvedAt: "2026-03-11T10:45:00.000Z" }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-11T12:00:00.000Z");
+  assert.equal(summary.safeCount, 2);
+  assert.equal(summary.probeCount, 2);
+  assert.equal(summary.shadowCount, 3);
+  assert.equal(summary.dailyBudget.probeUsed, 2);
+  assert.equal(summary.dailyBudget.shadowUsed, 3);
 });
 
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {

@@ -63,6 +63,7 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Paper-learning lane counts now survive dashboard refreshes by rebuilding `safe / probe / shadow` from same-day trades, open positions, and shadow-history instead of only the latest cycle decisions.
 - Dataset curation summaries now also surface recorder data-quality state such as lineage coverage, archived file counts, and hot/cold retention windows.
 - Normalized operator alerts around explicit `new`, `acked`, `silenced`, and `resolved` states, and surfaced those states directly in dashboard actions and payloads.
 - Reused the canonical market-state wrapper in regime inference, strategy routing, risk, backtest, and research paths instead of leaving trend semantics implied by only raw trend-state fields.

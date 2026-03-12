@@ -57,7 +57,7 @@ import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
 import { summarizeStrategyDsl } from "../research/strategyDsl.js";
-import { minutesBetween, nowIso } from "../utils/time.js";
+import { minutesBetween, nowIso, sameUtcDay } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
 import { average, clamp } from "../utils/math.js";
 
@@ -3865,11 +3865,64 @@ export class TradingBot {
   buildPaperLearningSummary(decisionSummaries = arr(this.runtime.latestDecisions), referenceNow = nowIso()) {
     const entries = arr(decisionSummaries);
     const learningEntries = entries.filter((item) => item.learningLane);
-    const laneCounts = learningEntries.reduce((acc, item) => {
-      const lane = item.learningLane || "safe";
-      acc[lane] = (acc[lane] || 0) + 1;
-      return acc;
-    }, {});
+    const laneKeys = {
+      safe: new Set(),
+      probe: new Set(),
+      shadow: new Set()
+    };
+    const recordLaneKey = (lane, key) => {
+      if (!laneKeys[lane] || !key) {
+        return;
+      }
+      laneKeys[lane].add(key);
+    };
+    for (const item of learningEntries) {
+      recordLaneKey(item.learningLane || "safe", item.id || item.symbol || `${item.learningLane}:${item.summary || ""}`);
+    }
+    for (const trade of arr(this.journal?.trades || [])) {
+      if ((trade.brokerMode || "paper") !== "paper") {
+        continue;
+      }
+      const at = trade.entryAt || trade.exitAt;
+      if (!at || !sameUtcDay(at, referenceNow)) {
+        continue;
+      }
+      recordLaneKey(trade.learningLane || "safe", trade.id || `${trade.symbol || "trade"}:${at}`);
+    }
+    for (const position of arr(this.runtime?.openPositions || [])) {
+      if ((position.brokerMode || this.config.botMode) !== "paper") {
+        continue;
+      }
+      if (!position.entryAt || !sameUtcDay(position.entryAt, referenceNow)) {
+        continue;
+      }
+      recordLaneKey(position.learningLane || "safe", position.id || `${position.symbol || "position"}:${position.entryAt}`);
+    }
+    for (const item of arr(this.journal?.counterfactuals || [])) {
+      if (item.learningLane !== "shadow") {
+        continue;
+      }
+      const at = item.resolvedAt || item.queuedAt || item.at;
+      if (!at || !sameUtcDay(at, referenceNow)) {
+        continue;
+      }
+      recordLaneKey("shadow", item.id || `${item.symbol || "shadow"}:${at}`);
+    }
+    for (const item of arr(this.runtime?.counterfactualQueue || [])) {
+      if (item.learningLane !== "shadow") {
+        continue;
+      }
+      const at = item.queuedAt || item.dueAt;
+      if (!at || !sameUtcDay(at, referenceNow)) {
+        continue;
+      }
+      recordLaneKey("shadow", item.id || `${item.symbol || "shadow"}:${at}`);
+    }
+    const laneCounts = {
+      safe: laneKeys.safe.size,
+      probe: laneKeys.probe.size,
+      shadow: laneKeys.shadow.size
+    };
     const familyCounts = {};
     const regimeCounts = {};
     const sessionCounts = {};
@@ -3908,7 +3961,14 @@ export class TradingBot {
       const outcome = resolvePaperOutcomeBucket(trade);
       outcomeCounts[outcome] = (outcomeCounts[outcome] || 0) + 1;
     }
-    const budget = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || null;
+    const budget = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || {
+      probeDailyLimit: this.config.paperLearningProbeDailyLimit || 0,
+      probeUsed: laneCounts.probe || 0,
+      probeRemaining: Math.max(0, (this.config.paperLearningProbeDailyLimit || 0) - (laneCounts.probe || 0)),
+      shadowDailyLimit: this.config.paperLearningShadowDailyLimit || 0,
+      shadowUsed: laneCounts.shadow || 0,
+      shadowRemaining: Math.max(0, (this.config.paperLearningShadowDailyLimit || 0) - (laneCounts.shadow || 0))
+    };
     const topBlockers = Object.entries(blockerCounts)
       .sort((left, right) => right[1] - left[1])
       .slice(0, 4)
