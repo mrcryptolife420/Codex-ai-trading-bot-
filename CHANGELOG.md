@@ -255,6 +255,7 @@ Initial public release of the Binance AI trading bot workspace.
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
 ## 2026-03-12
 
+- dashboard hero/blocker samenvattingen gebruiken nu eerst leesbare operatoruitleg uit geblokkeerde setups en vervormen volledige zinnen niet langer met een ruwe code-`titleize`
 - performance reports now keep `openExposure` finite even when one open position contains invalid numeric values
 - the dashboard learning summary now prefers the latest trade from the active bot mode, so paper learning cards no longer accidentally surface a mixed-mode recent trade first
 - hero/dashboard blocker summaries now prefer readable operator guidance before internal blocker codes, so the top status line stays consistent with the signal cards

@@ -154,6 +154,22 @@ function titleize(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function isReadableSentence(value) {
+  const text = `${value || ""}`.trim();
+  if (!text) {
+    return false;
+  }
+  return text.includes(" ") || /[.:]/.test(text);
+}
+
+function humanizeReason(value, fallback = "-") {
+  const text = `${value || ""}`.trim();
+  if (!text) {
+    return fallback;
+  }
+  return isReadableSentence(text) ? text : titleize(text);
+}
+
 function formatDecisionType(decision) {
   return titleize(
     decision.setupStyle ||
@@ -289,6 +305,10 @@ function pendingActions(snapshot) {
 }
 
 function topBlocker(snapshot) {
+  const blocked = snapshot?.dashboard?.blockedSetups?.[0];
+  if (blocked?.operatorAction) {
+    return blocked.operatorAction;
+  }
   const readinessReason = snapshot?.dashboard?.ops?.readiness?.reasons?.[0];
   if (readinessReason) {
     return readinessReason;
@@ -301,7 +321,6 @@ function topBlocker(snapshot) {
   if (pending?.state) {
     return pending.state;
   }
-  const blocked = snapshot?.dashboard?.blockedSetups?.[0];
   return blocked?.operatorAction || blocked?.blockerReasons?.[0] || null;
 }
 
@@ -319,7 +338,7 @@ function buildHeroSummary(snapshot) {
   const subline = leadDecision?.allow
     ? `${leadDecision.symbol} is momenteel de beste tradebare setup.`
     : topReason
-      ? `Geen nieuwe trade: ${titleize(topReason)}.`
+      ? `Geen nieuwe trade: ${humanizeReason(topReason)}.`
       : "Wachten op een valide setup of nieuwe analyse.";
 
   const pills = [
@@ -335,7 +354,7 @@ function buildHeroSummary(snapshot) {
     },
     {
       label: "Blokkade",
-      value: topReason ? titleize(topReason) : "Geen directe blocker",
+      value: topReason ? humanizeReason(topReason) : "Geen directe blocker",
       tone: topReason ? "negative" : "positive"
     },
     {
