@@ -4517,6 +4517,35 @@ await runCheck("calendar service records a cached context use once per cache sna
   assert.equal(calls[0].kind, "calendar");
 });
 
+await runCheck("calendar service records stale cached fallback as fallback history", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("network down");
+  };
+  const runtime = {
+    calendarCache: {
+      fetchedAt: "2026-03-10T08:00:00.000Z",
+      items: [
+        { title: "US CPI", at: "2026-03-12T12:30:00.000Z", impact: 0.9, type: "macro_cpi", source: "BLS" }
+      ]
+    }
+  };
+  const calls = [];
+  try {
+    const service = new CalendarService({
+      config: makeConfig({ calendarCacheMinutes: 1 }),
+      runtime,
+      logger: { info() {}, warn() {} },
+      recordHistory: async (payload) => { calls.push(payload); }
+    });
+    await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cacheState, "fallback");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 await runCheck("data recorder builds historical bootstrap summary from stored frames", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-bootstrap-"));
   try {

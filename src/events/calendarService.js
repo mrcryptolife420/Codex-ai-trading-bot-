@@ -262,12 +262,18 @@ export class CalendarService {
   async getEvents() {
     const cached = this.runtime.calendarCache;
     if (this.isFresh(cached)) {
-      return cached.items || [];
+      return {
+        items: cached.items || [],
+        cacheState: "cached",
+        cacheEntry: cached
+      };
     }
 
     try {
+      let fetchFailed = false;
       const [ics, userEvents] = await Promise.all([
         fetchText(BLS_CALENDAR_URL).catch((error) => {
+          fetchFailed = true;
           this.logger.warn("BLS calendar fetch failed", { error: error.message });
           return "";
         }),
@@ -282,37 +288,42 @@ export class CalendarService {
         }))
         .filter((event) => /consumer price index|producer price index|employment situation|nonfarm/i.test(event.title || ""));
       const items = [...defaultCalendarEvents, ...macroEvents, ...userEvents].map(normalizeEvent);
+      if (fetchFailed && cached?.items?.length) {
+        return {
+          items: cached.items || [],
+          cacheState: "fallback",
+          cacheEntry: cached
+        };
+      }
       this.runtime.calendarCache = {
         fetchedAt: nowIso(),
         items,
         historyRecorded: {
           fresh_fetch: false,
           cached: false,
-          fallback: false
+          fallback: false,
+          degraded: false
         }
       };
-      return items;
+      return {
+        items,
+        cacheState: fetchFailed ? "degraded" : "fresh_fetch",
+        cacheEntry: this.runtime.calendarCache
+      };
     } catch (error) {
       this.logger.warn("Calendar service failed", { error: error.message });
-      return cached?.items || [];
+      return {
+        items: cached?.items || [],
+        cacheState: cached?.items ? "fallback" : "empty",
+        cacheEntry: cached || null
+      };
     }
   }
 
   async getSymbolSummary(symbol, aliases = []) {
-    const cachedBefore = this.runtime.calendarCache;
-    const wasFreshBefore = this.isFresh(cachedBefore);
-    const events = await this.getEvents();
+    const { items: events, cacheState, cacheEntry } = await this.getEvents();
     const summary = summarizeCalendarEvents(events, symbol, aliases, this.config.calendarLookbackDays, nowIso());
-    const activeCache = this.runtime.calendarCache;
-    if (wasFreshBefore && cachedBefore?.items) {
-      await this.maybeRecordHistory({
-        symbol,
-        aliases,
-        summary,
-        items: summary.items || [],
-        cacheState: "cached",
-        cacheEntry: cachedBefore
-      });
+    if (cacheState === "empty") {
       return summary;
     }
     await this.maybeRecordHistory({
@@ -320,8 +331,8 @@ export class CalendarService {
       aliases,
       summary,
       items: summary.items || [],
-      cacheState: activeCache?.fetchedAt ? "fresh_fetch" : "fallback",
-      cacheEntry: activeCache || cachedBefore
+      cacheState,
+      cacheEntry
     });
     return summary;
   }
