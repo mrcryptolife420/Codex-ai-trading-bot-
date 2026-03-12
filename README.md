@@ -486,6 +486,8 @@ In de huidige versie zit nu al:
 - paper learning summary in runtime/dashboard payloads
 - paper outcome labeling op gesloten paper trades
 - paper samenvattingen met vaakste blockers en meest voorkomende leeruitkomsten
+- replay/chaos gebruikt nu ook recente paper-missers als extra review-signaal
+- lichte paper probation-samenvatting voor probe-trades met promote/rollback watch
 
 ## Projectstructuur
 

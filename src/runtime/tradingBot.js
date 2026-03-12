@@ -1777,6 +1777,14 @@ function summarizePaperLearning(summary = {}) {
       id: item.id || null,
       count: item.count || 0
     })),
+    probation: summary.probation ? {
+      status: summary.probation.status || "warmup",
+      eligibleProbeTrades: summary.probation.eligibleProbeTrades || 0,
+      promotionReady: Boolean(summary.probation.promotionReady),
+      rollbackRisk: Boolean(summary.probation.rollbackRisk),
+      leadingOutcome: summary.probation.leadingOutcome || null,
+      note: summary.probation.note || null
+    } : null,
     notes: arr(summary.notes || []).slice(0, 6)
   };
 }
@@ -3637,6 +3645,7 @@ export class TradingBot {
     const recentPaperTrades = arr(this.journal?.trades || [])
       .filter((trade) => (trade.brokerMode || "paper") === "paper" && trade.exitAt)
       .slice(-40);
+    const recentProbeTrades = recentPaperTrades.filter((trade) => trade.learningLane === "probe");
     const outcomeCounts = {};
     for (const trade of recentPaperTrades) {
       const outcome = resolvePaperOutcomeBucket(trade);
@@ -3651,6 +3660,30 @@ export class TradingBot {
       .sort((left, right) => right[1] - left[1])
       .slice(0, 6)
       .map(([id, count]) => ({ id, count }));
+    const probeGoodCount = recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
+    const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
+    const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
+    const rollbackRisk = recentProbeTrades.length >= 3 && probeWeakCount >= Math.ceil(recentProbeTrades.length * 0.5);
+    const probation = {
+      status: recentProbeTrades.length < 3
+        ? "warmup"
+        : promotionReady
+          ? "promote_candidate"
+          : rollbackRisk
+            ? "rollback_watch"
+            : "observe",
+      eligibleProbeTrades: recentProbeTrades.length,
+      promotionReady,
+      rollbackRisk,
+      leadingOutcome: recentOutcomes[0]?.id || null,
+      note: recentProbeTrades.length < 3
+        ? "Nog te weinig gesloten probe-trades voor paper probation."
+        : promotionReady
+          ? "Recente probe-trades zijn sterk genoeg om paper-promotie te overwegen."
+          : rollbackRisk
+            ? "Recente probe-trades tonen zwakke uitkomsten; rollback of strakkere gating is verstandig."
+            : "Paper-probation loopt nog; verzamel extra gesloten probe-trades."
+    };
     return {
       generatedAt: referenceNow,
       status: learningEntries.length ? "active" : "observe",
@@ -3670,6 +3703,7 @@ export class TradingBot {
         .map(([id, count]) => ({ id, count })),
       topBlockers,
       recentOutcomes,
+      probation,
       notes: [
         laneCounts.probe
           ? `${laneCounts.probe} probe-setup(s) draaien in deze cycle voor sneller paper learning.`
@@ -3685,7 +3719,8 @@ export class TradingBot {
           : "Nog geen dominante paper blocker zichtbaar.",
         recentOutcomes[0]
           ? `${recentOutcomes[0].id} is momenteel de meest voorkomende paper-uitkomst.`
-          : "Nog geen gesloten paper trades om outcome-labels te tonen."
+          : "Nog geen gesloten paper trades om outcome-labels te tonen.",
+        probation.note
       ].filter(Boolean)
     };
   }

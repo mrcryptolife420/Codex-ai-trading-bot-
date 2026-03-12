@@ -5463,6 +5463,49 @@ await runCheck("trading bot paper learning summary tracks blockers and recent ou
   assert.equal(summary.topBlockers[0].id, "committee_veto");
   assert.ok(summary.recentOutcomes.some((item) => item.id === "good_trade"));
   assert.ok(summary.recentOutcomes.some((item) => item.id === "early_exit"));
+  assert.equal(summary.probation.status, "warmup");
+});
+
+await runCheck("trading bot paper learning summary surfaces probe probation candidates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    latestDecisions: [
+      {
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.76,
+        paperLearning: { noveltyScore: 0.7, scope: { family: "trend_following", regime: "trend" } },
+        paperLearningBudget: { probeDailyLimit: 4, probeUsed: 2, probeRemaining: 2, shadowDailyLimit: 6, shadowUsed: 1, shadowRemaining: 5 }
+      }
+    ]
+  };
+  bot.journal = {
+    trades: [
+      { brokerMode: "paper", learningLane: "probe", exitAt: "2026-03-11T10:00:00.000Z", paperLearningOutcome: { outcome: "good_trade" } },
+      { brokerMode: "paper", learningLane: "probe", exitAt: "2026-03-11T11:00:00.000Z", paperLearningOutcome: { outcome: "acceptable_trade" } },
+      { brokerMode: "paper", learningLane: "probe", exitAt: "2026-03-11T12:00:00.000Z", paperLearningOutcome: { outcome: "good_trade" } },
+      { brokerMode: "paper", learningLane: "probe", exitAt: "2026-03-11T13:00:00.000Z", paperLearningOutcome: { outcome: "acceptable_trade" } }
+    ]
+  };
+  const summary = TradingBot.prototype.buildPaperLearningSummary.call(bot, bot.runtime.latestDecisions, "2026-03-11T15:00:00.000Z");
+  assert.equal(summary.probation.status, "promote_candidate");
+  assert.equal(summary.probation.promotionReady, true);
+  assert.equal(summary.probation.rollbackRisk, false);
+});
+
+await runCheck("replay chaos summary counts paper misses as replay signals", async () => {
+  const summary = buildReplayChaosSummary({
+    journal: {
+      trades: [
+        { strategyAtEntry: "ema_trend", exitAt: "2026-03-11T10:00:00.000Z", replayCheckpoints: [{ at: "2026-03-11T09:00:00.000Z", price: 100 }], paperLearningOutcome: { outcome: "early_exit" } },
+        { strategyAtEntry: "ema_trend", exitAt: "2026-03-11T11:00:00.000Z", replayCheckpoints: [{ at: "2026-03-11T10:00:00.000Z", price: 101 }], paperLearningOutcome: { outcome: "good_trade" } }
+      ],
+      blockedSetups: []
+    },
+    nowIso: "2026-03-11T15:00:00.000Z"
+  });
+  assert.equal(summary.paperMissCount, 1);
+  assert.ok(summary.activeScenarios.some((item) => item.id === "paper_miss"));
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {

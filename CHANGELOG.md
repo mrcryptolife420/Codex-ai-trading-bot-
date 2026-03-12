@@ -3,6 +3,8 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper replay/chaos summaries now count recent paper misses (`bad_trade`, `early_exit`, `late_exit`, `execution_drag`) as explicit replay review signals instead of only relying on blocked setups and trade stress.
+- Paper-learning summaries now expose a lightweight probe probation state with `promote_candidate`, `rollback_watch`, or `observe`, so paper probes can be reviewed with clearer promotion intent.
 - A concrete paper-mode roadmap in the README, plus paper-learning diversification limits per strategy family and regime so probes collect broader training data instead of clustering in the same scopes.
 - Paper-learning runtime summaries now surface dominant blockers and the most common recent learning outcomes, making it easier to see why paper is blocked and what it is actually learning from.
 - Closed paper trades now carry explainable `paperLearningOutcome` labels with entry, exit, risk, and execution quality buckets for faster paper-only tuning and review.

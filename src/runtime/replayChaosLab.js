@@ -62,6 +62,9 @@ function collectScenarioTags(item = {}) {
   ) {
     tags.add("partial_fill");
   }
+  if (["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(item.paperLearningOutcome?.outcome)) {
+    tags.add("paper_miss");
+  }
   return [...tags];
 }
 
@@ -116,6 +119,7 @@ export function buildReplayChaosSummary({
     ? trades.filter((trade) => arr(trade.replayCheckpoints || []).length > 0).length / trades.length
     : 0;
   const missedWinners = blockedSetups.filter((item) => (item.counterfactualOutcome || item.outcome) === "missed_winner").length;
+  const paperMisses = trades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(trade.paperLearningOutcome?.outcome));
   const worstScenario = scenarioLeaders[0] || null;
   const activeScenarios = Object.entries(scenarioCounts)
     .sort((left, right) => right[1] - left[1])
@@ -130,10 +134,12 @@ export function buildReplayChaosSummary({
         ? "Gebruik reference venues en execution budget als harde gate tot de divergente feed weer samenvalt."
         : item.id === "missing_news"
           ? "Markeer news coverage als degraded-but-allowed of observe-only afhankelijk van setup type."
-          : item.id === "protection_rebuild_failure"
+        : item.id === "protection_rebuild_failure"
             ? "Forceer reconcile/protect-only tot protective rebuilds weer schoon doorlopen."
             : item.id === "partial_fill"
               ? "Replay partial-fill recovery en exit-protectie voordat size of maker-bias omhoog mag."
+              : item.id === "paper_miss"
+                ? "Gebruik deze paper-missers als replay-cases en check of entry, exit of execution tuning moet bijsturen."
               : "Review dit chaos-scenario expliciet in replay voordat promotie doorgaat."
   }));
   const status = worstScenario?.status === "blocked"
@@ -151,6 +157,7 @@ export function buildReplayChaosSummary({
     blockedSetupCount: blockedSetups.length,
     replayCoverage: num(replayCoverage),
     missedWinnerCount: missedWinners,
+    paperMissCount: paperMisses.length,
     worstStrategy: worstScenario?.id || null,
     worstScenario: worstScenario?.worstScenario || null,
     activeScenarios,
@@ -164,6 +171,9 @@ export function buildReplayChaosSummary({
       blockedSetups.length
         ? `${blockedSetups.length} blocked setups blijven beschikbaar voor counterfactual replay.`
         : "Nog geen blocked setups voor extra replay-context.",
+      paperMisses.length
+        ? `${paperMisses.length} recente paper-missers zijn bruikbaar voor replay en chaos-review.`
+        : "Nog geen expliciete paper-missers voor extra replay-context.",
       activeScenarios.length
         ? `Meest zichtbare chaos-risico's: ${activeScenarios.map((item) => `${item.id} (${item.count})`).join(", ")}.`
         : "Nog geen expliciete chaos-scenario's uit recente runtime-data herkend.",
