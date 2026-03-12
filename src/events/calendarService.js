@@ -214,7 +214,9 @@ export class CalendarService {
     this.config = config;
     this.runtime = runtime;
     this.logger = logger;
-    this.calendarFilePath = path.join(config.runtimeDir, "event-calendar.json");
+    this.calendarFilePath = config.runtimeDir
+      ? path.join(config.runtimeDir, "event-calendar.json")
+      : path.join(process.cwd(), "runtime", "event-calendar.json");
     this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
   }
 
@@ -224,6 +226,37 @@ export class CalendarService {
     }
     const ageMs = Date.now() - new Date(cacheEntry.fetchedAt).getTime();
     return ageMs <= this.config.calendarCacheMinutes * 60 * 1000;
+  }
+
+  async maybeRecordHistory({ symbol, aliases, summary, items = [], cacheState, cacheEntry = null } = {}) {
+    if (!this.recordHistory || !symbol || !summary) {
+      return;
+    }
+    const entry = cacheEntry || this.runtime.calendarCache;
+    if (!entry) {
+      return;
+    }
+    entry.historyRecorded = entry.historyRecorded || {};
+    if (entry.historyRecorded[cacheState]) {
+      return;
+    }
+    try {
+      await this.recordHistory({
+        at: nowIso(),
+        symbol,
+        aliases,
+        kind: "calendar",
+        summary,
+        items,
+        cacheState
+      });
+      entry.historyRecorded[cacheState] = true;
+    } catch (error) {
+      this.logger.warn("Calendar history record failed", {
+        symbol,
+        error: error.message
+      });
+    }
   }
 
   async getEvents() {
@@ -251,7 +284,12 @@ export class CalendarService {
       const items = [...defaultCalendarEvents, ...macroEvents, ...userEvents].map(normalizeEvent);
       this.runtime.calendarCache = {
         fetchedAt: nowIso(),
-        items
+        items,
+        historyRecorded: {
+          fresh_fetch: false,
+          cached: false,
+          fallback: false
+        }
       };
       return items;
     } catch (error) {
@@ -261,26 +299,30 @@ export class CalendarService {
   }
 
   async getSymbolSummary(symbol, aliases = []) {
+    const cachedBefore = this.runtime.calendarCache;
+    const wasFreshBefore = this.isFresh(cachedBefore);
     const events = await this.getEvents();
     const summary = summarizeCalendarEvents(events, symbol, aliases, this.config.calendarLookbackDays, nowIso());
-    if (this.recordHistory) {
-      try {
-        await this.recordHistory({
-          at: nowIso(),
-          symbol,
-          aliases,
-          kind: "calendar",
-          summary,
-          items: summary.items || [],
-          cacheState: this.isFresh(this.runtime.calendarCache) ? "cached" : "fresh_fetch"
-        });
-      } catch (error) {
-        this.logger.warn("Calendar history record failed", {
-          symbol,
-          error: error.message
-        });
-      }
+    const activeCache = this.runtime.calendarCache;
+    if (wasFreshBefore && cachedBefore?.items) {
+      await this.maybeRecordHistory({
+        symbol,
+        aliases,
+        summary,
+        items: summary.items || [],
+        cacheState: "cached",
+        cacheEntry: cachedBefore
+      });
+      return summary;
     }
+    await this.maybeRecordHistory({
+      symbol,
+      aliases,
+      summary,
+      items: summary.items || [],
+      cacheState: activeCache?.fetchedAt ? "fresh_fetch" : "fallback",
+      cacheEntry: activeCache || cachedBefore
+    });
     return summary;
   }
 }

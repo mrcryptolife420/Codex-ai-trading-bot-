@@ -74,6 +74,9 @@ export class NewsService {
       return;
     }
     const entry = cacheEntry || this.runtime.newsCache?.[symbol];
+    if (!entry) {
+      return;
+    }
     entry.historyRecorded = entry.historyRecorded || {};
     if (entry.historyRecorded[cacheState]) {
       return;

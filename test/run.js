@@ -17,7 +17,7 @@ import { summarizeMarketSentiment } from "../src/market/marketSentimentService.j
 import { ReferenceVenueService } from "../src/market/referenceVenueService.js";
 import { summarizeVolatilityContext } from "../src/market/volatilityService.js";
 import { LocalOrderBookEngine } from "../src/market/localOrderBook.js";
-import { parseIcsEvents, summarizeCalendarEvents } from "../src/events/calendarService.js";
+import { CalendarService, parseIcsEvents, summarizeCalendarEvents } from "../src/events/calendarService.js";
 import { normalizeStrategyDsl } from "../src/research/strategyDsl.js";
 import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
@@ -4492,6 +4492,29 @@ await runCheck("announcement service records a cached context use once per cache
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cacheState, "cached");
   assert.equal(calls[0].kind, "announcements");
+});
+
+await runCheck("calendar service records a cached context use once per cache snapshot", async () => {
+  const runtime = {
+    calendarCache: {
+      fetchedAt: new Date(Date.now() - 60_000).toISOString(),
+      items: [
+        { title: "US CPI", at: "2026-03-12T12:30:00.000Z", impact: 0.9, type: "macro_cpi", source: "BLS" }
+      ]
+    }
+  };
+  const calls = [];
+  const service = new CalendarService({
+    config: makeConfig({ calendarCacheMinutes: 30 }),
+    runtime,
+    logger: { info() {}, warn() {} },
+    recordHistory: async (payload) => { calls.push(payload); }
+  });
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cacheState, "cached");
+  assert.equal(calls[0].kind, "calendar");
 });
 
 await runCheck("data recorder builds historical bootstrap summary from stored frames", async () => {
