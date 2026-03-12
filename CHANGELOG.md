@@ -66,6 +66,7 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Missed-trade analysis now narrows recent counterfactual matches by regime as well as blocker, strategy, and phase, and the dashboard learning card now correctly prefers explicit probation notes over generic sandbox copy.
 - Dashboard decision views now prefer explicit runtime `operatorAction` and `autoRecovery` text, and also translate legacy `probe_only` codes into readable operator guidance.
 - Recorder warm starts now rebuild `lastRecordAt` and `latestRecordQuality` from actual feature-store file truth instead of stale restored timestamps or bucket ordering.
 - Dashboard operations now surface retrain-batch and replay-pack context directly inside the paper-learning block, so the next retrain and replay actions are visible without digging through raw runtime payloads.

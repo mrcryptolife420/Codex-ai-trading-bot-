@@ -7114,17 +7114,20 @@ export class TradingBot {
     const blockerSet = new Set(blockerReasons.filter(Boolean));
     const blockerCard = offlineTrainer.blockerScorecards.find((item) => blockerSet.has(item.id));
     const strategyId = strategy.activeStrategy || strategy.id || strategy.strategyId || strategy.strategyLabel || null;
+    const regimeId = decision.regime || decision.regimeAtEntry || null;
     const strategyCard = offlineTrainer.strategyScorecards.find((item) => item.id === strategyId);
     const recentCounterfactuals = arr(this.journal?.counterfactuals || [])
       .filter((item) => {
         const itemBlockers = arr(item.blockerReasons || []);
         const blockerMatch = itemBlockers.some((itemBlocker) => blockerSet.has(itemBlocker));
         const strategyMatch = strategyId && (item.strategy === strategyId || item.strategyAtEntry === strategyId);
-        const regimeMatch = decision.marketState?.phase && item.marketPhase === decision.marketState.phase;
+        const regimeMatch = regimeId && (item.regime === regimeId || item.regimeAtEntry === regimeId);
+        const phaseMatch = decision.marketState?.phase && item.marketPhase === decision.marketState.phase;
         return (
           (blockerSet.size ? blockerMatch : true) &&
           (strategyId ? strategyMatch : true) &&
-          (decision.marketState?.phase ? regimeMatch : true)
+          (regimeId ? regimeMatch : true) &&
+          (decision.marketState?.phase ? phaseMatch : true)
         );
       })
       .slice(-12);

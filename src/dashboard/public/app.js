@@ -752,9 +752,9 @@ function renderLearning(snapshot) {
           <span class="metric-label">Wat de bot nu precies doet</span>
           <p>${escapeHtml(
             paperLearning.probation?.note ||
-            paperLearning.thresholdSandbox?.status
+            (paperLearning.thresholdSandbox?.status
               ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
-              : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds, veto's en replay-focus te verbeteren."
+              : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds, veto's en replay-focus te verbeteren.")
           )}</p>
         </article>
         <article class="learning-list-item">

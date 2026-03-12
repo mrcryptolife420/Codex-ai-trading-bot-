@@ -6147,7 +6147,7 @@ await runCheck("trading bot paper learning summary surfaces probe probation cand
   assert.equal(summary.probation.rollbackRisk, false);
 });
 
-await runCheck("trading bot missed trade analysis narrows recent matches by blocker strategy and phase", async () => {
+await runCheck("trading bot missed trade analysis narrows recent matches by blocker strategy regime and phase", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {
     offlineTrainer: {
@@ -6162,14 +6162,15 @@ await runCheck("trading bot missed trade analysis narrows recent matches by bloc
   };
   bot.journal = {
     counterfactuals: [
-      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", marketPhase: "healthy_continuation", realizedMovePct: 0.02 },
+      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", regime: "trend", marketPhase: "healthy_continuation", realizedMovePct: 0.02 },
+      { outcome: "bad_veto", blockerReasons: ["committee_veto"], strategy: "ema_trend", regime: "range", marketPhase: "healthy_continuation", realizedMovePct: 0.04 },
       { outcome: "good_veto", blockerReasons: ["committee_veto"], strategy: "mean_reversion", marketPhase: "healthy_continuation", realizedMovePct: 0.001 },
       { outcome: "bad_veto", blockerReasons: ["other_blocker"], strategy: "ema_trend", marketPhase: "range_acceptance", realizedMovePct: 0.03 }
     ]
   };
   const analysis = TradingBot.prototype.buildMissedTradeAnalysis.call(
     bot,
-    { marketState: { phase: "healthy_continuation" } },
+    { regime: "trend", marketState: { phase: "healthy_continuation" } },
     ["committee_veto"],
     { activeStrategy: "ema_trend" }
   );
