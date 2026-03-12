@@ -4119,6 +4119,11 @@ export class TradingBot {
       probe: new Set(),
       shadow: new Set()
     };
+    const isShadowReviewCase = (item = {}) => (
+      item.learningLane === "shadow" ||
+      arr(item.branches || []).length > 0 ||
+      arr(item.branchScenarios || []).length > 0
+    );
     const recordLaneKey = (lane, key) => {
       if (!laneKeys[lane] || !key) {
         return;
@@ -4151,7 +4156,7 @@ export class TradingBot {
       if ((item.brokerMode || "paper") !== "paper") {
         continue;
       }
-      if (item.learningLane !== "shadow") {
+      if (!isShadowReviewCase(item)) {
         continue;
       }
       const at = item.resolvedAt || item.queuedAt || item.at;
@@ -4164,7 +4169,7 @@ export class TradingBot {
       if ((item.brokerMode || "paper") !== "paper") {
         continue;
       }
-      if (item.learningLane !== "shadow") {
+      if (!isShadowReviewCase(item)) {
         continue;
       }
       const at = item.queuedAt || item.dueAt;

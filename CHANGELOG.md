@@ -124,6 +124,7 @@
 - Fixed dashboard/operator alert actions so alerts can now be resolved explicitly instead of only acknowledged or silenced.
 - Fixed strategy-research summaries so newer robustness/uniqueness scoring survives serialization into runtime and dashboard snapshots.
 - Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.
+- Paper-learning `shadow` counts now include real branchable counterfactual review cases from the queue/history instead of only explicit `learningLane: shadow` items, so the dashboard no longer underreports blocked setups that are still feeding the review loop.
 - Prevented `openBestCandidate()` from crashing in lightweight prototype-based tests when `this.config` is absent.
 - Kept recovered/rebuilt live positions explicitly marked as `reconcile_required` or `protected` so lifecycle state no longer goes stale after broker recovery paths.
 - Fixed scale-out protection recovery so failed protective rebuilds now leave a clear reconcile state instead of silently falling back to a generic open position.

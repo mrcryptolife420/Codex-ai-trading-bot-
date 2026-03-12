@@ -6608,6 +6608,43 @@ await runCheck("trading bot paper learning summary counts closed probe trades on
   assert.equal(summary.dailyBudget.probeUsed, 0);
 });
 
+await runCheck("trading bot paper learning summary counts branchable counterfactual reviews as shadow learning without consuming budget", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    counterfactualQueue: [
+      {
+        id: "queue-review",
+        symbol: "SOLUSDT",
+        brokerMode: "paper",
+        queuedAt: "2026-03-12T07:20:00.000Z",
+        branchScenarios: [{ id: "maker_bias", kind: "execution" }]
+      }
+    ],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "resolved-review",
+        symbol: "ETHUSDT",
+        brokerMode: "paper",
+        resolvedAt: "2026-03-12T06:45:00.000Z",
+        branches: [{ id: "base", outcome: "winner", adjustedMovePct: 0.012 }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.shadowCount, 2);
+  assert.equal(summary.dailyBudget.shadowUsed, 0);
+  assert.equal(summary.recentShadowReviews.length, 1);
+  assert.equal(summary.recentShadowReviews[0].symbol, "ETHUSDT");
+});
+
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {
   const summary = buildReplayChaosSummary({
     journal: {
