@@ -4204,6 +4204,8 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     assert.equal(payload.recordQuality.kind, "learning");
     assert.ok(payload.recordQuality.score >= 0);
     assert.ok(payload.rationale.topSignals.length >= 1);
+    assert.equal(recorder.getSummary().qualityByKind[0].kind, "learning");
+    assert.equal(recorder.getSummary().qualityByKind[0].count, 1);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -4341,6 +4343,7 @@ await runCheck("data recorder stores historical news frames and dataset curation
     assert.equal(recorder.getSummary().datasetFrames, 1);
     assert.equal(recorder.getSummary().sourceCoverage[0].provider, "coindesk");
     assert.equal(datasetPayload.datasets.newsHistory.topSources[0].provider, "coindesk");
+    assert.equal(datasetPayload.datasets.dataQuality.qualityByKind[0].kind, "news");
     assert.ok(recorder.getSummary().datasetCuration.dataQuality.hotRetentionDays >= 21);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -5494,6 +5497,7 @@ await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local
       lineageCoverage: 0.81,
       averageRecordQuality: 0.74,
       latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+      qualityByKind: [{ kind: "learning", count: 8, averageScore: 0.74, high: 2, medium: 5, low: 1 }],
       sourceCoverage: [{ provider: "coindesk", count: 3, avgReliability: 0.82, avgFreshnessScore: 0.88, lastSeenAt: "2026-03-12T08:10:00.000Z", channels: [["news", 3]] }],
       contextCoverage: [{ kind: "calendar", count: 2, avgCoverage: 0.71, avgConfidence: 0.66, avgRiskScore: 0.3, highImpactCount: 1, lastSeenAt: "2026-03-12T08:15:00.000Z", nextEventAt: "2026-03-12T13:30:00.000Z" }],
       retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" }
@@ -5713,6 +5717,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
       lineageCoverage: 0.81,
       averageRecordQuality: 0.74,
       latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+      qualityByKind: [{ kind: "learning", count: 8, averageScore: 0.74, high: 2, medium: 5, low: 1 }],
       sourceCoverage: [{ provider: "coindesk", count: 3, avgReliability: 0.82, avgFreshnessScore: 0.88, lastSeenAt: "2026-03-12T08:10:00.000Z", channels: [["news", 3]] }],
       contextCoverage: [{ kind: "calendar", count: 2, avgCoverage: 0.71, avgConfidence: 0.66, avgRiskScore: 0.3, highImpactCount: 1, lastSeenAt: "2026-03-12T08:15:00.000Z", nextEventAt: "2026-03-12T13:30:00.000Z" }],
       retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" }
@@ -5756,6 +5761,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
+  assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");
   assert.equal(snapshot.dataRecorder.sourceCoverage[0].provider, "coindesk");
   assert.equal(snapshot.dataRecorder.contextCoverage[0].kind, "calendar");
 });

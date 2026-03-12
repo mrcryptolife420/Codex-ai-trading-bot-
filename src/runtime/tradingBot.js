@@ -2292,6 +2292,14 @@ function summarizeDataRecorder(summary = {}) {
       coldRetentionDays: summary.retention?.coldRetentionDays || 0,
       lastCompactionAt: summary.retention?.lastCompactionAt || null
     },
+    qualityByKind: arr(summary.qualityByKind || []).slice(0, 8).map((item) => ({
+      kind: item.kind || null,
+      count: item.count || 0,
+      averageScore: num(item.averageScore || 0, 4),
+      high: item.high || 0,
+      medium: item.medium || 0,
+      low: item.low || 0
+    })),
     sourceCoverage: arr(summary.sourceCoverage || []).slice(0, 6).map((item) => ({
       provider: item.provider || null,
       count: item.count || 0,

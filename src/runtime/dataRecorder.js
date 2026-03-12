@@ -346,6 +346,21 @@ function buildNewsHistoryPayload({
   items = [],
   cacheState = "fresh_fetch"
 } = {}) {
+  const dataLineage = {
+    featureCompleteness: clamp(num(summary.coverage || 0, 4) / 4, 0, 1),
+    freshnessScore: num(summary.freshnessScore || 0, 4),
+    trustScore: num(summary.reliabilityScore || 0, 4),
+    coverageScore: clamp(num(summary.coverage || 0, 4) / 4, 0, 1),
+    degradedButAllowed: cacheState !== "fresh_fetch",
+    fallbackCount: cacheState === "fallback" ? 1 : 0,
+    degradedCount: cacheState === "degraded" ? 1 : 0,
+    missingCount: 0,
+    confidence: {
+      dataConfidence: num(summary.confidence || 0, 4),
+      marketConfidence: num(summary.confidence || 0, 4),
+      overallConfidence: num(summary.confidence || 0, 4)
+    }
+  };
   return {
     schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
     frameType: "news_history",
@@ -378,7 +393,12 @@ function buildNewsHistoryPayload({
       whitelisted: Boolean(item.reliability?.whitelisted || item.whitelisted),
       engagementScore: num(item.engagementScore || 0, 2),
       link: item.link || null
-    }))
+    })),
+    recordQuality: buildRecordQuality({
+      dataLineage,
+      marketState: { dataConfidence: num(summary.confidence || 0, 4) },
+      kind: "news"
+    })
   };
 }
 
@@ -391,6 +411,21 @@ function buildContextHistoryPayload({
   items = [],
   cacheState = "fresh_fetch"
 } = {}) {
+  const dataLineage = {
+    featureCompleteness: clamp(num(summary.coverage || 0, 4), 0, 1),
+    freshnessScore: num(summary.freshnessScore || 0, 4),
+    trustScore: num(summary.confidence || 0, 4),
+    coverageScore: clamp(num(summary.coverage || 0, 4), 0, 1),
+    degradedButAllowed: cacheState !== "fresh_fetch",
+    fallbackCount: cacheState === "fallback" ? 1 : 0,
+    degradedCount: cacheState === "degraded" ? 1 : 0,
+    missingCount: 0,
+    confidence: {
+      dataConfidence: num(summary.confidence || 0, 4),
+      marketConfidence: num(summary.confidence || 0, 4),
+      overallConfidence: num(summary.confidence || 0, 4)
+    }
+  };
   return {
     schemaVersion: FEATURE_STORE_SCHEMA_VERSION,
     frameType: "context_history",
@@ -420,7 +455,12 @@ function buildContextHistoryPayload({
       bias: num(item.bias || item.score || 0, 4),
       riskScore: num(item.riskScore || 0, 4),
       link: item.link || null
-    }))
+    })),
+    recordQuality: buildRecordQuality({
+      dataLineage,
+      marketState: { dataConfidence: num(summary.confidence || 0, 4) },
+      kind: `context_${kind || "unknown"}`
+    })
   };
 }
 
@@ -542,6 +582,7 @@ export class DataRecorder {
       recordQualityCount: 0,
       averageRecordQuality: 0,
       latestRecordQuality: null,
+      qualityByKind: {},
       sourceCoverage: {},
       contextCoverage: {},
       datasetCuration: null,
@@ -592,6 +633,7 @@ export class DataRecorder {
       recordQualityCount: safeStateNumber(restored.recordQualityCount, this.state.recordQualityCount),
       averageRecordQuality: num(restored.averageRecordQuality || 0, 4),
       latestRecordQuality: restored.latestRecordQuality || null,
+      qualityByKind: restored.qualityByKind || {},
       sourceCoverage: restoreSourceCoverage(restored.sourceCoverage),
       contextCoverage: restoreContextCoverage(restored.contextCoverage),
       datasetCuration: restored.datasetCuration || null,
@@ -1059,6 +1101,17 @@ export class DataRecorder {
           archivedFiles: this.state.archivedFiles || 0,
           averageRecordQuality: num(this.state.averageRecordQuality || 0, 4),
           latestRecordQuality: this.state.latestRecordQuality || null,
+          qualityByKind: arr(Object.values(this.state.qualityByKind || {}))
+            .sort((left, right) => (right.count || 0) - (left.count || 0))
+            .slice(0, 8)
+            .map((item) => ({
+              kind: item.kind || null,
+              count: item.count || 0,
+              averageScore: num(item.averageScore || 0, 4),
+              high: item.high || 0,
+              medium: item.medium || 0,
+              low: item.low || 0
+            })),
           hotRetentionDays: this.state.retention?.hotRetentionDays || this.config.dataRecorderRetentionDays || 21,
           coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90
         }
@@ -1079,6 +1132,17 @@ export class DataRecorder {
         coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90,
         lastCompactionAt: this.state.retention?.lastCompactionAt || null
       },
+      qualityByKind: arr(Object.values(this.state.qualityByKind || {}))
+        .sort((left, right) => (right.count || 0) - (left.count || 0))
+        .slice(0, 8)
+        .map((item) => ({
+          kind: item.kind || null,
+          count: item.count || 0,
+          averageScore: num(item.averageScore || 0, 4),
+          high: item.high || 0,
+          medium: item.medium || 0,
+          low: item.low || 0
+        })),
       sourceCoverage: summarizeSourceCoverage(this.state.sourceCoverage || {}, 6),
       contextCoverage: summarizeContextCoverage(this.state.contextCoverage || {}, 4),
       rootDir: this.rootDir
@@ -1101,6 +1165,27 @@ export class DataRecorder {
       );
       this.state.recordQualityCount = totalFrames;
       this.state.latestRecordQuality = payload.recordQuality;
+      const kind = payload.recordQuality.kind || "generic";
+      const previous = this.state.qualityByKind?.[kind] || {
+        kind,
+        count: 0,
+        averageScore: 0,
+        high: 0,
+        medium: 0,
+        low: 0
+      };
+      const kindTotal = (previous.count || 0) + 1;
+      this.state.qualityByKind = {
+        ...(this.state.qualityByKind || {}),
+        [kind]: {
+          kind,
+          count: kindTotal,
+          averageScore: num((((previous.averageScore || 0) * (previous.count || 0)) + num(payload.recordQuality.score || 0, 4)) / kindTotal, 4),
+          high: (previous.high || 0) + (payload.recordQuality.tier === "high" ? 1 : 0),
+          medium: (previous.medium || 0) + (payload.recordQuality.tier === "medium" ? 1 : 0),
+          low: (previous.low || 0) + (payload.recordQuality.tier === "low" ? 1 : 0)
+        }
+      };
     }
     this.touch(at);
   }

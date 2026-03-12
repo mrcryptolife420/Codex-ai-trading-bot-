@@ -112,6 +112,16 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
   - high-impact eventdekking
 - zo zie je sneller of je historische dataset vooral op een paar bronnen leunt of breed genoeg gespreid is
 
+11. `Kwaliteit per recordsoort`
+- de recorder vat recordkwaliteit nu ook samen per type, zoals:
+  - `decision`
+  - `trade`
+  - `learning`
+  - `trade_replay`
+  - `news`
+  - `context_*`
+- daardoor zie je sneller of vooral je leerframes, replays of historische context zwakker zijn, in plaats van alleen een globaal gemiddelde te zien
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).

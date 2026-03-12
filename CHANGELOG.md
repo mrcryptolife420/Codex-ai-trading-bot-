@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Data-recorder quality is now tracked per record kind, including `news` and `context_*`, so it is easier to see whether historical learning, replay, or source-history data is the weakest part of the stored dataset.
 - Data-recorder summary now tracks compact `sourceCoverage` and `contextCoverage` aggregates, so runtime, dashboard, and dataset curation can show which news providers and event context types actually dominate the stored history.
 - Recorder frames now carry a compact `recordQuality` score for decision, trade, learning, and replay records, so later training and review loops can filter by completeness/confidence instead of treating all records equally.
 - `status`, `doctor`, and dashboard snapshots now expose a cleaner recorder summary with average/latest record quality, lineage coverage, and hot/cold retention context instead of raw recorder state blobs.
