@@ -1513,6 +1513,36 @@ function summarizeOfflineTrainer(summary = {}) {
       averagePredictiveScore: num(summary.featureDecay?.averagePredictiveScore || 0, 4),
       notes: [...(summary.featureDecay?.notes || [])]
     },
+    retrainReadiness: summary.retrainReadiness ? {
+      status: summary.retrainReadiness.status || "warmup",
+      score: num(summary.retrainReadiness.score || 0, 4),
+      datasetHealth: num(summary.retrainReadiness.datasetHealth || 0, 4),
+      providerCoverage: summary.retrainReadiness.providerCoverage || 0,
+      contextCoverage: summary.retrainReadiness.contextCoverage || 0,
+      bootstrapStatus: summary.retrainReadiness.bootstrapStatus || "empty",
+      priority: summary.retrainReadiness.priority || null,
+      note: summary.retrainReadiness.note || null,
+      paper: summary.retrainReadiness.paper ? {
+        status: summary.retrainReadiness.paper.status || "warmup",
+        score: num(summary.retrainReadiness.paper.score || 0, 4),
+        tradeCount: summary.retrainReadiness.paper.tradeCount || 0,
+        strategyCount: summary.retrainReadiness.paper.strategyCount || 0,
+        regimeCount: summary.retrainReadiness.paper.regimeCount || 0,
+        winRate: num(summary.retrainReadiness.paper.winRate || 0, 4),
+        avgExecutionQuality: num(summary.retrainReadiness.paper.avgExecutionQuality || 0, 4),
+        recommendation: summary.retrainReadiness.paper.recommendation || null
+      } : null,
+      live: summary.retrainReadiness.live ? {
+        status: summary.retrainReadiness.live.status || "warmup",
+        score: num(summary.retrainReadiness.live.score || 0, 4),
+        tradeCount: summary.retrainReadiness.live.tradeCount || 0,
+        strategyCount: summary.retrainReadiness.live.strategyCount || 0,
+        regimeCount: summary.retrainReadiness.live.regimeCount || 0,
+        winRate: num(summary.retrainReadiness.live.winRate || 0, 4),
+        avgExecutionQuality: num(summary.retrainReadiness.live.avgExecutionQuality || 0, 4),
+        recommendation: summary.retrainReadiness.live.recommendation || null
+      } : null
+    } : null,
     featureDecayScorecards: arr(summary.featureDecayScorecards || []).slice(0, 8).map((item) => ({
       id: item.id || null,
       count: item.count || 0,

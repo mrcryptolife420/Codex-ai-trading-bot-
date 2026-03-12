@@ -682,6 +682,119 @@ function buildRegimeDeployment(regimeScorecards = []) {
   };
 }
 
+function countCoverage(entries = []) {
+  return (Array.isArray(entries) ? entries : []).reduce((total, item) => total + (item.count || 0), 0);
+}
+
+function buildRetrainTrack({
+  label = "paper",
+  trades = [],
+  bootstrap = {},
+  learningFrames = 0,
+  averageRecordQuality = 0,
+  lineageCoverage = 0
+} = {}) {
+  const strategyCount = new Set(trades.map((trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy).filter(Boolean)).size;
+  const regimeCount = new Set(trades.map((trade) => trade.regimeAtEntry).filter(Boolean)).size;
+  const winRate = trades.length ? trades.filter((trade) => (trade.pnlQuote || 0) > 0).length / trades.length : 0;
+  const avgExecutionQuality = average(trades.map((trade) => trade.executionQualityScore || 0), 0);
+  const countScore = Math.min(0.38, trades.length / (label === "live" ? 30 : 45) * 0.38);
+  const diversityScore = Math.min(0.18, strategyCount / 6 * 0.1 + regimeCount / 5 * 0.08);
+  const qualityScore = Math.min(0.18, averageRecordQuality * 0.1 + lineageCoverage * 0.08);
+  const executionScore = Math.min(0.14, avgExecutionQuality * 0.14);
+  const bootstrapBias = bootstrap?.paperLearningReady ? 0.08 : 0.03;
+  const score = clamp(0.12 + countScore + diversityScore + qualityScore + executionScore + bootstrapBias, 0, 1);
+  return {
+    label,
+    tradeCount: trades.length,
+    strategyCount,
+    regimeCount,
+    winRate: num(winRate),
+    avgExecutionQuality: num(avgExecutionQuality),
+    learningFrames,
+    averageRecordQuality: num(averageRecordQuality),
+    lineageCoverage: num(lineageCoverage),
+    score: num(score),
+    status: score >= 0.72
+      ? "ready"
+      : score >= 0.52
+        ? "building"
+        : "warmup",
+    recommendation: score >= 0.72
+      ? `${label} retrain kan frequenter en breder over scopes worden gebruikt.`
+      : score >= 0.52
+        ? `${label} retrain is bruikbaar, maar vraagt nog meer scope-diversiteit of trade-count.`
+        : `${label} retrain is nog dun; verzamel eerst meer representatieve closed trades.`
+  };
+}
+
+function buildRetrainReadiness({
+  paperTrades = [],
+  liveTrades = [],
+  dataRecorder = {},
+  bootstrap = {}
+} = {}) {
+  const paper = buildRetrainTrack({
+    label: "paper",
+    trades: paperTrades,
+    bootstrap: bootstrap.warmStart || {},
+    learningFrames: dataRecorder.learningFrames || 0,
+    averageRecordQuality: dataRecorder.averageRecordQuality || 0,
+    lineageCoverage: dataRecorder.lineageCoverage || 0
+  });
+  const live = buildRetrainTrack({
+    label: "live",
+    trades: liveTrades,
+    bootstrap: bootstrap.warmStart || {},
+    learningFrames: dataRecorder.learningFrames || 0,
+    averageRecordQuality: dataRecorder.averageRecordQuality || 0,
+    lineageCoverage: dataRecorder.lineageCoverage || 0
+  });
+  const providerCoverage = countCoverage(dataRecorder.sourceCoverage || []);
+  const contextCoverage = countCoverage(dataRecorder.contextCoverage || []);
+  const datasetHealth = clamp(
+    0.18 +
+      (dataRecorder.averageRecordQuality || 0) * 0.28 +
+      (dataRecorder.lineageCoverage || 0) * 0.22 +
+      Math.min(0.16, providerCoverage / 12 * 0.16) +
+      Math.min(0.16, contextCoverage / 8 * 0.16),
+    0,
+    1
+  );
+  const overallScore = clamp(
+    0.32 * paper.score +
+      0.28 * live.score +
+      0.4 * datasetHealth,
+    0,
+    1
+  );
+  const priority = live.score < 0.52
+    ? "grow_live_dataset"
+    : paper.score < 0.52
+      ? "grow_paper_dataset"
+      : datasetHealth < 0.56
+        ? "improve_dataset_quality"
+        : "schedule_full_retrain";
+  return {
+    status: overallScore >= 0.72 ? "ready" : overallScore >= 0.52 ? "building" : "warmup",
+    score: num(overallScore),
+    datasetHealth: num(datasetHealth),
+    providerCoverage,
+    contextCoverage,
+    bootstrapStatus: bootstrap.status || "empty",
+    priority,
+    paper,
+    live,
+    note: priority === "schedule_full_retrain"
+      ? "Paper, live en datasetkwaliteit zijn sterk genoeg voor een bredere retrain-run."
+      : priority === "improve_dataset_quality"
+        ? "Retrain-data is al bruikbaar, maar bron/contextdekking of recordkwaliteit moet nog omhoog."
+        : priority === "grow_live_dataset"
+          ? "Live retrain blijft het dunste pad; hou live streng en gebruik paper voorlopig als hoofdbron."
+          : "Paper retrain heeft nog extra closed-trade dekking nodig voor stabielere brede hertraining."
+  };
+}
+
 export class OfflineTrainer {
   constructor(config) {
     this.config = config;
@@ -719,6 +832,12 @@ export class OfflineTrainer {
     const thresholdPolicy = buildThresholdPolicy(blockerScorecards, this.config);
     const exitLearning = buildExitLearning(learningReadyTrades);
     const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
+    const retrainReadiness = buildRetrainReadiness({
+      paperTrades,
+      liveTrades,
+      dataRecorder,
+      bootstrap: dataRecorder.latestBootstrap || {}
+    });
     const calibrationGovernance = buildCalibrationGovernance({
       tradeCount: learningReadyTrades.length,
       falsePositiveCount: falsePositives.length,
@@ -764,6 +883,7 @@ export class OfflineTrainer {
       exitScorecards: exitLearning.scorecards || [],
       featureDecay,
       featureDecayScorecards: featureDecay.scorecards || [],
+      retrainReadiness,
       calibrationGovernance,
       regimeDeployment,
       falsePositiveByStrategy: falsePositiveByStrategy.slice(0, 6),
@@ -792,6 +912,7 @@ export class OfflineTrainer {
         featureDecay.weakestFeature
           ? `${featureDecay.weakestFeature} toont momenteel de meeste feature decay.`
           : "Feature-decay tracking warmt nog op.",
+        retrainReadiness.note,
         calibrationGovernance.note,
         regimeScorecards[0]
           ? `${regimeScorecards[0].id} is het sterkste regime in offline trainer governance.`

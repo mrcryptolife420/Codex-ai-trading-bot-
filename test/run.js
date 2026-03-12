@@ -6195,7 +6195,15 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
         { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -5, netPnlPct: -0.004, executionQualityScore: 0.58, labelScore: 0.41, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" }
       ]
     },
-    dataRecorder: { learningFrames: 8, decisionFrames: 14 },
+    dataRecorder: {
+      learningFrames: 8,
+      decisionFrames: 14,
+      averageRecordQuality: 0.74,
+      lineageCoverage: 0.81,
+      sourceCoverage: [{ provider: "coindesk", count: 3 }],
+      contextCoverage: [{ kind: "calendar", count: 2 }],
+      latestBootstrap: { status: "ready", warmStart: { paperLearningReady: true } }
+    },
     counterfactuals: [
       { outcome: "missed_winner", realizedMovePct: 0.019 },
       { outcome: "blocked_correctly", realizedMovePct: -0.011 }
@@ -6206,6 +6214,8 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.equal(summary.counterfactuals.missedWinners, 1);
   assert.equal(summary.counterfactuals.blockedCorrectly, 1);
   assert.ok(summary.readinessScore > 0.24);
+  assert.equal(summary.retrainReadiness.bootstrapStatus, "ready");
+  assert.ok(summary.retrainReadiness.paper.score > 0);
 });
 
 await runCheck("offline trainer builds blocker and regime veto scorecards", async () => {

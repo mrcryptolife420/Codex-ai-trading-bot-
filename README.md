@@ -132,6 +132,39 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
   - dataset curation
 - daaruit bouwt hij een compacte warm-start samenvatting voor runtime/governance/paper learning, zodat een restart minder koud begint
 
+## Retrain roadmap
+
+Om volledige data beter te hergebruiken voor paper en live retraining, volgt de bot nu deze lijn:
+
+1. `Recorder-first history`
+- retrain gebruikt eerst recorder-history en dataset-curation in plaats van alleen losse runtime-state
+
+2. `Paper/live scheiding`
+- paper en live worden apart beoordeeld voor retrain-volwassenheid
+- zo kan paper rijk leren terwijl live strenger blijft
+
+3. `Datasetkwaliteit als harde input`
+- lineage coverage
+- average record quality
+- source coverage
+- context coverage
+- bootstrap status
+
+4. `Warm-start bij restart`
+- de bot leest recente history terug in en bouwt direct een retrain warm-start samenvatting
+
+5. `Retrain readiness`
+- de offline trainer bouwt nu een aparte retrain-readiness laag met:
+  - overall status
+  - paper status
+  - live status
+  - dataset health
+  - priority / next action
+
+6. `Governance-first promotion`
+- als live nog dun is, blijft paper voorlopig de hoofdbron
+- pas bij betere live dekking en datasetkwaliteit wordt een bredere retrain-run interessanter
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).
