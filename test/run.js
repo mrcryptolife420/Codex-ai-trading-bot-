@@ -6446,6 +6446,25 @@ await runCheck("replay chaos summary builds automatic replay packs", async () =>
   assert.ok(summary.deterministicReplayPlan.selectedCases.length >= 2);
 });
 
+await runCheck("replay chaos summary keeps paper replay packs free from live trades", async () => {
+  const summary = buildReplayChaosSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", brokerMode: "paper", strategyAtEntry: "ema_trend", learningLane: "probe", exitAt: "2026-03-11T10:00:00.000Z", pnlQuote: 12, netPnlPct: 0.01, paperLearningOutcome: { outcome: "good_trade" } },
+        { symbol: "ETHUSDT", brokerMode: "paper", strategyAtEntry: "ema_trend", learningLane: "probe", exitAt: "2026-03-11T11:00:00.000Z", pnlQuote: -8, netPnlPct: -0.006, paperLearningOutcome: { outcome: "early_exit" } },
+        { symbol: "SOLUSDT", brokerMode: "live", strategyAtEntry: "ema_trend", learningLane: "probe", exitAt: "2026-03-11T12:00:00.000Z", pnlQuote: 50, netPnlPct: 0.025, paperLearningOutcome: { outcome: "good_trade" } },
+        { symbol: "BNBUSDT", brokerMode: "live", strategyAtEntry: "ema_trend", learningLane: "probe", exitAt: "2026-03-11T13:00:00.000Z", pnlQuote: -22, netPnlPct: -0.018, paperLearningOutcome: { outcome: "bad_trade" } }
+      ],
+      blockedSetups: []
+    },
+    nowIso: "2026-03-11T15:00:00.000Z"
+  });
+  assert.equal(summary.replayPacks.probeWinners.length, 1);
+  assert.equal(summary.replayPacks.probeWinners[0].symbol, "BTCUSDT");
+  assert.equal(summary.replayPacks.paperMisses.length, 1);
+  assert.equal(summary.replayPacks.paperMisses[0].symbol, "ETHUSDT");
+});
+
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {
   const coordinator = new StreamCoordinator({
     client: {

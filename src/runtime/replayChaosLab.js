@@ -191,7 +191,8 @@ export function buildReplayChaosSummary({
     ? trades.filter((trade) => arr(trade.replayCheckpoints || []).length > 0).length / trades.length
     : 0;
   const missedWinners = blockedSetups.filter((item) => (item.counterfactualOutcome || item.outcome) === "missed_winner").length;
-  const paperMisses = trades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(trade.paperLearningOutcome?.outcome));
+  const paperTrades = trades.filter((trade) => (trade.brokerMode || "paper") === "paper");
+  const paperMisses = paperTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(trade.paperLearningOutcome?.outcome));
   const worstScenario = scenarioLeaders[0] || null;
   const activeScenarios = Object.entries(scenarioCounts)
     .sort((left, right) => right[1] - left[1])
@@ -215,7 +216,7 @@ export function buildReplayChaosSummary({
               : "Review dit chaos-scenario expliciet in replay voordat promotie doorgaat."
   }));
   const replayPacks = {
-    probeWinners: trades
+    probeWinners: paperTrades
       .filter((trade) => trade.learningLane === "probe" && ["good_trade", "acceptable_trade"].includes(trade.paperLearningOutcome?.outcome))
       .sort((left, right) => (right.pnlQuote || 0) - (left.pnlQuote || 0))
       .slice(0, 4)
