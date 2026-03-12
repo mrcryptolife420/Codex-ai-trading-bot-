@@ -250,6 +250,8 @@ Initial public release of the Binance AI trading bot workspace.
 - Dashboard API smoke test on `http://127.0.0.1:3011/api/snapshot`
 ## 2026-03-12
 
+- paper-learning scope summaries now keep family/regime/session context across refreshes by rebuilding from recent paper trades and shadow history instead of only the latest visible decisions
+- fixed a dashboard action-tone bug where operator guidance could render as negative too eagerly because of boolean precedence in the top status cards
 - tightened scoped threshold and missed-trade matching so strategy+regime experiments and governance scorecards no longer overcount unrelated history
 - added `paper roadmap v3` features: active learning scoring, benchmark lanes, confidence miscalibration tracking, counterfactual branching, failure library, and recency-weighted paper readiness
 - extended paper counterfactual queue resolution with alternative execution/size/exit branches

@@ -341,7 +341,7 @@ function buildHeroSummary(snapshot) {
     {
       label: "Actie",
       value: leadDecision?.operatorAction || (freezeEntries ? "Reconcile controleren" : probeOnly ? "Alleen probes toelaten" : "Geen directe actie"),
-      tone: leadDecision?.operatorAction || freezeEntries ? "negative" : "neutral"
+      tone: (Boolean(leadDecision?.operatorAction) || freezeEntries) ? "negative" : "neutral"
     },
     {
       label: "Herstelt vanzelf",

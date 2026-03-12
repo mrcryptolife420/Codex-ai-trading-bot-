@@ -6299,18 +6299,18 @@ await runCheck("trading bot paper learning summary keeps daily lane counts after
       { id: "probe-open", symbol: "ETHUSDT", brokerMode: "paper", learningLane: "probe", entryAt: "2026-03-11T09:30:00.000Z" }
     ],
     counterfactualQueue: [
-      { id: "shadow-queue", symbol: "SOLUSDT", learningLane: "shadow", queuedAt: "2026-03-11T10:30:00.000Z" }
+      { id: "shadow-queue", symbol: "SOLUSDT", learningLane: "shadow", queuedAt: "2026-03-11T10:30:00.000Z", strategyFamily: "breakout", marketPhase: "range_acceptance", sessionAtEntry: "europe" }
     ],
     offlineTrainer: {}
   };
   bot.journal = {
     trades: [
-      { id: "safe-trade", symbol: "ADAUSDT", brokerMode: "paper", learningLane: "safe", entryAt: "2026-03-11T08:00:00.000Z", exitAt: "2026-03-11T10:00:00.000Z", paperLearningOutcome: { outcome: "good_trade" } },
-      { id: "probe-trade", symbol: "XRPUSDT", brokerMode: "paper", learningLane: "probe", entryAt: "2026-03-11T08:30:00.000Z", exitAt: "2026-03-11T11:00:00.000Z", paperLearningOutcome: { outcome: "bad_trade" } }
+      { id: "safe-trade", symbol: "ADAUSDT", brokerMode: "paper", learningLane: "safe", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", entryAt: "2026-03-11T08:00:00.000Z", exitAt: "2026-03-11T10:00:00.000Z", paperLearningOutcome: { outcome: "good_trade" } },
+      { id: "probe-trade", symbol: "XRPUSDT", brokerMode: "paper", learningLane: "probe", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", entryAt: "2026-03-11T08:30:00.000Z", exitAt: "2026-03-11T11:00:00.000Z", paperLearningOutcome: { outcome: "bad_trade" } }
     ],
     counterfactuals: [
-      { id: "shadow-1", symbol: "BNBUSDT", learningLane: "shadow", resolvedAt: "2026-03-11T09:15:00.000Z" },
-      { id: "shadow-2", symbol: "DOGEUSDT", learningLane: "shadow", resolvedAt: "2026-03-11T10:45:00.000Z" }
+      { id: "shadow-1", symbol: "BNBUSDT", learningLane: "shadow", strategyFamily: "breakout", marketPhase: "range_acceptance", sessionAtEntry: "europe", resolvedAt: "2026-03-11T09:15:00.000Z" },
+      { id: "shadow-2", symbol: "DOGEUSDT", learningLane: "shadow", strategyFamily: "breakout", marketPhase: "range_acceptance", sessionAtEntry: "europe", resolvedAt: "2026-03-11T10:45:00.000Z" }
     ]
   };
   const summary = bot.buildPaperLearningSummary([], "2026-03-11T12:00:00.000Z");
@@ -6319,6 +6319,9 @@ await runCheck("trading bot paper learning summary keeps daily lane counts after
   assert.equal(summary.shadowCount, 3);
   assert.equal(summary.dailyBudget.probeUsed, 2);
   assert.equal(summary.dailyBudget.shadowUsed, 3);
+  assert.equal(summary.topFamilies[0].id, "breakout");
+  assert.equal(summary.topRegimes[0].id, "range_acceptance");
+  assert.equal(summary.topSessions[0].id, "europe");
 });
 
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {

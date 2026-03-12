@@ -4170,13 +4170,38 @@ export class TradingBot {
       probe: laneKeys.probe.size,
       shadow: laneKeys.shadow.size
     };
+    const recentPaperTrades = arr(this.journal?.trades || [])
+      .filter((trade) => (trade.brokerMode || "paper") === "paper" && trade.exitAt)
+      .slice(-40);
     const familyCounts = {};
     const regimeCounts = {};
     const sessionCounts = {};
-    for (const item of learningEntries) {
-      const family = item.paperLearning?.scope?.family || item.strategy?.family || null;
-      const regime = item.paperLearning?.scope?.regime || item.regime || null;
-      const session = item.paperLearning?.scope?.session || item.session?.session || null;
+    const scopeEvidence = [
+      ...learningEntries.map((item) => ({
+        family: item.paperLearning?.scope?.family || item.strategy?.family || null,
+        regime: item.paperLearning?.scope?.regime || item.regime || null,
+        session: item.paperLearning?.scope?.session || item.session?.session || null
+      })),
+      ...recentPaperTrades.map((trade) => ({
+        family: trade.strategyFamily || trade.entryRationale?.strategy?.family || null,
+        regime: trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || null,
+        session: trade.sessionAtEntry || trade.entryRationale?.session?.session || null
+      })),
+      ...arr(this.journal?.counterfactuals || []).map((item) => ({
+        family: item.strategyFamily || null,
+        regime: item.marketPhase || null,
+        session: item.sessionAtEntry || null
+      })),
+      ...arr(this.runtime?.counterfactualQueue || []).map((item) => ({
+        family: item.strategyFamily || item.paperLearning?.scope?.family || null,
+        regime: item.marketPhase || item.paperLearning?.scope?.regime || null,
+        session: item.sessionAtEntry || item.paperLearning?.scope?.session || null
+      }))
+    ];
+    for (const item of scopeEvidence) {
+      const family = item.family || null;
+      const regime = item.regime || null;
+      const session = item.session || null;
       if (family) {
         familyCounts[family] = (familyCounts[family] || 0) + 1;
       }
@@ -4199,9 +4224,6 @@ export class TradingBot {
         blockerGroups[key] = (blockerGroups[key] || 0) + (value || 0);
       }
     }
-    const recentPaperTrades = arr(this.journal?.trades || [])
-      .filter((trade) => (trade.brokerMode || "paper") === "paper" && trade.exitAt)
-      .slice(-40);
     const recentProbeTrades = recentPaperTrades.filter((trade) => trade.learningLane === "probe");
     const outcomeCounts = {};
     for (const trade of recentPaperTrades) {
