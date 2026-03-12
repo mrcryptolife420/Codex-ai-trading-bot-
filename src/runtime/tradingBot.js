@@ -6227,7 +6227,7 @@ export class TradingBot {
           : blockerReasons.includes("quality_quorum_degraded")
             ? "Review degraded datasources voordat je deze setup vertrouwt."
             : blockerReasons.includes("committee_veto")
-              ? "Controleer veto-feedback en counterfactual scorecards voor deze setup."
+              ? "Geblokkeerd door leer/governance: eerdere vergelijkbare setups scoorden te zwak of werden terecht gevetoed. Bekijk gemiste-trade analyse om te zien of deze blokkade te streng was."
               : blockerReasons[0] || null;
     const autoRecovery = blockerReasons.some((item) => ["protection_pending", "protect_only"].includes(item))
       ? "Protective herstel of protect-only monitoring kan dit automatisch herstellen."
