@@ -16,8 +16,8 @@
           <div class="topbar-main">
             <div class="brand-block">
               <p class="eyebrow">Codex AI crypto trading bot</p>
-              <h1>Trading dashboard</h1>
-              <p class="subtle">Compact overzicht voor status, setups, posities en research.</p>
+              <h1>Trading desk</h1>
+              <p class="subtle">Zo weinig mogelijk ruis, alleen wat nu telt.</p>
             </div>
             <div class="status-cluster" aria-label="Status badges">
               <span class="badge" id="modeBadge">MODE</span>
@@ -27,13 +27,6 @@
           </div>
 
           <div class="topbar-actions">
-            <nav class="section-nav" aria-label="Snelle navigatie">
-              <a class="quick-link" href="#metricsSection">Pulse</a>
-              <a class="quick-link" href="#primaryTradesSection">Trades</a>
-              <a class="quick-link" href="#advancedSection">Analyse</a>
-              <a class="quick-link" href="#recentTradesSection">Historie</a>
-            </nav>
-
             <div class="topbar-controls">
               <div class="theme-switch" role="group" aria-label="Kies thema">
                 <button id="themeDarkBtn" class="theme-option secondary" type="button" aria-pressed="true">Dark</button>
@@ -68,8 +61,8 @@
 
         <section class="operator-strip panel" data-layout-item="operator-strip">
           <div>
-            <p class="eyebrow">Nu</p>
-            <h2>Alleen wat telt</h2>
+            <p class="eyebrow">Live overzicht</p>
+            <h2>Wat je nu moet weten</h2>
           </div>
           <div class="operator-copy">
             <p id="controlHint" class="hint">Status wordt geladen...</p>
@@ -77,19 +70,33 @@
           </div>
         </section>
 
-        <div class="group-banner" data-group-label="now">
-          <span class="eyebrow">Nu</span>
-          <strong>Live status en directe aandacht</strong>
-        </div>
-
-        <section class="dashboard-section" id="metricsSection" data-layout-item="metrics-section">
-          <div class="section-head flush">
+        <section class="dashboard-section panel performance-hub" id="metricsSection" data-layout-item="metrics-section">
+          <div class="section-head flush compact-split">
             <div>
-              <h2>Pulse</h2>
-              <p>De kerncijfers eerst, zonder extra ruis.</p>
+              <h2>Performance</h2>
+              <p>Kapitaal, windows en curve in één blok.</p>
             </div>
           </div>
           <div class="metrics" id="metrics"></div>
+          <div class="performance-grid">
+            <article class="performance-chart">
+              <div class="section-head compact">
+                <div>
+                  <h3>Equity</h3>
+                </div>
+                <span class="subtle" id="equityMeta"></span>
+              </div>
+              <div id="equityChart" class="chart"></div>
+            </article>
+            <article class="performance-windows">
+              <div class="section-head compact">
+                <div>
+                  <h3>Windows</h3>
+                </div>
+              </div>
+              <div id="windowCards" class="window-cards"></div>
+            </article>
+          </div>
         </section>
 
         <section class="panel focus-panel" id="focusSection" hidden>
@@ -102,48 +109,13 @@
           <div class="focus-grid" id="focusGrid"></div>
         </section>
 
-        <section class="grid two-up" id="setupsSection" data-layout-item="setups-overview" data-layout-group="setups-overview">
-          <article class="panel chart-panel" data-layout-item="equity-chart">
-            <div class="section-head">
-              <div>
-                <h2>Equity curve</h2>
-                <p>Kapitaalontwikkeling van recente cycli.</p>
-              </div>
-              <span class="subtle" id="equityMeta"></span>
-            </div>
-            <div id="equityChart" class="chart"></div>
-          </article>
-          <article class="panel chart-panel" data-layout-item="rolling-windows">
-            <div class="section-head">
-              <div>
-                <h2>Rolling windows</h2>
-                <p>Vandaag, 7 dagen, 15 dagen, 30 dagen en all-time.</p>
-              </div>
-            </div>
-            <div id="windowCards" class="window-cards"></div>
-          </article>
-        </section>
-
-        <div class="group-banner" data-group-label="trades">
-          <span class="eyebrow">Trades</span>
-          <strong>Open posities en beste kansen</strong>
-        </div>
-
-        <section class="grid two-up" id="primaryTradesSection" data-layout-item="primary-trades" data-layout-group="primary-trades">
-          <article class="panel collapsible" id="positionsPanel" data-default-collapsed="true" data-layout-item="positions-panel">
-            <div class="section-head" data-collapsible="true">
-              <div>
-                <h2>Open posities</h2>
-                <p>Alleen de kern van actieve posities.</p>
-              </div>
-            </div>
-            <div id="positionsList" class="stack"></div>
-          </article>
-          <article class="panel collapsible" id="setupsPanel" data-layout-item="setups-panel">
+        <section class="main-deck" id="primaryTradesSection" data-layout-item="primary-trades" data-layout-group="primary-trades">
+          <article class="panel collapsible hero-panel" id="setupsPanel" data-layout-item="setups-panel">
             <div class="section-head setup-head" data-collapsible="true">
               <div>
+                <p class="eyebrow">Kansen</p>
                 <h2>Top AI setups</h2>
-                <p>Eerst de kern, details pas na uitklappen.</p>
+                <p>De beste kansen eerst. Details alleen als je uitklapt.</p>
               </div>
               <div class="setup-toolbar">
                 <input id="decisionSearch" type="search" placeholder="Zoek pair, token of strategie" />
@@ -156,28 +128,47 @@
             </div>
             <div id="decisionsList" class="stack compact"></div>
           </article>
+
+          <article class="panel collapsible side-panel" id="positionsPanel" data-default-collapsed="false" data-layout-item="positions-panel">
+            <div class="section-head" data-collapsible="true">
+              <div>
+                <p class="eyebrow">Actief</p>
+                <h2>Open posities</h2>
+                <p>Wat nu echt leeft in de markt.</p>
+              </div>
+            </div>
+            <div id="positionsList" class="stack"></div>
+          </article>
+
+          <article class="panel collapsible side-panel ops-panel" id="opsRuntimePanel" data-default-collapsed="false" data-layout-item="ops-runtime-panel">
+            <div class="section-head" data-collapsible="true">
+              <div>
+                <p class="eyebrow">Risico &amp; herstel</p>
+                <h2>Operations</h2>
+                <p>Alerts, lifecycle en wat aandacht vraagt.</p>
+              </div>
+            </div>
+            <div id="opsSummary" class="insight-grid"></div>
+            <div id="opsList" class="stack compact"></div>
+          </article>
         </section>
 
         <section class="panel collapsible advanced-panel" id="advancedSection" data-default-collapsed="true" data-layout-item="advanced-section">
           <div class="section-head" data-collapsible="true">
             <div>
-              <h2>Extra analyse</h2>
-              <p>Alles wat niet direct nodig is voor je snelle overzicht.</p>
+              <h2>Verdieping</h2>
+              <p>Alle extra context, research en historiek op de tweede laag.</p>
             </div>
           </div>
 
           <div class="advanced-stack" data-layout-group="advanced-stack">
-            <div class="group-banner inline" data-group-label="risk">
-              <span class="eyebrow">Risico &amp; herstel</span>
-              <strong>Blockers, operations en runtime safety</strong>
-            </div>
-            <section class="grid two-up" id="tradeIntelSection" data-layout-item="trade-intel" data-layout-group="trade-intel">
+            <section class="compact-board" id="tradeIntelSection" data-layout-item="trade-intel" data-layout-group="trade-intel">
               <article class="panel collapsible" id="blockedPanel" data-default-collapsed="true" data-layout-item="blocked-panel">
                 <div class="section-head" data-collapsible="true">
-              <div>
-                <h2>Waarom niet</h2>
-                <p>Belangrijkste blocker-redenen.</p>
-              </div>
+                  <div>
+                    <h2>Waarom niet</h2>
+                    <p>Belangrijkste blocker-redenen.</p>
+                  </div>
                 </div>
                 <div id="blockedList" class="stack compact"></div>
               </article>
@@ -190,9 +181,6 @@
                 </div>
                 <div id="replayList" class="stack compact"></div>
               </article>
-            </section>
-
-            <section class="grid two-up" id="opsSection" data-layout-item="ops-section" data-layout-group="ops-section">
               <article class="panel collapsible" id="pnlPanel" data-default-collapsed="true" data-layout-item="pnl-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
@@ -203,23 +191,9 @@
                 <div id="pnlAttributionSummary" class="insight-grid"></div>
                 <div id="pnlAttributionList" class="stack compact"></div>
               </article>
-              <article class="panel collapsible" id="opsRuntimePanel" data-default-collapsed="true" data-layout-item="ops-runtime-panel">
-                <div class="section-head" data-collapsible="true">
-              <div>
-                <h2>Operations &amp; recovery</h2>
-                <p>Herstel, alerts en runtime-status.</p>
-              </div>
-                </div>
-                <div id="opsSummary" class="insight-grid"></div>
-                <div id="opsList" class="stack compact"></div>
-              </article>
             </section>
 
-            <div class="group-banner inline" data-group-label="research">
-              <span class="eyebrow">Research &amp; governance</span>
-              <strong>Universe, attributie, registry en intelligence</strong>
-            </div>
-            <section class="grid two-up" id="researchSection" data-layout-item="research-section" data-layout-group="research-section">
+            <section class="compact-board" id="researchSection" data-layout-item="research-section" data-layout-group="research-section">
               <article class="panel collapsible" id="universePanel" data-default-collapsed="true" data-layout-item="universe-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
@@ -240,9 +214,6 @@
                 <div id="attributionSummary" class="insight-grid"></div>
                 <div id="attributionList" class="stack compact"></div>
               </article>
-            </section>
-
-            <section class="grid two-up" id="governanceSection" data-layout-item="governance-section" data-layout-group="governance-section">
               <article class="panel collapsible" id="registryPanel" data-default-collapsed="true" data-layout-item="registry-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
@@ -253,6 +224,9 @@
                 <div id="governanceSummary" class="insight-grid"></div>
                 <div id="registryList" class="stack compact"></div>
               </article>
+            </section>
+
+            <section class="compact-board secondary-board" id="governanceSection" data-layout-item="governance-section" data-layout-group="governance-section">
               <article class="panel table-panel collapsible" id="tradesPanel" data-default-collapsed="true" data-layout-item="trades-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
@@ -278,9 +252,7 @@
                   </table>
                 </div>
               </article>
-            </section>
-
-            <section class="panel collapsible" id="intelPanel" data-default-collapsed="true" data-layout-item="intel-panel">
+              <section class="panel collapsible" id="intelPanel" data-default-collapsed="true" data-layout-item="intel-panel">
               <div class="section-head" data-collapsible="true">
                 <div>
                   <h2>Model &amp; market intelligence</h2>
@@ -362,6 +334,7 @@
                   </div>
                 </div>
               </details>
+              </section>
             </section>
           </div>
         </section>

@@ -973,7 +973,6 @@ body.density-ultra .compact-data-grid {
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
 }
 
-body.focus-mode #setupsSection,
 body.focus-mode #primaryTradesSection,
 body.focus-mode #advancedSection,
 body.focus-mode .group-banner[data-group-label],
@@ -1692,5 +1691,147 @@ body[data-theme="light"] .quick-link {
   .layout-tools {
     width: 100%;
     justify-content: flex-end;
+  }
+}
+
+.topbar {
+  background:
+    radial-gradient(circle at top left, rgba(89, 195, 178, 0.16), transparent 28%),
+    radial-gradient(circle at right center, rgba(127, 147, 255, 0.18), transparent 26%),
+    linear-gradient(160deg, rgba(8, 15, 28, 0.96), rgba(14, 25, 46, 0.9));
+}
+
+.operator-strip {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  min-height: 0;
+  background: linear-gradient(135deg, rgba(89, 195, 178, 0.09), rgba(127, 147, 255, 0.08));
+}
+
+.performance-hub {
+  display: grid;
+  gap: 14px;
+}
+
+.performance-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.85fr);
+  gap: 14px;
+}
+
+.performance-chart,
+.performance-windows {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.performance-windows {
+  align-content: start;
+}
+
+.main-deck {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.9fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.hero-panel {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.side-panel {
+  min-width: 0;
+}
+
+.ops-panel .insight-grid {
+  margin-bottom: 10px;
+}
+
+.compact-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.secondary-board {
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+}
+
+#intelPanel {
+  grid-column: 1 / -1;
+}
+
+.layout-tools {
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.panel:hover .layout-tools,
+.section-head:focus-within .layout-tools {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.metric-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(127, 147, 255, 0.03));
+}
+
+.decision-card.allowed {
+  border-color: rgba(49, 209, 139, 0.22);
+}
+
+.decision-card.allowed .reason-pill {
+  background: rgba(49, 209, 139, 0.1);
+  border-color: rgba(49, 209, 139, 0.22);
+}
+
+.decision-card .fold-summary,
+.position-card .fold-summary,
+.replay-card .fold-summary,
+.blocked-card .fold-summary {
+  gap: 10px;
+}
+
+.window-cards {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+@media (max-width: 1180px) {
+  .performance-grid,
+  .main-deck,
+  .compact-board,
+  .secondary-board,
+  .operator-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-panel {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    gap: 12px;
+  }
+
+  .operator-summary,
+  .metrics,
+  .performance-grid,
+  .main-deck,
+  .compact-board,
+  .secondary-board,
+  .focus-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .layout-tools {
+    opacity: 1;
+    transform: none;
   }
 }

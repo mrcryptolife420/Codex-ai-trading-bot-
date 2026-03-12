@@ -83,7 +83,7 @@ let transientMessage = "";
 let decisionSearchQuery = "";
 let decisionAllowedOnly = false;
 let snapshotEpoch = 0;
-let densityLevel = window.localStorage.getItem(DENSITY_STORAGE_KEY) || "comfortable";
+let densityLevel = window.localStorage.getItem(DENSITY_STORAGE_KEY) || "compact";
 let focusMode = window.localStorage.getItem(FOCUS_MODE_STORAGE_KEY) === "1";
 
 function readDetailState() {
