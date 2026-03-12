@@ -5875,8 +5875,8 @@ export class TradingBot {
     if (probeOnlyActive) {
       decision.quoteAmount = num((decision.quoteAmount || 0) * 0.32, 2);
       decision.reasons = [...new Set([...(decision.reasons || []), "operator_probe_only"])].slice(0, 10);
-      decision.operatorAction = "probe_only";
-      decision.autoRecovery = "operator_probe_window";
+      decision.operatorAction = "Alleen probe-entries zijn nu toegestaan. Gebruik deze periode om extra leertrades gecontroleerd te volgen.";
+      decision.autoRecovery = "De probe-only periode loopt automatisch af zodra het operatorvenster sluit.";
     }
     marketSnapshot.book.entryEstimate = this.stream.estimateFill?.(symbol, "BUY", { quoteAmount: decision.quoteAmount }) || null;
     decision.executionPlan = this.execution.buildEntryPlan({
@@ -7178,7 +7178,13 @@ export class TradingBot {
     ];
     const dataSources = arr(decision.dataQuality?.sources || decision.dataQualitySummary?.sources || []).slice(0, 5);
     const degradedSources = dataSources.filter((item) => ["degraded", "missing"].includes(item.status)).map((item) => item.label);
-    const operatorAction = blockerReasons.includes("exchange_truth_freeze")
+    const incomingOperatorAction = decision.operatorAction === "probe_only"
+      ? "Alleen probe-entries zijn nu toegestaan. Gebruik deze periode om extra leertrades gecontroleerd te volgen."
+      : decision.operatorAction || null;
+    const incomingAutoRecovery = decision.autoRecovery === "operator_probe_window"
+      ? "De probe-only periode loopt automatisch af zodra het operatorvenster sluit."
+      : decision.autoRecovery || null;
+    const operatorAction = incomingOperatorAction || (blockerReasons.includes("exchange_truth_freeze")
       ? "Wacht op reconcile en bevestig exchange truth voordat entries terug mogen."
       : blockerReasons.includes("reconcile_required")
         ? "Controleer protective state en runtime/exchange inventory."
@@ -7191,19 +7197,19 @@ export class TradingBot {
               : blockerReasons.includes("higher_tf_conflict")
                 ? "Hogere timeframes spreken deze setup tegen. Wacht op betere alignment of behandel dit alleen als leergeval."
           : blockerReasons.includes("local_book_quality_too_low")
-                ? "Wacht op gezonde local-book depth of schakel over op observe-only."
+              ? "Wacht op gezonde local-book depth of schakel over op observe-only."
                 : blockerReasons.includes("quality_quorum_degraded")
                   ? "Review degraded datasources voordat je deze setup vertrouwt."
                   : blockerReasons.includes("committee_veto")
                     ? "Geblokkeerd door leer/governance: eerdere vergelijkbare setups scoorden te zwak of werden terecht gevetoed. Bekijk gemiste-trade analyse om te zien of deze blokkade te streng was."
-                    : blockerReasons[0] ? titleize(blockerReasons[0]).replace(/_/g, " ") : null;
-    const autoRecovery = blockerReasons.some((item) => ["protection_pending", "protect_only"].includes(item))
+                    : blockerReasons[0] ? titleize(blockerReasons[0]).replace(/_/g, " ") : null);
+    const autoRecovery = incomingAutoRecovery || (blockerReasons.some((item) => ["protection_pending", "protect_only"].includes(item))
       ? "Protective herstel of protect-only monitoring kan dit automatisch herstellen."
       : blockerReasons.includes("paper_calibration_probe")
         ? "Paper probe kan blijven leren tot calibration weer gezond is."
         : degradedSources.length
           ? `Datasources in herstel: ${degradedSources.join(", ")}.`
-          : null;
+          : null);
     return {
       symbol: decision.symbol,
       summary: decision.summary || null,

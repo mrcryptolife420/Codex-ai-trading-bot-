@@ -5630,6 +5630,29 @@ await runCheck("dashboard decision view translates common operator blockers into
   assert.equal(view.missedTradeAnalysis.available, false);
 });
 
+await runCheck("dashboard decision view preserves readable operator fields and maps probe-only codes", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
+  bot.journal = { counterfactuals: [] };
+  const readableView = bot.buildDashboardDecisionView({
+    symbol: "BTCUSDT",
+    allow: false,
+    operatorAction: "Gebruik deze setup alleen als leergeval.",
+    autoRecovery: "Wacht tot de datafeed vanzelf herstelt."
+  });
+  assert.equal(readableView.operatorAction, "Gebruik deze setup alleen als leergeval.");
+  assert.equal(readableView.autoRecovery, "Wacht tot de datafeed vanzelf herstelt.");
+
+  const probeOnlyView = bot.buildDashboardDecisionView({
+    symbol: "ETHUSDT",
+    allow: false,
+    operatorAction: "probe_only",
+    autoRecovery: "operator_probe_window"
+  });
+  assert.ok(probeOnlyView.operatorAction.includes("Alleen probe-entries"));
+  assert.ok(probeOnlyView.autoRecovery.includes("probe-only periode"));
+});
+
 await runCheck("doctor preview scan uses explicit read-only candidate scan mode", async () => {
   const bot = Object.create(TradingBot.prototype);
   let called = 0;
