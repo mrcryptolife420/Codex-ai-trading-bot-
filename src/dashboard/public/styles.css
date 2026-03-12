@@ -229,7 +229,7 @@ button:disabled {
 }
 
 .bottom-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .panel {
@@ -459,6 +459,56 @@ input[type="search"] {
   background: linear-gradient(180deg, rgba(103, 190, 255, 0.08), rgba(255, 255, 255, 0.03));
 }
 
+.learning-board {
+  display: grid;
+  gap: 12px;
+}
+
+.learning-hero {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(114, 144, 255, 0.18);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(114, 144, 255, 0.12), rgba(255, 255, 255, 0.03));
+}
+
+.learning-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.learning-title h3 {
+  font-size: 1rem;
+}
+
+.learning-copy {
+  color: var(--text-soft);
+  line-height: 1.5;
+  font-size: 0.92rem;
+}
+
+.learning-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.learning-detail {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.learning-detail strong {
+  line-height: 1.35;
+}
+
 .learning-card .quick-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -484,6 +534,7 @@ input[type="search"] {
   .topbar-actions,
   .toolbar,
   .risk-grid,
+  .learning-grid,
   .quick-grid,
   .subgrid {
     display: grid;

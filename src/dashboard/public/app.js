@@ -24,6 +24,7 @@ const elements = {
   decisionShowMoreBtn: document.querySelector("#decisionShowMoreBtn"),
   decisionsList: document.querySelector("#decisionsList"),
   positionsList: document.querySelector("#positionsList"),
+  learningList: document.querySelector("#learningList"),
   opsSummary: document.querySelector("#opsSummary"),
   opsLearning: document.querySelector("#opsLearning"),
   opsList: document.querySelector("#opsList"),
@@ -31,11 +32,13 @@ const elements = {
   tradesBody: document.querySelector("#tradesBody"),
   signalsSection: document.querySelector("#signalsSection"),
   positionsSection: document.querySelector("#positionsSection"),
+  learningSection: document.querySelector("#learningSection"),
   missedTradesSection: document.querySelector("#missedTradesSection"),
   riskSection: document.querySelector("#riskSection"),
   historySection: document.querySelector("#historySection"),
   signalsToggleBtn: document.querySelector("#signalsToggleBtn"),
   positionsToggleBtn: document.querySelector("#positionsToggleBtn"),
+  learningToggleBtn: document.querySelector("#learningToggleBtn"),
   missedTradesToggleBtn: document.querySelector("#missedTradesToggleBtn"),
   riskToggleBtn: document.querySelector("#riskToggleBtn"),
   historyToggleBtn: document.querySelector("#historyToggleBtn")
@@ -52,6 +55,7 @@ let lastSnapshotReceivedAt = null;
 const panelState = {
   signals: true,
   positions: true,
+  learning: true,
   missedTrades: true,
   risk: true,
   history: true
@@ -534,6 +538,112 @@ function renderMissedTrades(snapshot) {
     : `<div class="empty">Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades.</div>`;
 }
 
+function learningFocusText(snapshot) {
+  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const retrainPlan = snapshot?.dashboard?.offlineTrainer?.retrainExecutionPlan || {};
+  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
+  const topScope = paperLearning.scopeReadiness?.[0];
+  const topBlocker = paperLearning.topBlockers?.[0];
+  const latestOutcome = paperLearning.recentOutcomes?.[0];
+
+  if (retrainPlan.selectedScopes?.[0]?.id) {
+    return `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`;
+  }
+  if (topScope?.id) {
+    return `Leert nu vooral op ${titleize(topScope.id)} in ${titleize(topScope.status || "building")}.`;
+  }
+  if (replayPlan.nextPackType) {
+    return `Replay-focus ligt op ${titleize(replayPlan.nextPackType)}.`;
+  }
+  if (topBlocker?.id || latestOutcome?.id) {
+    return `Leert nog vooral uit ${titleize(topBlocker?.id || latestOutcome?.id || "recente paper cases")}.`;
+  }
+  return "De bot bouwt nog basisleerdata op in paper mode.";
+}
+
+function latestTradeSummary(snapshot) {
+  const trade = snapshot?.dashboard?.report?.recentTrades?.[0];
+  if (!trade) {
+    return {
+      title: "Nog geen recente trade",
+      detail: "Zodra een trade sluit, zie je hier direct wat er gebeurde en wat de bot daarvan leert."
+    };
+  }
+  const pnl = formatMoney(trade.pnlQuote);
+  const pnlPct = formatSignedPct(trade.netPnlPct);
+  return {
+    title: `${trade.symbol || "-"} · ${titleize(trade.reason || "trade")}`,
+    detail: `${pnl} (${pnlPct}) bij exit op ${formatDate(trade.closedAt || trade.exitAt || trade.updatedAt)}.`
+  };
+}
+
+function renderLearning(snapshot) {
+  if (!elements.learningList) {
+    return;
+  }
+
+  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
+  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
+  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
+  const topScope = paperLearning.scopeReadiness?.[0];
+  const topBlocker = paperLearning.topBlockers?.[0];
+  const topOutcome = paperLearning.recentOutcomes?.[0];
+  const latestTrade = latestTradeSummary(snapshot);
+  const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
+  const learningScore = formatPct(paperLearning.readinessScore || 0, 0);
+  const nextStep =
+    retrainPlan.operatorAction ||
+    replayPlan.operatorGoal ||
+    paperLearning.probation?.note ||
+    paperLearning.notes?.[0] ||
+    "Nog geen directe leeractie nodig.";
+  const focusText = learningFocusText(snapshot);
+
+  elements.learningList.innerHTML = `
+    <article class="learning-board">
+      <section class="learning-hero">
+        <div class="learning-title">
+          <div>
+            <p class="eyebrow">Live learning</p>
+            <h3>${escapeHtml(learningStatus)} · ${escapeHtml(learningScore)}</h3>
+          </div>
+          <span class="pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}">${escapeHtml(learningStatus)}</span>
+        </div>
+        <p class="learning-copy">${escapeHtml(focusText)}</p>
+      </section>
+      <section class="learning-grid">
+        <article class="learning-detail">
+          <span class="metric-label">Leert nu</span>
+          <strong>${escapeHtml(topScope?.id ? titleize(topScope.id) : "Warmup dataset")}</strong>
+          <span class="metric-foot">${escapeHtml(topScope?.status ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || 0, 0)}` : "Nog geen sterke scope zichtbaar.")}</span>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Laatste trade</span>
+          <strong>${escapeHtml(latestTrade.title)}</strong>
+          <span class="metric-foot">${escapeHtml(latestTrade.detail)}</span>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Grootste les</span>
+          <strong>${escapeHtml(titleize(topOutcome?.id || topBlocker?.id || "nog geen duidelijke les"))}</strong>
+          <span class="metric-foot">${escapeHtml(
+            topOutcome?.count
+              ? `${topOutcome.count} recente cases van dit type.`
+              : topBlocker?.count
+                ? `${topBlocker.count} blokkades sturen nu de leerlus.`
+                : "Er is nog te weinig consistente paperdata om 1 duidelijke les te trekken."
+          )}</span>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Volgende stap</span>
+          <strong>${escapeHtml(titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"))}</strong>
+          <span class="metric-foot">${escapeHtml(nextStep)}</span>
+        </article>
+      </section>
+    </article>
+  `;
+}
+
 function buildOpsCards(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const alerts = unresolvedAlerts(snapshot);
@@ -760,6 +870,7 @@ function render(snapshot) {
   renderHero(snapshot);
   renderSignals(snapshot);
   renderPositions(snapshot);
+  renderLearning(snapshot);
   renderMissedTrades(snapshot);
   renderOps(snapshot);
   renderTrades(snapshot);
@@ -842,6 +953,7 @@ function bindEvents() {
 
   bindPanelToggle("signals", elements.signalsSection, elements.signalsToggleBtn);
   bindPanelToggle("positions", elements.positionsSection, elements.positionsToggleBtn);
+  bindPanelToggle("learning", elements.learningSection, elements.learningToggleBtn);
   bindPanelToggle("missedTrades", elements.missedTradesSection, elements.missedTradesToggleBtn);
   bindPanelToggle("risk", elements.riskSection, elements.riskToggleBtn);
   bindPanelToggle("history", elements.historySection, elements.historyToggleBtn);
@@ -865,6 +977,7 @@ function syncPanel(section, button, expanded) {
 function syncPanels() {
   syncPanel(elements.signalsSection, elements.signalsToggleBtn, panelState.signals);
   syncPanel(elements.positionsSection, elements.positionsToggleBtn, panelState.positions);
+  syncPanel(elements.learningSection, elements.learningToggleBtn, panelState.learning);
   syncPanel(elements.missedTradesSection, elements.missedTradesToggleBtn, panelState.missedTrades);
   syncPanel(elements.riskSection, elements.riskToggleBtn, panelState.risk);
   syncPanel(elements.historySection, elements.historyToggleBtn, panelState.history);
