@@ -4053,16 +4053,20 @@ await runCheck("config loader parses recorder and backup settings", async () => 
 await runCheck("data recorder restores persisted summary across restarts", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-restore-"));
   try {
+    const decisionFile = path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl");
+    const tradeFile = path.join(tempDir, "feature-store", "trades", "2026-03-10.jsonl");
     await fs.mkdir(path.join(tempDir, "feature-store", "decisions"), { recursive: true });
     await fs.mkdir(path.join(tempDir, "feature-store", "trades"), { recursive: true });
     await fs.writeFile(
-      path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl"),
-      `${JSON.stringify({ recordQuality: { kind: "decision", score: 0.82, tier: "high" } })}\n${JSON.stringify({ recordQuality: { kind: "decision", score: 0.58, tier: "medium" } })}\n`
+      decisionFile,
+      `${JSON.stringify({ at: "2026-03-10T08:00:00.000Z", recordQuality: { kind: "decision", score: 0.82, tier: "high" } })}\n${JSON.stringify({ at: "2026-03-10T10:00:00.000Z", recordQuality: { kind: "decision", score: 0.58, tier: "medium" } })}\n`
     );
     await fs.writeFile(
-      path.join(tempDir, "feature-store", "trades", "2026-03-10.jsonl"),
-      `${JSON.stringify({ recordQuality: { kind: "trade", score: 0.41, tier: "low" } })}\n`
+      tradeFile,
+      `${JSON.stringify({ at: "2026-03-10T12:30:00.000Z", recordQuality: { kind: "trade", score: 0.41, tier: "low" } })}\n`
     );
+    await fs.utimes(decisionFile, new Date("2026-03-10T10:00:00.000Z"), new Date("2026-03-10T10:00:00.000Z"));
+    await fs.utimes(tradeFile, new Date("2026-03-10T12:30:00.000Z"), new Date("2026-03-10T12:30:00.000Z"));
     const recorder = new DataRecorder({
       runtimeDir: tempDir,
       config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
@@ -4092,9 +4096,11 @@ await runCheck("data recorder restores persisted summary across restarts", async
     assert.equal(summary.tradeFrames, 1);
     assert.equal(summary.learningFrames, 0);
     assert.equal(summary.snapshotFrames, 0);
-    assert.equal(summary.lastRecordAt, "2026-03-10T09:00:00.000Z");
+    assert.equal(summary.lastRecordAt, "2026-03-10T12:30:00.000Z");
     assert.equal(summary.recordQualityCount, 3);
     assert.equal(summary.averageRecordQuality, 0.6033);
+    assert.equal(summary.latestRecordQuality?.kind, "trade");
+    assert.equal(summary.latestRecordQuality?.score, 0.41);
     assert.equal(summary.qualityByKind.find((item) => item.kind === "decision")?.count, 2);
     assert.equal(summary.qualityByKind.find((item) => item.kind === "trade")?.count, 1);
     assert.equal(summary.sourceCoverage[0].provider, "coindesk");

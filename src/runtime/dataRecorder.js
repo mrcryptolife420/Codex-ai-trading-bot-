@@ -622,12 +622,16 @@ async function countJsonlRecords(filePaths = []) {
 
 function summarizeQualityStateFromRecords(records = []) {
   const qualityRecords = arr(records)
-    .map((item) => item?.recordQuality)
-    .filter((item) => item && item.score != null);
+    .map((item) => ({
+      at: item?.at || null,
+      recordQuality: item?.recordQuality || null
+    }))
+    .filter((item) => item.recordQuality && item.recordQuality.score != null);
   const total = qualityRecords.length;
   const qualityByKind = {};
   for (const item of qualityRecords) {
-    const kind = item.kind || "generic";
+    const quality = item.recordQuality;
+    const kind = quality.kind || "generic";
     const previous = qualityByKind[kind] || {
       kind,
       count: 0,
@@ -640,16 +644,24 @@ function summarizeQualityStateFromRecords(records = []) {
     qualityByKind[kind] = {
       kind,
       count: nextCount,
-      averageScore: num((((previous.averageScore || 0) * (previous.count || 0)) + num(item.score || 0, 4)) / nextCount, 4),
-      high: (previous.high || 0) + (item.tier === "high" ? 1 : 0),
-      medium: (previous.medium || 0) + (item.tier === "medium" ? 1 : 0),
-      low: (previous.low || 0) + (item.tier === "low" ? 1 : 0)
+      averageScore: num((((previous.averageScore || 0) * (previous.count || 0)) + num(quality.score || 0, 4)) / nextCount, 4),
+      high: (previous.high || 0) + (quality.tier === "high" ? 1 : 0),
+      medium: (previous.medium || 0) + (quality.tier === "medium" ? 1 : 0),
+      low: (previous.low || 0) + (quality.tier === "low" ? 1 : 0)
     };
   }
+  const latestQualityEntry = qualityRecords.reduce((latest, item) => {
+    const itemAt = new Date(item.at || 0).getTime();
+    const latestAt = new Date(latest?.at || 0).getTime();
+    if (!latest || (Number.isFinite(itemAt) && itemAt >= latestAt)) {
+      return item;
+    }
+    return latest;
+  }, null);
   return {
     recordQualityCount: total,
-    averageRecordQuality: num(average(qualityRecords.map((item) => item.score || 0), 0), 4),
-    latestRecordQuality: qualityRecords.at(-1) || null,
+    averageRecordQuality: num(average(qualityRecords.map((item) => item.recordQuality?.score || 0), 0), 4),
+    latestRecordQuality: latestQualityEntry?.recordQuality || null,
     qualityByKind
   };
 }
@@ -769,10 +781,7 @@ export class DataRecorder {
     if (!this.state.lastRecordAt) {
       this.state.lastRecordAt = await resolveLatestTimestamp([...existingFiles, ...archivedFiles]);
     }
-    await this.rebuildFileTruthState({ maxCoverageRecords: 800, preserveLastRecordAt: true });
-    if (restored.lastRecordAt) {
-      this.state.lastRecordAt = restored.lastRecordAt;
-    }
+    await this.rebuildFileTruthState({ maxCoverageRecords: 800, preserveLastRecordAt: false });
   }
 
   async recordCycle({ at, mode, candidates = [], openedPosition = null, overview = {}, safety = {}, marketSentiment = {}, volatility = {} }) {
