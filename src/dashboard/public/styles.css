@@ -229,7 +229,7 @@ button:disabled {
 }
 
 .bottom-grid {
-  grid-template-columns: minmax(340px, 0.9fr) minmax(0, 1.3fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .panel {
@@ -267,7 +267,8 @@ button:disabled {
 
 .signal-card,
 .position-card,
-.risk-card {
+.risk-card,
+.missed-card {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: rgba(255, 255, 255, 0.03);
@@ -345,6 +346,10 @@ button:disabled {
 
 .analysis-note {
   color: var(--text-dim);
+}
+
+.missed-card {
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .card-header {

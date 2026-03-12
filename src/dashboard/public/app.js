@@ -27,13 +27,16 @@ const elements = {
   opsSummary: document.querySelector("#opsSummary"),
   opsLearning: document.querySelector("#opsLearning"),
   opsList: document.querySelector("#opsList"),
+  missedTradesList: document.querySelector("#missedTradesList"),
   tradesBody: document.querySelector("#tradesBody"),
   signalsSection: document.querySelector("#signalsSection"),
   positionsSection: document.querySelector("#positionsSection"),
+  missedTradesSection: document.querySelector("#missedTradesSection"),
   riskSection: document.querySelector("#riskSection"),
   historySection: document.querySelector("#historySection"),
   signalsToggleBtn: document.querySelector("#signalsToggleBtn"),
   positionsToggleBtn: document.querySelector("#positionsToggleBtn"),
+  missedTradesToggleBtn: document.querySelector("#missedTradesToggleBtn"),
   riskToggleBtn: document.querySelector("#riskToggleBtn"),
   historyToggleBtn: document.querySelector("#historyToggleBtn")
 };
@@ -49,6 +52,7 @@ let lastSnapshotReceivedAt = null;
 const panelState = {
   signals: true,
   positions: true,
+  missedTrades: true,
   risk: true,
   history: true
 };
@@ -192,6 +196,20 @@ function renderMissedTradeAnalysis(decision) {
       <p class="analysis-note">${escapeHtml(analysis.recommendation || "Gebruik dit als extra context bij geblokkeerde setups.")}</p>
     </details>
   `;
+}
+
+function hypotheticalTradeText(decision) {
+  const analysis = decision.missedTradeAnalysis || {};
+  if (analysis.averageMissedMovePct > 0.015) {
+    return `Vergelijkbare blokkades liepen vaak nog ongeveer ${formatPct(analysis.averageMissedMovePct, 1)} door in jouw richting.`;
+  }
+  if (analysis.averageMissedMovePct > 0.005) {
+    return `Vergelijkbare blokkades gaven vaak nog een kleine move van ongeveer ${formatPct(analysis.averageMissedMovePct, 1)}.`;
+  }
+  if ((analysis.goodVetoRate || 0) > (analysis.badVetoRate || 0)) {
+    return "Historisch was blokkeren hier meestal veiliger dan instappen.";
+  }
+  return "Deze setup is leergevoelig: er is nog geen sterke voorkeur tussen blokkeren of instappen.";
 }
 
 function truncate(text, max = 120) {
@@ -470,6 +488,52 @@ function renderPositions(snapshot) {
     : `<div class="empty">Er zijn nu geen open posities.</div>`;
 }
 
+function renderMissedTrades(snapshot) {
+  const blocked = (snapshot?.dashboard?.blockedSetups || [])
+    .filter((item) => item?.missedTradeAnalysis?.available)
+    .slice(0, 4);
+  elements.missedTradesList.innerHTML = blocked.length
+    ? blocked.map((decision) => {
+      const analysis = decision.missedTradeAnalysis || {};
+      const blockerLabel = analysis.blockerId ? titleize(analysis.blockerId) : "Gemengde blokkade";
+      return `
+        <article class="signal-card missed-card">
+          <div class="card-summary">
+            <div class="card-header">
+              <div>
+                <p class="eyebrow">Gemiste setup</p>
+                <h3>${escapeHtml(decision.symbol || "-")}</h3>
+              </div>
+              <span class="pill negative">${escapeHtml(blockerLabel)}</span>
+            </div>
+            <p class="card-copy">${escapeHtml(analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar.")}</p>
+            <div class="decision-reasons">
+              <div class="reason-row">
+                <strong>Setup</strong>
+                <span class="reason-copy">${escapeHtml(formatDecisionType(decision))}</span>
+              </div>
+              <div class="reason-row">
+                <strong>Hoe wel</strong>
+                <span class="reason-copy">${escapeHtml(hypotheticalTradeText(decision))}</span>
+              </div>
+              <div class="reason-row">
+                <strong>Les</strong>
+                <span class="reason-copy">${escapeHtml(analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad.")}</span>
+              </div>
+            </div>
+            <div class="tag-list">
+              ${analysis.badVetoRate != null ? `<span class="tag negative">Te streng ${escapeHtml(formatPct(analysis.badVetoRate, 0))}</span>` : ""}
+              ${analysis.goodVetoRate != null ? `<span class="tag ${analysis.goodVetoRate >= analysis.badVetoRate ? "positive" : ""}">Terecht ${escapeHtml(formatPct(analysis.goodVetoRate, 0))}</span>` : ""}
+              ${analysis.averageMissedMovePct != null ? `<span class="tag">${escapeHtml(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`)}</span>` : ""}
+              ${analysis.recentMatches ? `<span class="tag">${escapeHtml(`${analysis.recentMatches} cases`)}</span>` : ""}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join("")
+    : `<div class="empty">Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades.</div>`;
+}
+
 function buildOpsCards(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const alerts = unresolvedAlerts(snapshot);
@@ -646,6 +710,7 @@ function render(snapshot) {
   renderHero(snapshot);
   renderSignals(snapshot);
   renderPositions(snapshot);
+  renderMissedTrades(snapshot);
   renderOps(snapshot);
   renderTrades(snapshot);
   syncControls(snapshot);
@@ -727,6 +792,7 @@ function bindEvents() {
 
   bindPanelToggle("signals", elements.signalsSection, elements.signalsToggleBtn);
   bindPanelToggle("positions", elements.positionsSection, elements.positionsToggleBtn);
+  bindPanelToggle("missedTrades", elements.missedTradesSection, elements.missedTradesToggleBtn);
   bindPanelToggle("risk", elements.riskSection, elements.riskToggleBtn);
   bindPanelToggle("history", elements.historySection, elements.historyToggleBtn);
 }
@@ -749,6 +815,7 @@ function syncPanel(section, button, expanded) {
 function syncPanels() {
   syncPanel(elements.signalsSection, elements.signalsToggleBtn, panelState.signals);
   syncPanel(elements.positionsSection, elements.positionsToggleBtn, panelState.positions);
+  syncPanel(elements.missedTradesSection, elements.missedTradesToggleBtn, panelState.missedTrades);
   syncPanel(elements.riskSection, elements.riskToggleBtn, panelState.risk);
   syncPanel(elements.historySection, elements.historyToggleBtn, panelState.history);
 }
