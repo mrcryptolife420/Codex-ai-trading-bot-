@@ -2178,6 +2178,19 @@ await runCheck("self heal clears recovered circuit pauses in paper mode", async 
   assert.ok(state.lastRecoveryAt);
 });
 
+await runCheck("risk manager current exposure ignores invalid position values", async () => {
+  const manager = new RiskManager(makeConfig());
+  const exposure = manager.getCurrentExposure({
+    openPositions: [
+      { notional: 120 },
+      { quantity: 2, entryPrice: 15 },
+      { notional: Number.NaN, quantity: 1.5, entryPrice: 20 },
+      { quantity: Number.NaN, entryPrice: 50 }
+    ]
+  });
+  assert.equal(exposure, 180);
+});
+
 await runCheck("self heal uses paper calibration probe instead of full pause on calibration break", async () => {
   const manager = new SelfHealManager(makeConfig({
     selfHealPaperCalibrationProbeSizeMultiplier: 0.24,
@@ -6336,7 +6349,7 @@ await runCheck("trading bot paper learning summary keeps daily lane counts after
   assert.equal(summary.dailyBudget.probeUsed, 2);
   assert.equal(summary.dailyBudget.shadowUsed, 3);
   assert.equal(summary.topFamilies[0].id, "breakout");
-  assert.equal(summary.topRegimes[0].id, "range_acceptance");
+  assert.equal(summary.topRegimes[0].id, "trend");
   assert.equal(summary.topSessions[0].id, "europe");
 });
 

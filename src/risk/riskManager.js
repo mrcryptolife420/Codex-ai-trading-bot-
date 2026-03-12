@@ -638,7 +638,14 @@ export class RiskManager {
 
 
   getCurrentExposure(runtime) {
-    return (runtime.openPositions || []).reduce((total, position) => total + (position.notional || position.quantity * position.entryPrice), 0);
+    return (runtime.openPositions || []).reduce((total, position) => {
+      const notional = safeValue(position?.notional, Number.NaN);
+      const quantity = safeValue(position?.quantity, 0);
+      const entryPrice = safeValue(position?.entryPrice, 0);
+      const fallbackNotional = quantity * entryPrice;
+      const contribution = Number.isFinite(notional) ? notional : fallbackNotional;
+      return total + safeValue(contribution, 0);
+    }, 0);
   }
 
   getOptimizerAdjustments(strategySummary = {}) {

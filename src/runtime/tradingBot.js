@@ -4189,12 +4189,12 @@ export class TradingBot {
       })),
       ...arr(this.journal?.counterfactuals || []).map((item) => ({
         family: item.strategyFamily || null,
-        regime: item.marketPhase || null,
+        regime: item.regime || null,
         session: item.sessionAtEntry || null
       })),
       ...arr(this.runtime?.counterfactualQueue || []).map((item) => ({
         family: item.strategyFamily || item.paperLearning?.scope?.family || null,
-        regime: item.marketPhase || item.paperLearning?.scope?.regime || null,
+        regime: item.regime || item.paperLearning?.scope?.regime || null,
         session: item.sessionAtEntry || item.paperLearning?.scope?.session || null
       }))
     ];
