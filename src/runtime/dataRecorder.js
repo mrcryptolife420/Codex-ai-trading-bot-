@@ -557,6 +557,47 @@ async function resolveLatestTimestamp(files = []) {
   return timestamps.sort().reverse()[0] || null;
 }
 
+async function readRecentJsonlFiles(filePaths = [], maxRecords = 120) {
+  const records = [];
+  for (const filePath of filePaths) {
+    if (records.length >= maxRecords) {
+      break;
+    }
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.trim().split("\n").filter(Boolean);
+      for (const line of lines.reverse()) {
+        try {
+          records.push(JSON.parse(line));
+        } catch {
+          // Ignore malformed historical lines.
+        }
+        if (records.length >= maxRecords) {
+          break;
+        }
+      }
+    } catch {
+      // Ignore files that disappear or cannot be read during bootstrap sampling.
+    }
+  }
+  return records;
+}
+
+function topCounts(values = [], limit = 6) {
+  return Object.entries(
+    arr(values).reduce((acc, value) => {
+      if (!value) {
+        return acc;
+      }
+      acc[value] = (acc[value] || 0) + 1;
+      return acc;
+    }, {})
+  )
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit)
+    .map(([id, count]) => ({ id, count }));
+}
+
 export class DataRecorder {
   constructor({ runtimeDir, config, logger }) {
     this.runtimeDir = runtimeDir;
@@ -583,6 +624,7 @@ export class DataRecorder {
       averageRecordQuality: 0,
       latestRecordQuality: null,
       qualityByKind: {},
+      latestBootstrap: null,
       sourceCoverage: {},
       contextCoverage: {},
       datasetCuration: null,
@@ -634,6 +676,7 @@ export class DataRecorder {
       averageRecordQuality: num(restored.averageRecordQuality || 0, 4),
       latestRecordQuality: restored.latestRecordQuality || null,
       qualityByKind: restored.qualityByKind || {},
+      latestBootstrap: restored.latestBootstrap || null,
       sourceCoverage: restoreSourceCoverage(restored.sourceCoverage),
       contextCoverage: restoreContextCoverage(restored.contextCoverage),
       datasetCuration: restored.datasetCuration || null,
@@ -1123,6 +1166,90 @@ export class DataRecorder {
     return payload;
   }
 
+  async loadHistoricalBootstrap({ maxFilesPerBucket = 14, maxRecordsPerBucket = 160 } = {}) {
+    if (!this.config.dataRecorderEnabled) {
+      return null;
+    }
+    const loadBucket = async (bucket) => {
+      const liveFiles = await listFiles(path.join(this.rootDir, bucket));
+      const archiveFiles = await listFiles(path.join(this.rootDir, "archive", bucket));
+      const selected = [...liveFiles, ...archiveFiles].sort().reverse().slice(0, maxFilesPerBucket);
+      return readRecentJsonlFiles(selected, maxRecordsPerBucket);
+    };
+
+    const [decisionRecords, tradeRecords, learningRecords, newsRecords, contextRecords, datasetRecords] = await Promise.all([
+      loadBucket("decisions"),
+      loadBucket("trades"),
+      loadBucket("learning"),
+      loadBucket("news"),
+      loadBucket("contexts"),
+      loadBucket("datasets")
+    ]);
+
+    const latestDataset = datasetRecords[0]?.datasets || null;
+    const bootstrap = {
+      generatedAt: new Date().toISOString(),
+      status: decisionRecords.length || tradeRecords.length || learningRecords.length || newsRecords.length || contextRecords.length
+        ? "ready"
+        : "empty",
+      decisions: {
+        count: decisionRecords.length,
+        topStrategies: topCounts(decisionRecords.map((item) => item.strategy), 5),
+        topRegimes: topCounts(decisionRecords.map((item) => item.regime), 5)
+      },
+      trades: {
+        count: tradeRecords.length,
+        avgNetPnlPct: num(average(tradeRecords.map((item) => item.netPnlPct || 0), 0), 4),
+        topStrategies: topCounts(tradeRecords.map((item) => item.strategy), 5),
+        topRegimes: topCounts(tradeRecords.map((item) => item.regime), 5)
+      },
+      learning: {
+        count: learningRecords.length,
+        avgLabelScore: num(average(learningRecords.map((item) => item.labelScore || 0), 0), 4),
+        topStrategies: topCounts(learningRecords.map((item) => item.strategy), 5),
+        topFamilies: topCounts(learningRecords.map((item) => item.family), 5),
+        topRegimes: topCounts(learningRecords.map((item) => item.regime), 5)
+      },
+      news: {
+        count: newsRecords.length,
+        topProviders: topCounts(newsRecords.flatMap((item) => arr(item.items || []).map((newsItem) => newsItem.provider || newsItem.source)), 6),
+        topEventTypes: topCounts(newsRecords.flatMap((item) => arr(item.items || []).map((newsItem) => newsItem.dominantEventType)), 6)
+      },
+      contexts: {
+        count: contextRecords.length,
+        topKinds: topCounts(contextRecords.map((item) => item.contextType), 4),
+        topEventTypes: topCounts(contextRecords.flatMap((item) => arr(item.items || []).map((contextItem) => contextItem.type)), 6)
+      },
+      latestDatasetCuration: latestDataset ? {
+        paperLearningStatus: latestDataset.paperLearning?.status || "unknown",
+        paperLearningOutcomes: latestDataset.paperLearning?.recentOutcomes || {},
+        topVetoBlockerCount: latestDataset.vetoReview?.blockedSetups || 0,
+        exitLearning: latestDataset.exitLearning || null,
+        executionLearning: latestDataset.executionLearning || null,
+        regimeLearning: latestDataset.regimeLearning || null,
+        newsHistory: latestDataset.newsHistory || null,
+        contextHistory: latestDataset.contextHistory || null,
+        dataQuality: latestDataset.dataQuality || null
+      } : null,
+      warmStart: {
+        paperLearningReady: (latestDataset?.paperLearning?.tradeCount || 0) >= 3,
+        governanceFocus: latestDataset?.vetoReview?.badVetoCount > latestDataset?.vetoReview?.goodVetoCount
+          ? "veto_review"
+          : latestDataset?.executionLearning?.executionDragCount > 0
+            ? "execution_learning"
+            : latestDataset?.exitLearning?.earlyExitCount > 0
+              ? "exit_learning"
+              : "paper_learning",
+        note: latestDataset
+          ? `Warm start vanuit recorder: ${latestDataset.paperLearning?.status || "unknown"} paper learning met ${latestDataset.featureStore?.learningFrames || 0} learning frames.`
+          : "Nog geen dataset-curation beschikbaar voor warm start."
+      }
+    };
+
+    this.state.latestBootstrap = bootstrap;
+    return bootstrap;
+  }
+
   getSummary() {
     return {
       ...this.state,
@@ -1132,6 +1259,7 @@ export class DataRecorder {
         coldRetentionDays: this.state.retention?.coldRetentionDays || this.config.dataRecorderColdRetentionDays || 90,
         lastCompactionAt: this.state.retention?.lastCompactionAt || null
       },
+      latestBootstrap: this.state.latestBootstrap || null,
       qualityByKind: arr(Object.values(this.state.qualityByKind || {}))
         .sort((left, right) => (right.count || 0) - (left.count || 0))
         .slice(0, 8)

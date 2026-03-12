@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- The data recorder now has a historical bootstrap loader that reads recent stored decisions, trades, learning, news, contexts, and curated datasets on startup to build a warm-start summary for runtime and paper/governance views.
 - Data-recorder quality is now tracked per record kind, including `news` and `context_*`, so it is easier to see whether historical learning, replay, or source-history data is the weakest part of the stored dataset.
 - Data-recorder summary now tracks compact `sourceCoverage` and `contextCoverage` aggregates, so runtime, dashboard, and dataset curation can show which news providers and event context types actually dominate the stored history.
 - Recorder frames now carry a compact `recordQuality` score for decision, trade, learning, and replay records, so later training and review loops can filter by completeness/confidence instead of treating all records equally.

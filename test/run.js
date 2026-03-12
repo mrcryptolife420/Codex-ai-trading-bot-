@@ -4406,6 +4406,70 @@ await runCheck("data recorder stores announcement and calendar context history f
   }
 });
 
+await runCheck("data recorder builds historical bootstrap summary from stored frames", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-bootstrap-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21, dataRecorderColdRetentionDays: 90 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordNewsHistory({
+      at: "2026-03-12T08:00:00.000Z",
+      symbol: "BTCUSDT",
+      summary: { coverage: 2, confidence: 0.66, reliabilityScore: 0.74, freshnessScore: 0.82 },
+      items: [{ title: "BTC headline", provider: "coindesk", source: "CoinDesk", channel: "news", publishedAt: "2026-03-12T07:55:00.000Z", reliability: { reliabilityScore: 0.81 }, event: { dominantType: "etf_flow" } }]
+    });
+    await recorder.recordContextHistory({
+      at: "2026-03-12T08:02:00.000Z",
+      symbol: "BTCUSDT",
+      kind: "calendar",
+      summary: { coverage: 1, confidence: 0.71, riskScore: 0.33, nextEventType: "macro_cpi", nextEventAt: "2026-03-12T13:30:00.000Z" },
+      items: [{ title: "US CPI", at: "2026-03-12T13:30:00.000Z", type: "macro_cpi", source: "BLS", impact: 0.92 }]
+    });
+    await recorder.recordLearningEvent({
+      trade: {
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        pnlQuote: 12.4,
+        netPnlPct: 0.012,
+        labelScore: 0.77,
+        rawFeatures: {},
+        entryRationale: {
+          strategy: { family: "trend_following", activeStrategy: "ema_trend" },
+          marketState: { dataConfidence: 0.8 },
+          dataQuality: { sources: [], coverageScore: 0.8, freshnessScore: 0.82, trustScore: 0.79, status: "ready" },
+          confidenceBreakdown: { dataConfidence: 0.79, marketConfidence: 0.76, overallConfidence: 0.78 }
+        }
+      },
+      learning: { label: { labelScore: 0.77 } }
+    });
+    await recorder.recordDatasetCuration({
+      at: "2026-03-12T08:05:00.000Z",
+      paperLearning: { status: "building" },
+      newsCache: { BTCUSDT: { summary: { coverage: 2, reliabilityScore: 0.74 } } },
+      sourceReliability: { operationalReliability: 0.8 },
+      journal: {
+        trades: [{ brokerMode: "paper", regimeAtEntry: "trend", strategyAtEntry: "ema_trend", executionQualityScore: 0.67, paperLearningOutcome: { outcome: "good_trade", executionQuality: "solid" } }],
+        blockedSetups: [{ symbol: "BTCUSDT" }],
+        counterfactuals: [{ outcome: "bad_veto" }]
+      }
+    });
+    const bootstrap = await recorder.loadHistoricalBootstrap();
+    assert.equal(bootstrap.status, "ready");
+    assert.equal(bootstrap.learning.topFamilies[0].id, "trend_following");
+    assert.equal(bootstrap.news.topProviders[0].id, "coindesk");
+    assert.equal(bootstrap.contexts.topKinds[0].id, "calendar");
+    assert.equal(bootstrap.latestDatasetCuration.paperLearningStatus, "building");
+    assert.equal(recorder.getSummary().latestBootstrap.status, "ready");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 await runCheck("data recorder compacts old files into archive before deletion", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-archive-"));
   try {
@@ -5805,6 +5869,23 @@ await runCheck("trading bot paper learning summary tracks blockers and recent ou
   assert.ok(summary.recentOutcomes.some((item) => item.id === "good_trade"));
   assert.ok(summary.recentOutcomes.some((item) => item.id === "early_exit"));
   assert.equal(summary.probation.status, "warmup");
+});
+
+await runCheck("trading bot applies historical bootstrap warm start", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = { ops: {}, thresholdTuning: {}, paperLearning: {} };
+  TradingBot.prototype.applyHistoricalBootstrap.call(bot, {
+    status: "ready",
+    generatedAt: "2026-03-12T09:00:00.000Z",
+    warmStart: {
+      governanceFocus: "veto_review",
+      note: "Warm start vanuit recorder."
+    }
+  });
+  assert.equal(bot.runtime.historicalBootstrap.status, "ready");
+  assert.equal(bot.runtime.ops.historicalBootstrap.warmStart.governanceFocus, "veto_review");
+  assert.equal(bot.runtime.thresholdTuning.warmStart.focus, "veto_review");
+  assert.equal(bot.runtime.paperLearning.notes[0], "Warm start vanuit recorder.");
 });
 
 await runCheck("trading bot paper learning summary surfaces probe probation candidates", async () => {

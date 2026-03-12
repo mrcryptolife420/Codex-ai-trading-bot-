@@ -122,6 +122,16 @@ De volgende datalaag is nu actief en vormt de basis voor beter leren, historisch
   - `context_*`
 - daardoor zie je sneller of vooral je leerframes, replays of historische context zwakker zijn, in plaats van alleen een globaal gemiddelde te zien
 
+12. `Historical bootstrap loader`
+- bij start leest de recorder nu recente history terug van schijf voor:
+  - decisions
+  - trades
+  - learning
+  - news
+  - contexts
+  - dataset curation
+- daaruit bouwt hij een compacte warm-start samenvatting voor runtime/governance/paper learning, zodat een restart minder koud begint
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).

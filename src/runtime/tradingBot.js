@@ -2292,6 +2292,31 @@ function summarizeDataRecorder(summary = {}) {
       coldRetentionDays: summary.retention?.coldRetentionDays || 0,
       lastCompactionAt: summary.retention?.lastCompactionAt || null
     },
+    latestBootstrap: summary.latestBootstrap ? {
+      generatedAt: summary.latestBootstrap.generatedAt || null,
+      status: summary.latestBootstrap.status || "empty",
+      decisions: {
+        count: summary.latestBootstrap.decisions?.count || 0,
+        topStrategies: arr(summary.latestBootstrap.decisions?.topStrategies || []).slice(0, 4),
+        topRegimes: arr(summary.latestBootstrap.decisions?.topRegimes || []).slice(0, 4)
+      },
+      learning: {
+        count: summary.latestBootstrap.learning?.count || 0,
+        avgLabelScore: num(summary.latestBootstrap.learning?.avgLabelScore || 0, 4),
+        topFamilies: arr(summary.latestBootstrap.learning?.topFamilies || []).slice(0, 4),
+        topRegimes: arr(summary.latestBootstrap.learning?.topRegimes || []).slice(0, 4)
+      },
+      news: {
+        count: summary.latestBootstrap.news?.count || 0,
+        topProviders: arr(summary.latestBootstrap.news?.topProviders || []).slice(0, 4)
+      },
+      contexts: {
+        count: summary.latestBootstrap.contexts?.count || 0,
+        topKinds: arr(summary.latestBootstrap.contexts?.topKinds || []).slice(0, 4)
+      },
+      latestDatasetCuration: summary.latestBootstrap.latestDatasetCuration || null,
+      warmStart: summary.latestBootstrap.warmStart || null
+    } : null,
     qualityByKind: arr(summary.qualityByKind || []).slice(0, 8).map((item) => ({
       kind: item.kind || null,
       count: item.count || 0,
@@ -2572,6 +2597,37 @@ export class TradingBot {
     this.marketCache = {};
   }
 
+  applyHistoricalBootstrap(bootstrap = null) {
+    if (!bootstrap || bootstrap.status === "empty") {
+      return;
+    }
+    this.runtime.historicalBootstrap = bootstrap;
+    this.runtime.ops = this.runtime.ops || {};
+    this.runtime.ops.historicalBootstrap = {
+      status: bootstrap.status || "ready",
+      generatedAt: bootstrap.generatedAt || null,
+      warmStart: bootstrap.warmStart || null
+    };
+    if (!this.runtime.paperLearning || !arr(this.runtime.paperLearning.notes || []).length) {
+      this.runtime.paperLearning = {
+        ...(this.runtime.paperLearning || {}),
+        notes: [bootstrap.warmStart?.note].filter(Boolean)
+      };
+    } else if (bootstrap.warmStart?.note) {
+      this.runtime.paperLearning.notes = [bootstrap.warmStart.note, ...arr(this.runtime.paperLearning.notes || [])].slice(0, 6);
+    }
+    if (!this.runtime.thresholdTuning?.warmStart) {
+      this.runtime.thresholdTuning = {
+        ...(this.runtime.thresholdTuning || {}),
+        warmStart: {
+          source: "data_recorder",
+          focus: bootstrap.warmStart?.governanceFocus || null,
+          generatedAt: bootstrap.generatedAt || null
+        }
+      };
+    }
+  }
+
   async init() {
     const validation = assertValidConfig(this.config);
     for (const warning of validation.warnings) {
@@ -2657,7 +2713,9 @@ export class TradingBot {
     this.journal.events = arr(this.journal.events);
 
     await this.dataRecorder.init(this.runtime.dataRecorder || null);
+    const historicalBootstrap = await this.dataRecorder.loadHistoricalBootstrap();
     await this.backupManager.init(this.runtime.stateBackups || null);
+    this.applyHistoricalBootstrap(historicalBootstrap);
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.model = new AdaptiveTradingModel(await this.store.loadModel(), this.config);
