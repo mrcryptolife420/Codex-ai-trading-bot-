@@ -92,8 +92,6 @@ const DEFAULTS = {
   sourceReliabilityRateLimitCooldownMinutes: 30,
   sourceReliabilityTimeoutCooldownMinutes: 12,
   sourceReliabilityFailureCooldownMinutes: 8,
-  enableRedditSentiment: false,
-  redditSentimentSubreddits: [],
   enableMarketSentimentContext: true,
   marketSentimentCacheMinutes: 15,
   alternativeApiBaseUrl: "https://api.alternative.me",
@@ -535,8 +533,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
     sourceReliabilityRateLimitCooldownMinutes: parseNumber(env.SOURCE_RELIABILITY_RATE_LIMIT_COOLDOWN_MINUTES, DEFAULTS.sourceReliabilityRateLimitCooldownMinutes),
     sourceReliabilityTimeoutCooldownMinutes: parseNumber(env.SOURCE_RELIABILITY_TIMEOUT_COOLDOWN_MINUTES, DEFAULTS.sourceReliabilityTimeoutCooldownMinutes),
     sourceReliabilityFailureCooldownMinutes: parseNumber(env.SOURCE_RELIABILITY_FAILURE_COOLDOWN_MINUTES, DEFAULTS.sourceReliabilityFailureCooldownMinutes),
-    enableRedditSentiment: parseBoolean(env.ENABLE_REDDIT_SENTIMENT, DEFAULTS.enableRedditSentiment),
-    redditSentimentSubreddits: parseTextCsv(env.REDDIT_SENTIMENT_SUBREDDITS, DEFAULTS.redditSentimentSubreddits),
     enableMarketSentimentContext: parseBoolean(env.ENABLE_MARKET_SENTIMENT_CONTEXT, DEFAULTS.enableMarketSentimentContext),
     marketSentimentCacheMinutes: parseNumber(env.MARKET_SENTIMENT_CACHE_MINUTES, DEFAULTS.marketSentimentCacheMinutes),
     alternativeApiBaseUrl: env.ALTERNATIVE_API_BASE_URL || DEFAULTS.alternativeApiBaseUrl,
@@ -839,6 +835,5 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
 
 

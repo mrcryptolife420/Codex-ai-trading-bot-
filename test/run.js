@@ -126,8 +126,6 @@ function makeConfig(overrides = {}) {
     newsMinSourceQuality: 0.68,
     newsMinReliabilityScore: 0.64,
     newsStrictWhitelist: true,
-    enableRedditSentiment: true,
-    redditSentimentSubreddits: ["CryptoCurrency", "CryptoMarkets", "Binance"],
     minCalibrationConfidence: 0.16,
     minRegimeConfidence: 0.4,
     abstainBand: 0.02,

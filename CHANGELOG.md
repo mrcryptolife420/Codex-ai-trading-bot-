@@ -75,6 +75,7 @@
 - Expanded offline veto learning so blocker scorecards now track late-veto and timing-issue patterns alongside classic good/bad veto counts.
 
 ### Fixed
+- Removed the leftover Reddit RSS provider implementation and its dead config hooks so paper/live news collection no longer risks noisy `429` Reddit warnings from stale code paths.
 - Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
 - Fixed dashboard/operator alert actions so alerts can now be resolved explicitly instead of only acknowledged or silenced.
 - Fixed strategy-research summaries so newer robustness/uniqueness scoring survives serialization into runtime and dashboard snapshots.
