@@ -67,14 +67,19 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function matchesBrokerMode(item, botMode = "paper") {
+  return (item?.brokerMode || "paper") === botMode;
+}
+
 function getPaperLearningBudgetState({ journal = {}, runtime = {}, nowIso, config = {} } = {}) {
+  const botMode = config.botMode || "paper";
   const probeUsed = [
-    ...(journal?.trades || []).filter((trade) => trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
-    ...(runtime?.openPositions || []).filter((position) => position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
+    ...(journal?.trades || []).filter((trade) => matchesBrokerMode(trade, botMode) && trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
+    ...(runtime?.openPositions || []).filter((position) => matchesBrokerMode(position, botMode) && position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
   ].length;
   const shadowUsed = [
-    ...(journal?.counterfactuals || []).filter((item) => item.learningLane === "shadow" && sameUtcDay(item.resolvedAt || item.queuedAt || item.at, nowIso)),
-    ...(runtime?.counterfactualQueue || []).filter((item) => item.learningLane === "shadow" && sameUtcDay(item.queuedAt || item.dueAt, nowIso))
+    ...(journal?.counterfactuals || []).filter((item) => matchesBrokerMode(item, botMode) && item.learningLane === "shadow" && sameUtcDay(item.resolvedAt || item.queuedAt || item.at, nowIso)),
+    ...(runtime?.counterfactualQueue || []).filter((item) => matchesBrokerMode(item, botMode) && item.learningLane === "shadow" && sameUtcDay(item.queuedAt || item.dueAt, nowIso))
   ].length;
   const probeDailyLimit = Math.max(0, Math.round(config.paperLearningProbeDailyLimit || 0));
   const shadowDailyLimit = Math.max(0, Math.round(config.paperLearningShadowDailyLimit || 0));
@@ -104,12 +109,13 @@ function getPaperLearningSamplingState({
   regimeSummary = {},
   sessionSummary = {}
 } = {}) {
+  const botMode = config.botMode || "paper";
   const familyCounts = {};
   const regimeCounts = {};
   const sessionCounts = {};
   const records = [
-    ...(journal?.trades || []).filter((trade) => trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
-    ...(runtime?.openPositions || []).filter((position) => position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
+    ...(journal?.trades || []).filter((trade) => matchesBrokerMode(trade, botMode) && trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
+    ...(runtime?.openPositions || []).filter((position) => matchesBrokerMode(position, botMode) && position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
   ];
   for (const item of records) {
     incrementCounter(familyCounts, item.strategyFamily || item.family || item.strategy?.family || null);
@@ -590,24 +596,26 @@ export class RiskManager {
 
   getDailyRealizedPnl(journal, nowIso) {
     const tradePnl = (journal?.trades || [])
-      .filter((trade) => trade.exitAt && sameUtcDay(trade.exitAt, nowIso))
+      .filter((trade) => matchesBrokerMode(trade, this.config.botMode) && trade.exitAt && sameUtcDay(trade.exitAt, nowIso))
       .reduce((total, trade) => total + (trade.pnlQuote || 0), 0);
     const scaleOutPnl = (journal?.scaleOuts || [])
-      .filter((event) => event.at && sameUtcDay(event.at, nowIso))
+      .filter((event) => matchesBrokerMode(event, this.config.botMode) && event.at && sameUtcDay(event.at, nowIso))
       .reduce((total, event) => total + (event.realizedPnl || 0), 0);
     return tradePnl + scaleOutPnl;
   }
 
   getRecentTradeForSymbol(journal, symbol) {
-    return [...(journal?.trades || [])].reverse().find((trade) => trade.symbol === symbol && trade.exitAt);
+    return [...(journal?.trades || [])]
+      .reverse()
+      .find((trade) => matchesBrokerMode(trade, this.config.botMode) && trade.symbol === symbol && trade.exitAt);
   }
 
   getDailyEntryCountForSymbol(journal, runtime, symbol, nowIso) {
     const closedEntries = (journal?.trades || []).filter(
-      (trade) => trade.symbol === symbol && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)
+      (trade) => matchesBrokerMode(trade, this.config.botMode) && trade.symbol === symbol && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)
     ).length;
     const openEntries = (runtime?.openPositions || []).filter(
-      (position) => position.symbol === symbol && position.entryAt && sameUtcDay(position.entryAt, nowIso)
+      (position) => matchesBrokerMode(position, this.config.botMode) && position.symbol === symbol && position.entryAt && sameUtcDay(position.entryAt, nowIso)
     ).length;
     return closedEntries + openEntries;
   }
@@ -619,6 +627,9 @@ export class RiskManager {
     const lookbackMinutes = Number.isFinite(options.lookbackMinutes) ? options.lookbackMinutes : 0;
     for (const trade of trades) {
       if (!trade.exitAt) {
+        continue;
+      }
+      if (!matchesBrokerMode(trade, this.config.botMode)) {
         continue;
       }
       if (symbol && trade.symbol !== symbol) {

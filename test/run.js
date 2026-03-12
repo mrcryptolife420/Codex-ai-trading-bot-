@@ -3393,6 +3393,86 @@ await runCheck("risk manager blocks extra paper probes after the daily learning 
   assert.equal(decision.paperLearningBudget.probeRemaining, 0);
 });
 
+await runCheck("risk manager ignores live probe and shadow history when tracking paper learning budgets", async () => {
+  const manager = new RiskManager(makeConfig({
+    paperLearningProbeDailyLimit: 4,
+    paperLearningShadowDailyLimit: 6,
+    paperLearningMaxProbePerFamilyPerDay: 1,
+    paperLearningMaxProbePerRegimePerDay: 1,
+    paperLearningMaxProbePerSessionPerDay: 1
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.472,
+      calibrationConfidence: 0.24,
+      disagreement: 0.08,
+      shouldAbstain: false,
+      transformer: { probability: 0.49, confidence: 0.05 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: -0.26, microPriceEdgeBps: 0.2 },
+      market: { realizedVolPct: 0.018, atrPct: 0.01, bearishPatternScore: 0.08, bullishPatternScore: 0.22, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.14, signalScore: 0.06, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.32, contrarianScore: 0.18 },
+    volatilitySummary: { riskScore: 0.52, ivPremium: 5 },
+    calendarSummary: { riskScore: 0.1, bullishScore: 0, urgencyScore: 0.08 },
+    committeeSummary: { agreement: 0.31, probability: 0.46, netScore: -0.06, sizeMultiplier: 0.92, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.47,
+      confidence: 0.42,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { session: "asia", blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.61, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: {
+      openPositions: [{ brokerMode: "live", learningLane: "probe", entryAt: "2026-03-08T08:30:00.000Z", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia" }],
+      counterfactualQueue: [{ brokerMode: "live", learningLane: "shadow", queuedAt: "2026-03-08T09:00:00.000Z" }]
+    },
+    journal: {
+      trades: [{ brokerMode: "live", learningLane: "probe", entryAt: "2026-03-08T08:00:00.000Z", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia" }],
+      counterfactuals: [{ brokerMode: "live", learningLane: "shadow", resolvedAt: "2026-03-08T09:15:00.000Z" }]
+    },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.paperLearningBudget.probeUsed, 0);
+  assert.equal(decision.paperLearningBudget.shadowUsed, 0);
+  assert.equal(decision.paperLearningSampling.probeCaps.familyUsed, 0);
+  assert.equal(decision.paperLearningSampling.probeCaps.regimeUsed, 0);
+  assert.equal(decision.paperLearningSampling.probeCaps.sessionUsed, 0);
+});
+
+await runCheck("risk manager ignores live pnl and loss streak when paper mode evaluates risk history", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const journal = {
+    trades: [
+      { brokerMode: "live", exitAt: "2026-03-08T08:00:00.000Z", pnlQuote: -40, symbol: "BTCUSDT" },
+      { brokerMode: "live", exitAt: "2026-03-08T09:00:00.000Z", pnlQuote: -20, symbol: "BTCUSDT" },
+      { brokerMode: "paper", exitAt: "2026-03-08T10:30:00.000Z", pnlQuote: 5, symbol: "BTCUSDT" }
+    ],
+    scaleOuts: [
+      { brokerMode: "live", at: "2026-03-08T11:00:00.000Z", realizedPnl: -6 }
+    ]
+  };
+  assert.equal(manager.getDailyRealizedPnl(journal, "2026-03-08T12:00:00.000Z"), 5);
+  assert.equal(manager.getLossStreak(journal, "BTCUSDT", { nowIso: "2026-03-08T12:00:00.000Z", lookbackMinutes: 60 * 24 }), 0);
+  assert.equal(manager.getRecentTradeForSymbol(journal, "BTCUSDT").brokerMode, "paper");
+});
+
 await runCheck("risk manager spreads paper probes across strategy families and regimes", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningProbeDailyLimit: 4,
