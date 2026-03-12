@@ -6182,6 +6182,8 @@ await runCheck("replay chaos summary builds automatic replay packs", async () =>
   assert.equal(summary.replayPacks.probeWinners[0].symbol, "BTCUSDT");
   assert.equal(summary.replayPacks.paperMisses[0].symbol, "ETHUSDT");
   assert.equal(summary.replayPacks.nearMissSetups[0].symbol, "SOLUSDT");
+  assert.equal(summary.deterministicReplayPlan.nextPackType, "paper_miss_pack");
+  assert.ok(summary.deterministicReplayPlan.selectedCases.length >= 2);
 });
 
 await runCheck("stream coordinator ignores stale book tickers and falls back to fresh local book", async () => {
@@ -6395,6 +6397,8 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.equal(summary.retrainFocusPlan.status, summary.retrainReadiness.status);
   assert.equal(summary.retrainFocusPlan.topScope?.type, "family");
   assert.ok(summary.retrainFocusPlan.nextAction);
+  assert.ok(summary.retrainExecutionPlan.batchType);
+  assert.ok(Array.isArray(summary.retrainExecutionPlan.selectedScopes));
 });
 
 await runCheck("offline trainer builds blocker and regime veto scorecards", async () => {

@@ -3,6 +3,9 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Offline trainer now exposes a concrete `retrainExecutionPlan` with cadence, selected scopes, probation scopes, rollback-watch scopes, and an operator action so retraining can be scheduled and reviewed instead of inferred from readiness alone.
+- Replay chaos summaries now include a `deterministicReplayPlan` that selects the next replay pack from paper misses, near-miss blocked setups, and probe winners for faster operator review.
+- The README now documents a concrete codebase roadmap focused on retrain governance, deterministic replay, operator visibility, and rollback-safe promotion.
 - Offline trainer now exposes a compact `retrainFocusPlan` that highlights the strongest and weakest retrain scopes, counts ready/building/warmup scopes, and recommends the next retrain action instead of only reporting raw readiness scores.
 - Retrain governance now ranks concrete retrain scopes by family and regime, so paper/live history can point to which parts of the dataset are actually mature enough for broader retraining.
 - Offline trainer now exposes a dedicated `retrainReadiness` layer for paper and live, using trade counts, strategy/regime diversity, record quality, lineage coverage, source/context coverage, and recorder bootstrap state to decide how mature broader retraining really is.
@@ -63,6 +66,7 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Dashboard operations now surface retrain-batch and replay-pack context directly inside the paper-learning block, so the next retrain and replay actions are visible without digging through raw runtime payloads.
 - Recorder frame counters now rebuild from actual feature-store files on disk instead of trusting persisted summary counters, so restores and manual recoveries stay aligned with file-truth state.
 - Decision records now flow through the shared recorder write path, which means `recordQuality`, `averageRecordQuality`, and `qualityByKind` finally include decision history instead of only trade/learning/replay-style frames.
 - Cached news and announcement/context reuses are now written once per cache snapshot to historical recorder storage, so offline review can distinguish fresh fetches from cached and fallback-backed runtime use.

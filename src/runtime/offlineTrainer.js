@@ -913,6 +913,100 @@ function buildRetrainFocusPlan({
   };
 }
 
+function buildRetrainExecutionPlan({
+  retrainReadiness = {},
+  retrainFocusPlan = {},
+  scopeRetrainReadiness = [],
+  thresholdPolicy = {},
+  exitLearning = {},
+  calibrationGovernance = {},
+  regimeDeployment = {}
+} = {}) {
+  const readyScopes = (scopeRetrainReadiness || []).filter((item) => item.status === "ready");
+  const buildingScopes = (scopeRetrainReadiness || []).filter((item) => item.status === "building");
+  const warmupScopes = (scopeRetrainReadiness || []).filter((item) => item.status === "warmup");
+  const selectedScopes = (readyScopes.length ? readyScopes : buildingScopes).slice(0, 3);
+  const probationScopes = buildingScopes
+    .filter((item) => (item.score || 0) >= 0.58)
+    .slice(0, 3);
+  const rollbackWatchScopes = [...(scopeRetrainReadiness || [])]
+    .filter((item) => (item.liveCount || 0) > 0 || (item.avgPnlPct || 0) < -0.003 || (item.score || 0) < 0.45)
+    .sort((left, right) => (left.score || 0) - (right.score || 0))
+    .slice(0, 3);
+  const gatingReasons = [
+    thresholdPolicy.status === "adjust" ? "threshold_probation_active" : null,
+    exitLearning.status === "blocked" ? "exit_learning_blocked" : null,
+    calibrationGovernance.status === "blocked" ? "calibration_governance_blocked" : null,
+    retrainReadiness.priority === "improve_dataset_quality" ? "dataset_quality_upgrade" : null
+  ].filter(Boolean);
+  const cadence = retrainReadiness.priority === "schedule_full_retrain"
+    ? "daily_scope_review_weekly_full"
+    : retrainReadiness.priority === "grow_live_dataset"
+      ? "daily_scope_review_live_guarded"
+      : retrainReadiness.priority === "grow_paper_dataset"
+        ? "daily_scope_review_paper_expansion"
+        : "quality_repair_then_review";
+  const batchType = retrainReadiness.priority === "schedule_full_retrain"
+    ? "full_retrain"
+    : selectedScopes.length
+      ? "scoped_retrain"
+      : "warmup_review";
+  const status = retrainReadiness.status === "ready" && !gatingReasons.length
+    ? "ready"
+    : selectedScopes.length
+      ? "building"
+      : "warmup";
+
+  return {
+    status,
+    cadence,
+    batchType,
+    selectedScopes: selectedScopes.map((item) => ({
+      id: item.id,
+      type: item.type,
+      status: item.status,
+      score: num(item.score),
+      paperCount: item.paperCount || 0,
+      liveCount: item.liveCount || 0
+    })),
+    probationScopes: probationScopes.map((item) => ({
+      id: item.id,
+      type: item.type,
+      score: num(item.score),
+      status: item.status
+    })),
+    rollbackWatchScopes: rollbackWatchScopes.map((item) => ({
+      id: item.id,
+      type: item.type,
+      score: num(item.score),
+      avgPnlPct: num(item.avgPnlPct || 0),
+      liveCount: item.liveCount || 0
+    })),
+    gatingReasons,
+    operatorAction: retrainReadiness.priority === "schedule_full_retrain"
+      ? "Plan een bredere retrain-run, maar hou probation en rollback-watch actief op zwakkere scopes."
+      : retrainReadiness.priority === "grow_live_dataset"
+        ? "Hou live streng, vergroot live closed trades in de sterkste paper-scopes en retrain scoped."
+        : retrainReadiness.priority === "grow_paper_dataset"
+          ? "Vergroot paper-dekking in building scopes en promote pas na probation naar bredere retrain."
+          : "Verbeter eerst datasetkwaliteit en lineage voordat retrain wordt opgeschaald.",
+    notes: [
+      selectedScopes.length
+        ? `Volgende retrain-batch focust op ${selectedScopes.map((item) => `${item.type}:${item.id}`).join(", ")}.`
+        : "Nog geen sterke retrain-scope voor een gerichte batch zichtbaar.",
+      probationScopes.length
+        ? `${probationScopes.length} scope(s) kunnen eerst via probation naar een bredere retrain-run doorgroeien.`
+        : "Nog geen duidelijke probation-scopes voor retrain-promotie.",
+      rollbackWatchScopes.length
+        ? `Rollback-watch blijft actief op ${rollbackWatchScopes.map((item) => `${item.type}:${item.id}`).join(", ")}.`
+        : "Geen expliciete rollback-watch scopes actief.",
+      regimeDeployment.readyRegimes?.length
+        ? `Regime deployment is al bruikbaar in ${regimeDeployment.readyRegimes.join(", ")}.`
+        : "Regime deployment warmt nog op voor retrain-segmentatie."
+    ]
+  };
+}
+
 export class OfflineTrainer {
   constructor(config) {
     this.config = config;
@@ -960,10 +1054,6 @@ export class OfflineTrainer {
       dataRecorder,
       bootstrap: dataRecorder.latestBootstrap || {}
     });
-    const retrainFocusPlan = buildRetrainFocusPlan({
-      retrainReadiness,
-      scopeRetrainReadiness
-    });
     const calibrationGovernance = buildCalibrationGovernance({
       tradeCount: learningReadyTrades.length,
       falsePositiveCount: falsePositives.length,
@@ -971,6 +1061,19 @@ export class OfflineTrainer {
       readinessScore
     });
     const regimeDeployment = buildRegimeDeployment(regimeScorecards);
+    const retrainFocusPlan = buildRetrainFocusPlan({
+      retrainReadiness,
+      scopeRetrainReadiness
+    });
+    const retrainExecutionPlan = buildRetrainExecutionPlan({
+      retrainReadiness,
+      retrainFocusPlan,
+      scopeRetrainReadiness,
+      thresholdPolicy,
+      exitLearning,
+      calibrationGovernance,
+      regimeDeployment
+    });
 
     return {
       generatedAt: nowIso,
@@ -1012,6 +1115,7 @@ export class OfflineTrainer {
       scopeRetrainReadiness,
       retrainReadiness,
       retrainFocusPlan,
+      retrainExecutionPlan,
       calibrationGovernance,
       regimeDeployment,
       falsePositiveByStrategy: falsePositiveByStrategy.slice(0, 6),
@@ -1042,6 +1146,7 @@ export class OfflineTrainer {
           : "Feature-decay tracking warmt nog op.",
         retrainReadiness.note,
         retrainFocusPlan.note,
+        retrainExecutionPlan.notes?.[0],
         scopeRetrainReadiness[0]
           ? `${scopeRetrainReadiness[0].type}:${scopeRetrainReadiness[0].id} is momenteel de sterkste retrain-scope.`
           : "Nog geen duidelijke retrain-scopeleider zichtbaar.",

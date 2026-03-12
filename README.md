@@ -179,6 +179,47 @@ Om volledige data beter te hergebruiken voor paper en live retraining, volgt de 
   - wat de meest logische volgende retrain-actie is
 - zo wordt het eenvoudiger om te beslissen of je eerst datasetkwaliteit moet verbeteren, meer paper/live trades moet verzamelen, of al een bredere retrain-run kunt plannen
 
+## Codebase roadmap
+
+De volgende uitbreidingslijn is nu leidend voor de codebase en is ook doorgetrokken in runtime en dashboard:
+
+1. `Scheduled retrain governance`
+- retrain readiness blijft gescheiden voor `paper` en `live`
+- scopes worden per `family` en `regime` gerankt
+- de bot bouwt nu ook een `retrainExecutionPlan` met:
+  - volgende batch-type
+  - cadence
+  - geselecteerde scopes
+  - probation scopes
+  - rollback-watch scopes
+
+2. `Deterministic replay v2`
+- replay/chaos houdt niet alleen scenario-tags bij, maar ook een compacte `deterministicReplayPlan`
+- die kiest de eerstvolgende replay-pack uit:
+  - paper misses
+  - near-miss blocked setups
+  - probe winners
+
+3. `Operator cockpit`
+- runtime en dashboard tonen nu directer:
+  - wat de volgende retrain-batch is
+  - welke scopes nog probation vragen
+  - welke scopes rollback-watch nodig hebben
+  - welk replay-pack prioriteit heeft
+
+4. `Paper-to-live discipline`
+- paper-learning, scope readiness en retrain execution blijven gekoppeld
+- promotie blijft daardoor explainable in plaats van impliciet
+
+5. `Rollback en safety`
+- retrain-planning blijft rekening houden met:
+  - threshold probation
+  - calibration governance
+  - exit learning
+  - dataset quality
+
+Deze roadmap is bewust production-safe gehouden: meer governancestructuur, betere replay-keuze en duidelijkere operatorcontext, zonder brede refactor van de runtime.
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).

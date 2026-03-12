@@ -1563,6 +1563,35 @@ function summarizeOfflineTrainer(summary = {}) {
         score: num(summary.retrainFocusPlan.weakestScope.score || 0, 4)
       } : null
     } : null,
+    retrainExecutionPlan: summary.retrainExecutionPlan ? {
+      status: summary.retrainExecutionPlan.status || "warmup",
+      cadence: summary.retrainExecutionPlan.cadence || null,
+      batchType: summary.retrainExecutionPlan.batchType || null,
+      operatorAction: summary.retrainExecutionPlan.operatorAction || null,
+      gatingReasons: [...(summary.retrainExecutionPlan.gatingReasons || [])],
+      selectedScopes: arr(summary.retrainExecutionPlan.selectedScopes || []).slice(0, 4).map((item) => ({
+        id: item.id || null,
+        type: item.type || null,
+        status: item.status || "warmup",
+        score: num(item.score || 0, 4),
+        paperCount: item.paperCount || 0,
+        liveCount: item.liveCount || 0
+      })),
+      probationScopes: arr(summary.retrainExecutionPlan.probationScopes || []).slice(0, 4).map((item) => ({
+        id: item.id || null,
+        type: item.type || null,
+        status: item.status || "warmup",
+        score: num(item.score || 0, 4)
+      })),
+      rollbackWatchScopes: arr(summary.retrainExecutionPlan.rollbackWatchScopes || []).slice(0, 4).map((item) => ({
+        id: item.id || null,
+        type: item.type || null,
+        score: num(item.score || 0, 4),
+        avgPnlPct: num(item.avgPnlPct || 0, 4),
+        liveCount: item.liveCount || 0
+      })),
+      notes: [...(summary.retrainExecutionPlan.notes || [])]
+    } : null,
     scopeRetrainReadiness: arr(summary.scopeRetrainReadiness || []).slice(0, 8).map((item) => ({
       id: item.id || null,
       type: item.type || null,
@@ -2218,6 +2247,24 @@ function summarizeReplayChaos(summary = {}) {
       count: item.count || 0,
       action: item.action || null
     })),
+    deterministicReplayPlan: summary.deterministicReplayPlan ? {
+      status: summary.deterministicReplayPlan.status || "warmup",
+      nextPackType: summary.deterministicReplayPlan.nextPackType || null,
+      packCount: summary.deterministicReplayPlan.packCount || 0,
+      worstScenario: summary.deterministicReplayPlan.worstScenario || null,
+      coverageNeeds: [...(summary.deterministicReplayPlan.coverageNeeds || [])],
+      operatorGoal: summary.deterministicReplayPlan.operatorGoal || null,
+      selectedCases: arr(summary.deterministicReplayPlan.selectedCases || []).slice(0, 6).map((item) => ({
+        kind: item.kind || null,
+        symbol: item.symbol || null,
+        strategy: item.strategy || null,
+        outcome: item.outcome || null,
+        pnlQuote: num(item.pnlQuote || 0, 2),
+        netPnlPct: num(item.netPnlPct || item.realizedMovePct || 0, 4),
+        reason: item.reason || null
+      })),
+      notes: [...(summary.deterministicReplayPlan.notes || [])]
+    } : null,
     scenarioLeaders: arr(summary.scenarioLeaders || []).slice(0, 6).map((item) => ({
       id: item.id || null,
       tradeCount: item.tradeCount || 0,

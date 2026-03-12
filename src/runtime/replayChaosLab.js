@@ -90,6 +90,56 @@ function collectScenarioTags(item = {}) {
   return [...tags];
 }
 
+function buildDeterministicReplayPlan({
+  status = "warmup",
+  activeScenarios = [],
+  replayPacks = {},
+  worstScenario = null
+} = {}) {
+  const selectedCases = [
+    ...arr(replayPacks.paperMisses || []).map((item) => ({ kind: "paper_miss", ...item })),
+    ...arr(replayPacks.nearMissSetups || []).map((item) => ({ kind: "near_miss", ...item })),
+    ...arr(replayPacks.probeWinners || []).map((item) => ({ kind: "probe_winner", ...item }))
+  ].slice(0, 6);
+  const nextPackType = arr(replayPacks.paperMisses || []).length
+    ? "paper_miss_pack"
+    : arr(replayPacks.nearMissSetups || []).length
+      ? "near_miss_pack"
+      : arr(replayPacks.probeWinners || []).length
+        ? "probe_winner_pack"
+        : "warmup";
+  const coverageNeeds = activeScenarios
+    .filter((item) => ["stale_book", "venue_divergence", "protection_rebuild_failure", "partial_fill"].includes(item.id))
+    .slice(0, 4)
+    .map((item) => item.id);
+  return {
+    status: status === "blocked" ? "priority" : selectedCases.length ? "ready" : "warmup",
+    nextPackType,
+    packCount: selectedCases.length,
+    worstScenario,
+    selectedCases,
+    coverageNeeds,
+    operatorGoal: nextPackType === "paper_miss_pack"
+      ? "Replay eerst de zwakste paper missers en kijk of entry, exit of execution tuning moet worden aangepast."
+      : nextPackType === "near_miss_pack"
+        ? "Review near-miss geblokkeerde setups om te zien of governance te streng staat."
+        : nextPackType === "probe_winner_pack"
+          ? "Gebruik sterke probe winners als benchmark voor promotie- of threshold-probation."
+          : "Nog geen replay-pack met duidelijke prioriteit beschikbaar.",
+    notes: [
+      selectedCases.length
+        ? `${selectedCases.length} cases vormen nu een deterministische replay-pack.`
+        : "Nog geen replay-pack beschikbaar voor deterministische review.",
+      coverageNeeds.length
+        ? `Replay moet extra letten op ${coverageNeeds.join(", ")}.`
+        : "Geen extra chaos-coverage focus geselecteerd.",
+      worstScenario
+        ? `${worstScenario} blijft de zwakste strategy-stresscase voor replay-prioriteit.`
+        : "Nog geen strategy-stressleider voor replay."
+    ]
+  };
+}
+
 export function buildReplayChaosSummary({
   journal = {},
   nowIso = new Date().toISOString()
@@ -187,6 +237,12 @@ export function buildReplayChaosSummary({
       : trades.length
         ? "ready"
         : "warmup";
+  const deterministicReplayPlan = buildDeterministicReplayPlan({
+    status,
+    activeScenarios,
+    replayPacks,
+    worstScenario: worstScenario?.worstScenario || null
+  });
 
   return {
     generatedAt: nowIso,
@@ -201,6 +257,7 @@ export function buildReplayChaosSummary({
     activeScenarios,
     recommendedActions,
     replayPacks,
+    deterministicReplayPlan,
     scenarioCounts,
     scenarioLeaders,
     notes: [

@@ -578,6 +578,9 @@ function buildOpsCards(snapshot) {
 function buildOpsEvents(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
+  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
+  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
   const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
     title: titleize(item.type || item.severity || "alert"),
     detail: item.note || item.message || item.reason || "Alert vereist aandacht.",
@@ -624,6 +627,20 @@ function buildOpsEvents(snapshot) {
           tone: "neutral"
         }
       : null,
+    retrainPlan.operatorAction
+      ? {
+          title: "Retrain batch",
+          detail: retrainPlan.operatorAction,
+          tone: retrainPlan.gatingReasons?.length ? "negative" : "neutral"
+        }
+      : null,
+    replayPlan.operatorGoal
+      ? {
+          title: "Replay prioriteit",
+          detail: replayPlan.operatorGoal,
+          tone: replayPlan.status === "priority" ? "negative" : "neutral"
+        }
+      : null,
     ...lifecycle,
     ...runbooks
   ].filter(Boolean).slice(0, 5);
@@ -634,6 +651,9 @@ function buildOpsEvents(snapshot) {
 function renderOps(snapshot) {
   const cards = buildOpsCards(snapshot);
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
+  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
+  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
   elements.opsSummary.innerHTML = cards.map((item) => `
     <article class="risk-card">
       <span class="metric-label">${escapeHtml(item.label)}</span>
@@ -691,6 +711,14 @@ function renderOps(snapshot) {
           <div class="reason-row">
             <strong>Review</strong>
             <span class="reason-copy">${escapeHtml(paperLearning.reviewPacks?.topMissedSetup ? `Bekijk vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "geen zwakke probe"} als zwakke probe.` : "Nog geen automatische paper review-packs beschikbaar.")}</span>
+          </div>
+          <div class="reason-row">
+            <strong>Retrain</strong>
+            <span class="reason-copy">${escapeHtml(retrainPlan.selectedScopes?.[0]?.id ? `${titleize(retrainPlan.batchType || "scoped_retrain")} · ${titleize(retrainPlan.selectedScopes[0].type)} ${titleize(retrainPlan.selectedScopes[0].id)} · ${titleize(retrainPlan.status || "building")}` : "Nog geen actieve retrain-batch geselecteerd.")}</span>
+          </div>
+          <div class="reason-row">
+            <strong>Replay</strong>
+            <span class="reason-copy">${escapeHtml(replayPlan.nextPackType ? `${titleize(replayPlan.nextPackType)} · ${replayPlan.packCount || 0} cases` : "Nog geen replay-pack met prioriteit beschikbaar.")}</span>
           </div>
         </div>
       </article>
