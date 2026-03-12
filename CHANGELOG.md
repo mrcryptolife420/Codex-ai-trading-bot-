@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Retrain governance now ranks concrete retrain scopes by family and regime, so paper/live history can point to which parts of the dataset are actually mature enough for broader retraining.
 - Offline trainer now exposes a dedicated `retrainReadiness` layer for paper and live, using trade counts, strategy/regime diversity, record quality, lineage coverage, source/context coverage, and recorder bootstrap state to decide how mature broader retraining really is.
 - The data recorder now has a historical bootstrap loader that reads recent stored decisions, trades, learning, news, contexts, and curated datasets on startup to build a warm-start summary for runtime and paper/governance views.
 - Data-recorder quality is now tracked per record kind, including `news` and `context_*`, so it is easier to see whether historical learning, replay, or source-history data is the weakest part of the stored dataset.

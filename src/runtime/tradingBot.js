@@ -1543,6 +1543,18 @@ function summarizeOfflineTrainer(summary = {}) {
         recommendation: summary.retrainReadiness.live.recommendation || null
       } : null
     } : null,
+    scopeRetrainReadiness: arr(summary.scopeRetrainReadiness || []).slice(0, 8).map((item) => ({
+      id: item.id || null,
+      type: item.type || null,
+      totalCount: item.totalCount || 0,
+      paperCount: item.paperCount || 0,
+      liveCount: item.liveCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+      avgPnlPct: num(item.avgPnlPct || 0, 4),
+      score: num(item.score || 0, 4),
+      status: item.status || "warmup"
+    })),
     featureDecayScorecards: arr(summary.featureDecayScorecards || []).slice(0, 8).map((item) => ({
       id: item.id || null,
       count: item.count || 0,

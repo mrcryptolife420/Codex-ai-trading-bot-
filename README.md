@@ -165,6 +165,11 @@ Om volledige data beter te hergebruiken voor paper en live retraining, volgt de 
 - als live nog dun is, blijft paper voorlopig de hoofdbron
 - pas bij betere live dekking en datasetkwaliteit wordt een bredere retrain-run interessanter
 
+7. `Scope-level retrain readiness`
+- de offline trainer rangschikt nu ook families en regimes als retrain-scopes
+- zo zie je sneller welke families/regimes al `ready`, `building` of nog `warmup` zijn
+- dat maakt bredere retrain-runs veiliger en beter uitlegbaar
+
 ## Snelle start
 
 1. Maak een `.env` op basis van [`.env.example`](/mnt/c/Users/highlife/Documents/Playground/.env.example).

@@ -795,6 +795,83 @@ function buildRetrainReadiness({
   };
 }
 
+function buildScopedRetrainReadiness({
+  paperTrades = [],
+  liveTrades = []
+} = {}) {
+  const buckets = new Map();
+  const addTrade = (trade, mode, scopeType, scopeId) => {
+    if (!scopeId) {
+      return;
+    }
+    const key = `${scopeType}:${scopeId}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        id: scopeId,
+        type: scopeType,
+        paperCount: 0,
+        liveCount: 0,
+        totalCount: 0,
+        wins: 0,
+        executionQuality: 0,
+        pnl: 0
+      });
+    }
+    const bucket = buckets.get(key);
+    bucket.totalCount += 1;
+    bucket.paperCount += mode === "paper" ? 1 : 0;
+    bucket.liveCount += mode === "live" ? 1 : 0;
+    bucket.wins += (trade.pnlQuote || 0) > 0 ? 1 : 0;
+    bucket.executionQuality += trade.executionQualityScore || 0;
+    bucket.pnl += trade.netPnlPct || 0;
+  };
+
+  for (const trade of paperTrades) {
+    addTrade(trade, "paper", "family", trade.entryRationale?.strategy?.family || trade.strategyFamily || null);
+    addTrade(trade, "paper", "regime", trade.regimeAtEntry || null);
+  }
+  for (const trade of liveTrades) {
+    addTrade(trade, "live", "family", trade.entryRationale?.strategy?.family || trade.strategyFamily || null);
+    addTrade(trade, "live", "regime", trade.regimeAtEntry || null);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => {
+      const winRate = bucket.totalCount ? bucket.wins / bucket.totalCount : 0;
+      const avgExecutionQuality = bucket.totalCount ? bucket.executionQuality / bucket.totalCount : 0;
+      const avgPnlPct = bucket.totalCount ? bucket.pnl / bucket.totalCount : 0;
+      const diversityBias = bucket.paperCount > 0 && bucket.liveCount > 0 ? 0.08 : bucket.liveCount > 0 ? 0.05 : 0.03;
+      const score = clamp(
+        0.16 +
+          Math.min(0.32, bucket.totalCount / 12 * 0.32) +
+          Math.min(0.18, winRate * 0.18) +
+          Math.min(0.16, avgExecutionQuality * 0.16) +
+          Math.max(-0.08, Math.min(0.1, avgPnlPct * 8)) +
+          diversityBias,
+        0,
+        1
+      );
+      return {
+        id: bucket.id,
+        type: bucket.type,
+        totalCount: bucket.totalCount,
+        paperCount: bucket.paperCount,
+        liveCount: bucket.liveCount,
+        winRate: num(winRate),
+        avgExecutionQuality: num(avgExecutionQuality),
+        avgPnlPct: num(avgPnlPct),
+        score: num(score),
+        status: score >= 0.72
+          ? "ready"
+          : score >= 0.52
+            ? "building"
+            : "warmup"
+      };
+    })
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 10);
+}
+
 export class OfflineTrainer {
   constructor(config) {
     this.config = config;
@@ -832,6 +909,10 @@ export class OfflineTrainer {
     const thresholdPolicy = buildThresholdPolicy(blockerScorecards, this.config);
     const exitLearning = buildExitLearning(learningReadyTrades);
     const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
+    const scopeRetrainReadiness = buildScopedRetrainReadiness({
+      paperTrades,
+      liveTrades
+    });
     const retrainReadiness = buildRetrainReadiness({
       paperTrades,
       liveTrades,
@@ -883,6 +964,7 @@ export class OfflineTrainer {
       exitScorecards: exitLearning.scorecards || [],
       featureDecay,
       featureDecayScorecards: featureDecay.scorecards || [],
+      scopeRetrainReadiness,
       retrainReadiness,
       calibrationGovernance,
       regimeDeployment,
@@ -913,6 +995,9 @@ export class OfflineTrainer {
           ? `${featureDecay.weakestFeature} toont momenteel de meeste feature decay.`
           : "Feature-decay tracking warmt nog op.",
         retrainReadiness.note,
+        scopeRetrainReadiness[0]
+          ? `${scopeRetrainReadiness[0].type}:${scopeRetrainReadiness[0].id} is momenteel de sterkste retrain-scope.`
+          : "Nog geen duidelijke retrain-scopeleider zichtbaar.",
         calibrationGovernance.note,
         regimeScorecards[0]
           ? `${regimeScorecards[0].id} is het sterkste regime in offline trainer governance.`

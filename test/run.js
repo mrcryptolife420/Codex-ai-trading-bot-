@@ -6191,8 +6191,8 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   const summary = trainer.buildSummary({
     journal: {
       trades: [
-        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 20, netPnlPct: 0.015, executionQualityScore: 0.71, labelScore: 0.82, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
-        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -5, netPnlPct: -0.004, executionQualityScore: 0.58, labelScore: 0.41, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" }
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 20, netPnlPct: 0.015, executionQualityScore: 0.71, labelScore: 0.82, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", entryRationale: { strategy: { family: "trend_following" } }, regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -5, netPnlPct: -0.004, executionQualityScore: 0.58, labelScore: 0.41, rawFeatures: { a: 1 }, strategyAtEntry: "vwap_reversion", strategyFamily: "mean_reversion", entryRationale: { strategy: { family: "mean_reversion" } }, regimeAtEntry: "range", brokerMode: "paper" }
       ]
     },
     dataRecorder: {
@@ -6216,6 +6216,7 @@ await runCheck("offline trainer summarizes learning readiness and counterfactual
   assert.ok(summary.readinessScore > 0.24);
   assert.equal(summary.retrainReadiness.bootstrapStatus, "ready");
   assert.ok(summary.retrainReadiness.paper.score > 0);
+  assert.equal(summary.scopeRetrainReadiness[0].type, "family");
 });
 
 await runCheck("offline trainer builds blocker and regime veto scorecards", async () => {
