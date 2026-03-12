@@ -490,6 +490,12 @@ input[type="search"] {
   font-size: 0.92rem;
 }
 
+.learning-strip-grid {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .learning-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -507,6 +513,28 @@ input[type="search"] {
 
 .learning-detail strong {
   line-height: 1.35;
+}
+
+.learning-note,
+.learning-list-item p {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.45;
+  font-size: 0.84rem;
+}
+
+.learning-list {
+  display: grid;
+  gap: 10px;
+}
+
+.learning-list-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .learning-card .quick-grid {

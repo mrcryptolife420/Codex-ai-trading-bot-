@@ -566,14 +566,17 @@ function latestTradeSummary(snapshot) {
   if (!trade) {
     return {
       title: "Nog geen recente trade",
-      detail: "Zodra een trade sluit, zie je hier direct wat er gebeurde en wat de bot daarvan leert."
+      detail: "Zodra een trade sluit, zie je hier direct wat er gebeurde en wat de bot daarvan leert.",
+      lesson: "Nog geen concrete trade-les beschikbaar."
     };
   }
   const pnl = formatMoney(trade.pnlQuote);
   const pnlPct = formatSignedPct(trade.netPnlPct);
+  const reason = titleize(trade.reason || "trade");
   return {
-    title: `${trade.symbol || "-"} · ${titleize(trade.reason || "trade")}`,
-    detail: `${pnl} (${pnlPct}) bij exit op ${formatDate(trade.closedAt || trade.exitAt || trade.updatedAt)}.`
+    title: `${trade.symbol || "-"} · ${reason}`,
+    detail: `${pnl} (${pnlPct}) bij exit op ${formatDate(trade.closedAt || trade.exitAt || trade.updatedAt)}.`,
+    lesson: `${trade.symbol || "Deze trade"} sloot via ${reason.toLowerCase()} en telt mee in de leerlus voor exits, timing en execution-kosten.`
   };
 }
 
@@ -592,6 +595,18 @@ function renderLearning(snapshot) {
   const latestTrade = latestTradeSummary(snapshot);
   const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
   const learningScore = formatPct(paperLearning.readinessScore || 0, 0);
+  const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
+  const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
+  const topOutcomeText = titleize(topOutcome?.id || "nog geen duidelijke outcome");
+  const reviewText = paperLearning.reviewPacks?.topMissedSetup
+    ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
+    : "Nog geen automatische review-pack beschikbaar.";
+  const blockerMeaning = topBlocker?.id
+    ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
+    : "Er is nog geen dominante rem in de huidige learning-data.";
+  const scopeMeaning = topScope?.id
+    ? `${titleize(topScope.id)} is nu de sterkste leerscope.`
+    : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
   const nextStep =
     retrainPlan.operatorAction ||
     replayPlan.operatorGoal ||
@@ -611,17 +626,24 @@ function renderLearning(snapshot) {
           <span class="pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}">${escapeHtml(learningStatus)}</span>
         </div>
         <p class="learning-copy">${escapeHtml(focusText)}</p>
+        <div class="learning-strip-grid">
+          <span class="tag">${escapeHtml(laneText)}</span>
+          <span class="tag">${escapeHtml(`Top blocker: ${topBlockerText}`)}</span>
+          <span class="tag">${escapeHtml(`Top outcome: ${topOutcomeText}`)}</span>
+        </div>
       </section>
       <section class="learning-grid">
         <article class="learning-detail">
           <span class="metric-label">Leert nu</span>
           <strong>${escapeHtml(topScope?.id ? titleize(topScope.id) : "Warmup dataset")}</strong>
           <span class="metric-foot">${escapeHtml(topScope?.status ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || 0, 0)}` : "Nog geen sterke scope zichtbaar.")}</span>
+          <p class="learning-note">${escapeHtml(scopeMeaning)}</p>
         </article>
         <article class="learning-detail">
           <span class="metric-label">Laatste trade</span>
           <strong>${escapeHtml(latestTrade.title)}</strong>
           <span class="metric-foot">${escapeHtml(latestTrade.detail)}</span>
+          <p class="learning-note">${escapeHtml(latestTrade.lesson)}</p>
         </article>
         <article class="learning-detail">
           <span class="metric-label">Grootste les</span>
@@ -633,11 +655,32 @@ function renderLearning(snapshot) {
                 ? `${topBlocker.count} blokkades sturen nu de leerlus.`
                 : "Er is nog te weinig consistente paperdata om 1 duidelijke les te trekken."
           )}</span>
+          <p class="learning-note">${escapeHtml(blockerMeaning)}</p>
         </article>
         <article class="learning-detail">
           <span class="metric-label">Volgende stap</span>
           <strong>${escapeHtml(titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"))}</strong>
           <span class="metric-foot">${escapeHtml(nextStep)}</span>
+          <p class="learning-note">${escapeHtml(reviewText)}</p>
+        </article>
+      </section>
+      <section class="learning-list">
+        <article class="learning-list-item">
+          <span class="metric-label">Wat de bot nu precies doet</span>
+          <p>${escapeHtml(
+            paperLearning.probation?.note ||
+            paperLearning.thresholdSandbox?.status
+              ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
+              : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds, veto's en replay-focus te verbeteren."
+          )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Waarom dit belangrijk is</span>
+          <p>${escapeHtml(
+            paperLearning.counterfactualTuning?.blocker
+              ? `Counterfactuals tonen waar ${titleize(paperLearning.counterfactualTuning.blocker)} mogelijk te streng of net terecht was.`
+              : "Deze leerlus helpt de bot beter te begrijpen welke setups later meer of minder ruimte moeten krijgen."
+          )}</p>
         </article>
       </section>
     </article>
