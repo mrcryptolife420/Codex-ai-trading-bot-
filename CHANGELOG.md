@@ -120,6 +120,7 @@
 - Fixed operator-alert runtime state migration so restored runtimes now always carry the new `resolvedAtById` store without breaking older persisted JSON.
 - Paper-learning lane counts, scope summaries, and shadow review context now stay paper-only instead of letting live shadow/counterfactual cases leak into paper dashboard learning summaries after refresh.
 - Paper-mode risk history now ignores live trades, live scale-outs, and live probe/shadow activity when computing capital pressure, loss streaks, and paper-learning budgets, so paper no longer gets stricter from mixed-mode history.
+- Paper-learning now counts closed probe trades on their exit day in the dashboard summary, and the capital governor now stays mode-safe by ignoring live PnL/drawdown history when paper evaluates recovery and blocking state.
 - Fixed dashboard/operator alert actions so alerts can now be resolved explicitly instead of only acknowledged or silenced.
 - Fixed strategy-research summaries so newer robustness/uniqueness scoring survives serialization into runtime and dashboard snapshots.
 - Closed a new threshold-policy bug where the `adjust` state could effectively never trigger because the shift floor was stricter than the maximum recommendation size.

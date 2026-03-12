@@ -4089,6 +4089,7 @@ export class TradingBot {
 
   buildPaperLearningSummary(decisionSummaries = arr(this.runtime.latestDecisions), referenceNow = nowIso()) {
     const entries = arr(decisionSummaries);
+    const botMode = this.config?.botMode || "paper";
     const learningEntries = entries.filter((item) => item.learningLane);
     const recencyWeight = (at) => {
       const timestamp = new Date(at || 0).getTime();
@@ -4131,7 +4132,7 @@ export class TradingBot {
       if ((trade.brokerMode || "paper") !== "paper") {
         continue;
       }
-      const at = trade.entryAt || trade.exitAt;
+      const at = trade.exitAt || trade.entryAt;
       if (!at || !sameUtcDay(at, referenceNow)) {
         continue;
       }
@@ -4177,6 +4178,32 @@ export class TradingBot {
       probe: laneKeys.probe.size,
       shadow: laneKeys.shadow.size
     };
+    const probeBudgetUsed = [
+      ...arr(this.journal?.trades || []).filter(
+        (trade) => (trade.brokerMode || "paper") === botMode &&
+          trade.learningLane === "probe" &&
+          trade.entryAt &&
+          sameUtcDay(trade.entryAt, referenceNow)
+      ),
+      ...arr(this.runtime?.openPositions || []).filter(
+        (position) => (position.brokerMode || botMode) === botMode &&
+          position.learningLane === "probe" &&
+          position.entryAt &&
+          sameUtcDay(position.entryAt, referenceNow)
+      )
+    ].length;
+    const shadowBudgetUsed = [
+      ...arr(this.journal?.counterfactuals || []).filter(
+        (item) => (item.brokerMode || "paper") === botMode &&
+          item.learningLane === "shadow" &&
+          sameUtcDay(item.resolvedAt || item.queuedAt || item.at, referenceNow)
+      ),
+      ...arr(this.runtime?.counterfactualQueue || []).filter(
+        (item) => (item.brokerMode || "paper") === botMode &&
+          item.learningLane === "shadow" &&
+          sameUtcDay(item.queuedAt || item.dueAt, referenceNow)
+      )
+    ].length;
     const recentPaperTrades = arr(this.journal?.trades || [])
       .filter((trade) => (trade.brokerMode || "paper") === "paper" && trade.exitAt)
       .slice(-40);
@@ -4243,11 +4270,11 @@ export class TradingBot {
     }
     const budget = entries.find((item) => item.paperLearningBudget)?.paperLearningBudget || {
       probeDailyLimit: this.config.paperLearningProbeDailyLimit || 0,
-      probeUsed: laneCounts.probe || 0,
-      probeRemaining: Math.max(0, (this.config.paperLearningProbeDailyLimit || 0) - (laneCounts.probe || 0)),
+      probeUsed: probeBudgetUsed,
+      probeRemaining: Math.max(0, (this.config.paperLearningProbeDailyLimit || 0) - probeBudgetUsed),
       shadowDailyLimit: this.config.paperLearningShadowDailyLimit || 0,
-      shadowUsed: laneCounts.shadow || 0,
-      shadowRemaining: Math.max(0, (this.config.paperLearningShadowDailyLimit || 0) - (laneCounts.shadow || 0))
+      shadowUsed: shadowBudgetUsed,
+      shadowRemaining: Math.max(0, (this.config.paperLearningShadowDailyLimit || 0) - shadowBudgetUsed)
     };
     const topBlockers = Object.entries(blockerCounts)
       .sort((left, right) => right[1] - left[1])
@@ -6825,6 +6852,7 @@ export class TradingBot {
     const portfolio = await this.updatePortfolioSnapshot(markedPrices);
     this.journal.equitySnapshots.push({
       at: cycleAt,
+      brokerMode: this.config.botMode,
       equity: portfolio.equity,
       quoteFree: portfolio.balance.quoteFree,
       openPositions: this.runtime.openPositions.length

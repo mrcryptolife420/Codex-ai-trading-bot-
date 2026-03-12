@@ -16,10 +16,17 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
-function computeDrawdownPct(equitySnapshots = []) {
+function matchesBrokerMode(item, botMode = "paper") {
+  return !item?.brokerMode || (item.brokerMode === botMode);
+}
+
+function computeDrawdownPct(equitySnapshots = [], botMode = "paper") {
   let peak = 0;
   let maxDrawdown = 0;
   for (const snapshot of equitySnapshots) {
+    if (!matchesBrokerMode(snapshot, botMode)) {
+      continue;
+    }
     const equity = safeNumber(snapshot?.equity, 0);
     if (equity <= 0) {
       continue;
@@ -33,7 +40,7 @@ function computeDrawdownPct(equitySnapshots = []) {
   return clamp(maxDrawdown, 0, 1);
 }
 
-function buildDailyLedger(journal = {}) {
+function buildDailyLedger(journal = {}, botMode = "paper") {
   const ledger = new Map();
   const add = (at, amount) => {
     const key = `${at || ""}`.slice(0, 10);
@@ -44,9 +51,15 @@ function buildDailyLedger(journal = {}) {
   };
 
   for (const trade of journal.trades || []) {
+    if (!matchesBrokerMode(trade, botMode)) {
+      continue;
+    }
     add(trade.exitAt || trade.entryAt, trade.pnlQuote || 0);
   }
   for (const event of journal.scaleOuts || []) {
+    if (!matchesBrokerMode(event, botMode)) {
+      continue;
+    }
     add(event.at, event.realizedPnl || 0);
   }
 
@@ -73,16 +86,18 @@ export function buildCapitalGovernor({
   config = {},
   nowIso = new Date().toISOString()
 } = {}) {
-  const dailyLedger = buildDailyLedger(journal);
+  const botMode = config.botMode || "paper";
+  const dailyLedger = buildDailyLedger(journal, botMode);
   const todayPnl = dailyLedger.find((item) => sameUtcDay(item.day, nowIso))?.pnlQuote || 0;
   const recentDays = dailyLedger.slice(-7);
   const weeklyPnl = recentDays.reduce((total, item) => total + safeNumber(item.pnlQuote, 0), 0);
   const startingCash = Math.max(config.startingCash || 1, 1);
   const dailyLossFraction = todayPnl < 0 ? Math.abs(todayPnl) / startingCash : 0;
   const weeklyLossFraction = weeklyPnl < 0 ? Math.abs(weeklyPnl) / startingCash : 0;
-  const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240));
+  const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240), botMode);
   const redDayStreak = computeRedDayStreak(dailyLedger);
   const recoveryTrades = (journal.trades || [])
+    .filter((trade) => matchesBrokerMode(trade, botMode))
     .filter((trade) => trade.exitAt)
     .slice(-(config.capitalGovernorRecoveryTrades || 4));
   const recoveryWinRate = recoveryTrades.length

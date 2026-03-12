@@ -5377,6 +5377,34 @@ await runCheck("capital governor blocks entries after weekly drawdown breach", a
   assert.ok(summary.blockerReasons.includes("capital_governor_weekly_drawdown_limit"));
 });
 
+await runCheck("capital governor ignores live history when evaluating paper mode", async () => {
+  const summary = buildCapitalGovernor({
+    journal: {
+      trades: [
+        { brokerMode: "live", exitAt: "2026-03-05T10:00:00.000Z", pnlQuote: -180 },
+        { brokerMode: "live", exitAt: "2026-03-06T10:00:00.000Z", pnlQuote: -220 },
+        { brokerMode: "paper", exitAt: "2026-03-08T10:00:00.000Z", pnlQuote: 12 }
+      ],
+      scaleOuts: [
+        { brokerMode: "live", at: "2026-03-08T11:00:00.000Z", realizedPnl: -20 }
+      ],
+      equitySnapshots: [
+        { brokerMode: "live", at: "2026-03-05T00:00:00.000Z", equity: 10000 },
+        { brokerMode: "live", at: "2026-03-08T00:00:00.000Z", equity: 9200 },
+        { brokerMode: "paper", at: "2026-03-08T00:00:00.000Z", equity: 10000 },
+        { brokerMode: "paper", at: "2026-03-08T12:00:00.000Z", equity: 10012 }
+      ]
+    },
+    runtime: {},
+    config: makeConfig({ botMode: "paper", capitalGovernorWeeklyDrawdownPct: 0.05 }),
+    nowIso: "2026-03-08T12:00:00.000Z"
+  });
+  assert.equal(summary.status, "ready");
+  assert.equal(summary.allowEntries, true);
+  assert.equal(summary.dailyLossFraction, 0);
+  assert.equal(summary.weeklyLossFraction, 0);
+});
+
 await runCheck("operator alert dispatcher builds and dispatches webhook plans safely", async () => {
   const alerts = buildOperatorAlerts({
     runtime: {
@@ -6552,6 +6580,32 @@ await runCheck("trading bot paper learning summary keeps daily lane counts after
   assert.equal(summary.topRegimes[0].id, "trend");
   assert.equal(summary.topSessions[0].id, "europe");
   assert.ok(summary.topSessions.every((item) => item.id !== "us"));
+});
+
+await runCheck("trading bot paper learning summary counts closed probe trades on exit day", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = { latestDecisions: [], openPositions: [], counterfactualQueue: [], offlineTrainer: {}, ops: { replayChaos: { replayPacks: {} } } };
+  bot.journal = {
+    trades: [
+      {
+        id: "overnight-probe",
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        entryAt: "2026-03-11T23:30:00.000Z",
+        exitAt: "2026-03-12T01:10:00.000Z",
+        paperLearningOutcome: { outcome: "good_trade" }
+      }
+    ],
+    counterfactuals: []
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.probeCount, 1);
+  assert.equal(summary.dailyBudget.probeUsed, 0);
 });
 
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {
