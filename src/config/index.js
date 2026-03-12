@@ -223,6 +223,9 @@ const DEFAULTS = {
   paperLearningMaxProbePerRegimePerDay: 3,
   paperLearningMaxProbePerSessionPerDay: 2,
   paperLearningMinNoveltyScore: 0.18,
+  paperLearningSandboxEnabled: true,
+  paperLearningSandboxMinClosedTrades: 3,
+  paperLearningSandboxMaxThresholdShift: 0.01,
   exitOnSpreadShockBps: 20,
   minVolTargetFraction: 0.4,
   maxVolTargetFraction: 1.05,
@@ -679,6 +682,9 @@ export async function loadConfig(projectRoot = process.cwd()) {
     paperLearningMaxProbePerRegimePerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_REGIME_PER_DAY, DEFAULTS.paperLearningMaxProbePerRegimePerDay),
     paperLearningMaxProbePerSessionPerDay: parseNumber(env.PAPER_LEARNING_MAX_PROBE_PER_SESSION_PER_DAY, DEFAULTS.paperLearningMaxProbePerSessionPerDay),
     paperLearningMinNoveltyScore: parseNumber(env.PAPER_LEARNING_MIN_NOVELTY_SCORE, DEFAULTS.paperLearningMinNoveltyScore),
+    paperLearningSandboxEnabled: parseBoolean(env.PAPER_LEARNING_SANDBOX_ENABLED, DEFAULTS.paperLearningSandboxEnabled),
+    paperLearningSandboxMinClosedTrades: parseNumber(env.PAPER_LEARNING_SANDBOX_MIN_CLOSED_TRADES, DEFAULTS.paperLearningSandboxMinClosedTrades),
+    paperLearningSandboxMaxThresholdShift: parseNumber(env.PAPER_LEARNING_SANDBOX_MAX_THRESHOLD_SHIFT, DEFAULTS.paperLearningSandboxMaxThresholdShift),
     exitOnSpreadShockBps: parseNumber(env.EXIT_ON_SPREAD_SHOCK_BPS, DEFAULTS.exitOnSpreadShockBps),
     minVolTargetFraction: parseNumber(env.MIN_VOL_TARGET_FRACTION, DEFAULTS.minVolTargetFraction),
     maxVolTargetFraction: parseNumber(env.MAX_VOL_TARGET_FRACTION, DEFAULTS.maxVolTargetFraction),
@@ -837,4 +843,3 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-

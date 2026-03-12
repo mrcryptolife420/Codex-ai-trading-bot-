@@ -671,6 +671,20 @@ function renderOps(snapshot) {
             <strong>${escapeHtml(titleize(paperLearning.recentOutcomes?.[0]?.id || "nog geen"))}</strong>
           </div>
         </div>
+        <div class="decision-reasons">
+          <div class="reason-row">
+            <strong>Scope</strong>
+            <span class="reason-copy">${escapeHtml(paperLearning.scopeReadiness?.[0]?.id ? `${titleize(paperLearning.scopeReadiness[0].id)} (${titleize(paperLearning.scopeReadiness[0].status)})` : "Nog geen sterke paper-scope zichtbaar.")}</span>
+          </div>
+          <div class="reason-row">
+            <strong>Sandbox</strong>
+            <span class="reason-copy">${escapeHtml(paperLearning.thresholdSandbox?.status ? `${titleize(paperLearning.thresholdSandbox.status)} · ${paperLearning.thresholdSandbox.scopeLabel || "scope onbekend"} · shift ${formatPct(paperLearning.thresholdSandbox.thresholdShift || 0, 1)}` : "Geen actieve threshold sandbox.")}</span>
+          </div>
+          <div class="reason-row">
+            <strong>Review</strong>
+            <span class="reason-copy">${escapeHtml(paperLearning.reviewPacks?.topMissedSetup ? `Bekijk vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "geen zwakke probe"} als zwakke probe.` : "Nog geen automatische paper review-packs beschikbaar.")}</span>
+          </div>
+        </div>
       </article>
     `
       : "";

@@ -492,6 +492,42 @@ In de huidige versie zit nu al:
 - compacte paper learning kaart in het dashboard met lanes, readiness, probation, top blocker en top outcome
 - probe-diversificatie over sessies zodat paper niet te veel in dezelfde markturen blijft leren
 - automatische replay-packs met probe winners, paper misses en near-miss blocked setups
+- paper blocker-splitting tussen `safety`, `governance`, `learning` en `market`
+- scope-readiness per strategy-family, regime en session
+- paper-only threshold sandbox met kleine scope-gebonden threshold shifts
+- review-packs voor beste probe, zwakste probe en top gemiste setup
+
+### Paper roadmap v2
+
+1. `Experiment lanes`
+- Houd `safe`, `probe` en `shadow` expliciet apart.
+
+2. `Learning value`
+- Waardeer zeldzame en ondervertegenwoordigde scopes hoger.
+
+3. `Probe sampling`
+- Spreid probes over family, regime en session.
+
+4. `Threshold sandbox`
+- Laat paper kleine, begrensde threshold-experimenten doen per scope.
+
+5. `Blocker splitting`
+- Splits blockers in `safety`, `governance`, `learning` en `market`.
+
+6. `Outcome labeling`
+- Blijf paper trades en veto's labelen als leerinput.
+
+7. `Replay & review packs`
+- Bundel beste probes, zwakke probes en gemiste setups automatisch.
+
+8. `Scope readiness`
+- Meet paper readiness niet alleen globaal, maar ook per family, regime en session.
+
+9. `Counterfactual tuning`
+- Gebruik gemiste winnaars en slechte veto's als gerichte tuning-input.
+
+10. `Operator visibility`
+- Toon paper readiness, sandbox, review-packs en gemiste-trade analyse duidelijk in runtime/dashboard.
 
 ## Projectstructuur
 

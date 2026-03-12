@@ -211,6 +211,8 @@ export function validateConfig(config) {
   assertRange("PAPER_LEARNING_MAX_PROBE_PER_REGIME_PER_DAY", config.paperLearningMaxProbePerRegimePerDay, 0, 20, errors);
   assertRange("PAPER_LEARNING_MAX_PROBE_PER_SESSION_PER_DAY", config.paperLearningMaxProbePerSessionPerDay, 0, 20, errors);
   assertRange("PAPER_LEARNING_MIN_NOVELTY_SCORE", config.paperLearningMinNoveltyScore, 0, 1, errors);
+  assertRange("PAPER_LEARNING_SANDBOX_MIN_CLOSED_TRADES", config.paperLearningSandboxMinClosedTrades, 1, 30, errors);
+  assertRange("PAPER_LEARNING_SANDBOX_MAX_THRESHOLD_SHIFT", config.paperLearningSandboxMaxThresholdShift, 0, 0.05, errors);
   assertRange("ANNOUNCEMENT_LOOKBACK_HOURS", config.announcementLookbackHours, 1, 168, errors);
   assertRange("ONCHAIN_LITE_TRENDING_LIMIT", config.onChainLiteTrendingLimit, 1, 20, errors);
   assertRange("ANNOUNCEMENT_CACHE_MINUTES", config.announcementCacheMinutes, 1, 240, errors);

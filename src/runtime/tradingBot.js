@@ -1762,6 +1762,27 @@ function summarizePaperLearning(summary = {}) {
     shadowCount: summary.shadowCount || 0,
     averageLearningValueScore: num(summary.averageLearningValueScore || 0, 4),
     averageNoveltyScore: num(summary.averageNoveltyScore || 0, 4),
+    blockerGroups: Object.fromEntries(Object.entries(summary.blockerGroups || {}).map(([key, value]) => [key, value || 0])),
+    scopeReadiness: arr(summary.scopeReadiness || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      type: item.type || null,
+      count: item.count || 0,
+      readinessScore: num(item.readinessScore || 0, 4),
+      status: item.status || "warmup",
+      goodRate: num(item.goodRate || 0, 4),
+      weakRate: num(item.weakRate || 0, 4)
+    })),
+    thresholdSandbox: summary.thresholdSandbox ? {
+      status: summary.thresholdSandbox.status || "observe",
+      scopeLabel: summary.thresholdSandbox.scopeLabel || null,
+      thresholdShift: num(summary.thresholdSandbox.thresholdShift || 0, 4),
+      sampleSize: summary.thresholdSandbox.sampleSize || 0
+    } : null,
+    reviewPacks: summary.reviewPacks ? {
+      bestProbeWinner: summary.reviewPacks.bestProbeWinner || null,
+      weakestProbe: summary.reviewPacks.weakestProbe || null,
+      topMissedSetup: summary.reviewPacks.topMissedSetup || null
+    } : null,
     dailyBudget: summary.dailyBudget || null,
     topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
       id: item.id || null,
@@ -3627,21 +3648,31 @@ export class TradingBot {
     }, {});
     const familyCounts = {};
     const regimeCounts = {};
+    const sessionCounts = {};
     for (const item of learningEntries) {
       const family = item.paperLearning?.scope?.family || item.strategy?.family || null;
       const regime = item.paperLearning?.scope?.regime || item.regime || null;
+      const session = item.paperLearning?.scope?.session || item.session?.session || null;
       if (family) {
         familyCounts[family] = (familyCounts[family] || 0) + 1;
       }
       if (regime) {
         regimeCounts[regime] = (regimeCounts[regime] || 0) + 1;
       }
+      if (session) {
+        sessionCounts[session] = (sessionCounts[session] || 0) + 1;
+      }
     }
     const blockerCounts = {};
+    const blockerGroups = { safety: 0, governance: 0, learning: 0, market: 0 };
     for (const item of entries.filter((entry) => !entry.allow)) {
       const reasons = arr(item.blockerReasons || item.reasons || []);
       for (const reason of reasons.slice(0, 3)) {
         blockerCounts[reason] = (blockerCounts[reason] || 0) + 1;
+      }
+      const categories = item.paperBlockerCategories || item.paperLearning?.blockerCategories || {};
+      for (const [key, value] of Object.entries(categories)) {
+        blockerGroups[key] = (blockerGroups[key] || 0) + (value || 0);
       }
     }
     const recentPaperTrades = arr(this.journal?.trades || [])
@@ -3662,6 +3693,58 @@ export class TradingBot {
       .sort((left, right) => right[1] - left[1])
       .slice(0, 6)
       .map(([id, count]) => ({ id, count }));
+    const readinessByScope = (records, type, pickId) => Object.entries(
+      records.reduce((acc, trade) => {
+        const id = pickId(trade);
+        if (!id) {
+          return acc;
+        }
+        acc[id] = acc[id] || [];
+        acc[id].push(trade);
+        return acc;
+      }, {})
+    )
+      .map(([id, trades]) => {
+        const goodCount = trades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
+        const weakCount = trades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
+        const goodRate = goodCount / Math.max(trades.length, 1);
+        const weakRate = weakCount / Math.max(trades.length, 1);
+        const readinessScore = clamp(0.3 + Math.min(0.28, trades.length / 10) + goodRate * 0.28 - weakRate * 0.22, 0, 1);
+        return {
+          id,
+          type,
+          count: trades.length,
+          readinessScore,
+          status: readinessScore >= 0.72 ? "paper_ready" : readinessScore >= 0.54 ? "building" : "warmup",
+          goodRate,
+          weakRate
+        };
+      })
+      .sort((left, right) => right.readinessScore - left.readinessScore)
+      .slice(0, 2);
+    const scopeReadiness = [
+      ...readinessByScope(recentProbeTrades, "strategy_family", (trade) => trade.strategyFamily || null),
+      ...readinessByScope(recentProbeTrades, "regime", (trade) => trade.regimeAtEntry || null),
+      ...readinessByScope(recentProbeTrades, "session", (trade) => trade.sessionAtEntry || null)
+    ].sort((left, right) => right.readinessScore - left.readinessScore).slice(0, 6);
+    const sandboxStates = learningEntries
+      .map((item) => item.paperThresholdSandbox || item.paperLearning?.thresholdSandbox)
+      .filter((item) => item?.status && item.status !== "warmup")
+      .sort((left, right) => Math.abs(right.thresholdShift || 0) - Math.abs(left.thresholdShift || 0));
+    const thresholdSandbox = sandboxStates[0]
+      ? {
+          status: sandboxStates[0].status,
+          scopeLabel: [sandboxStates[0].scope?.family, sandboxStates[0].scope?.regime, sandboxStates[0].scope?.session].filter(Boolean).join(" · "),
+          thresholdShift: sandboxStates[0].thresholdShift || 0,
+          sampleSize: sandboxStates[0].sampleSize || 0
+        }
+      : null;
+    const replayPacks = this.runtime?.ops?.replayChaos?.replayPacks || this.runtime?.replayChaos?.replayPacks || {};
+    const reviewPacks = {
+      bestProbeWinner: replayPacks.probeWinners?.[0]?.symbol || null,
+      weakestProbe: replayPacks.paperMisses?.[0]?.symbol || null,
+      topMissedSetup: replayPacks.nearMissSetups?.[0]?.symbol || null
+    };
     const probeGoodCount = recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
     const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
     const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
@@ -3714,12 +3797,20 @@ export class TradingBot {
       shadowCount: laneCounts.shadow || 0,
       averageLearningValueScore: avgLearningValue,
       averageNoveltyScore: avgNovelty,
+      blockerGroups,
+      scopeReadiness,
+      thresholdSandbox,
+      reviewPacks,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)
         .sort((left, right) => right[1] - left[1])
         .slice(0, 4)
         .map(([id, count]) => ({ id, count })),
       topRegimes: Object.entries(regimeCounts)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4)
+        .map(([id, count]) => ({ id, count })),
+      topSessions: Object.entries(sessionCounts)
         .sort((left, right) => right[1] - left[1])
         .slice(0, 4)
         .map(([id, count]) => ({ id, count })),
@@ -3736,6 +3827,12 @@ export class TradingBot {
         budget
           ? `Dagbudget probes ${budget.probeUsed}/${budget.probeDailyLimit} en shadow ${budget.shadowUsed}/${budget.shadowDailyLimit}.`
           : "Nog geen paper learning budget zichtbaar.",
+        thresholdSandbox
+          ? `Paper threshold sandbox ${thresholdSandbox.status} in ${thresholdSandbox.scopeLabel || "scope onbekend"} (${num(thresholdSandbox.thresholdShift * 100, 1)}% shift).`
+          : "Geen actieve paper threshold sandbox.",
+        scopeReadiness[0]
+          ? `Sterkste paper-scope: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
+          : "Nog geen paper-scope readiness zichtbaar.",
         topBlockers[0]
           ? `${topBlockers[0].id} blokkeert momenteel het vaakst in paper learning.`
           : "Nog geen dominante paper blocker zichtbaar.",
@@ -5524,12 +5621,16 @@ export class TradingBot {
         lane: candidate.decision.learningLane || null,
         learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
         noveltyScore: num(candidate.decision.paperLearningSampling?.noveltyScore || 0, 4),
+        rarityScore: num(candidate.decision.paperLearningSampling?.rarityScore || 0, 4),
         scope: {
           family: candidate.decision.paperLearningSampling?.scope?.family || null,
-          regime: candidate.decision.paperLearningSampling?.scope?.regime || null
+          regime: candidate.decision.paperLearningSampling?.scope?.regime || null,
+          session: candidate.decision.paperLearningSampling?.scope?.session || null
         },
         probeCaps: candidate.decision.paperLearningSampling?.probeCaps || null,
-        budget: candidate.decision.paperLearningBudget || null
+        budget: candidate.decision.paperLearningBudget || null,
+        blockerCategories: candidate.decision.paperBlockerCategories || {},
+        thresholdSandbox: candidate.decision.paperThresholdSandbox || null
       } : null,
       onChainLite: summarizeOnChainLite(candidate.onChainLiteSummary),
       orderBook: summarizeOrderBook(candidate.marketSnapshot.book),

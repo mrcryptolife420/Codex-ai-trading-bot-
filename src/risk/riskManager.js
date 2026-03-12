@@ -131,7 +131,9 @@ function getPaperLearningSamplingState({
   const familyNovelty = familyLimit > 0 ? clamp(1 - (familyUsed / familyLimit), 0, 1) : (familyUsed === 0 ? 1 : 0.5);
   const regimeNovelty = regimeLimit > 0 ? clamp(1 - (regimeUsed / regimeLimit), 0, 1) : (regimeUsed === 0 ? 1 : 0.5);
   const sessionNovelty = sessionLimit > 0 ? clamp(1 - (sessionUsed / sessionLimit), 0, 1) : (sessionUsed === 0 ? 1 : 0.5);
-  const noveltyScore = clamp(familyNovelty * 0.42 + regimeNovelty * 0.38 + sessionNovelty * 0.2, 0, 1);
+  const recordCount = records.length;
+  const scopeRarityScore = clamp(recordCount <= 0 ? 1 : 1 / Math.sqrt(recordCount + 1), 0, 1);
+  const noveltyScore = clamp(familyNovelty * 0.34 + regimeNovelty * 0.31 + sessionNovelty * 0.17 + scopeRarityScore * 0.18, 0, 1);
   return {
     scope: {
       family,
@@ -153,7 +155,8 @@ function getPaperLearningSamplingState({
     canOpenProbe:
       (familyLimit === 0 || familyUsed < familyLimit) &&
       (regimeLimit === 0 || regimeUsed < regimeLimit) &&
-      (sessionLimit === 0 || sessionUsed < sessionLimit)
+      (sessionLimit === 0 || sessionUsed < sessionLimit),
+    rarityScore: scopeRarityScore
   };
 }
 
@@ -169,6 +172,129 @@ function isHardPaperLearningBlocker(reason) {
     "drift_blocked",
     "operator_ack_required"
   ].includes(reason);
+}
+
+function classifyPaperBlocker(reason) {
+  if ([
+    "health_circuit_open",
+    "exchange_truth_freeze",
+    "exchange_safety_blocked",
+    "lifecycle_attention_required",
+    "reconcile_required",
+    "operator_ack_required"
+  ].includes(reason)) {
+    return "safety";
+  }
+  if ([
+    "capital_governor_blocked",
+    "capital_governor_recovery",
+    "execution_cost_budget_exceeded",
+    "strategy_cooldown",
+    "strategy_budget_cooled",
+    "cluster_budget_cooled",
+    "regime_budget_cooled"
+  ].includes(reason)) {
+    return "governance";
+  }
+  if ([
+    "committee_veto",
+    "model_confidence_too_low",
+    "model_uncertainty_abstain",
+    "committee_confidence_too_low",
+    "strategy_fit_too_low",
+    "paper_learning_probe_budget_reached",
+    "paper_learning_family_probe_cap_reached",
+    "paper_learning_regime_probe_cap_reached",
+    "paper_learning_session_probe_cap_reached",
+    "paper_learning_novelty_too_low"
+  ].includes(reason)) {
+    return "learning";
+  }
+  return "market";
+}
+
+function resolvePaperTradeBucket(trade = {}) {
+  const outcome = trade.paperLearningOutcome?.outcome || null;
+  if (["good_trade", "acceptable_trade"].includes(outcome)) {
+    return "good";
+  }
+  if (["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(outcome)) {
+    return "weak";
+  }
+  return "neutral";
+}
+
+function buildPaperThresholdSandboxState({
+  journal = {},
+  config = {},
+  strategySummary = {},
+  regimeSummary = {},
+  sessionSummary = {},
+  nowIso
+} = {}) {
+  if (!config.paperLearningSandboxEnabled) {
+    return {
+      active: false,
+      status: "disabled",
+      thresholdShift: 0,
+      sampleSize: 0,
+      scope: {
+        family: strategySummary.family || null,
+        regime: regimeSummary.regime || null,
+        session: sessionSummary.session || null
+      }
+    };
+  }
+  const scope = {
+    family: strategySummary.family || null,
+    regime: regimeSummary.regime || null,
+    session: sessionSummary.session || null
+  };
+  const records = (journal?.trades || [])
+    .filter((trade) => (trade.brokerMode || "paper") === "paper" && trade.exitAt && isWithinLookback(trade.exitAt, nowIso, 60 * 24 * 21))
+    .filter((trade) => {
+      const familyMatch = !scope.family || trade.strategyFamily === scope.family;
+      const regimeMatch = !scope.regime || trade.regimeAtEntry === scope.regime;
+      const sessionMatch = !scope.session || trade.sessionAtEntry === scope.session;
+      return familyMatch && regimeMatch && sessionMatch;
+    })
+    .slice(-18);
+  const minClosedTrades = Math.max(1, Math.round(config.paperLearningSandboxMinClosedTrades || 3));
+  if (records.length < minClosedTrades) {
+    return {
+      active: false,
+      status: "warmup",
+      thresholdShift: 0,
+      sampleSize: records.length,
+      scope
+    };
+  }
+  const goodCount = records.filter((trade) => resolvePaperTradeBucket(trade) === "good").length;
+  const weakCount = records.filter((trade) => resolvePaperTradeBucket(trade) === "weak").length;
+  const avgNetPnlPct = average(records.map((trade) => trade.netPnlPct || 0), 0);
+  const avgExecutionQuality = average(records.map((trade) => trade.executionQualityScore || 0), 0);
+  const goodRate = goodCount / Math.max(records.length, 1);
+  const weakRate = weakCount / Math.max(records.length, 1);
+  let thresholdShift = 0;
+  let status = "observe";
+  if (goodRate >= 0.62 && avgNetPnlPct > 0 && avgExecutionQuality >= 0.52) {
+    thresholdShift = -Math.min(config.paperLearningSandboxMaxThresholdShift || 0.01, 0.004 + (goodRate - 0.62) * 0.02);
+    status = "relax";
+  } else if (weakRate >= 0.52 && avgNetPnlPct < 0) {
+    thresholdShift = Math.min(config.paperLearningSandboxMaxThresholdShift || 0.01, 0.004 + (weakRate - 0.52) * 0.02);
+    status = "tighten";
+  }
+  return {
+    active: thresholdShift !== 0,
+    status,
+    thresholdShift: clamp(thresholdShift, -(config.paperLearningSandboxMaxThresholdShift || 0.01), config.paperLearningSandboxMaxThresholdShift || 0.01),
+    sampleSize: records.length,
+    goodRate,
+    weakRate,
+    avgNetPnlPct,
+    avgExecutionQuality,
+    scope
+  };
 }
 
 function buildPaperLearningValueScore({
@@ -189,15 +315,17 @@ function buildPaperLearningValueScore({
   const confidenceScore = clamp(1 - safeValue(confidenceBreakdown.overallConfidence, 0.5) * 0.55, 0, 1);
   const blockerScore = clamp(reasons.length / 4, 0, 1);
   const noveltyScore = clamp(safeValue(samplingState.noveltyScore, 0.5), 0, 1);
+  const rarityScore = clamp(safeValue(samplingState.rarityScore, 0.5), 0, 1);
   const modeBoost = entryMode === "paper_recovery_probe" ? 0.08 : entryMode === "paper_exploration" ? 0.05 : 0;
   return clamp(
-    nearMissScore * 0.24 +
+    nearMissScore * 0.22 +
     disagreementScore * 0.12 +
     signalScore * 0.19 +
     dataScore * 0.15 +
     confidenceScore * 0.1 +
     blockerScore * 0.08 +
-    noveltyScore * 0.12 +
+    noveltyScore * 0.08 +
+    rarityScore * 0.06 +
     modeBoost,
     0,
     1
@@ -1246,6 +1374,18 @@ export class RiskManager {
       regimeSummary,
       sessionSummary
     });
+    const paperThresholdSandbox = buildPaperThresholdSandboxState({
+      journal,
+      config: this.config,
+      strategySummary,
+      regimeSummary,
+      sessionSummary,
+      nowIso
+    });
+    const thresholdBeforeSandbox = threshold;
+    if (this.config.botMode === "paper" && Number.isFinite(paperThresholdSandbox.thresholdShift)) {
+      threshold = clamp(threshold + paperThresholdSandbox.thresholdShift, 0.4, 0.85);
+    }
     if (allow && ["paper_exploration", "paper_recovery_probe"].includes(entryMode) && paperLearningBudget.probeRemaining <= 0) {
       allow = false;
       entryMode = "standard";
@@ -1343,6 +1483,16 @@ export class RiskManager {
       learningValueScore,
       paperLearningBudget,
       paperLearningSampling,
+      paperThresholdSandbox: {
+        ...paperThresholdSandbox,
+        thresholdBeforeSandbox,
+        thresholdAfterSandbox: threshold
+      },
+      paperBlockerCategories: allow ? {} : reasons.reduce((acc, reason) => {
+        const category = classifyPaperBlocker(reason);
+        acc[category] = (acc[category] || 0) + 1;
+        return acc;
+      }, {}),
       paperExploration,
       paperGuardrailRelief,
       baseThreshold,

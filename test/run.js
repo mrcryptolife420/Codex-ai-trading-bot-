@@ -214,6 +214,9 @@ function makeConfig(overrides = {}) {
     paperLearningMinSignalQuality: 0.4,
     paperLearningMinDataQuality: 0.52,
     paperLearningMaxProbePerSessionPerDay: 2,
+    paperLearningSandboxEnabled: true,
+    paperLearningSandboxMinClosedTrades: 3,
+    paperLearningSandboxMaxThresholdShift: 0.01,
     exitOnSpreadShockBps: 20,
     minVolTargetFraction: 0.4,
     maxVolTargetFraction: 1.05,
@@ -3554,6 +3557,53 @@ await runCheck("risk manager blocks repetitive paper probes when novelty is too 
   assert.ok(decision.paperLearningSampling.noveltyScore < 0.95);
 });
 
+await runCheck("risk manager applies paper threshold sandbox shifts per scope", async () => {
+  const manager = new RiskManager(makeConfig({
+    botMode: "paper",
+    paperLearningSandboxEnabled: true,
+    paperLearningSandboxMinClosedTrades: 3,
+    paperLearningSandboxMaxThresholdShift: 0.01
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: { probability: 0.56, disagreement: 0.05 },
+    rawFeatures: {},
+    marketSnapshot: {
+      book: { spreadBps: 4, ask: 100, bid: 99.9, mid: 99.95, bookPressure: 0.18 },
+      market: { realizedVolPct: 0.02 }
+    },
+    marketStructureSummary: { riskScore: 0.1 },
+    newsSummary: { riskScore: 0.1, reliabilityScore: 0.8 },
+    announcementSummary: { riskScore: 0.05 },
+    calendarSummary: { riskScore: 0.05 },
+    volatilitySummary: { riskScore: 0.15 },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" },
+    sessionSummary: { session: "asia" },
+    runtime: { openPositions: [], counterfactualQueue: [] },
+    journal: {
+      trades: [
+        { brokerMode: "paper", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", exitAt: "2026-03-11T10:00:00.000Z", netPnlPct: 0.011, executionQualityScore: 0.65, paperLearningOutcome: { outcome: "good_trade" } },
+        { brokerMode: "paper", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", exitAt: "2026-03-11T11:00:00.000Z", netPnlPct: 0.008, executionQualityScore: 0.61, paperLearningOutcome: { outcome: "good_trade" } },
+        { brokerMode: "paper", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", exitAt: "2026-03-11T12:00:00.000Z", netPnlPct: 0.004, executionQualityScore: 0.58, paperLearningOutcome: { outcome: "acceptable_trade" } }
+      ],
+      scaleOuts: [],
+      counterfactuals: []
+    },
+    rules,
+    balance: { quoteFree: 1000 },
+    nowIso: "2026-03-12T12:00:00.000Z",
+    quoteBalance: 1000,
+    remainingExposureBudget: 300,
+    portfolioSummary: {},
+    symbolStats: { avgPnlPct: 0.003 },
+    qualityQuorumSummary: { status: "ready", quorumScore: 1, observeOnly: false, blockerReasons: [], cautionReasons: [] }
+  });
+  assert.equal(decision.paperThresholdSandbox.status, "relax");
+  assert.ok(decision.paperThresholdSandbox.thresholdShift < 0);
+  assert.ok(decision.threshold < decision.paperThresholdSandbox.thresholdBeforeSandbox);
+});
+
 await runCheck("risk manager keeps health-circuit self heal as a hard paper block", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -5573,6 +5623,50 @@ await runCheck("trading bot paper learning summary surfaces probe probation cand
   assert.equal(summary.probation.status, "promote_candidate");
   assert.equal(summary.probation.promotionReady, true);
   assert.equal(summary.probation.rollbackRisk, false);
+});
+
+await runCheck("trading bot paper learning summary exposes scope readiness and sandbox", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    latestDecisions: [
+      {
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.74,
+        session: { session: "asia" },
+        paperLearning: { noveltyScore: 0.68, scope: { family: "trend_following", regime: "trend", session: "asia" } },
+        paperThresholdSandbox: { status: "relax", thresholdShift: -0.008, sampleSize: 4, scope: { family: "trend_following", regime: "trend", session: "asia" } },
+        paperBlockerCategories: {}
+      },
+      {
+        allow: false,
+        blockerReasons: ["committee_veto", "capital_governor_blocked"],
+        paperBlockerCategories: { learning: 1, governance: 1 },
+        paperLearning: { noveltyScore: 0.52, scope: { family: "trend_following", regime: "trend", session: "asia" } }
+      }
+    ],
+    ops: {
+      replayChaos: {
+        replayPacks: {
+          probeWinners: [{ symbol: "BTCUSDT" }],
+          paperMisses: [{ symbol: "ETHUSDT" }],
+          nearMissSetups: [{ symbol: "SOLUSDT" }]
+        }
+      }
+    }
+  };
+  bot.journal = {
+    trades: [
+      { brokerMode: "paper", learningLane: "probe", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", exitAt: "2026-03-11T10:00:00.000Z", netPnlPct: 0.01, executionQualityScore: 0.64, paperLearningOutcome: { outcome: "good_trade" } },
+      { brokerMode: "paper", learningLane: "probe", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", exitAt: "2026-03-11T11:00:00.000Z", netPnlPct: 0.005, executionQualityScore: 0.58, paperLearningOutcome: { outcome: "acceptable_trade" } },
+      { brokerMode: "paper", learningLane: "probe", strategyFamily: "trend_following", regimeAtEntry: "trend", sessionAtEntry: "asia", exitAt: "2026-03-11T12:00:00.000Z", netPnlPct: -0.002, executionQualityScore: 0.51, paperLearningOutcome: { outcome: "early_exit" } }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T12:00:00.000Z");
+  assert.equal(summary.scopeReadiness[0].id, "trend_following");
+  assert.equal(summary.thresholdSandbox.status, "relax");
+  assert.equal(summary.reviewPacks.bestProbeWinner, "BTCUSDT");
+  assert.equal(summary.blockerGroups.learning, 1);
 });
 
 await runCheck("replay chaos summary counts paper misses as replay signals", async () => {

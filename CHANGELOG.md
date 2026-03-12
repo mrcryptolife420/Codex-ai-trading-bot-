@@ -3,6 +3,10 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper learning now exposes blocker groups (`safety`, `governance`, `learning`, `market`) plus per-scope readiness across strategy families, regimes, and sessions.
+- A paper-only threshold sandbox now applies small, bounded scope-level threshold shifts in paper based on recent closed paper outcomes instead of changing the main policy globally.
+- The dashboard paper-learning card now shows strongest paper scope, active threshold sandbox context, and automatic review-pack hints.
+- A dedicated paper-mode roadmap v2 in the README covering experiment lanes, sandboxing, blocker splitting, scope readiness, review packs, and operator visibility.
 - Paper probe-diversification now also tracks session usage, so probes can be spread across market hours instead of only strategy families and regimes.
 - Replay/chaos summaries now build automatic replay packs for probe winners, paper misses, and near-miss blocked setups to speed up paper review loops.
 - Paper-learning summaries now compute a dedicated readiness score/status, so paper can be read as `warmup`, `building`, or `paper_ready` instead of only lane counts.
