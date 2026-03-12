@@ -214,6 +214,12 @@ export class PaperBroker {
       calibration: resolveExecutionCalibration(runtime, executionPlan)
     });
     const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.ask || marketSnapshot.book.mid;
+    const sessionAtEntry =
+      decision.sessionSummary?.session ||
+      decision.session?.session ||
+      entryRationale?.session?.session ||
+      entryRationale?.sessionSummary?.session ||
+      null;
     const size = resolvePaperBuySize({
       quoteAmount,
       executionPrice,
@@ -270,6 +276,7 @@ export class PaperBroker {
       regimeAtEntry: decision.regime || score.regime || "range",
       strategyAtEntry: strategySummary?.activeStrategy || decision.strategySummary?.activeStrategy || entryRationale?.strategy?.activeStrategy || null,
       strategyFamily: strategySummary?.family || decision.strategySummary?.family || entryRationale?.strategy?.family || null,
+      sessionAtEntry,
       entrySpreadBps: marketSnapshot.book.spreadBps,
       rawFeatures,
       newsSummary,
@@ -369,6 +376,7 @@ export class PaperBroker {
       brokerMode: "paper",
       learningLane: position.learningLane || null,
       learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
+      sessionAtEntry: position.sessionAtEntry || null,
       executionAttribution: exitExecutionAttribution
     };
   }
@@ -461,6 +469,7 @@ export class PaperBroker {
       brokerMode: "paper",
       learningLane: position.learningLane || null,
       learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
+      sessionAtEntry: position.sessionAtEntry || null,
       paperLearningOutcome: resolvePaperTradeLearningOutcome({
         netPnlPct,
         captureEfficiency,

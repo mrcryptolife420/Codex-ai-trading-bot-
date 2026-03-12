@@ -4322,6 +4322,7 @@ await runCheck("paper broker persists learning lanes on positions and closed tra
       takeProfitPct: 0.03,
       executionPlan: { entryStyle: "market", fallbackStyle: "none" },
       regime: "trend",
+      sessionSummary: { session: "asia" },
       learningLane: "probe",
       learningValueScore: 0.73,
       paperLearningBudget: { probeDailyLimit: 4, probeUsed: 1, probeRemaining: 3 }
@@ -4334,6 +4335,7 @@ await runCheck("paper broker persists learning lanes on positions and closed tra
   });
   assert.equal(position.learningLane, "probe");
   assert.equal(position.learningValueScore, 0.73);
+  assert.equal(position.sessionAtEntry, "asia");
   const trade = await broker.exitPosition({
     position,
     marketSnapshot: { book: { bid: 70500, mid: 70510, spreadBps: 2, exitEstimate: { averagePrice: 70500 } } },
@@ -4342,6 +4344,7 @@ await runCheck("paper broker persists learning lanes on positions and closed tra
   });
   assert.equal(trade.learningLane, "probe");
   assert.equal(trade.learningValueScore, 0.73);
+  assert.equal(trade.sessionAtEntry, "asia");
   assert.equal(typeof trade.paperLearningOutcome?.outcome, "string");
   assert.equal(typeof trade.paperLearningOutcome?.entryQuality, "string");
   assert.equal(typeof trade.paperLearningOutcome?.exitQuality, "string");
