@@ -6348,6 +6348,34 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   assert.equal(summary.recentShadowReviews[0].bestBranch.id, "maker_bias");
 });
 
+await runCheck("trading bot paper learning summary only uses branchable shadow cases for shadow reviews", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = { latestDecisions: [], offlineTrainer: {}, ops: { replayChaos: { replayPacks: {} } } };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        symbol: "LATEUSDT",
+        outcome: "bad_veto",
+        resolvedAt: "2026-03-11T12:30:00.000Z"
+      },
+      {
+        symbol: "SHADOWUSDT",
+        outcome: "good_veto",
+        learningLane: "shadow",
+        resolvedAt: "2026-03-11T12:00:00.000Z",
+        branches: [
+          { id: "maker_bias", outcome: "small_winner" }
+        ]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-11T15:00:00.000Z");
+  assert.equal(summary.recentShadowReviews.length, 1);
+  assert.equal(summary.recentShadowReviews[0].symbol, "SHADOWUSDT");
+});
+
 await runCheck("trading bot paper learning summary keeps daily lane counts after refresh with empty decisions", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });

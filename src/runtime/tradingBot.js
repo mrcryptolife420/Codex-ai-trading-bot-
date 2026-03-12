@@ -4308,6 +4308,7 @@ export class TradingBot {
       .reverse()
       .map((trade) => summarizePaperTradeReview(trade));
     const recentShadowReviews = counterfactuals
+      .filter((item) => item.learningLane === "shadow" || arr(item.branches || []).length > 0)
       .slice(-6)
       .reverse()
       .map((item) => summarizeCounterfactualReview(item));
