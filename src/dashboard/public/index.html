@@ -11,7 +11,7 @@
     <div class="ambient ambient-b"></div>
 
     <div class="app-shell">
-      <main class="workspace">
+      <main class="workspace" id="workspaceBoard" data-layout-group="workspace">
         <header class="topbar panel">
           <div class="topbar-main">
             <div class="brand-block">
@@ -39,6 +39,10 @@
                 <button id="themeDarkBtn" class="theme-option secondary" type="button" aria-pressed="true">Dark</button>
                 <button id="themeLightBtn" class="theme-option secondary" type="button" aria-pressed="false">Light</button>
               </div>
+              <div class="control-cluster layout-controls">
+                <button id="compactToggleBtn" class="secondary" type="button">Compact: uit</button>
+                <button id="layoutResetBtn" class="secondary" type="button">Reset layout</button>
+              </div>
               <div class="mode-cluster control-cluster">
                 <button id="paperBtn" class="secondary">Paper</button>
                 <button id="liveBtn" class="secondary warn">Live</button>
@@ -54,7 +58,7 @@
           </div>
         </header>
 
-        <section class="operator-strip panel">
+        <section class="operator-strip panel" data-layout-item="operator-strip">
           <div>
             <p class="eyebrow">Nu</p>
             <h2>Alleen wat telt</h2>
@@ -62,7 +66,7 @@
           <p id="controlHint" class="hint">Status wordt geladen...</p>
         </section>
 
-        <section class="dashboard-section" id="metricsSection">
+        <section class="dashboard-section" id="metricsSection" data-layout-item="metrics-section">
           <div class="section-head flush">
             <div>
               <h2>Pulse</h2>
@@ -72,8 +76,8 @@
           <div class="metrics" id="metrics"></div>
         </section>
 
-        <section class="grid two-up" id="setupsSection">
-          <article class="panel chart-panel">
+        <section class="grid two-up" id="setupsSection" data-layout-item="setups-overview" data-layout-group="setups-overview">
+          <article class="panel chart-panel" data-layout-item="equity-chart">
             <div class="section-head">
               <div>
                 <h2>Equity curve</h2>
@@ -83,7 +87,7 @@
             </div>
             <div id="equityChart" class="chart"></div>
           </article>
-          <article class="panel chart-panel">
+          <article class="panel chart-panel" data-layout-item="rolling-windows">
             <div class="section-head">
               <div>
                 <h2>Rolling windows</h2>
@@ -94,8 +98,8 @@
           </article>
         </section>
 
-        <section class="grid two-up" id="primaryTradesSection">
-          <article class="panel collapsible" id="positionsPanel" data-default-collapsed="true">
+        <section class="grid two-up" id="primaryTradesSection" data-layout-item="primary-trades" data-layout-group="primary-trades">
+          <article class="panel collapsible" id="positionsPanel" data-default-collapsed="true" data-layout-item="positions-panel">
             <div class="section-head" data-collapsible="true">
               <div>
                 <h2>Open posities</h2>
@@ -104,7 +108,7 @@
             </div>
             <div id="positionsList" class="stack"></div>
           </article>
-          <article class="panel collapsible" id="setupsPanel">
+          <article class="panel collapsible" id="setupsPanel" data-layout-item="setups-panel">
             <div class="section-head setup-head" data-collapsible="true">
               <div>
                 <h2>Top AI setups</h2>
@@ -123,17 +127,17 @@
           </article>
         </section>
 
-        <section class="panel collapsible advanced-panel" id="advancedSection" data-default-collapsed="true">
+        <section class="panel collapsible advanced-panel" id="advancedSection" data-default-collapsed="true" data-layout-item="advanced-section">
           <div class="section-head" data-collapsible="true">
             <div>
-              <h2>Advanced analysis</h2>
-              <p>Alle extra context pas op de tweede laag.</p>
+              <h2>Extra analyse</h2>
+              <p>Alles wat niet direct nodig is voor je snelle overzicht.</p>
             </div>
           </div>
 
-          <div class="advanced-stack">
-            <section class="grid two-up" id="tradeIntelSection">
-              <article class="panel collapsible" id="blockedPanel" data-default-collapsed="true">
+          <div class="advanced-stack" data-layout-group="advanced-stack">
+            <section class="grid two-up" id="tradeIntelSection" data-layout-item="trade-intel" data-layout-group="trade-intel">
+              <article class="panel collapsible" id="blockedPanel" data-default-collapsed="true" data-layout-item="blocked-panel">
                 <div class="section-head" data-collapsible="true">
               <div>
                 <h2>Waarom niet</h2>
@@ -142,7 +146,7 @@
                 </div>
                 <div id="blockedList" class="stack compact"></div>
               </article>
-              <article class="panel collapsible" id="replayPanel" data-default-collapsed="true">
+              <article class="panel collapsible" id="replayPanel" data-default-collapsed="true" data-layout-item="replay-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Trade replay</h2>
@@ -153,8 +157,8 @@
               </article>
             </section>
 
-            <section class="grid two-up" id="opsSection">
-              <article class="panel collapsible" id="pnlPanel" data-default-collapsed="true">
+            <section class="grid two-up" id="opsSection" data-layout-item="ops-section" data-layout-group="ops-section">
+              <article class="panel collapsible" id="pnlPanel" data-default-collapsed="true" data-layout-item="pnl-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>PnL attribution</h2>
@@ -164,7 +168,7 @@
                 <div id="pnlAttributionSummary" class="insight-grid"></div>
                 <div id="pnlAttributionList" class="stack compact"></div>
               </article>
-              <article class="panel collapsible" id="opsRuntimePanel" data-default-collapsed="true">
+              <article class="panel collapsible" id="opsRuntimePanel" data-default-collapsed="true" data-layout-item="ops-runtime-panel">
                 <div class="section-head" data-collapsible="true">
               <div>
                 <h2>Operations &amp; recovery</h2>
@@ -176,8 +180,8 @@
               </article>
             </section>
 
-            <section class="grid two-up" id="researchSection">
-              <article class="panel collapsible" id="universePanel" data-default-collapsed="true">
+            <section class="grid two-up" id="researchSection" data-layout-item="research-section" data-layout-group="research-section">
+              <article class="panel collapsible" id="universePanel" data-default-collapsed="true" data-layout-item="universe-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Universe focus</h2>
@@ -187,7 +191,7 @@
                 <div id="universeSummary" class="insight-grid"></div>
                 <div id="universeList" class="stack compact"></div>
               </article>
-              <article class="panel collapsible" id="attributionPanel" data-default-collapsed="true">
+              <article class="panel collapsible" id="attributionPanel" data-default-collapsed="true" data-layout-item="attribution-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Strategy attribution</h2>
@@ -199,8 +203,8 @@
               </article>
             </section>
 
-            <section class="grid two-up" id="governanceSection">
-              <article class="panel collapsible" id="registryPanel" data-default-collapsed="true">
+            <section class="grid two-up" id="governanceSection" data-layout-item="governance-section" data-layout-group="governance-section">
+              <article class="panel collapsible" id="registryPanel" data-default-collapsed="true" data-layout-item="registry-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Research registry</h2>
@@ -210,7 +214,7 @@
                 <div id="governanceSummary" class="insight-grid"></div>
                 <div id="registryList" class="stack compact"></div>
               </article>
-              <article class="panel table-panel collapsible" id="tradesPanel" data-default-collapsed="true">
+              <article class="panel table-panel collapsible" id="tradesPanel" data-default-collapsed="true" data-layout-item="trades-panel">
                 <div class="section-head" data-collapsible="true">
                   <div>
                     <h2>Recente trades</h2>
@@ -237,7 +241,7 @@
               </article>
             </section>
 
-            <section class="panel collapsible" id="intelPanel" data-default-collapsed="true">
+            <section class="panel collapsible" id="intelPanel" data-default-collapsed="true" data-layout-item="intel-panel">
               <div class="section-head" data-collapsible="true">
                 <div>
                   <h2>Model &amp; market intelligence</h2>

@@ -1,6 +1,8 @@
 const POLL_MS = 5000;
 const THEME_STORAGE_KEY = "dashboard-theme";
 const DETAIL_STATE_STORAGE_KEY = "dashboard-detail-state";
+const COMPACT_MODE_STORAGE_KEY = "dashboard-compact-mode";
+const LAYOUT_STORAGE_KEY = "dashboard-layout-order";
 const TOP_DECISION_RENDER_LIMIT = 6;
 const BLOCKED_RENDER_LIMIT = 4;
 const REPLAY_RENDER_LIMIT = 3;
@@ -19,6 +21,9 @@ const elements = {
   sidebarScrim: document.querySelector("#sidebarScrim"),
   themeDarkBtn: document.querySelector("#themeDarkBtn"),
   themeLightBtn: document.querySelector("#themeLightBtn"),
+  compactToggleBtn: document.querySelector("#compactToggleBtn"),
+  layoutResetBtn: document.querySelector("#layoutResetBtn"),
+  workspaceBoard: document.querySelector("#workspaceBoard"),
   metrics: document.querySelector("#metrics"),
   equityChart: document.querySelector("#equityChart"),
   equityMeta: document.querySelector("#equityMeta"),
@@ -72,6 +77,7 @@ let transientMessage = "";
 let decisionSearchQuery = "";
 let decisionAllowedOnly = false;
 let snapshotEpoch = 0;
+let compactMode = window.localStorage.getItem(COMPACT_MODE_STORAGE_KEY) === "1";
 
 function readDetailState() {
   try {
@@ -184,6 +190,28 @@ function healthTone(value) {
     return "negative";
   }
   return "neutral";
+}
+
+function readLayoutState() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeLayoutState(state) {
+  window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(state));
+}
+
+function setCompactMode(enabled) {
+  compactMode = Boolean(enabled);
+  document.body.classList.toggle("dashboard-compact", compactMode);
+  window.localStorage.setItem(COMPACT_MODE_STORAGE_KEY, compactMode ? "1" : "0");
+  if (elements.compactToggleBtn) {
+    elements.compactToggleBtn.textContent = `Compact: ${compactMode ? "aan" : "uit"}`;
+    elements.compactToggleBtn.setAttribute("aria-pressed", String(compactMode));
+  }
 }
 
 function formatBreakdown(items = []) {
@@ -554,6 +582,105 @@ function setupCollapsiblePanels() {
   });
 }
 
+function renderNoteLine(label, items = [], emptyText = "Geen details") {
+  return `<div class="note-line"><span class="kicker">${escapeHtml(label)}</span><div class="tag-list">${renderTagList(items, emptyText)}</div></div>`;
+}
+
+function compactNoteLines(lines = [], limit = 3) {
+  return compactMode ? lines.filter(Boolean).slice(0, limit) : lines.filter(Boolean);
+}
+
+function moveLayoutItem(item, direction) {
+  const parent = item?.parentElement;
+  if (!parent) {
+    return;
+  }
+  const siblings = [...parent.querySelectorAll(":scope > [data-layout-item]")];
+  const index = siblings.indexOf(item);
+  if (index === -1) {
+    return;
+  }
+  const targetIndex = direction === "up" ? index - 1 : index + 1;
+  const target = siblings[targetIndex];
+  if (!target) {
+    return;
+  }
+  if (direction === "up") {
+    parent.insertBefore(item, target);
+  } else {
+    parent.insertBefore(target, item);
+  }
+  persistLayoutGroup(parent);
+}
+
+function persistLayoutGroup(group) {
+  const groupId = group?.dataset.layoutGroup;
+  if (!groupId) {
+    return;
+  }
+  const state = readLayoutState();
+  state[groupId] = [...group.querySelectorAll(":scope > [data-layout-item]")].map((item) => item.dataset.layoutItem).filter(Boolean);
+  writeLayoutState(state);
+}
+
+function applyLayoutGroup(group) {
+  const groupId = group?.dataset.layoutGroup;
+  if (!groupId) {
+    return;
+  }
+  const savedOrder = readLayoutState()[groupId];
+  if (!Array.isArray(savedOrder) || !savedOrder.length) {
+    return;
+  }
+  const byId = new Map(
+    [...group.querySelectorAll(":scope > [data-layout-item]")]
+      .map((item) => [item.dataset.layoutItem, item])
+  );
+  savedOrder.forEach((itemId) => {
+    const item = byId.get(itemId);
+    if (item) {
+      group.appendChild(item);
+    }
+  });
+}
+
+function ensureLayoutControls(item, group) {
+  const head = item.querySelector(":scope > .section-head, :scope > article > .section-head, :scope > .section-head.flush");
+  if (!head || head.dataset.layoutBound) {
+    return;
+  }
+  const tools = document.createElement("div");
+  tools.className = "layout-tools";
+  tools.innerHTML = `
+    <button class="layout-move-btn secondary" type="button" data-move="up" aria-label="Verplaats omhoog">↑</button>
+    <button class="layout-move-btn secondary" type="button" data-move="down" aria-label="Verplaats omlaag">↓</button>
+  `;
+  tools.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const button = event.target.closest("[data-move]");
+    if (!button) {
+      return;
+    }
+    moveLayoutItem(item, button.dataset.move);
+  });
+  head.appendChild(tools);
+  head.classList.add("with-layout-tools");
+  head.dataset.layoutBound = "true";
+  persistLayoutGroup(group);
+}
+
+function setupLayoutGroups() {
+  document.querySelectorAll("[data-layout-group]").forEach((group) => {
+    applyLayoutGroup(group);
+    [...group.querySelectorAll(":scope > [data-layout-item]")].forEach((item) => ensureLayoutControls(item, group));
+  });
+}
+
+function resetLayoutGroups() {
+  window.localStorage.removeItem(LAYOUT_STORAGE_KEY);
+  window.location.reload();
+}
+
 async function api(path, method = "GET", body) {
   const response = await fetch(path, {
     method,
@@ -778,6 +905,12 @@ function renderPositions(snapshot) {
         ...(rationale.sessionBlockers || []).slice(0, 1).map(normalizeReasonLabel)
       ], 4);
       const headlines = (rationale.headlines || []).slice(0, 2).map((headline) => headline.title || headline);
+      const positionNotes = compactNoteLines([
+        renderNoteLine("Waarom open", keyReasons, "Geen kernreden"),
+        renderNoteLine("Nu opletten", riskReasons, "Geen directe waarschuwingen"),
+        renderNoteLine("Lifecycle", [lifecycle.state, lifecycle.operatorMode !== "normal" ? lifecycle.operatorMode : "", lifecycle.manualReviewRequired ? "manual_review" : "", lifecycle.reconcileRequired ? "reconcile_required" : "", lifecycle.managementFailureCount ? `${lifecycle.managementFailureCount} beheerfouten` : ""].filter(Boolean), "Normale runtime-state"),
+        renderNoteLine("Nieuws", headlines, "Geen recente headlines")
+      ], 2);
       return `
         <details class="position-card fold-card compact-fold"${detailAttrs(`position:${position.symbol}`, false)}>
           <summary class="fold-summary">
@@ -802,10 +935,7 @@ function renderPositions(snapshot) {
               <div class="mini-stat"><span class="kicker">Stop</span><strong>${formatNumber(position.stopLossPrice, 6)}</strong></div>
               <div class="mini-stat"><span class="kicker">Exit AI</span><strong>${escapeHtml((exitAi.action || "hold").replaceAll("_", " "))}</strong><div class="meta">conf ${formatPct(exitAi.confidence || 0, 1)}</div></div>
             </div>
-            <div class="note-line"><span class="kicker">Waarom open</span><div class="tag-list">${renderTagList(keyReasons, "Geen kernreden")}</div></div>
-            <div class="note-line"><span class="kicker">Nu opletten</span><div class="tag-list">${renderTagList(riskReasons, "Geen directe waarschuwingen")}</div></div>
-            <div class="note-line"><span class="kicker">Lifecycle</span><div class="tag-list">${renderTagList([lifecycle.state, lifecycle.operatorMode !== "normal" ? lifecycle.operatorMode : "", lifecycle.manualReviewRequired ? "manual_review" : "", lifecycle.reconcileRequired ? "reconcile_required" : "", lifecycle.managementFailureCount ? `${lifecycle.managementFailureCount} beheerfouten` : ""].filter(Boolean), "Normale runtime-state")}</div></div>
-            <div class="note-line"><span class="kicker">Nieuws</span><div class="tag-list">${renderTagList(headlines, "Geen recente headlines")}</div></div>
+            ${positionNotes.join("")}
           </div>
         </details>
       `;
@@ -890,6 +1020,18 @@ function renderDecisions(snapshot) {
         : entryStatus === "opened"
           ? collectHighlights([leadBull, strategyLabel, familyLabel, "positie geopend"], 4)
           : collectHighlights([leadBull, strategyLabel, familyLabel, statusMeta.label], 4);
+      const compactNotes = compactNoteLines([
+        renderNoteLine("Waarom", decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden"),
+        decision.operatorAction ? renderNoteLine("Actie", [decision.operatorAction].map(normalizeReasonLabel), "Geen operator-actie") : "",
+        decision.autoRecovery ? renderNoteLine("Herstel", [decision.autoRecovery], "Geen automatisch herstel") : "",
+        renderNoteLine("Confidence", [`market ${formatPct(decision.confidenceBreakdown?.marketConfidence || 0, 1)}`, `data ${formatPct(decision.confidenceBreakdown?.dataConfidence || 0, 1)}`, `exec ${formatPct(decision.confidenceBreakdown?.executionConfidence || 0, 1)}`, `model ${formatPct(decision.confidenceBreakdown?.modelConfidence || 0, 1)}`], "Geen confidence breakdown"),
+        renderNoteLine("Kwaliteit", [`setup ${formatPct(decision.signalQuality?.setupFit || 0, 1)}`, `exec ${formatPct(decision.signalQuality?.executionViability || 0, 1)}`, dataQualityStatus, decision.dataQuality?.degradedButAllowed ? "degraded but allowed" : ""].filter(Boolean), "Geen kwaliteitsscore"),
+        decision.paperExploration?.mode ? renderNoteLine("Paper mode", [decision.paperExploration.mode === "paper_recovery_probe" ? "paper recovery probe" : "paper warm-up"], "Geen paper override") : "",
+        decision.paperGuardrailRelief?.length ? renderNoteLine(decision.paperExploration?.mode === "paper_recovery_probe" ? "Recovery relief" : "Paper leniency", (decision.paperGuardrailRelief || []).slice(0, 3).map(normalizeReasonLabel), "Geen versoepeling") : "",
+        decision.downtrendPolicy?.strongDowntrend ? renderNoteLine("Bear market", [decision.downtrendPolicy?.shortingUnavailable ? "spot-only defensive mode" : "shorting available", `${formatPct(decision.downtrendPolicy?.downtrendScore || 0, 1)} downtrend`], "Geen bear-market context") : "",
+        decision.qualityQuorum?.blockerReasons?.length || decision.qualityQuorum?.cautionReasons?.length ? renderNoteLine("Data quorum", [...(decision.qualityQuorum?.blockerReasons || []), ...(decision.qualityQuorum?.cautionReasons || [])].slice(0, 3).map(normalizeReasonLabel), "Quorum ready") : "",
+        decision.allow && decision.executionBlockers?.length ? renderNoteLine("Niet uitgevoerd", (decision.executionBlockers || []).slice(0, 3).map(normalizeReasonLabel), "Geen runtime blocker") : ""
+      ], 4);
       const compactView = `
         <div class="mini-grid compact-data-grid">
           <div class="mini-stat"><span class="kicker">Model</span><strong>${formatPct(decision.probability || 0, 1)} / ${formatPct(decision.threshold || 0, 1)}</strong><div class="meta">edge ${formatSignedPct(edge, 1)}</div></div>
@@ -899,16 +1041,7 @@ function renderDecisions(snapshot) {
           <div class="mini-stat"><span class="kicker">Quorum</span><strong>${escapeHtml(quorumStatus)}</strong><div class="meta">${formatPct(quorumScore || 0, 1)}</div></div>
           <div class="mini-stat"><span class="kicker">Trend</span><strong>${escapeHtml(trendDirection.replaceAll("_", " "))}</strong><div class="meta">${escapeHtml(trendPhase.replaceAll("_", " "))}</div></div>
         </div>
-        <div class="note-line"><span class="kicker">Waarom</span><div class="tag-list">${renderTagList(decision.allow ? [leadBull] : [leadBear, ...(decision.blockerReasons || []).slice(0, 2).map(normalizeReasonLabel)], "Geen kernreden")}</div></div>
-        ${decision.operatorAction ? `<div class="note-line"><span class="kicker">Actie</span><div class="tag-list">${renderTagList([decision.operatorAction].map(normalizeReasonLabel), "Geen operator-actie")}</div></div>` : ""}
-        ${decision.autoRecovery ? `<div class="note-line"><span class="kicker">Herstel</span><div class="tag-list">${renderTagList([decision.autoRecovery], "Geen automatisch herstel")}</div></div>` : ""}
-        <div class="note-line"><span class="kicker">Confidence</span><div class="tag-list">${renderTagList([`market ${formatPct(decision.confidenceBreakdown?.marketConfidence || 0, 1)}`, `data ${formatPct(decision.confidenceBreakdown?.dataConfidence || 0, 1)}`, `exec ${formatPct(decision.confidenceBreakdown?.executionConfidence || 0, 1)}`, `model ${formatPct(decision.confidenceBreakdown?.modelConfidence || 0, 1)}`], "Geen confidence breakdown")}</div></div>
-        <div class="note-line"><span class="kicker">Kwaliteit</span><div class="tag-list">${renderTagList([`setup ${formatPct(decision.signalQuality?.setupFit || 0, 1)}`, `exec ${formatPct(decision.signalQuality?.executionViability || 0, 1)}`, dataQualityStatus, decision.dataQuality?.degradedButAllowed ? "degraded but allowed" : ""].filter(Boolean), "Geen kwaliteitsscore")}</div></div>
-        ${decision.paperExploration?.mode ? `<div class="note-line"><span class="kicker">Paper mode</span><div class="tag-list">${renderTagList([decision.paperExploration.mode === "paper_recovery_probe" ? "paper recovery probe" : "paper warm-up"], "Geen paper override")}</div></div>` : ""}
-        ${decision.paperGuardrailRelief?.length ? `<div class="note-line"><span class="kicker">${decision.paperExploration?.mode === "paper_recovery_probe" ? "Recovery relief" : "Paper leniency"}</span><div class="tag-list">${renderTagList((decision.paperGuardrailRelief || []).slice(0, 3).map(normalizeReasonLabel), "Geen versoepeling")}</div></div>` : ""}
-        ${decision.downtrendPolicy?.strongDowntrend ? `<div class="note-line"><span class="kicker">Bear market</span><div class="tag-list">${renderTagList([decision.downtrendPolicy?.shortingUnavailable ? "spot-only defensive mode" : "shorting available", `${formatPct(decision.downtrendPolicy?.downtrendScore || 0, 1)} downtrend`], "Geen bear-market context")}</div></div>` : ""}
-        ${decision.qualityQuorum?.blockerReasons?.length || decision.qualityQuorum?.cautionReasons?.length ? `<div class="note-line"><span class="kicker">Data quorum</span><div class="tag-list">${renderTagList([...(decision.qualityQuorum?.blockerReasons || []), ...(decision.qualityQuorum?.cautionReasons || [])].slice(0, 3).map(normalizeReasonLabel), "Quorum ready")}</div></div>` : ""}
-        ${decision.allow && decision.executionBlockers?.length ? `<div class="note-line"><span class="kicker">Niet uitgevoerd door</span><div class="tag-list">${renderTagList((decision.executionBlockers || []).slice(0, 3).map(normalizeReasonLabel), "Geen runtime blocker")}</div></div>` : ""}
+        ${compactNotes.join("")}
       `;
       const contextView = `
         <div class="mini-grid compact-data-grid">
@@ -1882,6 +2015,18 @@ elements.cycleBtn.addEventListener("click", () => runAction("Losse cyclus draaie
 elements.refreshBtn.addEventListener("click", () => runAction("Analyse verversen", () => api("/api/refresh", "POST")));
 elements.researchBtn.addEventListener("click", () => runAction("Research lab draaien", () => api("/api/research", "POST", { symbols: [] })));
 elements.paperBtn.addEventListener("click", () => runAction("Naar paper trading schakelen", () => api("/api/mode", "POST", { mode: "paper" })));
+elements.compactToggleBtn?.addEventListener("click", () => {
+  setCompactMode(!compactMode);
+  if (latestSnapshot) {
+    render(latestSnapshot);
+  }
+});
+elements.layoutResetBtn?.addEventListener("click", () => {
+  const confirmed = window.confirm("Reset alle verplaatste panelen naar de standaard layout?");
+  if (confirmed) {
+    resetLayoutGroups();
+  }
+});
 elements.liveBtn.addEventListener("click", () => {
   const approved = window.confirm("Live trading stuurt echte orders naar Binance. Alleen doorgaan als je API keys en veiligheidsinstellingen kloppen.");
   if (!approved) {
@@ -1952,7 +2097,9 @@ elements.opsList.addEventListener("click", (event) => {
 });
 
 setupThemeToggle();
+setCompactMode(compactMode);
 setupCollapsiblePanels();
+setupLayoutGroups();
 bindPersistentDetails();
 
 refreshSnapshot().catch((error) => {

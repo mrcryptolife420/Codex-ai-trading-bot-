@@ -612,6 +612,10 @@ body[data-theme="light"] .fold-card {
   margin-bottom: 12px;
 }
 
+.section-head.with-layout-tools {
+  gap: 10px;
+}
+
 .section-head.flush {
   margin-bottom: 12px;
 }
@@ -627,6 +631,24 @@ body[data-theme="light"] .fold-card {
 .setup-toolbar {
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+.layout-controls {
+  align-items: center;
+}
+
+.layout-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.layout-move-btn {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 999px;
 }
 
 .panel.collapsible .section-head[data-collapsible="true"] {
@@ -732,6 +754,76 @@ body[data-theme="light"] .fold-card {
   min-height: 28px;
   padding: 6px 10px;
   font-size: 0.72rem;
+}
+
+body.dashboard-compact .brand-block .subtle,
+body.dashboard-compact .section-head p,
+body.dashboard-compact .operator-strip .eyebrow,
+body.dashboard-compact .decision-blurb,
+body.dashboard-compact .metric-foot {
+  display: none;
+}
+
+body.dashboard-compact .workspace {
+  gap: 12px;
+}
+
+body.dashboard-compact .topbar,
+body.dashboard-compact .panel,
+body.dashboard-compact .chart-panel,
+body.dashboard-compact .table-panel,
+body.dashboard-compact .operator-strip,
+body.dashboard-compact .advanced-panel {
+  padding: 11px 12px;
+}
+
+body.dashboard-compact .section-head {
+  margin-bottom: 8px;
+}
+
+body.dashboard-compact .topbar-actions,
+body.dashboard-compact .topbar-controls,
+body.dashboard-compact .advanced-stack {
+  gap: 8px;
+}
+
+body.dashboard-compact .fold-summary {
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+body.dashboard-compact .fold-body {
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+body.dashboard-compact .summary-strip {
+  padding-top: 6px;
+}
+
+body.dashboard-compact .mini-stat {
+  padding: 8px 10px;
+}
+
+body.dashboard-compact .metrics,
+body.dashboard-compact .window-cards,
+body.dashboard-compact .insight-grid {
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+}
+
+body.dashboard-compact .note-line {
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 8px;
+}
+
+body.dashboard-compact .note-pill {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: 0.68rem;
+}
+
+body.dashboard-compact .operator-strip {
+  min-height: 0;
 }
 
 .decision-blurb {
@@ -1431,5 +1523,10 @@ body[data-theme="light"] .quick-link {
   button,
   .theme-option {
     width: 100%;
+  }
+
+  .layout-tools {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
