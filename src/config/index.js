@@ -216,6 +216,11 @@ const DEFAULTS = {
   paperRecoveryProbeCooldownMinutes: 60,
   paperRecoveryProbeMinBookPressure: -0.28,
   paperRecoveryProbeAllowMinTradeOverride: true,
+  paperLearningProbeDailyLimit: 4,
+  paperLearningShadowDailyLimit: 6,
+  paperLearningNearMissThresholdBuffer: 0.025,
+  paperLearningMinSignalQuality: 0.4,
+  paperLearningMinDataQuality: 0.52,
   exitOnSpreadShockBps: 20,
   minVolTargetFraction: 0.4,
   maxVolTargetFraction: 1.05,
@@ -665,6 +670,11 @@ export async function loadConfig(projectRoot = process.cwd()) {
     paperRecoveryProbeCooldownMinutes: parseNumber(env.PAPER_RECOVERY_PROBE_COOLDOWN_MINUTES, DEFAULTS.paperRecoveryProbeCooldownMinutes),
     paperRecoveryProbeMinBookPressure: parseNumber(env.PAPER_RECOVERY_PROBE_MIN_BOOK_PRESSURE, DEFAULTS.paperRecoveryProbeMinBookPressure),
     paperRecoveryProbeAllowMinTradeOverride: parseBoolean(env.PAPER_RECOVERY_PROBE_ALLOW_MIN_TRADE_OVERRIDE, DEFAULTS.paperRecoveryProbeAllowMinTradeOverride),
+    paperLearningProbeDailyLimit: parseNumber(env.PAPER_LEARNING_PROBE_DAILY_LIMIT, DEFAULTS.paperLearningProbeDailyLimit),
+    paperLearningShadowDailyLimit: parseNumber(env.PAPER_LEARNING_SHADOW_DAILY_LIMIT, DEFAULTS.paperLearningShadowDailyLimit),
+    paperLearningNearMissThresholdBuffer: parseNumber(env.PAPER_LEARNING_NEAR_MISS_THRESHOLD_BUFFER, DEFAULTS.paperLearningNearMissThresholdBuffer),
+    paperLearningMinSignalQuality: parseNumber(env.PAPER_LEARNING_MIN_SIGNAL_QUALITY, DEFAULTS.paperLearningMinSignalQuality),
+    paperLearningMinDataQuality: parseNumber(env.PAPER_LEARNING_MIN_DATA_QUALITY, DEFAULTS.paperLearningMinDataQuality),
     exitOnSpreadShockBps: parseNumber(env.EXIT_ON_SPREAD_SHOCK_BPS, DEFAULTS.exitOnSpreadShockBps),
     minVolTargetFraction: parseNumber(env.MIN_VOL_TARGET_FRACTION, DEFAULTS.minVolTargetFraction),
     maxVolTargetFraction: parseNumber(env.MAX_VOL_TARGET_FRACTION, DEFAULTS.maxVolTargetFraction),
@@ -823,8 +833,6 @@ export async function loadConfig(projectRoot = process.cwd()) {
   config.validation = validateConfig(config);
   return config;
 }
-
-
 
 
 

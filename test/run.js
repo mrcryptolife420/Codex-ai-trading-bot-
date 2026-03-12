@@ -210,6 +210,11 @@ function makeConfig(overrides = {}) {
     paperRecoveryProbeCooldownMinutes: 60,
     paperRecoveryProbeMinBookPressure: -0.28,
     paperRecoveryProbeAllowMinTradeOverride: true,
+    paperLearningProbeDailyLimit: 4,
+    paperLearningShadowDailyLimit: 6,
+    paperLearningNearMissThresholdBuffer: 0.025,
+    paperLearningMinSignalQuality: 0.4,
+    paperLearningMinDataQuality: 0.52,
     exitOnSpreadShockBps: 20,
     minVolTargetFraction: 0.4,
     maxVolTargetFraction: 1.05,
@@ -3317,6 +3322,61 @@ await runCheck("risk manager keeps paper recovery probe blocked when market qual
   assert.ok(decision.reasons.includes("quality_quorum_degraded"));
 });
 
+await runCheck("risk manager blocks extra paper probes after the daily learning budget is exhausted", async () => {
+  const manager = new RiskManager(makeConfig({
+    paperLearningProbeDailyLimit: 0,
+    paperExplorationThresholdBuffer: 0.06
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.468,
+      calibrationConfidence: 0.22,
+      disagreement: 0.06,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 0.15, globalConfidence: 0.15 },
+      transformer: { probability: 0.49, confidence: 0.04 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: -0.34, microPriceEdgeBps: 0.2 },
+      market: { realizedVolPct: 0.018, atrPct: 0.01, bearishPatternScore: 0.08, bullishPatternScore: 0.22, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.14, signalScore: 0.06, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.32, contrarianScore: 0.18 },
+    volatilitySummary: { riskScore: 0.52, ivPremium: 5 },
+    calendarSummary: { riskScore: 0.1, bullishScore: 0, urgencyScore: 0.08 },
+    committeeSummary: { agreement: 0.31, probability: 0.46, netScore: -0.06, sizeMultiplier: 0.92, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.47,
+      confidence: 0.42,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.61, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: {
+      openPositions: [],
+      counterfactualQueue: []
+    },
+    journal: { trades: [], counterfactuals: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.equal(decision.paperLearningBudget.probeRemaining, 0);
+});
+
 await runCheck("risk manager keeps health-circuit self heal as a hard paper block", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -4070,6 +4130,41 @@ await runCheck("paper broker can scale out and keep the remainder open", async (
   assert.ok(scaleOut.realizedPnl !== 0);
   assert.ok(position.quantity > 0);
   assert.equal(position.scaleOutCount, 1);
+});
+
+await runCheck("paper broker persists learning lanes on positions and closed trades", async () => {
+  const broker = new (await import("../src/execution/paperBroker.js")).PaperBroker(makeConfig(), { warn() {}, info() {} });
+  const runtime = { openPositions: [], paperPortfolio: { quoteFree: 10000, feesPaid: 0, realizedPnl: 0 } };
+  const position = await broker.enterPosition({
+    symbol: "BTCUSDT",
+    quoteAmount: 900,
+    rules,
+    marketSnapshot: { book: { bid: 69990, ask: 70010, mid: 70000, spreadBps: 2 } },
+    decision: {
+      stopLossPct: 0.02,
+      takeProfitPct: 0.03,
+      executionPlan: { entryStyle: "market", fallbackStyle: "none" },
+      regime: "trend",
+      learningLane: "probe",
+      learningValueScore: 0.73,
+      paperLearningBudget: { probeDailyLimit: 4, probeUsed: 1, probeRemaining: 3 }
+    },
+    score: { probability: 0.7, regime: "trend" },
+    rawFeatures: { momentum_5: 1 },
+    strategySummary: { activeStrategy: "ema_trend" },
+    newsSummary: { sentimentScore: 0.1 },
+    runtime
+  });
+  assert.equal(position.learningLane, "probe");
+  assert.equal(position.learningValueScore, 0.73);
+  const trade = await broker.exitPosition({
+    position,
+    marketSnapshot: { book: { bid: 70500, mid: 70510, spreadBps: 2, exitEstimate: { averagePrice: 70500 } } },
+    reason: "test_exit",
+    runtime
+  });
+  assert.equal(trade.learningLane, "probe");
+  assert.equal(trade.learningValueScore, 0.73);
 });
 
 await runCheck("research lab builds walk-forward windows and summary", async () => {
@@ -5022,6 +5117,42 @@ await runCheck("scanCandidatesForResearch does not mutate runtime journals or lo
   assert.equal(localBookCalls, 0);
   assert.equal(JSON.stringify(bot.runtime), beforeRuntime);
   assert.equal(JSON.stringify(bot.journal), beforeJournal);
+});
+
+await runCheck("shadow trading view includes near-miss shadow learning candidates in paper mode", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", shadowTradeDecisionLimit: 2, paperLearningShadowDailyLimit: 3, paperLatencyMs: 220 });
+  bot.marketCache = {
+    BTCUSDT: { book: { mid: 70000, ask: 70010, bid: 69990 } },
+    ETHUSDT: { book: { mid: 3500, ask: 3502, bid: 3498 } }
+  };
+  bot.execution = {
+    simulatePaperFill({ marketSnapshot }) {
+      return { fillPrice: marketSnapshot.book.mid, expectedImpactBps: 1.2 };
+    }
+  };
+  const view = bot.buildShadowTradingView([
+    {
+      symbol: "BTCUSDT",
+      allow: true,
+      quoteAmount: 250,
+      probability: 0.61,
+      threshold: 0.52,
+      executionStyle: "market"
+    },
+    {
+      symbol: "ETHUSDT",
+      allow: false,
+      quoteAmount: 120,
+      probability: 0.49,
+      threshold: 0.51,
+      executionStyle: "limit_maker",
+      learningLane: "shadow",
+      learningValueScore: 0.66
+    }
+  ], "2026-03-12T12:00:00.000Z");
+  assert.equal(view.simulatedEntries.length, 2);
+  assert.ok(view.simulatedEntries.some((item) => item.status === "shadow_learning" && item.symbol === "ETHUSDT"));
 });
 
 await runCheck("lifecycle sync records disappeared pending actions and recovery actions", async () => {

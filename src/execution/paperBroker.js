@@ -230,7 +230,10 @@ export class PaperBroker {
       scaleOutTrailOffsetPct: decision.scaleOutPlan?.trailOffsetPct || this.config.scaleOutTrailOffsetPct,
       scaleOutCompletedAt: null,
       scaleOutCount: 0,
-      brokerMode: "paper"
+      brokerMode: "paper",
+      learningLane: decision.learningLane || null,
+      learningValueScore: Number.isFinite(decision.learningValueScore) ? decision.learningValueScore : null,
+      paperLearningBudget: decision.paperLearningBudget || null
     };
 
     runtime.openPositions.push(position);
@@ -308,6 +311,8 @@ export class PaperBroker {
       realizedPnl,
       reason,
       brokerMode: "paper",
+      learningLane: position.learningLane || null,
+      learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
       executionAttribution: exitExecutionAttribution
     };
   }
@@ -395,7 +400,9 @@ export class PaperBroker {
       committeeDecision: position.committeeDecision || position.entryRationale?.committee || null,
       executionPolicyDecision: position.executionPolicyDecision || position.entryRationale?.rlPolicy || null,
       exitSource: "paper_market_exit",
-      brokerMode: "paper"
+      brokerMode: "paper",
+      learningLane: position.learningLane || null,
+      learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null
     };
   }
 }

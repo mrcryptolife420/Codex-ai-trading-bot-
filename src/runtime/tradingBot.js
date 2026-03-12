@@ -2652,6 +2652,8 @@ export class TradingBot {
       regime: candidate.regimeSummary?.regime || null,
       marketPhase: candidate.marketStateSummary?.phase || null,
       blockerReasons: [...(candidate.decision?.reasons || [])].slice(0, 6),
+      learningLane: candidate.decision?.learningLane || null,
+      learningValueScore: num(candidate.decision?.learningValueScore || 0, 4),
       executionStyle: candidate.decision?.executionPlan?.entryStyle || null,
       signalQuality: candidate.signalQualitySummary?.overallScore || 0,
       executionViability: candidate.signalQualitySummary?.executionViability || 0,
@@ -3496,9 +3498,15 @@ export class TradingBot {
   }
 
   buildShadowTradingView(decisionSummaries = arr(this.runtime.latestDecisions), referenceNow = nowIso()) {
-    const eligible = arr(decisionSummaries).filter((item) => item.allow);
-    const simulatedEntries = eligible
-      .slice(0, this.config.shadowTradeDecisionLimit || 3)
+    const entries = arr(decisionSummaries);
+    const eligible = entries.filter((item) => item.allow);
+    const shadowLearning = this.config.botMode === "paper"
+      ? entries
+          .filter((item) => !item.allow && item.learningLane === "shadow")
+          .slice(0, Math.min(this.config.shadowTradeDecisionLimit || 3, this.config.paperLearningShadowDailyLimit || 6))
+      : [];
+    const simulatedEntries = [...eligible, ...shadowLearning]
+      .slice(0, Math.max(this.config.shadowTradeDecisionLimit || 3, shadowLearning.length))
       .map((decision) => {
         const marketSnapshot = this.marketCache[decision.symbol] || null;
         const fill = marketSnapshot
@@ -3518,7 +3526,13 @@ export class TradingBot {
           fillPrice: num(fill?.fillPrice || marketSnapshot?.book?.mid || 0, 6),
           expectedSlippageBps: num(fill?.expectedImpactBps || 0, 2),
           executionStyle: decision.executionStyle || decision.executionPlan?.entryStyle || null,
-          status: this.config.botMode === "live" ? "shadow_live" : "shadow_paper"
+          learningLane: decision.learningLane || (decision.allow ? "safe" : null),
+          learningValueScore: num(decision.learningValueScore || 0, 4),
+          status: !decision.allow && decision.learningLane === "shadow"
+            ? "shadow_learning"
+            : this.config.botMode === "live"
+              ? "shadow_live"
+              : "shadow_paper"
         };
       });
     return {
@@ -3531,6 +3545,9 @@ export class TradingBot {
         simulatedEntries.length
           ? `${simulatedEntries.length} shadow entries volgen de live marktfase zonder echte orderplaatsing.`
           : "Nog geen tradebare setups beschikbaar voor shadow mode.",
+        shadowLearning.length
+          ? `${shadowLearning.length} near-miss setups lopen mee als shadow learning om paper sneller bij te scholen.`
+          : "Geen extra near-miss shadow learning setups actief.",
         this.config.botMode === "live"
           ? "Gebruik shadow fills om echte live entries met paper gedrag te vergelijken."
           : "In paper mode laat shadow trading zien wat een extra live-achtige routing zou doen."
@@ -4323,6 +4340,9 @@ export class TradingBot {
       rankScore: num(candidate.decision.rankScore, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
       entryMode: candidate.decision.entryMode || "standard",
+      learningLane: candidate.decision.learningLane || null,
+      learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
+      paperLearningBudget: candidate.decision.paperLearningBudget || null,
       suppressedReasons: candidate.decision.suppressedReasons || [],
       paperExploration: candidate.decision.paperExploration || null,
       paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
@@ -5203,6 +5223,9 @@ export class TradingBot {
       rankScore: num(candidate.decision.rankScore, 4),
       threshold: num(candidate.decision.threshold, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
+      learningLane: candidate.decision.learningLane || null,
+      learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
+      paperLearningBudget: candidate.decision.paperLearningBudget || null,
       spreadBps: num(candidate.marketSnapshot.book.spreadBps, 2),
       realizedVolPct: num(candidate.marketSnapshot.market.realizedVolPct, 4),
       edgeToThreshold: num(candidate.score.probability - candidate.decision.threshold, 4),

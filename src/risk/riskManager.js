@@ -67,6 +67,122 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function getPaperLearningBudgetState({ journal = {}, runtime = {}, nowIso, config = {} } = {}) {
+  const probeUsed = [
+    ...(journal?.trades || []).filter((trade) => trade.learningLane === "probe" && trade.entryAt && sameUtcDay(trade.entryAt, nowIso)),
+    ...(runtime?.openPositions || []).filter((position) => position.learningLane === "probe" && position.entryAt && sameUtcDay(position.entryAt, nowIso))
+  ].length;
+  const shadowUsed = [
+    ...(journal?.counterfactuals || []).filter((item) => item.learningLane === "shadow" && sameUtcDay(item.resolvedAt || item.queuedAt || item.at, nowIso)),
+    ...(runtime?.counterfactualQueue || []).filter((item) => item.learningLane === "shadow" && sameUtcDay(item.queuedAt || item.dueAt, nowIso))
+  ].length;
+  const probeDailyLimit = Math.max(0, Math.round(config.paperLearningProbeDailyLimit || 0));
+  const shadowDailyLimit = Math.max(0, Math.round(config.paperLearningShadowDailyLimit || 0));
+  return {
+    probeDailyLimit,
+    probeUsed,
+    probeRemaining: Math.max(0, probeDailyLimit - probeUsed),
+    shadowDailyLimit,
+    shadowUsed,
+    shadowRemaining: Math.max(0, shadowDailyLimit - shadowUsed)
+  };
+}
+
+function isHardPaperLearningBlocker(reason) {
+  return [
+    "health_circuit_open",
+    "exchange_truth_freeze",
+    "exchange_safety_blocked",
+    "lifecycle_attention_required",
+    "quality_quorum_observe_only",
+    "quality_quorum_degraded",
+    "session_blocked",
+    "drift_blocked",
+    "operator_ack_required"
+  ].includes(reason);
+}
+
+function buildPaperLearningValueScore({
+  score = {},
+  threshold = 0,
+  signalQualitySummary = {},
+  confidenceBreakdown = {},
+  dataQualitySummary = {},
+  reasons = [],
+  entryMode = "standard"
+} = {}) {
+  const thresholdBuffer = Math.max(0.0001, Math.abs(score.probability - threshold) + 0.02);
+  const nearMissScore = clamp(1 - Math.min(1, Math.abs((score.probability || 0) - threshold) / thresholdBuffer), 0, 1);
+  const disagreementScore = clamp(safeValue(score.disagreement) / 0.2, 0, 1);
+  const signalScore = clamp(safeValue(signalQualitySummary.overallScore, 0.5), 0, 1);
+  const dataScore = clamp(safeValue(dataQualitySummary.overallScore, 0.5), 0, 1);
+  const confidenceScore = clamp(1 - safeValue(confidenceBreakdown.overallConfidence, 0.5) * 0.55, 0, 1);
+  const blockerScore = clamp(reasons.length / 4, 0, 1);
+  const modeBoost = entryMode === "paper_recovery_probe" ? 0.08 : entryMode === "paper_exploration" ? 0.05 : 0;
+  return clamp(
+    nearMissScore * 0.3 +
+    disagreementScore * 0.14 +
+    signalScore * 0.2 +
+    dataScore * 0.16 +
+    confidenceScore * 0.12 +
+    blockerScore * 0.08 +
+    modeBoost,
+    0,
+    1
+  );
+}
+
+function resolvePaperLearningLane({
+  config = {},
+  allow = false,
+  entryMode = "standard",
+  reasons = [],
+  score = {},
+  threshold = 0,
+  signalQualitySummary = {},
+  confidenceBreakdown = {},
+  dataQualitySummary = {},
+  paperLearningBudget = {},
+  botMode = "paper"
+} = {}) {
+  const learningValueScore = buildPaperLearningValueScore({
+    score,
+    threshold,
+    signalQualitySummary,
+    confidenceBreakdown,
+    dataQualitySummary,
+    reasons,
+    entryMode
+  });
+  if (botMode !== "paper") {
+    return {
+      lane: allow ? "safe" : null,
+      learningValueScore
+    };
+  }
+  if (allow) {
+    return {
+      lane: entryMode === "paper_exploration" || entryMode === "paper_recovery_probe" ? "probe" : "safe",
+      learningValueScore
+    };
+  }
+  const nearThreshold = (score.probability || 0) >= threshold - (config.paperLearningNearMissThresholdBuffer || 0.025);
+  const qualityOkay =
+    safeValue(signalQualitySummary.overallScore, 0) >= (config.paperLearningMinSignalQuality || 0.4) &&
+    safeValue(dataQualitySummary.overallScore, 0) >= (config.paperLearningMinDataQuality || 0.52);
+  const hardBlocked = reasons.some((reason) => isHardPaperLearningBlocker(reason));
+  if (nearThreshold && qualityOkay && !hardBlocked && (paperLearningBudget.shadowRemaining || 0) > 0) {
+    return {
+      lane: "shadow",
+      learningValueScore
+    };
+  }
+  return {
+    lane: null,
+    learningValueScore
+  };
+}
+
 function toBoolean(value, fallback = false) {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
@@ -1041,11 +1157,45 @@ export class RiskManager {
       }
     }
 
+    const paperLearningBudget = getPaperLearningBudgetState({
+      journal,
+      runtime,
+      nowIso,
+      config: this.config
+    });
+    if (allow && ["paper_exploration", "paper_recovery_probe"].includes(entryMode) && paperLearningBudget.probeRemaining <= 0) {
+      allow = false;
+      entryMode = "standard";
+      finalQuoteAmount = 0;
+      paperExploration = null;
+      suppressedReasons = [];
+      paperGuardrailRelief = [];
+      if (!reasons.includes("paper_learning_probe_budget_reached")) {
+        reasons.push("paper_learning_probe_budget_reached");
+      }
+    }
+    const { lane: learningLane, learningValueScore } = resolvePaperLearningLane({
+      config: this.config,
+      allow,
+      entryMode,
+      reasons,
+      score,
+      threshold,
+      signalQualitySummary,
+      confidenceBreakdown,
+      dataQualitySummary,
+      paperLearningBudget,
+      botMode: this.config.botMode
+    });
+
     return {
       allow,
       reasons: allow ? [] : reasons,
       suppressedReasons,
       entryMode,
+      learningLane,
+      learningValueScore,
+      paperLearningBudget,
       paperExploration,
       paperGuardrailRelief,
       baseThreshold,
