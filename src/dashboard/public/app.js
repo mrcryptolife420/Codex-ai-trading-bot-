@@ -169,6 +169,10 @@ function whyBlocked(decision) {
   return decision.operatorAction || titleize(decision.blockerReasons?.[0] || decision.reasons?.[0] || "geen directe reden");
 }
 
+function actionText(decision) {
+  return decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.";
+}
+
 function truncate(text, max = 120) {
   const value = `${text || ""}`.trim();
   if (!value) {
@@ -386,11 +390,11 @@ function renderSignals(snapshot) {
               </div>
               <div class="reason-row">
                 <strong>${decision.allow ? "Waarom wel" : "Waarom niet"}</strong>
-                <span>${escapeHtml(truncate(decision.allow ? whyTradeable(decision) || decision.summary : whyBlocked(decision), 150))}</span>
+                <span class="reason-copy">${escapeHtml(decision.allow ? whyTradeable(decision) || decision.summary || "Tradebaar volgens huidige checks." : whyBlocked(decision))}</span>
               </div>
               <div class="reason-row">
                 <strong>Actie</strong>
-                <span>${escapeHtml(truncate(decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.", 150))}</span>
+                <span class="reason-copy">${escapeHtml(actionText(decision))}</span>
               </div>
             </div>
             <div class="tag-list">

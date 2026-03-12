@@ -310,6 +310,13 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.reason-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
 .card-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
