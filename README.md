@@ -752,6 +752,8 @@ De paper-roadmap toont nu ook:
 - richer `learning value` met active-learning gewicht
 - `benchmark lanes` voor probe/safe/shadow take/skip
 - extra benchmark-baselines zoals `always_take`, `always_skip`, `fixed_threshold` en `simple_exit`
+- `paper coaching` met wat werkte, wat te streng was, wat te los was en wat de volgende reviewstap is
+- `experiment scopes` zodat paper toont welke family/regime/session combinatie het meeste sandbox- of probationpotentieel heeft
 - `miscalibration` samenvatting voor over- en underconfidence
 - `counterfactual branching` met alternatieve size/execution/exit/risk/hold-paden
 - `failure library` voor terugkerende paper-fouttypes

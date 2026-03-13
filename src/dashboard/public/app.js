@@ -707,6 +707,7 @@ function renderLearning(snapshot) {
   const topOutcomeText = titleize(topOutcome?.id || "nog geen duidelijke outcome");
   const focusScopes = (paperLearning.activeLearning?.focusScopes || []).slice(0, 2);
   const benchmarkTags = (paperLearning.benchmarkLanes?.rankedLanes || []).slice(0, 3);
+  const experimentScopes = (paperLearning.experimentScopes || []).slice(0, 3);
   const reviewText = paperLearning.reviewPacks?.topMissedSetup
     ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
     : "Nog geen automatische review-pack beschikbaar.";
@@ -825,6 +826,38 @@ function renderLearning(snapshot) {
             paperLearning.counterfactualTuning?.blocker
               ? `Counterfactuals tonen waar ${titleize(paperLearning.counterfactualTuning.blocker)} mogelijk te streng of net terecht was.`
               : "Deze leerlus helpt de bot beter te begrijpen welke setups later meer of minder ruimte moeten krijgen."
+          )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Paper coaching</span>
+          <p>${escapeHtml(paperLearning.coaching?.whatWorked || "Nog geen duidelijke paper coaching beschikbaar.")}</p>
+          <p>${escapeHtml(paperLearning.coaching?.tooStrict || "Nog geen duidelijke te-strenge rem zichtbaar.")}</p>
+          <p>${escapeHtml(paperLearning.coaching?.tooLoose || "Nog geen duidelijke te-losse zone zichtbaar.")}</p>
+          <p>${escapeHtml(paperLearning.coaching?.nextReview || "Nog geen volgende reviewfocus zichtbaar.")}</p>
+        </article>
+      </section>
+      <section class="learning-list">
+        <article class="learning-list-item">
+          <span class="metric-label">Experiment scopes</span>
+          <div class="tag-list">
+            ${experimentScopes.length
+              ? experimentScopes.map((item) => `<span class="tag">${escapeHtml(`${item.id} · ${titleize(item.action)} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")
+              : `<span class="tag">Nog geen scope</span>`}
+          </div>
+          <p>${escapeHtml(
+            experimentScopes[0]?.reason ||
+            "Nog geen duidelijke family/regime/session-scope die extra sandbox of probation verdient."
+          )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Benchmark delta</span>
+          <div class="tag-list">
+            ${benchmarkTags.map((item) => `<span class="tag">${escapeHtml(`${titleize(item.id)} · ${item.deltaVsProbe > 0 ? "+" : ""}${formatPct(item.deltaVsProbe || 0, 0)} vs probe`)}</span>`).join("")}
+          </div>
+          <p>${escapeHtml(
+            paperLearning.benchmarkLanes?.bestLane
+              ? `${titleize(paperLearning.benchmarkLanes.bestLane)} staat nu het sterkst tegenover de echte probe-lane.`
+              : "Nog geen duidelijke benchmarkvergelijking beschikbaar."
           )}</p>
         </article>
       </section>

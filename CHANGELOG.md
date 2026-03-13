@@ -3,6 +3,7 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper-learning summaries now include compact `coaching` guidance, experiment-scope recommendations, and benchmark deltas versus the real probe lane so operators can see faster where paper is too strict, too loose, or ready for the next sandbox/probation step.
 - Paper-learning summaries now expose richer active-learning prioritization with focus scopes, candidate priority bands, and expanded benchmark baselines such as `always_take`, `fixed_threshold`, and `simple_exit`.
 - Counterfactual shadow review now compares extra branch paths (`market_entry`, `tighter_stop`, `longer_hold`) so blocked paper setups teach more than only baseline, smaller size, maker bias, and earlier exit.
 - Offline trainer now exposes a concrete `retrainExecutionPlan` with cadence, selected scopes, probation scopes, rollback-watch scopes, and an operator action so retraining can be scheduled and reviewed instead of inferred from readiness alone.

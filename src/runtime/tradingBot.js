@@ -1955,6 +1955,14 @@ function summarizePaperLearning(summary = {}) {
       })),
       note: summary.activeLearning.note || null
     } : null,
+    experimentScopes: arr(summary.experimentScopes || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      source: item.source || null,
+      score: num(item.score || 0, 4),
+      status: item.status || "observe",
+      action: item.action || "observe",
+      reason: item.reason || null
+    })),
     benchmarkLanes: summary.benchmarkLanes ? {
       actualProbeWinRate: num(summary.benchmarkLanes.actualProbeWinRate || 0, 4),
       actualProbeAvgPnlPct: num(summary.benchmarkLanes.actualProbeAvgPnlPct || 0, 4),
@@ -1967,7 +1975,8 @@ function summarizePaperLearning(summary = {}) {
       simpleExitWinRate: num(summary.benchmarkLanes.simpleExitWinRate || 0, 4),
       rankedLanes: arr(summary.benchmarkLanes.rankedLanes || []).slice(0, 7).map((item) => ({
         id: item.id || null,
-        score: num(item.score || 0, 4)
+        score: num(item.score || 0, 4),
+        deltaVsProbe: num(item.deltaVsProbe || 0, 4)
       })),
       bestLane: summary.benchmarkLanes.bestLane || null,
       note: summary.benchmarkLanes.note || null
@@ -1986,6 +1995,12 @@ function summarizePaperLearning(summary = {}) {
       status: item.status || "observe",
       note: item.note || null
     })),
+    coaching: summary.coaching ? {
+      whatWorked: summary.coaching.whatWorked || null,
+      tooStrict: summary.coaching.tooStrict || null,
+      tooLoose: summary.coaching.tooLoose || null,
+      nextReview: summary.coaching.nextReview || null
+    } : null,
     counterfactualBranches: summary.counterfactualBranches ? {
       topBranch: summary.counterfactualBranches.topBranch || null,
       branchCount: summary.counterfactualBranches.branchCount || 0,
@@ -4724,6 +4739,37 @@ export class TradingBot {
       }))
       .sort((left, right) => right.score - left.score)
       .slice(0, 4);
+    const experimentScopes = [
+      ...scopeReadiness.map((item) => ({
+        id: item.id,
+        source: "readiness",
+        score: item.readinessScore || 0,
+        status: item.status || "warmup",
+        action: item.status === "paper_ready"
+          ? "probation"
+          : item.status === "building"
+            ? "sandbox"
+            : "observe",
+        reason: item.status === "paper_ready"
+          ? "Sterk genoeg voor een volgende paper probationstap."
+          : item.status === "building"
+            ? "Goed genoeg voor extra sandbox- of probe-aandacht."
+            : "Nog vooral leerdata verzamelen."
+      })),
+      ...focusScopes.map((item) => ({
+        id: item.id,
+        source: "focus",
+        score: item.score || 0,
+        status: item.score >= 0.68 ? "priority" : "observe",
+        action: item.score >= 0.68 ? "sample_more" : "observe",
+        reason: item.topReason
+          ? `Active learning focust hier nu op ${item.topReason}.`
+          : "Deze scope levert nu extra leerwaarde op."
+      }))
+    ]
+      .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 4);
     const activeLearning = {
       status: rankedActiveCandidates[0]?.score >= 0.65 ? "priority" : rankedActiveCandidates.length ? "observe" : "warmup",
       score: rankedActiveCandidates[0]?.score || avgActiveLearning || 0,
@@ -4774,7 +4820,14 @@ export class TradingBot {
       { id: "always_skip", score: alwaysSkipWinRate },
       { id: "fixed_threshold", score: fixedThresholdWinRate },
       { id: "simple_exit", score: simpleExitWinRate }
-    ].sort((left, right) => right.score - left.score);
+    ]
+      .map((item) => ({
+        ...item,
+        deltaVsProbe: item.id === "probe_lane"
+          ? 0
+          : num(item.score - (actualProbeWinRate + Math.max(0, actualProbeAvgPnlPct) * 8), 4)
+      }))
+      .sort((left, right) => right.score - left.score);
     const benchmarkLanes = {
       actualProbeWinRate,
       actualProbeAvgPnlPct,
@@ -4862,6 +4915,32 @@ export class TradingBot {
               ? "Goede setup, maar de kwaliteit van uitvoering of follow-through bleef te zwak."
               : `${titleize(id)} komt nu vaker terug in paper learning.`
       }));
+    const coaching = {
+      whatWorked: benchmarkLanes.bestLane === "probe_lane"
+        ? "Probes leveren nu de beste mix van leerwaarde en resultaat."
+        : benchmarkLanes.bestLane === "safe_lane"
+          ? "De veilige lane presteert nu stabieler dan agressievere leerpaden."
+          : benchmarkLanes.bestLane === "shadow_take"
+            ? "Shadow-cases laten zien dat meer near-miss setups waardevol kunnen zijn."
+            : benchmarkLanes.bestLane === "always_take"
+              ? "Een brede take-baseline doet het opvallend goed; paper is mogelijk te streng."
+              : benchmarkLanes.bestLane === "fixed_threshold"
+                ? "Een eenvoudige thresholdregel houdt goed stand als benchmark."
+                : "De paper-lanes bouwen nog basisinzichten op.",
+      tooStrict: counterfactualTuning.blocker
+        ? `${titleize(counterfactualTuning.blocker)} lijkt nu de strengste rem voor paper-learning.`
+        : topBlockers[0]?.id
+          ? `${titleize(topBlockers[0].id)} blokkeert nu het vaakst.`
+          : "Nog geen duidelijke te-strenge blocker zichtbaar.",
+      tooLoose: failureLibrary[0]
+        ? `${titleize(failureLibrary[0].id)} is nu de grootste foutcluster en vraagt strakkere gating.`
+        : "Nog geen duidelijke te-losse paperzone zichtbaar.",
+      nextReview: reviewPacks.topMissedSetup
+        ? `Bekijk ${reviewPacks.topMissedSetup} als gemiste setup en ${reviewPacks.weakestProbe || "de zwakste probe"} als volgend reviewpunt.`
+        : experimentScopes[0]
+          ? `Volgende focus: ${experimentScopes[0].id} via ${experimentScopes[0].action}.`
+          : "Nog geen duidelijke volgende reviewfocus beschikbaar."
+    };
     const branchStats = new Map();
     for (const item of counterfactuals) {
       for (const branch of arr(item.branches || [])) {
@@ -4915,9 +4994,11 @@ export class TradingBot {
       paperToLiveReadiness,
       counterfactualTuning,
       activeLearning,
+      experimentScopes,
       benchmarkLanes,
       miscalibration,
       failureLibrary,
+      coaching,
       counterfactualBranches,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)

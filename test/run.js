@@ -6766,6 +6766,11 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   assert.equal(summary.benchmarkLanes.bestLane, "safe_lane");
   assert.ok(summary.benchmarkLanes.rankedLanes.some((item) => item.id === "always_take"));
   assert.ok(summary.benchmarkLanes.rankedLanes.some((item) => item.id === "fixed_threshold"));
+  assert.ok(summary.benchmarkLanes.rankedLanes.every((item) => Number.isFinite(item.deltaVsProbe)));
+  assert.ok(summary.experimentScopes.some((item) => item.id === "trend_following"));
+  assert.ok(summary.coaching.whatWorked.length > 10);
+  assert.ok(summary.coaching.tooStrict.length > 10);
+  assert.ok(summary.coaching.nextReview.length > 10);
   assert.equal(summary.failureLibrary[0].id, "early_exit");
   assert.equal(summary.counterfactualBranches.topBranch, "maker_bias");
   assert.equal(summary.miscalibration.topIssue, "overconfidence");

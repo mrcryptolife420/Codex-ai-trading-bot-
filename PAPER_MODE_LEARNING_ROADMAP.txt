@@ -5,3 +5,6 @@
 [x] Expose the new paper-learning comparisons in the dashboard in a compact, readable way.
 [x] Add regression tests for the new paper-learning prioritization, branching, and benchmark behavior.
 [x] Run extended checks on paper/runtime paths and keep the roadmap updated as each item is completed.
+[x] Add a compact paper coaching summary so the bot explains what worked, what was too strict, what was too loose, and what to review next.
+[x] Surface experiment scopes so paper clearly shows which family/regime/session combinations deserve the next sandbox or probation attention.
+[x] Make benchmark comparisons more actionable by showing lane deltas relative to the real probe lane instead of only naming the best lane.
