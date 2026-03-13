@@ -748,10 +748,12 @@ De paper-roadmap toont nu ook:
 ### Nu ook toegevoegd
 
 - `active learning` score en focusreden per paper-candidate
+- `active learning` focus-scopes en priority-bands zodat paper duidelijker ziet welke family/regime/session combinatie nu het meest leerzaam is
 - richer `learning value` met active-learning gewicht
 - `benchmark lanes` voor probe/safe/shadow take/skip
+- extra benchmark-baselines zoals `always_take`, `always_skip`, `fixed_threshold` en `simple_exit`
 - `miscalibration` samenvatting voor over- en underconfidence
-- `counterfactual branching` met alternatieve size/execution/exit-paden
+- `counterfactual branching` met alternatieve size/execution/exit/risk/hold-paden
 - `failure library` voor terugkerende paper-fouttypes
 - recency-gewogen `freshness` in paper readiness
 

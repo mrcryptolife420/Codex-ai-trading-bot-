@@ -6761,7 +6761,11 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   };
   const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-11T15:00:00.000Z");
   assert.equal(summary.activeLearning.topCandidates[0].symbol, "ETHUSDT");
+  assert.equal(summary.activeLearning.topCandidates[0].priorityBand, "high_priority");
+  assert.ok(summary.activeLearning.focusScopes.some((item) => item.id === "mean_reversion · range · europe"));
   assert.equal(summary.benchmarkLanes.bestLane, "safe_lane");
+  assert.ok(summary.benchmarkLanes.rankedLanes.some((item) => item.id === "always_take"));
+  assert.ok(summary.benchmarkLanes.rankedLanes.some((item) => item.id === "fixed_threshold"));
   assert.equal(summary.failureLibrary[0].id, "early_exit");
   assert.equal(summary.counterfactualBranches.topBranch, "maker_bias");
   assert.equal(summary.miscalibration.topIssue, "overconfidence");
@@ -6769,6 +6773,38 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   assert.equal(summary.recentProbeReviews[0].symbol, "BTCUSDT");
   assert.equal(summary.recentShadowReviews[0].outcome, "good_veto");
   assert.equal(summary.recentShadowReviews[0].bestBranch.id, "maker_bias");
+});
+
+await runCheck("trading bot queues richer counterfactual branch scenarios for paper review", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", counterfactualLookaheadMinutes: 90, counterfactualQueueLimit: 40 });
+  bot.runtime = { counterfactualQueue: [] };
+  bot.queueCounterfactualCandidate({
+    symbol: "BTCUSDT",
+    marketSnapshot: { book: { mid: 100 } },
+    score: { probability: 0.58 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    marketStateSummary: { phase: "healthy_continuation" },
+    sessionSummary: { session: "europe" },
+    signalQualitySummary: { overallScore: 0.62, executionViability: 0.55 },
+    confidenceBreakdown: { modelConfidence: 0.57 },
+    decision: {
+      threshold: 0.61,
+      reasons: ["committee_veto"],
+      learningLane: "shadow",
+      learningValueScore: 0.72,
+      executionPlan: {
+        entryStyle: "maker",
+        expectedSlippageBps: 4
+      }
+    }
+  }, "2026-03-12T10:00:00.000Z");
+  assert.equal(bot.runtime.counterfactualQueue.length, 1);
+  const ids = bot.runtime.counterfactualQueue[0].branchScenarios.map((item) => item.id);
+  assert.ok(ids.includes("market_entry"));
+  assert.ok(ids.includes("tighter_stop"));
+  assert.ok(ids.includes("longer_hold"));
 });
 
 await runCheck("trading bot paper learning summary only uses branchable shadow cases for shadow reviews", async () => {

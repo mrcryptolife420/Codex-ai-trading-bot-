@@ -705,6 +705,8 @@ function renderLearning(snapshot) {
   const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
   const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
   const topOutcomeText = titleize(topOutcome?.id || "nog geen duidelijke outcome");
+  const focusScopes = (paperLearning.activeLearning?.focusScopes || []).slice(0, 2);
+  const benchmarkTags = (paperLearning.benchmarkLanes?.rankedLanes || []).slice(0, 3);
   const reviewText = paperLearning.reviewPacks?.topMissedSetup
     ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
     : "Nog geen automatische review-pack beschikbaar.";
@@ -771,6 +773,40 @@ function renderLearning(snapshot) {
           <strong>${escapeHtml(titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"))}</strong>
           <span class="metric-foot">${escapeHtml(nextStep)}</span>
           <p class="learning-note">${escapeHtml(reviewText)}</p>
+        </article>
+      </section>
+      <section class="learning-grid learning-grid-secondary">
+        <article class="learning-detail">
+          <span class="metric-label">Active learning focus</span>
+          <strong>${escapeHtml(titleize(paperLearning.activeLearning?.focusReason || "nog geen focus"))}</strong>
+          <span class="metric-foot">${escapeHtml(
+            focusScopes[0]
+              ? `${focusScopes[0].id} · ${formatPct(focusScopes[0].score || 0, 0)}`
+              : "Nog geen duidelijke focus-scope zichtbaar."
+          )}</span>
+          <p class="learning-note">${escapeHtml(
+            paperLearning.activeLearning?.topCandidates?.[0]?.scopeLabel
+              ? `Top candidate zit in ${paperLearning.activeLearning.topCandidates[0].scopeLabel}.`
+              : "De bot zoekt nog naar de meest informatieve scope voor extra paper-feedback."
+          )}</p>
+          <div class="tag-list">
+            ${focusScopes.map((item) => `<span class="tag">${escapeHtml(`${item.id} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")}
+          </div>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Benchmark lanes</span>
+          <strong>${escapeHtml(titleize(paperLearning.benchmarkLanes?.bestLane || "nog geen benchmark"))}</strong>
+          <span class="metric-foot">${escapeHtml(paperLearning.benchmarkLanes?.note || "Nog geen duidelijke benchmarkvergelijking zichtbaar.")}</span>
+          <p class="learning-note">${escapeHtml(
+            paperLearning.benchmarkLanes?.bestLane === "always_take"
+              ? "Dit wijst erop dat paper op dit moment mogelijk te streng blijft voor leertrades."
+              : paperLearning.benchmarkLanes?.bestLane === "fixed_threshold"
+                ? "Een eenvoudige thresholdregel houdt verrassend goed stand tegen de slimme paper-lanes."
+                : "De benchmarkvergelijking laat zien welke lane nu de meeste leer- en resultaatwaarde geeft."
+          )}</p>
+          <div class="tag-list">
+            ${benchmarkTags.map((item) => `<span class="tag">${escapeHtml(`${titleize(item.id)} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")}
+          </div>
         </article>
       </section>
       <section class="learning-list">

@@ -1936,10 +1936,22 @@ function summarizePaperLearning(summary = {}) {
       status: summary.activeLearning.status || "observe",
       score: num(summary.activeLearning.score || 0, 4),
       focusReason: summary.activeLearning.focusReason || null,
+      focusScopes: arr(summary.activeLearning.focusScopes || []).slice(0, 4).map((item) => ({
+        id: item.id || null,
+        count: item.count || 0,
+        score: num(item.score || 0, 4),
+        topReason: item.topReason || null
+      })),
       topCandidates: arr(summary.activeLearning.topCandidates || []).slice(0, 4).map((item) => ({
         symbol: item.symbol || null,
         score: num(item.score || 0, 4),
-        reason: item.reason || null
+        reason: item.reason || null,
+        noveltyScore: num(item.noveltyScore || 0, 4),
+        rarityScore: num(item.rarityScore || 0, 4),
+        disagreementScore: num(item.disagreementScore || 0, 4),
+        uncertaintyScore: num(item.uncertaintyScore || 0, 4),
+        priorityBand: item.priorityBand || "observe",
+        scopeLabel: item.scopeLabel || null
       })),
       note: summary.activeLearning.note || null
     } : null,
@@ -1949,6 +1961,14 @@ function summarizePaperLearning(summary = {}) {
       safeLaneWinRate: num(summary.benchmarkLanes.safeLaneWinRate || 0, 4),
       shadowTakeWinRate: num(summary.benchmarkLanes.shadowTakeWinRate || 0, 4),
       shadowSkipWinRate: num(summary.benchmarkLanes.shadowSkipWinRate || 0, 4),
+      alwaysTakeWinRate: num(summary.benchmarkLanes.alwaysTakeWinRate || 0, 4),
+      alwaysSkipWinRate: num(summary.benchmarkLanes.alwaysSkipWinRate || 0, 4),
+      fixedThresholdWinRate: num(summary.benchmarkLanes.fixedThresholdWinRate || 0, 4),
+      simpleExitWinRate: num(summary.benchmarkLanes.simpleExitWinRate || 0, 4),
+      rankedLanes: arr(summary.benchmarkLanes.rankedLanes || []).slice(0, 7).map((item) => ({
+        id: item.id || null,
+        score: num(item.score || 0, 4)
+      })),
       bestLane: summary.benchmarkLanes.bestLane || null,
       note: summary.benchmarkLanes.note || null
     } : null,
@@ -3169,6 +3189,24 @@ export class TradingBot {
         label: "Snellere exit",
         kind: "exit",
         takeProfitFactor: 0.65
+      },
+      {
+        id: "market_entry",
+        label: "Market-entry",
+        kind: "execution",
+        slippageBps: Math.max(expectedSlippageBps + 3, 3)
+      },
+      {
+        id: "tighter_stop",
+        label: "Strakkere stop",
+        kind: "risk",
+        stopLossFactor: 0.72
+      },
+      {
+        id: "longer_hold",
+        label: "Langer vasthouden",
+        kind: "hold",
+        holdBiasPct: 0.0035
       }
     ];
     this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), {
@@ -3262,6 +3300,16 @@ export class TradingBot {
             adjustedMovePct += Math.max(0, (item.expectedSlippageBps || 0) - (branch.slippageBps || 0)) / 10000;
           } else if (branch.kind === "exit") {
             adjustedMovePct = Math.min(realizedMovePct, winBar * (branch.takeProfitFactor || 1));
+          } else if (branch.kind === "risk") {
+            if (adjustedMovePct < 0) {
+              adjustedMovePct = Math.max(adjustedMovePct, lossBar * (branch.stopLossFactor || 1));
+            }
+          } else if (branch.kind === "hold") {
+            if (adjustedMovePct > 0) {
+              adjustedMovePct += branch.holdBiasPct || 0;
+            } else if (adjustedMovePct > lossBar * 0.5) {
+              adjustedMovePct += (branch.holdBiasPct || 0) * 0.35;
+            }
           }
           const branchOutcome = adjustedMovePct >= winBar
             ? "winner"
@@ -4621,15 +4669,66 @@ export class TradingBot {
       .map((item) => ({
         symbol: item.symbol || null,
         score: item.paperLearning?.activeLearning?.score || 0,
-        reason: item.paperLearning?.activeLearning?.focusReason || null
+        reason: item.paperLearning?.activeLearning?.focusReason || null,
+        noveltyScore: item.paperLearning?.noveltyScore || 0,
+        rarityScore: item.paperLearning?.rarityScore || 0,
+        disagreementScore: item.paperLearning?.activeLearning?.disagreementScore || 0,
+        uncertaintyScore: item.paperLearning?.activeLearning?.uncertaintyScore || 0,
+        scopeLabel: [
+          item.paperLearning?.scope?.family || item.strategy?.family || null,
+          item.paperLearning?.scope?.regime || item.regime || null,
+          item.paperLearning?.scope?.session || item.session?.session || null
+        ].filter(Boolean).join(" · ") || null
       }))
       .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 5)
+      .map((item) => ({
+        ...item,
+        priorityBand: item.score >= 0.75
+          ? "high_priority"
+          : item.score >= 0.58
+            ? "priority"
+            : "observe"
+      }));
+    const focusScopeStats = new Map();
+    for (const item of scoredLearningEntries) {
+      const family = item.paperLearning?.scope?.family || item.strategy?.family || null;
+      const regime = item.paperLearning?.scope?.regime || item.regime || null;
+      const session = item.paperLearning?.scope?.session || item.session?.session || null;
+      const scopeId = [family, regime, session].filter(Boolean).join(" · ");
+      if (!scopeId) {
+        continue;
+      }
+      if (!focusScopeStats.has(scopeId)) {
+        focusScopeStats.set(scopeId, {
+          id: scopeId,
+          count: 0,
+          scoreSum: 0,
+          topReason: null
+        });
+      }
+      const bucket = focusScopeStats.get(scopeId);
+      bucket.count += 1;
+      bucket.scoreSum += item.paperLearning?.activeLearning?.score || 0;
+      if (!bucket.topReason && item.paperLearning?.activeLearning?.focusReason) {
+        bucket.topReason = item.paperLearning.activeLearning.focusReason;
+      }
+    }
+    const focusScopes = [...focusScopeStats.values()]
+      .map((item) => ({
+        id: item.id,
+        count: item.count,
+        score: item.count ? item.scoreSum / item.count : 0,
+        topReason: item.topReason || null
+      }))
       .sort((left, right) => right.score - left.score)
       .slice(0, 4);
     const activeLearning = {
       status: rankedActiveCandidates[0]?.score >= 0.65 ? "priority" : rankedActiveCandidates.length ? "observe" : "warmup",
       score: rankedActiveCandidates[0]?.score || avgActiveLearning || 0,
       focusReason: rankedActiveCandidates[0]?.reason || null,
+      focusScopes,
       topCandidates: rankedActiveCandidates,
       note: rankedActiveCandidates[0]
         ? `${rankedActiveCandidates[0].symbol || "De top candidate"} is nu het meest informatieve leergeval door ${titleize(rankedActiveCandidates[0].reason || "active learning")}.`
@@ -4655,19 +4754,49 @@ export class TradingBot {
       { id: "shadow_take", score: shadowTakeWinRate },
       { id: "shadow_skip", score: shadowSkipWinRate }
     ].sort((left, right) => right.score - left.score);
+    const alwaysTakeWinRate = (recentPaperTrades.length + counterfactuals.length)
+      ? (
+        recentPaperTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length +
+        counterfactuals.filter((item) => ["bad_veto", "missed_winner", "right_direction_wrong_timing"].includes(item.outcome)).length
+      ) / (recentPaperTrades.length + counterfactuals.length)
+      : 0;
+    const alwaysSkipWinRate = counterfactuals.length
+      ? counterfactuals.filter((item) => ["good_veto", "blocked_correctly", "neutral"].includes(item.outcome)).length / counterfactuals.length
+      : shadowSkipWinRate;
+    const fixedThresholdTrades = recentPaperTrades.filter((trade) => Number.isFinite(trade.probabilityAtEntry) && trade.probabilityAtEntry >= 0.55);
+    const fixedThresholdWinRate = fixedThresholdTrades.length
+      ? fixedThresholdTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length / fixedThresholdTrades.length
+      : 0;
+    let simpleExitWinRate = 0;
+    const expandedBenchmarkEntries = [
+      ...benchmarkLaneEntries,
+      { id: "always_take", score: alwaysTakeWinRate },
+      { id: "always_skip", score: alwaysSkipWinRate },
+      { id: "fixed_threshold", score: fixedThresholdWinRate },
+      { id: "simple_exit", score: simpleExitWinRate }
+    ].sort((left, right) => right.score - left.score);
     const benchmarkLanes = {
       actualProbeWinRate,
       actualProbeAvgPnlPct,
       safeLaneWinRate,
       shadowTakeWinRate,
       shadowSkipWinRate,
-      bestLane: benchmarkLaneEntries[0]?.id || null,
-      note: benchmarkLaneEntries[0]?.id === "shadow_take"
+      alwaysTakeWinRate,
+      alwaysSkipWinRate,
+      fixedThresholdWinRate,
+      simpleExitWinRate,
+      rankedLanes: expandedBenchmarkEntries.slice(0, 7),
+      bestLane: expandedBenchmarkEntries[0]?.id || null,
+      note: expandedBenchmarkEntries[0]?.id === "shadow_take"
         ? "Shadow-cases tonen nu relatief vaak dat near-miss setups toch doorliepen."
-        : benchmarkLaneEntries[0]?.id === "safe_lane"
+        : expandedBenchmarkEntries[0]?.id === "safe_lane"
           ? "De veilige lane presteert nu stabieler dan probes."
-          : benchmarkLaneEntries[0]?.id === "probe_lane"
+          : expandedBenchmarkEntries[0]?.id === "probe_lane"
             ? "De probe-lane levert nu de beste leer- en resultaatmix."
+            : expandedBenchmarkEntries[0]?.id === "always_take"
+              ? "Een brede take-benchmark doet het nu opvallend goed; paper kan mogelijk nog te streng zijn."
+              : expandedBenchmarkEntries[0]?.id === "fixed_threshold"
+                ? "Een eenvoudige threshold-benchmark blijft nu verrassend competitief."
             : "Shadow-skip blijft voorlopig de veiligste benchmark."
     };
     const miscalibrationSamples = recentPaperTrades
@@ -4747,6 +4876,8 @@ export class TradingBot {
         }
       }
     }
+    const simpleExitStats = branchStats.get("earlier_take_profit");
+    simpleExitWinRate = simpleExitStats?.total ? simpleExitStats.winnerCount / simpleExitStats.total : 0;
     const topBranch = [...branchStats.values()]
       .map((item) => ({
         id: item.id,

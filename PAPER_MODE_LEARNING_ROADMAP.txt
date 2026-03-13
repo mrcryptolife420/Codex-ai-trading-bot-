@@ -1,0 +1,7 @@
+[x] Audit what already exists in paper mode so we do not duplicate active learning, benchmark lanes, shadow branching, readiness, sandbox, review packs, or blocker splitting.
+[x] Tighten active-learning prioritization so paper clearly prefers the most informative candidates instead of only near-threshold setups.
+[x] Expand shadow branching so blocked setups can compare more realistic alternative entry, size, execution, and exit paths.
+[x] Improve paper benchmark lanes with clearer baseline comparisons, not only probe/safe/shadow take-skip.
+[x] Expose the new paper-learning comparisons in the dashboard in a compact, readable way.
+[x] Add regression tests for the new paper-learning prioritization, branching, and benchmark behavior.
+[x] Run extended checks on paper/runtime paths and keep the roadmap updated as each item is completed.
