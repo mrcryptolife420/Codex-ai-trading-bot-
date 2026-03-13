@@ -2106,6 +2106,33 @@ function summarizeCounterfactualReview(item = {}) {
   };
 }
 
+function summarizeQueuedCounterfactualReview(item = {}) {
+  const scenarios = arr(item.branchScenarios || []);
+  const branch = scenarios.find((entry) => entry.id === "maker_bias")
+    || scenarios.find((entry) => entry.kind === "execution")
+    || scenarios[0]
+    || null;
+  const branchLabel = branch?.id || branch?.kind || null;
+  const blocker = arr(item.blockerReasons || [])[0] || null;
+  const lesson = blocker
+    ? "Deze geblokkeerde setup wordt nog gevolgd om te zien of de blokkade te streng was."
+    : "Deze shadow-case staat nog open en voedt de gemiste-trade analyse zodra de review afrondt.";
+  return {
+    id: item.id || null,
+    symbol: item.symbol || null,
+    outcome: "shadow_watch",
+    blocker,
+    realizedMovePct: null,
+    resolvedAt: item.queuedAt || item.dueAt || null,
+    bestBranch: branchLabel ? {
+      id: branchLabel,
+      outcome: "pending_review",
+      adjustedMovePct: null
+    } : null,
+    lesson
+  };
+}
+
 function summarizeStrategyMeta(summary = {}) {
   return {
     preferredFamily: summary.preferredFamily || null,
@@ -4416,11 +4443,19 @@ export class TradingBot {
       .slice(-4)
       .reverse()
       .map((trade) => summarizePaperTradeReview(trade));
-    const recentShadowReviews = counterfactuals
+    const resolvedShadowReviews = counterfactuals
       .filter((item) => item.learningLane === "shadow" || arr(item.branches || []).length > 0)
       .slice(-6)
       .reverse()
       .map((item) => summarizeCounterfactualReview(item));
+    const queuedShadowReviews = arr(this.runtime?.counterfactualQueue || [])
+      .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
+      .slice(-6)
+      .reverse()
+      .map((item) => summarizeQueuedCounterfactualReview(item));
+    const recentShadowReviews = [...resolvedShadowReviews, ...queuedShadowReviews]
+      .filter((item, index, items) => item?.symbol && items.findIndex((entry) => entry?.symbol === item.symbol) === index)
+      .slice(0, 6);
     const shadowLearningEvidence = [
       ...counterfactuals
         .filter((item) => isShadowReviewCase(item))

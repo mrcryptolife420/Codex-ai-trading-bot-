@@ -663,8 +663,13 @@ function renderShadowReviews(reviews = []) {
   }
   return reviews.map((review) => {
     const branchText = review.bestBranch?.id
-      ? `${titleize(review.bestBranch.id)} · ${titleize(review.bestBranch.outcome || "observe")} · ${formatPct(review.bestBranch.adjustedMovePct || 0, 1)}`
+      ? review.bestBranch.outcome === "pending_review"
+        ? `${titleize(review.bestBranch.id)} · Review loopt nog`
+        : `${titleize(review.bestBranch.id)} · ${titleize(review.bestBranch.outcome || "observe")} · ${formatPct(review.bestBranch.adjustedMovePct || 0, 1)}`
       : "Nog geen beste alternatieve branch.";
+    const moveText = Number.isFinite(review.realizedMovePct)
+      ? `Move ${formatPct(review.realizedMovePct || 0, 1)}`
+      : "Nog in review";
     return `
       <article class="learning-review-card">
         <div class="learning-review-head">
@@ -672,7 +677,7 @@ function renderShadowReviews(reviews = []) {
           <span class="pill ${statusTone(review.outcome)}">${escapeHtml(titleize(review.outcome || "observe"))}</span>
         </div>
         <div class="learning-review-metrics">
-          <span class="tag">${escapeHtml(`Move ${formatPct(review.realizedMovePct || 0, 1)}`)}</span>
+          <span class="tag">${escapeHtml(moveText)}</span>
           <span class="tag">${escapeHtml(titleize(review.blocker || "geen blocker"))}</span>
         </div>
         <p class="learning-note">${escapeHtml(review.lesson || "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.")}</p>

@@ -6745,8 +6745,11 @@ await runCheck("trading bot paper learning summary counts branchable counterfact
   const summary = bot.buildPaperLearningSummary([], "2026-03-12T08:00:00.000Z");
   assert.equal(summary.shadowCount, 2);
   assert.equal(summary.dailyBudget.shadowUsed, 0);
-  assert.equal(summary.recentShadowReviews.length, 1);
+  assert.equal(summary.recentShadowReviews.length, 2);
   assert.equal(summary.recentShadowReviews[0].symbol, "ETHUSDT");
+  assert.equal(summary.recentShadowReviews[1].symbol, "SOLUSDT");
+  assert.equal(summary.recentShadowReviews[1].outcome, "shadow_watch");
+  assert.equal(summary.recentShadowReviews[1].bestBranch.id, "maker_bias");
 });
 
 await runCheck("trading bot paper learning summary uses runtime journal truth for shadow budget instead of stale decision snapshots", async () => {

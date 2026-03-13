@@ -66,6 +66,7 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Paper-learning shadow reviews now include active queued review cases alongside resolved counterfactuals, so the dashboard no longer shows an empty `Shadow cases` block while branchable shadow learning is still in progress.
 - Replay chaos now keeps `paperMisses` and `probeWinners` strictly paper-only, so paper-learning review packs and dashboard learning context cannot be polluted by live trades.
 - Paper-learning shadow reviews now only show actual branchable shadow cases, so the learning block no longer gets polluted by generic counterfactual history without replay value.
 - Missed-trade analysis now narrows recent counterfactual matches by regime as well as blocker, strategy, and phase, and the dashboard learning card now correctly prefers explicit probation notes over generic sandbox copy.
