@@ -3409,6 +3409,169 @@ await runCheck("risk manager keeps paper recovery probe blocked when market qual
   assert.ok(decision.reasons.includes("quality_quorum_degraded"));
 });
 
+await runCheck("risk manager allows paper recovery probe through mild degraded local-book quality", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "SEIUSDT",
+    score: {
+      probability: 0.518,
+      calibrationConfidence: 0.51,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      transformer: { probability: 0.52, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.4, bookPressure: -0.16, microPriceEdgeBps: 0.14, depthConfidence: 0.18 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.03, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.03, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.11, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.11 },
+    volatilitySummary: { riskScore: 0.34, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.02 },
+    committeeSummary: { agreement: 0.44, probability: 0.5, netScore: -0.01, sizeMultiplier: 0.96, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.36, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "pullback_trend",
+      family: "trend_following",
+      fitScore: 0.56,
+      confidence: 0.48,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 8, sampleConfidence: 0.6 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: ["local_book_quality_too_low"], severity: 0.22 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.63, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 400 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.7 },
+    qualityQuorumSummary: { status: "degraded", observeOnly: false, quorumScore: 0.62, blockerReasons: [], cautionReasons: ["local_book_quality_too_low"] },
+    capitalGovernorSummary: { status: "blocked", allowEntries: false, sizeMultiplier: 0, recoveryMode: true, notes: ["drawdown recovery active"] },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_recovery_probe");
+  assert.ok(decision.suppressedReasons.includes("capital_governor_blocked"));
+  assert.ok(decision.suppressedReasons.includes("quality_quorum_degraded"));
+  assert.ok(decision.suppressedReasons.includes("local_book_quality_too_low"));
+});
+
+await runCheck("risk manager marks informative blocked paper setups as shadow learning even when they are not near threshold", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "TIAUSDT",
+    score: {
+      probability: 0.44,
+      calibrationConfidence: 0.41,
+      disagreement: 0.14,
+      shouldAbstain: false,
+      transformer: { probability: 0.54, confidence: 0.32 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 3.2, bookPressure: -0.11, microPriceEdgeBps: 0.09, depthConfidence: 0.71 },
+      market: { realizedVolPct: 0.016, atrPct: 0.01, bearishPatternScore: 0.04, bullishPatternScore: 0.11, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.07, sentimentScore: 0.02, eventBullishScore: 0, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.03, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.32, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.31, probability: 0.41, netScore: -0.12, sizeMultiplier: 0.94, vetoes: [{ id: "committee_guard" }] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.34, expectedReward: 0.008 },
+    strategySummary: {
+      activeStrategy: "vwap_trend",
+      family: "trend_following",
+      fitScore: 0.53,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.05,
+      optimizer: { sampleSize: 4, sampleConfidence: 0.44 }
+    },
+    sessionSummary: { blockerReasons: ["session_liquidity_guard"], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.62, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.68 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T11:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.equal(decision.learningLane, "shadow");
+  assert.ok(decision.paperActiveLearning.activeLearningScore >= 0.5);
+});
+
+await runCheck("risk manager treats paper entry cooldown and daily budget as soft exploration blockers", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ARBUSDT",
+    score: {
+      probability: 0.494,
+      calibrationConfidence: 0.45,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      transformer: { probability: 0.5, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.8, bookPressure: -0.16, microPriceEdgeBps: 0.16, depthConfidence: 0.82 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.13, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.04, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.03, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.1 },
+    volatilitySummary: { riskScore: 0.35, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.36, probability: 0.49, netScore: -0.03, sizeMultiplier: 0.95, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.008 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.52,
+      confidence: 0.44,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 5, sampleConfidence: 0.48 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.63, dailyTradeCount: makeConfig().maxEntriesPerDay, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: {
+      trades: [
+        {
+          symbol: "ARBUSDT",
+          brokerMode: "paper",
+          entryAt: "2026-03-12T10:45:00.000Z",
+          exitAt: "2026-03-12T10:57:00.000Z",
+          pnlQuote: -1
+        }
+      ]
+    },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.67 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-12T11:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.suppressedReasons.includes("daily_entry_budget_reached"));
+});
+
 await runCheck("risk manager blocks extra paper probes after the daily learning budget is exhausted", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningProbeDailyLimit: 0,

@@ -44,7 +44,16 @@ function isSoftPaperReason(reason) {
     "regime_budget_cooled",
     "capital_governor_blocked",
     "capital_governor_recovery",
-    "trade_size_below_minimum"
+    "trade_size_below_minimum",
+    "entry_cooldown_active",
+    "daily_entry_budget_reached"
+  ].includes(reason);
+}
+
+function isMildPaperQualityReason(reason) {
+  return [
+    "local_book_quality_too_low",
+    "quality_quorum_degraded"
   ].includes(reason);
 }
 
@@ -450,7 +459,15 @@ function resolvePaperLearningLane({
     safeValue(signalQualitySummary.overallScore, 0) >= (config.paperLearningMinSignalQuality || 0.4) &&
     safeValue(dataQualitySummary.overallScore, 0) >= (config.paperLearningMinDataQuality || 0.52);
   const hardBlocked = reasons.some((reason) => isHardPaperLearningBlocker(reason));
-  if (nearThreshold && qualityOkay && !hardBlocked && (paperLearningBudget.shadowRemaining || 0) > 0) {
+  const informativeShadowCase =
+    nearThreshold ||
+    safeValue(activeLearningState.activeLearningScore, 0) >= 0.5 ||
+    safeValue(activeLearningState.disagreementScore, 0) >= 0.35 ||
+    safeValue(activeLearningState.uncertaintyScore, 0) >= 0.48;
+  const shadowQualityOkay =
+    safeValue(signalQualitySummary.overallScore, 0) >= Math.max(0.34, (config.paperLearningMinSignalQuality || 0.4) - 0.06) &&
+    safeValue(dataQualitySummary.overallScore, 0) >= Math.max(0.42, (config.paperLearningMinDataQuality || 0.52) - 0.08);
+  if (informativeShadowCase && shadowQualityOkay && !hardBlocked && (paperLearningBudget.shadowRemaining || 0) > 0) {
     return {
       lane: "shadow",
       learningValueScore,
@@ -1219,6 +1236,12 @@ export class RiskManager {
     }
     const recentPortfolioTradeAt = getMostRecentTradeTimestamp(journal);
     const minutesSincePortfolioTrade = recentPortfolioTradeAt ? minutesBetween(recentPortfolioTradeAt, nowIso) : Number.POSITIVE_INFINITY;
+    const effectivePaperExplorationCooldownMinutes = this.config.botMode === "paper"
+      ? Math.min(this.config.paperExplorationCooldownMinutes || 0, 3)
+      : (this.config.paperExplorationCooldownMinutes || 0);
+    const effectivePaperRecoveryCooldownMinutes = this.config.botMode === "paper"
+      ? Math.min(this.config.paperRecoveryProbeCooldownMinutes || 0, 3)
+      : (this.config.paperRecoveryProbeCooldownMinutes || 0);
 
     const stopLossPct = clamp(Math.max(this.config.stopLossPct, marketSnapshot.market.atrPct * 1.2), 0.008, 0.04);
     const adjustedStopLossPct = clamp(stopLossPct * parameterGovernorAdjustment.stopLossMultiplier * clamp(safeValue(strategyMetaSummary.stopLossMultiplier || 1), 0.88, 1.12), 0.006, 0.05);
@@ -1341,14 +1364,19 @@ export class RiskManager {
       ].includes(reason)
     );
 
+    const mildPaperQualityOnly =
+      reasons.some((reason) => isMildPaperQualityReason(reason)) &&
+      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason));
+
     if (
       !allow &&
       this.config.botMode === "paper" &&
       this.config.paperExplorationEnabled &&
       openPositions.length === 0 &&
-      minutesSincePortfolioTrade >= this.config.paperExplorationCooldownMinutes &&
+      minutesSincePortfolioTrade >= effectivePaperExplorationCooldownMinutes &&
       reasons.length > 0 &&
-      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState)) &&
+      !reasons.includes("capital_governor_recovery") &&
+      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
       score.probability >= threshold - this.config.paperExplorationThresholdBuffer &&
       (marketSnapshot.book.bookPressure || 0) >= this.config.paperExplorationMinBookPressure &&
       (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.4, 8) &&
@@ -1359,7 +1387,17 @@ export class RiskManager {
       (marketStructureSummary.riskScore || 0) <= 0.32 &&
       (volatilitySummary.riskScore || 0) <= 0.72 &&
       !(sessionSummary.blockerReasons || []).length &&
-      !(driftSummary.blockerReasons || []).length &&
+      (
+        !(driftSummary.blockerReasons || []).length ||
+        (driftSummary.blockerReasons || []).every((reason) => isMildPaperQualityReason(reason))
+      ) &&
+      qualityQuorumSummary.observeOnly !== true &&
+      ((qualityQuorumSummary.status || "") !== "degraded" || mildPaperQualityOnly) &&
+      (
+        !mildPaperQualityOnly ||
+        safeValue(signalQualitySummary.executionViability, 0) >= 0.52 ||
+        safeValue(dataQualitySummary.overallScore, 0) >= 0.54
+      ) &&
       canRelaxPaperSelfHeal(selfHealState)
     ) {
       const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
@@ -1404,9 +1442,9 @@ export class RiskManager {
       this.config.botMode === "paper" &&
       this.config.paperRecoveryProbeEnabled &&
       openPositions.length === 0 &&
-      minutesSincePortfolioTrade >= this.config.paperRecoveryProbeCooldownMinutes &&
+      minutesSincePortfolioTrade >= effectivePaperRecoveryCooldownMinutes &&
       reasons.some((reason) => ["capital_governor_blocked", "capital_governor_recovery"].includes(reason)) &&
-      reasons.every((reason) => isPaperRecoveryProbeReason(reason) || isPaperLeniencyReason(reason, selfHealState)) &&
+      reasons.every((reason) => isPaperRecoveryProbeReason(reason) || isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
       score.probability >= threshold - this.config.paperRecoveryProbeThresholdBuffer &&
       (marketSnapshot.book.bookPressure || 0) >= this.config.paperRecoveryProbeMinBookPressure &&
       (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.5, 10) &&
@@ -1417,7 +1455,16 @@ export class RiskManager {
       (marketStructureSummary.riskScore || 0) <= 0.36 &&
       (volatilitySummary.riskScore || 0) <= 0.76 &&
       !(sessionSummary.blockerReasons || []).length &&
-      !(driftSummary.blockerReasons || []).length &&
+      (
+        !(driftSummary.blockerReasons || []).length ||
+        (driftSummary.blockerReasons || []).every((reason) => isMildPaperQualityReason(reason))
+      ) &&
+      (qualityQuorumSummary.observeOnly !== true) &&
+      (
+        (qualityQuorumSummary.status || "") !== "degraded" ||
+        safeValue(signalQualitySummary.executionViability, 0) >= 0.52 ||
+        safeValue(dataQualitySummary.overallScore, 0) >= 0.54
+      ) &&
       canRelaxPaperSelfHeal(selfHealState)
     ) {
       const recoveryBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);

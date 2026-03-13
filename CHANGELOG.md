@@ -66,6 +66,7 @@
 - Richer counterfactual labels (`good_veto`, `bad_veto`, `late_veto`, `right_direction_wrong_timing`) so blocker feedback can distinguish timing problems from clean vetoes.
 
 ### Improved
+- Paper mode now learns more aggressively but still safely: informative blocked setups can become `shadow` cases earlier, mild local-book/data degradation can still permit tiny `paper_recovery_probe` entries, and paper-only exploration/recovery cooldowns are shorter so learning loops do not stall behind live-style throttles.
 - Paper-learning shadow reviews now include active queued review cases alongside resolved counterfactuals, so the dashboard no longer shows an empty `Shadow cases` block while branchable shadow learning is still in progress.
 - Replay chaos now keeps `paperMisses` and `probeWinners` strictly paper-only, so paper-learning review packs and dashboard learning context cannot be polluted by live trades.
 - Paper-learning shadow reviews now only show actual branchable shadow cases, so the learning block no longer gets polluted by generic counterfactual history without replay value.
