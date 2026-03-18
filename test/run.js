@@ -6119,6 +6119,7 @@ await runCheck("dashboard decision view preserves blocked-setup safety context",
 
 await runCheck("dashboard decision view translates common operator blockers into readable guidance", async () => {
   const bot = Object.create(TradingBot.prototype);
+  bot.config = { botMode: "live" };
   bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
   bot.journal = { counterfactuals: [] };
   const view = bot.buildDashboardDecisionView({
@@ -6131,6 +6132,22 @@ await runCheck("dashboard decision view translates common operator blockers into
   });
   assert.ok(view.operatorAction.includes("Capital governor houdt entries nu tegen."));
   assert.equal(view.missedTradeAnalysis.available, false);
+});
+
+await runCheck("dashboard decision view prefers more specific paper blockers over capital governor text", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = { botMode: "paper" };
+  bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
+  bot.journal = { counterfactuals: [] };
+  const view = bot.buildDashboardDecisionView({
+    symbol: "DOGEUSDT",
+    allow: false,
+    blockerReasons: ["capital_governor_blocked", "model_confidence_too_low", "committee_veto"],
+    dataQuality: { status: "ready", overallScore: 0.72, freshnessScore: 0.7, trustScore: 0.68, coverageScore: 0.75, degradedButAllowed: false, sources: [] },
+    signalQuality: { overallScore: 0.58, setupFit: 0.61, structureQuality: 0.56, executionViability: 0.49, newsCleanliness: 0.64, quorumQuality: 0.71 },
+    confidenceBreakdown: { marketConfidence: 0.55, dataConfidence: 0.7, executionConfidence: 0.48, modelConfidence: 0.41, overallConfidence: 0.53 }
+  });
+  assert.ok(view.operatorAction.includes("Modelconfidence is te laag"));
 });
 
 await runCheck("dashboard decision view preserves readable operator fields and maps probe-only codes", async () => {
@@ -7594,6 +7611,39 @@ await runCheck("offline trainer freshness-aware retrain readiness penalizes stal
   assert.ok(summary.retrainReadiness.paper.freshnessScore > summary.retrainReadiness.live.freshnessScore);
   assert.ok(summary.retrainReadiness.paper.score > summary.retrainReadiness.live.score);
   assert.ok(summary.scopeRetrainReadiness.every((item) => item.freshnessScore >= 0));
+});
+
+await runCheck("offline trainer smooths retrain readiness when no new trades arrive", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const sharedInput = {
+    journal: {
+      trades: [
+        {
+          symbol: "ETHUSDT",
+          exitAt: "2026-03-11T12:00:00.000Z",
+          pnlQuote: 9,
+          netPnlPct: 0.011,
+          executionQualityScore: 0.69,
+          labelScore: 0.75,
+          rawFeatures: { a: 1 },
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          brokerMode: "live"
+        }
+      ]
+    },
+    dataRecorder: { learningFrames: 4, decisionFrames: 8, averageRecordQuality: 0.74, lineageCoverage: 0.8 },
+    counterfactuals: []
+  };
+  const first = trainer.buildSummary({
+    ...sharedInput,
+    nowIso: "2026-03-12T12:00:00.000Z"
+  });
+  const second = trainer.buildSummary({
+    ...sharedInput,
+    nowIso: "2026-03-12T12:05:00.000Z"
+  });
+  assert.ok(Math.abs(second.retrainReadiness.live.score - first.retrainReadiness.live.score) < 0.02);
 });
 
 await runCheck("offline trainer ignores resolution_failed counterfactuals in learning summary", async () => {

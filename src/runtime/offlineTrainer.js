@@ -8,6 +8,10 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function safeNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function computeFreshnessScore(trades = [], nowIso = new Date().toISOString(), horizonHours = 24 * 21) {
   const nowMs = new Date(nowIso).getTime();
   if (!Number.isFinite(nowMs) || !trades.length) {
@@ -833,6 +837,51 @@ function buildRetrainReadiness({
   };
 }
 
+function smoothRetrainTrack(nextTrack = {}, previousTrack = {}) {
+  if (!previousTrack || !nextTrack) {
+    return nextTrack;
+  }
+  const sameLatestTrade = (nextTrack.latestTradeAt || null) === (previousTrack.latestTradeAt || null);
+  const sameTradeCount = (nextTrack.tradeCount || 0) === (previousTrack.tradeCount || 0);
+  if (!sameLatestTrade || !sameTradeCount) {
+    return nextTrack;
+  }
+  const smoothedScore = clamp((safeNumber(previousTrack.score, nextTrack.score) * 0.65) + (safeNumber(nextTrack.score, 0) * 0.35), 0, 1);
+  return {
+    ...nextTrack,
+    score: num(smoothedScore),
+    status: smoothedScore >= 0.72
+      ? "ready"
+      : smoothedScore >= 0.52
+        ? "building"
+        : "warmup"
+  };
+}
+
+function stabilizeRetrainReadiness(nextReadiness = {}, previousReadiness = {}) {
+  if (!previousReadiness || !nextReadiness) {
+    return nextReadiness;
+  }
+  const paper = smoothRetrainTrack(nextReadiness.paper || {}, previousReadiness.paper || {});
+  const live = smoothRetrainTrack(nextReadiness.live || {}, previousReadiness.live || {});
+  const samePaper = (paper.latestTradeAt || null) === (previousReadiness.paper?.latestTradeAt || null) &&
+    (paper.tradeCount || 0) === (previousReadiness.paper?.tradeCount || 0);
+  const sameLive = (live.latestTradeAt || null) === (previousReadiness.live?.latestTradeAt || null) &&
+    (live.tradeCount || 0) === (previousReadiness.live?.tradeCount || 0);
+  const nextScoreRaw = safeNumber(nextReadiness.score, 0);
+  const previousScoreRaw = safeNumber(previousReadiness.score, nextScoreRaw);
+  const score = samePaper && sameLive
+    ? clamp(previousScoreRaw * 0.65 + nextScoreRaw * 0.35, 0, 1)
+    : nextScoreRaw;
+  return {
+    ...nextReadiness,
+    paper,
+    live,
+    score: num(score),
+    status: score >= 0.72 ? "ready" : score >= 0.52 ? "building" : "warmup"
+  };
+}
+
 function buildScopedRetrainReadiness({
   paperTrades = [],
   liveTrades = [],
@@ -1062,6 +1111,7 @@ function buildRetrainExecutionPlan({
 export class OfflineTrainer {
   constructor(config) {
     this.config = config;
+    this.lastSummary = null;
   }
 
   buildSummary({ journal = {}, dataRecorder = {}, counterfactuals = [], nowIso = new Date().toISOString() } = {}) {
@@ -1102,13 +1152,14 @@ export class OfflineTrainer {
       liveTrades,
       nowIso
     });
-    const retrainReadiness = buildRetrainReadiness({
+    const retrainReadinessRaw = buildRetrainReadiness({
       paperTrades,
       liveTrades,
       dataRecorder,
       bootstrap: dataRecorder.latestBootstrap || {},
       nowIso
     });
+    const retrainReadiness = stabilizeRetrainReadiness(retrainReadinessRaw, this.lastSummary?.retrainReadiness || {});
     const calibrationGovernance = buildCalibrationGovernance({
       tradeCount: learningReadyTrades.length,
       falsePositiveCount: falsePositives.length,
@@ -1130,7 +1181,7 @@ export class OfflineTrainer {
       regimeDeployment
     });
 
-    return {
+    const summary = {
       generatedAt: nowIso,
       learningReadyTrades: learningReadyTrades.length,
       paperTrades: paperTrades.length,
@@ -1214,5 +1265,7 @@ export class OfflineTrainer {
           : "Nog geen duidelijke strategy-leider in offline trainer."
       ]
     };
+    this.lastSummary = summary;
+    return summary;
   }
 }
