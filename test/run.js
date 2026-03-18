@@ -7091,6 +7091,65 @@ await runCheck("trading bot paper learning summary counts branchable counterfact
   assert.equal(summary.recentShadowReviews[1].bestBranch.id, "maker_bias");
 });
 
+await runCheck("trading bot paper learning summary prefers specific shadow blockers over capital governor", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = { latestDecisions: [], openPositions: [], counterfactualQueue: [], offlineTrainer: {}, ops: { replayChaos: { replayPacks: {} } } };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "resolved-shadow-specific-blocker",
+        symbol: "ETCUSDT",
+        brokerMode: "paper",
+        resolvedAt: "2026-03-12T06:45:00.000Z",
+        outcome: "bad_veto",
+        blockerReasons: ["capital_governor_blocked", "committee_veto"],
+        branches: [{ id: "base", outcome: "winner", adjustedMovePct: 0.029 }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.recentShadowReviews.length, 1);
+  assert.equal(summary.recentShadowReviews[0].symbol, "ETCUSDT");
+  assert.equal(summary.recentShadowReviews[0].blocker, "committee_veto");
+  assert.equal(summary.recentShadowReviews[0].bestBranch.id, "base");
+});
+
+await runCheck("refresh analysis resolves counterfactual queue so shadow cases stay current", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    openPositions: [],
+    counterfactualQueue: [{ id: "queued-shadow", symbol: "ETCUSDT" }]
+  };
+  bot.broker = {
+    getBalance: async () => ({ quoteFree: 1200 }),
+    getEquity: async () => 1200
+  };
+  bot.getLatestMidPrices = async () => ({});
+  bot.maybeRunExchangeTruthLoop = async () => {};
+  bot.scanCandidatesForCycle = async () => [];
+  bot.syncOrderLifecycleState = () => {};
+  let resolvedAt = null;
+  let governanceRefreshedAt = null;
+  bot.resolveCounterfactualQueue = async (at) => {
+    resolvedAt = at;
+    bot.runtime.counterfactualQueue = [];
+  };
+  bot.refreshGovernanceViews = (at) => {
+    governanceRefreshedAt = at;
+  };
+  bot.trimJournal = () => {};
+  bot.persist = async () => {};
+
+  const result = await bot.refreshAnalysis();
+  assert.equal(result.quoteFree, 1200);
+  assert.equal(result.equity, 1200);
+  assert.equal(bot.runtime.counterfactualQueue.length, 0);
+  assert.ok(resolvedAt);
+  assert.equal(governanceRefreshedAt, resolvedAt);
+});
+
 await runCheck("trading bot paper learning summary uses runtime journal truth for shadow budget instead of stale decision snapshots", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper", paperLearningProbeDailyLimit: 4, paperLearningShadowDailyLimit: 6 });

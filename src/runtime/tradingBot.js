@@ -2135,6 +2135,27 @@ function summarizePaperTradeReview(trade = {}) {
   };
 }
 
+function pickCounterfactualBlocker(item = {}) {
+  const blockers = arr(item.blockerReasons || []).filter(Boolean);
+  if (!blockers.length) {
+    return item.reason || null;
+  }
+  const preferredPaperBlocker = [
+    "exchange_truth_freeze",
+    "reconcile_required",
+    "quality_quorum_observe_only",
+    "higher_tf_conflict",
+    "local_book_quality_too_low",
+    "quality_quorum_degraded",
+    "model_confidence_too_low",
+    "committee_veto",
+    "execution_cost_budget_exceeded",
+    "capital_governor_blocked",
+    "capital_governor_recovery"
+  ].find((reason) => blockers.includes(reason));
+  return preferredPaperBlocker || blockers[0] || item.reason || null;
+}
+
 function summarizeCounterfactualReview(item = {}) {
   const branch = arr(item.branches || []).find((entry) => ["winner", "small_winner"].includes(entry.outcome)) || arr(item.branches || [])[0] || null;
   const lesson = item.outcome === "bad_veto"
@@ -2150,7 +2171,7 @@ function summarizeCounterfactualReview(item = {}) {
     id: item.id || null,
     symbol: item.symbol || null,
     outcome: item.outcome || "neutral",
-    blocker: arr(item.blockerReasons || [])[0] || item.reason || null,
+    blocker: pickCounterfactualBlocker(item),
     realizedMovePct: num(item.realizedMovePct || 0, 4),
     resolvedAt: item.resolvedAt || null,
     bestBranch: branch ? {
@@ -2169,7 +2190,7 @@ function summarizeQueuedCounterfactualReview(item = {}) {
     || scenarios[0]
     || null;
   const branchLabel = branch?.id || branch?.kind || null;
-  const blocker = arr(item.blockerReasons || [])[0] || null;
+  const blocker = pickCounterfactualBlocker(item);
   const lesson = blocker
     ? "Deze geblokkeerde setup wordt nog gevolgd om te zien of de blokkade te streng was."
     : "Deze shadow-case staat nog open en voedt de gemiste-trade analyse zodra de review afrondt.";
@@ -7237,6 +7258,7 @@ export class TradingBot {
       this.runtime.lastKnownEquity = equity;
       this.runtime.lastPortfolioUpdateAt = nowIso();
       this.runtime.lastAnalysisAt = nowIso();
+      await this.resolveCounterfactualQueue(this.runtime.lastAnalysisAt);
       this.runtime.lastAnalysisError = null;
       this.syncOrderLifecycleState("analysis_refresh");
       this.refreshGovernanceViews(this.runtime.lastAnalysisAt);
