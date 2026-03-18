@@ -754,6 +754,8 @@ De paper-roadmap toont nu ook:
 - extra benchmark-baselines zoals `always_take`, `always_skip`, `fixed_threshold` en `simple_exit`
 - `paper coaching` met wat werkte, wat te streng was, wat te los was en wat de volgende reviewstap is
 - `experiment scopes` zodat paper toont welke family/regime/session combinatie het meeste sandbox- of probationpotentieel heeft
+- `scope coaching` met sterkste en zwakste paper-scope plus aanbevolen volgende actie
+- `review queue` zodat het dashboard meteen toont welke probe, shadow-case of active-learning candidate je als eerste moet bekijken
 - `miscalibration` samenvatting voor over- en underconfidence
 - `counterfactual branching` met alternatieve size/execution/exit/risk/hold-paden
 - `failure library` voor terugkerende paper-fouttypes
@@ -816,3 +818,15 @@ Lokaal geverifieerd met:
 - `node src/cli.js status`
 - `node src/cli.js doctor`
 - `node src/cli.js once`
+
+## Paper mode learning roadmap
+
+De paper-mode roadmap is nu verder aangescherpt op sneller leren zonder live-logica los te trekken.
+
+- `active learning` voor informatieve near-miss en disagreement-cases
+- `shadow branching` voor alternatieve entry-, size-, execution- en exitpaden
+- `benchmark lanes` en `benchmark delta vs probe`
+- `paper coaching`, `review queue` en `scope coaching`
+- `experiment scopes` voor family/regime/session sandboxing
+- `meerdere gelijktijdige paper learning posities`, zodat paper niet meer effectief op één open leercase tegelijk blijft steken
+- `capital governor paper recovery leniency`, zodat paper tijdens recovery nog kleine gecontroleerde leertrades kan openen

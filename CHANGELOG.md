@@ -3,6 +3,9 @@
 ## Unreleased - 2026-03-11
 
 ### Added
+- Paper learning laat nu meerdere gelijktijdige paper probes en recovery-probes toe via een aparte concurrentielimiet, zodat paper niet meer effectief op nul open posities hoeft te wachten voor de volgende leercase.
+- Capital governor geeft paper nu expliciet recovery-leniency mee, zodat dashboard en risklogica zichtbaar maken dat paper tijdens recovery nog kleine leertrades mag openen terwijl normale entries geblokkeerd blijven.
+- Paper-learning runtime and dashboard views now expose `scopeCoaching` and a compact `reviewQueue`, so you can see the strongest scope, the weakest scope, and which probe/shadow/active-learning case deserves manual review first.
 - Paper-learning summaries now include compact `coaching` guidance, experiment-scope recommendations, and benchmark deltas versus the real probe lane so operators can see faster where paper is too strict, too loose, or ready for the next sandbox/probation step.
 - Paper-learning summaries now expose richer active-learning prioritization with focus scopes, candidate priority bands, and expanded benchmark baselines such as `always_take`, `fixed_threshold`, and `simple_exit`.
 - Counterfactual shadow review now compares extra branch paths (`market_entry`, `tighter_stop`, `longer_hold`) so blocked paper setups teach more than only baseline, smaller size, maker bias, and earlier exit.

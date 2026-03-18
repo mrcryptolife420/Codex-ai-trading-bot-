@@ -109,6 +109,7 @@ export function buildCapitalGovernor({
   const drawdownWatch = drawdownPct >= safeNumber(config.portfolioDrawdownBudgetPct, 0.05) * 0.85;
   const dailyBlock = dailyLossFraction >= safeNumber(config.maxDailyDrawdown, 0.04);
   const recoveryMode = dailyBlock || weeklyBlock || streakBlock || drawdownWatch;
+  const allowProbeEntries = botMode === "paper" && recoveryMode;
   const releaseReady = recoveryTrades.length >= safeNumber(config.capitalGovernorRecoveryTrades, 4) &&
     recoveryWinRate >= safeNumber(config.capitalGovernorRecoveryMinWinRate, 0.55) &&
     recoveryAveragePnl >= -0.0015;
@@ -133,6 +134,7 @@ export function buildCapitalGovernor({
     generatedAt: nowIso,
     status,
     allowEntries,
+    allowProbeEntries,
     recoveryMode,
     releaseReady,
     sizeMultiplier: num(sizeMultiplier),
@@ -154,7 +156,9 @@ export function buildCapitalGovernor({
         ? recoveryMode
           ? `Capital governor draait in recovery met ${num(sizeMultiplier * 100, 1)}% sizing.`
           : "Capital governor ziet geen extra allocatieblokkade."
-        : "Capital governor blokkeert nieuwe entries tot het verliesritme afneemt.",
+        : botMode === "paper" && allowProbeEntries
+          ? "Capital governor blokkeert normale entries, maar laat in paper nog kleine leertrades door."
+          : "Capital governor blokkeert nieuwe entries tot het verliesritme afneemt.",
       `Vandaag ${num(dailyLossFraction * 100, 2)}% verliesbudget gebruikt, 7d ${num(weeklyLossFraction * 100, 2)}%.`,
       redDayStreak
         ? `${redDayStreak} opeenvolgende rode dag(en) sturen de recovery-logica aan.`

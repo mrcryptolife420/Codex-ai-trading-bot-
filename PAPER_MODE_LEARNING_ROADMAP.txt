@@ -8,3 +8,6 @@
 [x] Add a compact paper coaching summary so the bot explains what worked, what was too strict, what was too loose, and what to review next.
 [x] Surface experiment scopes so paper clearly shows which family/regime/session combinations deserve the next sandbox or probation attention.
 [x] Make benchmark comparisons more actionable by showing lane deltas relative to the real probe lane instead of only naming the best lane.
+[x] Add a compact review queue so paper shows which probe, shadow case, or active-learning candidate deserves manual review first.
+[x] Add scope coaching so the strongest and weakest paper scopes are visible together with the next action.
+[x] Fix benchmark branch scoring so `simple_exit` and similar branch-based baselines use real counterfactual branch history.

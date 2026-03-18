@@ -852,6 +852,7 @@ export class RiskManager {
       active: Boolean(capitalGovernorSummary.status),
       status: capitalGovernorSummary.status || "warmup",
       blocked: capitalGovernorSummary.allowEntries === false,
+      allowProbeEntries: Boolean(capitalGovernorSummary.allowProbeEntries),
       recoveryMode: Boolean(capitalGovernorSummary.recoveryMode),
       sizeMultiplier: clamp(safeValue(capitalGovernorSummary.sizeMultiplier ?? 1), 0, 1),
       notes: [...(capitalGovernorSummary.notes || [])]
@@ -900,6 +901,9 @@ export class RiskManager {
   }) {
     const reasons = [];
     const openPositions = runtime.openPositions || [];
+    const openPositionsInMode = openPositions.filter((position) => matchesBrokerMode(position, this.config.botMode));
+    const paperLearningMaxConcurrentPositions = Math.max(1, Math.round(this.config.paperLearningMaxConcurrentPositions || 1));
+    const canOpenAnotherPaperLearningPosition = this.config.botMode !== "paper" || openPositionsInMode.length < paperLearningMaxConcurrentPositions;
     const baseThreshold = Math.max(this.config.modelThreshold, this.config.minModelConfidence);
     const optimizerAdjustments = this.getOptimizerAdjustments(strategySummary);
     const thresholdTuningAdjustment = this.getThresholdTuningAdjustment(thresholdTuningSummary, strategySummary, regimeSummary);
@@ -1372,7 +1376,7 @@ export class RiskManager {
       !allow &&
       this.config.botMode === "paper" &&
       this.config.paperExplorationEnabled &&
-      openPositions.length === 0 &&
+      canOpenAnotherPaperLearningPosition &&
       minutesSincePortfolioTrade >= effectivePaperExplorationCooldownMinutes &&
       reasons.length > 0 &&
       !reasons.includes("capital_governor_recovery") &&
@@ -1441,7 +1445,7 @@ export class RiskManager {
       !allow &&
       this.config.botMode === "paper" &&
       this.config.paperRecoveryProbeEnabled &&
-      openPositions.length === 0 &&
+      canOpenAnotherPaperLearningPosition &&
       minutesSincePortfolioTrade >= effectivePaperRecoveryCooldownMinutes &&
       reasons.some((reason) => ["capital_governor_blocked", "capital_governor_recovery"].includes(reason)) &&
       reasons.every((reason) => isPaperRecoveryProbeReason(reason) || isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&

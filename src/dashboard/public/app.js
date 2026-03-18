@@ -708,6 +708,7 @@ function renderLearning(snapshot) {
   const focusScopes = (paperLearning.activeLearning?.focusScopes || []).slice(0, 2);
   const benchmarkTags = (paperLearning.benchmarkLanes?.rankedLanes || []).slice(0, 3);
   const experimentScopes = (paperLearning.experimentScopes || []).slice(0, 3);
+  const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
   const reviewText = paperLearning.reviewPacks?.topMissedSetup
     ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
     : "Nog geen automatische review-pack beschikbaar.";
@@ -774,6 +775,20 @@ function renderLearning(snapshot) {
           <strong>${escapeHtml(titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"))}</strong>
           <span class="metric-foot">${escapeHtml(nextStep)}</span>
           <p class="learning-note">${escapeHtml(reviewText)}</p>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Scope coaching</span>
+          <strong>${escapeHtml(
+            paperLearning.scopeCoaching?.strongest?.id
+              ? titleize(paperLearning.scopeCoaching.strongest.id)
+              : "Nog geen sterke scope"
+          )}</strong>
+          <span class="metric-foot">${escapeHtml(
+            paperLearning.scopeCoaching?.strongest
+              ? `${titleize(paperLearning.scopeCoaching.strongest.action)} · ${formatPct(paperLearning.scopeCoaching.strongest.score || 0, 0)}`
+              : "Nog geen scope klaar voor sandbox of probation."
+          )}</span>
+          <p class="learning-note">${escapeHtml(paperLearning.scopeCoaching?.note || "De bot bouwt nog paper-scope coaching op.")}</p>
         </article>
       </section>
       <section class="learning-grid learning-grid-secondary">
@@ -859,6 +874,15 @@ function renderLearning(snapshot) {
               ? `${titleize(paperLearning.benchmarkLanes.bestLane)} staat nu het sterkst tegenover de echte probe-lane.`
               : "Nog geen duidelijke benchmarkvergelijking beschikbaar."
           )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Review queue</span>
+          <div class="tag-list">
+            ${reviewQueue.length
+              ? reviewQueue.map((item) => `<span class="tag ${item.priority === "high" ? "negative" : ""}">${escapeHtml(`${titleize(item.type)} · ${item.id}`)}</span>`).join("")
+              : `<span class="tag">Nog geen review</span>`}
+          </div>
+          <p>${escapeHtml(reviewQueue[0]?.note || "Nog geen duidelijke probe-, shadow- of active-learning case die als eerste review verdient.")}</p>
         </article>
       </section>
       <section class="learning-review-grid">

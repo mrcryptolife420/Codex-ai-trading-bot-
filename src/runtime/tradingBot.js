@@ -1963,6 +1963,21 @@ function summarizePaperLearning(summary = {}) {
       action: item.action || "observe",
       reason: item.reason || null
     })),
+    scopeCoaching: summary.scopeCoaching ? {
+      strongest: summary.scopeCoaching.strongest ? {
+        id: summary.scopeCoaching.strongest.id || null,
+        status: summary.scopeCoaching.strongest.status || "warmup",
+        score: num(summary.scopeCoaching.strongest.score || 0, 4),
+        action: summary.scopeCoaching.strongest.action || "observe"
+      } : null,
+      weakest: summary.scopeCoaching.weakest ? {
+        id: summary.scopeCoaching.weakest.id || null,
+        status: summary.scopeCoaching.weakest.status || "warmup",
+        score: num(summary.scopeCoaching.weakest.score || 0, 4),
+        action: summary.scopeCoaching.weakest.action || "observe"
+      } : null,
+      note: summary.scopeCoaching.note || null
+    } : null,
     benchmarkLanes: summary.benchmarkLanes ? {
       actualProbeWinRate: num(summary.benchmarkLanes.actualProbeWinRate || 0, 4),
       actualProbeAvgPnlPct: num(summary.benchmarkLanes.actualProbeAvgPnlPct || 0, 4),
@@ -2001,6 +2016,12 @@ function summarizePaperLearning(summary = {}) {
       tooLoose: summary.coaching.tooLoose || null,
       nextReview: summary.coaching.nextReview || null
     } : null,
+    reviewQueue: arr(summary.reviewQueue || []).slice(0, 4).map((item) => ({
+      type: item.type || null,
+      id: item.id || null,
+      priority: item.priority || "normal",
+      note: item.note || null
+    })),
     counterfactualBranches: summary.counterfactualBranches ? {
       topBranch: summary.counterfactualBranches.topBranch || null,
       branchCount: summary.counterfactualBranches.branchCount || 0,
@@ -4770,6 +4791,27 @@ export class TradingBot {
       .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index)
       .sort((left, right) => right.score - left.score)
       .slice(0, 4);
+    const scopeCoaching = {
+      strongest: scopeReadiness[0]
+        ? {
+            id: scopeReadiness[0].id,
+            status: scopeReadiness[0].status,
+            score: scopeReadiness[0].readinessScore || 0,
+            action: scopeReadiness[0].status === "paper_ready" ? "probation" : "sandbox"
+          }
+        : null,
+      weakest: scopeReadiness.length
+        ? {
+            id: scopeReadiness[scopeReadiness.length - 1].id,
+            status: scopeReadiness[scopeReadiness.length - 1].status,
+            score: scopeReadiness[scopeReadiness.length - 1].readinessScore || 0,
+            action: "collect_more_data"
+          }
+        : null,
+      note: scopeReadiness[0]
+        ? `${scopeReadiness[0].id} is nu het sterkst; ${scopeReadiness[scopeReadiness.length - 1]?.id || "andere scopes"} hebben nog meer leerdata nodig.`
+        : "Nog geen duidelijke scope-coaching beschikbaar."
+    };
     const activeLearning = {
       status: rankedActiveCandidates[0]?.score >= 0.65 ? "priority" : rankedActiveCandidates.length ? "observe" : "warmup",
       score: rankedActiveCandidates[0]?.score || avgActiveLearning || 0,
@@ -4780,6 +4822,20 @@ export class TradingBot {
         ? `${rankedActiveCandidates[0].symbol || "De top candidate"} is nu het meest informatieve leergeval door ${titleize(rankedActiveCandidates[0].reason || "active learning")}.`
         : "Nog geen uitgesproken active-learning kandidaat zichtbaar."
     };
+    const branchStats = new Map();
+    for (const item of counterfactuals) {
+      for (const branch of arr(item.branches || [])) {
+        const key = branch.id || branch.kind || "branch";
+        if (!branchStats.has(key)) {
+          branchStats.set(key, { id: key, winnerCount: 0, total: 0 });
+        }
+        const bucket = branchStats.get(key);
+        bucket.total += 1;
+        if (["winner", "small_winner"].includes(branch.outcome)) {
+          bucket.winnerCount += 1;
+        }
+      }
+    }
     const safeTrades = recentPaperTrades.filter((trade) => trade.learningLane === "safe");
     const actualProbeWinRate = recentProbeTrades.length
       ? recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length / recentProbeTrades.length
@@ -4813,7 +4869,8 @@ export class TradingBot {
     const fixedThresholdWinRate = fixedThresholdTrades.length
       ? fixedThresholdTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length / fixedThresholdTrades.length
       : 0;
-    let simpleExitWinRate = 0;
+    const simpleExitStats = branchStats.get("earlier_take_profit");
+    const simpleExitWinRate = simpleExitStats?.total ? simpleExitStats.winnerCount / simpleExitStats.total : 0;
     const expandedBenchmarkEntries = [
       ...benchmarkLaneEntries,
       { id: "always_take", score: alwaysTakeWinRate },
@@ -4941,22 +4998,32 @@ export class TradingBot {
           ? `Volgende focus: ${experimentScopes[0].id} via ${experimentScopes[0].action}.`
           : "Nog geen duidelijke volgende reviewfocus beschikbaar."
     };
-    const branchStats = new Map();
-    for (const item of counterfactuals) {
-      for (const branch of arr(item.branches || [])) {
-        const key = branch.id || branch.kind || "branch";
-        if (!branchStats.has(key)) {
-          branchStats.set(key, { id: key, winnerCount: 0, total: 0 });
-        }
-        const bucket = branchStats.get(key);
-        bucket.total += 1;
-        if (["winner", "small_winner"].includes(branch.outcome)) {
-          bucket.winnerCount += 1;
-        }
-      }
-    }
-    const simpleExitStats = branchStats.get("earlier_take_profit");
-    simpleExitWinRate = simpleExitStats?.total ? simpleExitStats.winnerCount / simpleExitStats.total : 0;
+    const reviewQueue = [
+      recentProbeReviews[0]
+        ? {
+            type: "probe_trade",
+            id: recentProbeReviews[0].symbol || recentProbeReviews[0].id || "probe",
+            priority: recentProbeReviews[0].outcome === "bad_trade" || recentProbeReviews[0].outcome === "early_exit" ? "high" : "normal",
+            note: recentProbeReviews[0].lesson || "Bekijk deze probe-trade opnieuw."
+          }
+        : null,
+      recentShadowReviews[0]
+        ? {
+            type: "shadow_case",
+            id: recentShadowReviews[0].symbol || recentShadowReviews[0].id || "shadow",
+            priority: recentShadowReviews[0].outcome === "bad_veto" ? "high" : "normal",
+            note: recentShadowReviews[0].lesson || "Bekijk deze shadow-case opnieuw."
+          }
+        : null,
+      rankedActiveCandidates[0]
+        ? {
+            type: "active_candidate",
+            id: rankedActiveCandidates[0].symbol || "candidate",
+            priority: rankedActiveCandidates[0].priorityBand === "high_priority" ? "high" : "normal",
+            note: `${rankedActiveCandidates[0].symbol || "Deze candidate"} is nu de meest informatieve active-learning case.`
+          }
+        : null
+    ].filter(Boolean);
     const topBranch = [...branchStats.values()]
       .map((item) => ({
         id: item.id,
@@ -4994,11 +5061,13 @@ export class TradingBot {
       paperToLiveReadiness,
       counterfactualTuning,
       activeLearning,
+      scopeCoaching,
       experimentScopes,
       benchmarkLanes,
       miscalibration,
       failureLibrary,
       coaching,
+      reviewQueue,
       counterfactualBranches,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)
