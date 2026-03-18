@@ -7116,6 +7116,47 @@ await runCheck("trading bot paper learning summary prefers specific shadow block
   assert.equal(summary.recentShadowReviews[0].bestBranch.id, "base");
 });
 
+await runCheck("trading bot paper learning summary prefers the newest shadow review per symbol", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    counterfactualQueue: [
+      {
+        id: "queued-shadow-newer",
+        symbol: "ETCUSDT",
+        brokerMode: "paper",
+        queuedAt: "2026-03-12T07:20:00.000Z",
+        blockerReasons: ["committee_veto"],
+        branchScenarios: [{ id: "maker_bias", kind: "execution" }]
+      }
+    ],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "resolved-shadow-older",
+        symbol: "ETCUSDT",
+        brokerMode: "paper",
+        resolvedAt: "2026-03-12T06:45:00.000Z",
+        outcome: "bad_veto",
+        blockerReasons: ["committee_veto"],
+        branches: [{ id: "base", outcome: "winner", adjustedMovePct: 0.029 }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.recentShadowReviews.length, 1);
+  assert.equal(summary.recentShadowReviews[0].symbol, "ETCUSDT");
+  assert.equal(summary.recentShadowReviews[0].outcome, "shadow_watch");
+  assert.equal(summary.recentShadowReviews[0].bestBranch.id, "maker_bias");
+  assert.ok(summary.reviewQueue.some((item) => item.type === "shadow_case" && item.id === "ETCUSDT"));
+});
+
 await runCheck("refresh analysis resolves counterfactual queue so shadow cases stay current", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {

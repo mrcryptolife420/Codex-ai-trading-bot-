@@ -2210,6 +2210,12 @@ function summarizeQueuedCounterfactualReview(item = {}) {
   };
 }
 
+function shadowReviewSortTime(item = {}) {
+  const at = item.resolvedAt || item.reviewedAt || item.queuedAt || item.dueAt || null;
+  const time = at ? new Date(at).getTime() : Number.NaN;
+  return Number.isFinite(time) ? time : 0;
+}
+
 function summarizeStrategyMeta(summary = {}) {
   return {
     preferredFamily: summary.preferredFamily || null,
@@ -4551,14 +4557,13 @@ export class TradingBot {
     const resolvedShadowReviews = counterfactuals
       .filter((item) => item.learningLane === "shadow" || arr(item.branches || []).length > 0)
       .slice(-6)
-      .reverse()
       .map((item) => summarizeCounterfactualReview(item));
     const queuedShadowReviews = arr(this.runtime?.counterfactualQueue || [])
       .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
       .slice(-6)
-      .reverse()
       .map((item) => summarizeQueuedCounterfactualReview(item));
     const recentShadowReviews = [...resolvedShadowReviews, ...queuedShadowReviews]
+      .sort((left, right) => shadowReviewSortTime(right) - shadowReviewSortTime(left))
       .filter((item, index, items) => item?.symbol && items.findIndex((entry) => entry?.symbol === item.symbol) === index)
       .slice(0, 6);
     const shadowLearningEvidence = [
