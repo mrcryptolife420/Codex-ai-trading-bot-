@@ -133,6 +133,7 @@ export async function runBacktest({ config, logger, symbol }) {
           quantity,
           notional: sizedFill.notional,
           totalCost,
+          entryFee: fee,
           stopLossPrice: executionPrice * (1 - pendingEntry.stopLossPct),
           takeProfitPrice: executionPrice * (1 + pendingEntry.takeProfitPct),
           maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
@@ -183,7 +184,7 @@ export async function runBacktest({ config, logger, symbol }) {
           plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
           latencyMs: config.backtestLatencyMs
         });
-        const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, requestedQuantity, position.quantity));
+        const executedQuantity = Math.max(0, Math.min(Number(fillEstimate.executedQuantity || 0), requestedQuantity, position.quantity));
         if (executedQuantity > 0 && executedQuantity < position.quantity) {
           const grossProceeds = executedQuantity * fillEstimate.fillPrice;
           const fee = grossProceeds * feeRate;
@@ -194,6 +195,7 @@ export async function runBacktest({ config, logger, symbol }) {
           position.quantity -= executedQuantity;
           position.totalCost -= allocatedCost;
           position.notional = position.entryPrice * position.quantity;
+          position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
           position.scaleOutCompletedAt = new Date(candle.closeTime).toISOString();
           position.scaleOutCount = (position.scaleOutCount || 0) + 1;
           position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct)));
@@ -241,15 +243,27 @@ export async function runBacktest({ config, logger, symbol }) {
           plan: exitPlan,
           latencyMs: config.backtestLatencyMs
         });
-        const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || normalizedSell.quantity, normalizedSell.quantity, position.quantity));
+        const originalQuantity = position.quantity;
+        const executedQuantity = Math.max(0, Math.min(Number(fillEstimate.executedQuantity || 0), normalizedSell.quantity, originalQuantity));
+        if (!executedQuantity) {
+          continue;
+        }
         const grossProceeds = executedQuantity * fillEstimate.fillPrice;
         const fee = grossProceeds * feeRate;
         const proceeds = grossProceeds - fee;
-        const proportion = executedQuantity / Math.max(position.quantity, 1e-9);
+        const proportion = executedQuantity / Math.max(originalQuantity, 1e-9);
         const allocatedCost = position.totalCost * proportion;
         const pnlQuote = proceeds - allocatedCost;
         const netPnlPct = allocatedCost ? pnlQuote / allocatedCost : 0;
         quoteFree += proceeds;
+        if (executedQuantity < originalQuantity) {
+          position.quantity -= executedQuantity;
+          position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+          position.notional = position.entryPrice * position.quantity;
+          position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
+          position.lastMarkedPrice = context.book.mid;
+          continue;
+        }
         const trade = {
           symbol,
           entryAt: new Date(position.entryTime).toISOString(),
@@ -279,7 +293,7 @@ export async function runBacktest({ config, logger, symbol }) {
             fillPrice: position.entryPrice,
             requestedQuoteAmount: position.requestedQuoteAmount,
             executedQuote: position.notional,
-            executedQuantity: position.quantity,
+            executedQuantity: originalQuantity,
             fillEstimate: position.entryFillEstimate,
             brokerMode: "backtest"
           }),
@@ -298,14 +312,7 @@ export async function runBacktest({ config, logger, symbol }) {
         };
         trades.push(trade);
         model.updateFromTrade(trade);
-        if (executedQuantity >= position.quantity) {
-          position = null;
-        } else {
-          position.quantity -= executedQuantity;
-          position.totalCost = Math.max(0, position.totalCost - allocatedCost);
-          position.notional = position.entryPrice * position.quantity;
-          position.lastMarkedPrice = context.book.mid;
-        }
+        position = null;
       }
     }
 
@@ -384,3 +391,7 @@ export async function runBacktest({ config, logger, symbol }) {
     ...report
   };
 }
+
+
+
+

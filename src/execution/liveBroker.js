@@ -1058,10 +1058,28 @@ export class LiveBroker {
       }
       const rules = this.symbolRules[position.symbol];
       const balance = assetMap[rules.baseAsset]?.total || 0;
-      if (balance < Math.min(position.quantity * 0.5, rules.minQty || position.quantity)) {
+      const runtimeQuantity = Number(position.quantity || 0);
+      const exchangeQuantity = normalizeQuantity(balance, rules, "floor", false) || 0;
+      const quantityTolerance = Math.max(rules.minQty || 0, 1e-9);
+      if (balance < Math.min(runtimeQuantity * 0.5, rules.minQty || runtimeQuantity)) {
         runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
         warnings.push({ symbol: position.symbol, issue: "runtime_position_missing_on_exchange" });
         continue;
+      }
+      if ((exchangeQuantity - runtimeQuantity) > quantityTolerance) {
+        position.reconcileRequired = true;
+        position.lifecycleState = "reconcile_required";
+        warnings.push({ symbol: position.symbol, issue: "position_quantity_mismatch", runtimeQuantity, exchangeQuantity });
+      } else if ((runtimeQuantity - exchangeQuantity) > quantityTolerance) {
+        const retainedRatio = exchangeQuantity / Math.max(runtimeQuantity, 1e-9);
+        position.quantity = exchangeQuantity;
+        position.totalCost = Math.max(0, (position.totalCost || 0) * retainedRatio);
+        position.notional = Math.max(0, (position.entryPrice || 0) * position.quantity);
+        position.entryFee = Math.max(0, (position.entryFee || 0) * retainedRatio);
+        if (position.protectiveOrderListId) {
+          this.clearProtectiveOrderState(position, "QUANTITY_ADJUSTED");
+        }
+        warnings.push({ symbol: position.symbol, issue: "position_quantity_reduced_to_exchange_balance", runtimeQuantity, exchangeQuantity });
       }
       if (position.protectiveOrderListId && !openOrderListIds.has(position.protectiveOrderListId)) {
         this.clearProtectiveOrderState(position, "UNKNOWN");
@@ -1183,7 +1201,9 @@ export class LiveBroker {
             "protective_order_for_recovered_position_failed",
             "protective_order_state_stale",
             "position_sync_failed",
-            "unmanaged_balance_detected"
+            "unmanaged_balance_detected",
+            "position_quantity_mismatch",
+            "position_quantity_reduced_to_exchange_balance"
           ].includes(warning.issue))
           .map((warning) => warning.symbol)
           .filter(Boolean)
@@ -1294,7 +1314,10 @@ export class LiveBroker {
       const order = settled.order;
       const trades = settled.trades;
       const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
-      const executedQty = Number(order.executedQty || requestedQuantity);
+      const executedQty = Math.max(0, Math.min(Number(order.executedQty || 0), requestedQuantity, originalQuantity));
+      if (!executedQty) {
+        throw new Error(`Scale-out order for ${position.symbol} returned no filled quantity.`);
+      }
       const quoteReceived = Number(order.cummulativeQuoteQty || 0);
       const averagePrice = executedQty ? quoteReceived / executedQty : marketSnapshot.book.bid;
       const fee = sumTradeCommissionsToQuote(trades, rules.baseAsset, rules.quoteAsset);
@@ -1470,3 +1493,4 @@ export class LiveBroker {
     }
   }
 }
+

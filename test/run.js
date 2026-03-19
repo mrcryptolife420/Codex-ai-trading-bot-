@@ -1812,6 +1812,74 @@ await runCheck("live broker rebuilds stale protection after an unfilled ALL_DONE
   assert.equal(runtime.openPositions[0].protectiveOrderStatus, "NEW");
 });
 
+await runCheck("live broker reconcile downsyncs quantity drift and rebuilds protection", async () => {
+  let rebuiltOrderListId = null;
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0.00600000", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOpenOrderLists() {
+      return [{ orderListId: 123 }];
+    },
+    async getOrderList() {
+      return { listStatusType: "EXEC_STARTED", orders: [{ orderId: 55 }] };
+    },
+    async placeOrderListOco() {
+      rebuiltOrderListId = 777;
+      return {
+        orderListId: rebuiltOrderListId,
+        listClientOrderId: "rebuild-qty-drift",
+        listStatusType: "NEW",
+        orders: [{ orderId: 91 }, { orderId: 92 }]
+      };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        protectiveOrderListId: 123,
+        protectiveListClientOrderId: "old-list",
+        protectiveOrders: [{ orderId: 55 }],
+        protectiveOrderStatus: "NEW",
+        brokerMode: "live",
+        operatorMode: "normal"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.equal(runtime.openPositions.length, 1);
+  assert.equal(runtime.openPositions[0].quantity, 0.006);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, rebuiltOrderListId);
+  assert.ok(Math.abs(runtime.openPositions[0].totalCost - 420.42) < 1e-9);
+  assert.ok(Math.abs(runtime.openPositions[0].entryFee - 0.42) < 1e-9);
+  assert.ok(reconciliation.warnings.some((item) => item.issue === "position_quantity_reduced_to_exchange_balance"));
+});
+
 await runCheck("live broker auto-flattens filled entries when protection setup fails", async () => {
   const placedSides = [];
   const client = {
@@ -2096,6 +2164,93 @@ await runCheck("live broker re-protects a position when scale-out submission fai
   assert.equal(runtime.openPositions[0].quantity, 0.01);
   assert.equal(Object.keys(runtime.orderLifecycle?.activeActions || {}).length, 0);
   assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "scale_out" && item.stage === "protected_after_error"));
+});
+
+await runCheck("live broker re-protects a position when scale-out fills zero quantity", async () => {
+  let rebuiltProtection = 0;
+  const client = {
+    async cancelOrderList() {
+      return { orderListId: 77, listStatusType: "ALL_DONE" };
+    },
+    async placeOrder() {
+      return {
+        orderId: 808,
+        status: "NEW",
+        executedQty: "0.00000000",
+        cummulativeQuoteQty: "0.00",
+        fills: []
+      };
+    },
+    async getOrder() {
+      return {
+        orderId: 808,
+        status: "CANCELED",
+        executedQty: "0.00000000",
+        cummulativeQuoteQty: "0.00"
+      };
+    },
+    async getMyTrades() {
+      return [];
+    },
+    async placeOrderListOco() {
+      rebuiltProtection += 1;
+      return {
+        orderListId: 991,
+        listClientOrderId: "reprotect-zero-fill",
+        orders: [{ orderId: 291 }, { orderId: 292 }],
+        listStatusType: "EXEC_STARTED"
+      };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        quantity: 0.01,
+        entryPrice: 70000,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        scaleOutTrailOffsetPct: 0.003,
+        protectiveOrderListId: 123,
+        protectiveOrders: [{ orderId: 11 }, { orderId: 12 }],
+        protectiveOrderStatus: "NEW",
+        executionPlan: { strategyId: "ema_trend", strategyType: "trend_following" },
+        operatorMode: "normal",
+        brokerMode: "live"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  await assert.rejects(
+    broker.scaleOutPosition({
+      position: runtime.openPositions[0],
+      rules,
+      marketSnapshot: { book: { bid: 71990, ask: 72010, mid: 72000, spreadBps: 2 } },
+      fraction: 0.4,
+      reason: "partial_take_profit",
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.positionSafeguarded, true);
+      assert.equal(error.message, "Scale-out order for BTCUSDT returned no filled quantity.");
+      return true;
+    }
+  );
+
+  assert.equal(rebuiltProtection, 1);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, 991);
+  assert.equal(runtime.openPositions[0].quantity, 0.01);
+  assert.equal(runtime.openPositions[0].scaleOutCount || 0, 0);
 });
 
 await runCheck("live broker recovery flatten rejects non-dust partial fills", async () => {
@@ -6022,6 +6177,89 @@ await runCheck("paper broker can scale out and keep the remainder open", async (
   assert.equal(position.scaleOutCount, 1);
 });
 
+await runCheck("paper broker rejects zero-fill scale-outs instead of booking them", async () => {
+  const broker = new (await import("../src/execution/paperBroker.js")).PaperBroker(makeConfig(), { warn() {}, info() {} });
+  const runtime = { openPositions: [], paperPortfolio: { quoteFree: 10000, feesPaid: 0, realizedPnl: 0 } };
+  const position = await broker.enterPosition({
+    symbol: "BTCUSDT",
+    quoteAmount: 900,
+    rules,
+    marketSnapshot: { book: { bid: 69990, ask: 70010, mid: 70000, spreadBps: 2 } },
+    decision: { stopLossPct: 0.02, takeProfitPct: 0.03, executionPlan: { entryStyle: "market", fallbackStyle: "none" }, regime: "trend" },
+    score: { probability: 0.7, regime: "trend" },
+    rawFeatures: { momentum_5: 1 },
+    strategySummary: { activeStrategy: "ema_trend" },
+    newsSummary: { sentimentScore: 0.1 },
+    runtime
+  });
+  broker.execution.simulatePaperFill = () => ({
+    fillPrice: 70500,
+    executedQuantity: 0,
+    executedQuote: 0,
+    completionRatio: 0,
+    makerFillRatio: 0,
+    takerFillRatio: 0,
+    workingTimeMs: 800,
+    notes: ["no_fill"]
+  });
+  await assert.rejects(
+    broker.scaleOutPosition({
+      position,
+      marketSnapshot: { book: { bid: 70500, mid: 70510, exitEstimate: { averagePrice: 70500 } } },
+      fraction: 0.4,
+      reason: "partial_take_profit",
+      runtime
+    }),
+    /returned no filled quantity/
+  );
+  assert.equal(position.scaleOutCount || 0, 0);
+  assert.ok(position.quantity > 0);
+});
+
+await runCheck("paper broker keeps remainder open on partial exit fills", async () => {
+  const broker = new (await import("../src/execution/paperBroker.js")).PaperBroker(makeConfig(), { warn() {}, info() {} });
+  const runtime = { openPositions: [], paperPortfolio: { quoteFree: 10000, feesPaid: 0, realizedPnl: 0 } };
+  const position = await broker.enterPosition({
+    symbol: "BTCUSDT",
+    quoteAmount: 900,
+    rules,
+    marketSnapshot: { book: { bid: 69990, ask: 70010, mid: 70000, spreadBps: 2 } },
+    decision: { stopLossPct: 0.02, takeProfitPct: 0.03, executionPlan: { entryStyle: "market", fallbackStyle: "none" }, regime: "trend" },
+    score: { probability: 0.7, regime: "trend" },
+    rawFeatures: { momentum_5: 1 },
+    strategySummary: { activeStrategy: "ema_trend" },
+    newsSummary: { sentimentScore: 0.1 },
+    runtime
+  });
+  const originalQuantity = position.quantity;
+  broker.execution.simulatePaperFill = () => ({
+    fillPrice: 70500,
+    executedQuantity: originalQuantity * 0.45,
+    executedQuote: originalQuantity * 0.45 * 70500,
+    completionRatio: 0.45,
+    makerFillRatio: 0,
+    takerFillRatio: 1,
+    workingTimeMs: 900,
+    notes: ["partial_fill"]
+  });
+  await assert.rejects(
+    broker.exitPosition({
+      position,
+      marketSnapshot: { book: { bid: 70500, mid: 70510, spreadBps: 2, exitEstimate: { averagePrice: 70500 } } },
+      reason: "risk_exit",
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.positionSafeguarded, true);
+      assert.ok(error.remainingQuantity > 0);
+      assert.ok(error.executedQuantity > 0);
+      return true;
+    }
+  );
+  assert.equal(runtime.openPositions.length, 1);
+  assert.ok(runtime.openPositions[0].quantity < originalQuantity);
+  assert.ok(runtime.paperPortfolio.realizedPnl !== 0);
+});
 await runCheck("paper broker persists learning lanes on positions and closed trades", async () => {
   const broker = new (await import("../src/execution/paperBroker.js")).PaperBroker(makeConfig(), { warn() {}, info() {} });
   const runtime = { openPositions: [], paperPortfolio: { quoteFree: 10000, feesPaid: 0, realizedPnl: 0 } };
@@ -7432,6 +7670,41 @@ await runCheck("trading bot getReport keeps full report metrics instead of dashb
   assert.equal(report.modes.paper.realizedPnl, 19);
 });
 
+await runCheck("trading bot status preserves research recorder and explainability snapshot fields", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.getDashboardSnapshot = async () => ({
+    overview: { mode: "paper", lastCycleAt: "2026-03-19T10:00:00.000Z", lastAnalysisAt: "2026-03-19T10:01:00.000Z", quoteFree: 900, equity: 1015 },
+    positions: [],
+    topDecisions: [],
+    health: { circuitOpen: false },
+    stream: { publicStreamConnected: true },
+    ai: {},
+    portfolio: {},
+    exchangeCapabilities: {},
+    exchange: {},
+    marketStructure: {},
+    qualityQuorum: {},
+    offlineTrainer: {},
+    strategyResearch: {},
+    calendar: {},
+    safety: {},
+    ops: { readiness: { status: "ready", reasons: [] } },
+    report: { tradeCount: 2 },
+    modelWeights: [],
+    research: { bestSymbol: "BTCUSDT" },
+    dataRecorder: { replayFrames: 3 },
+    explainability: { replays: [{ symbol: "BTCUSDT" }] },
+    promotionPipeline: { readyLevel: "guarded_live_probation" },
+    operatorDiagnostics: { status: "degraded" }
+  });
+  const status = await TradingBot.prototype.getStatus.call(bot);
+  assert.equal(status.research.bestSymbol, "BTCUSDT");
+  assert.equal(status.dataRecorder.replayFrames, 3);
+  assert.equal(status.explainability.replays[0].symbol, "BTCUSDT");
+  assert.equal(status.promotionPipeline.readyLevel, "guarded_live_probation");
+  assert.equal(status.operatorDiagnostics.status, "degraded");
+});
+
 await runCheck("research view falls back to persisted journal runs after restart", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = { researchLab: { lastRunAt: null, latestSummary: null } };
@@ -7455,6 +7728,132 @@ await runCheck("research view falls back to persisted journal runs after restart
   const view = TradingBot.prototype.buildResearchView.call(bot);
   assert.equal(view.bestSymbol, "BTCUSDT");
   assert.equal(view.realizedPnl, 182);
+});
+
+await runCheck("doctor surfaces replay explainability and recorder freshness checks", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const now = Date.now();
+  const isoAgo = (ms) => new Date(now - ms).toISOString();
+  bot.config = makeConfig({ dataRecorderEnabled: true, tradingIntervalSeconds: 60, botMode: "paper" });
+  bot.runtime = {
+    lastAnalysisAt: isoAgo(30_000),
+    lastPortfolioUpdateAt: isoAgo(15_000),
+    lastKnownBalance: 1000,
+    openPositions: [],
+    health: {},
+    ops: { alerts: { alerts: [] } },
+    selfHeal: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    offlineTrainer: {},
+    sourceReliability: {},
+    exchangeCapabilities: bot?.config?.exchangeCapabilities,
+    session: {},
+    marketSentiment: {},
+    onChainLite: {},
+    volatilityContext: {},
+    dataRecorder: {
+      lastRecordAt: isoAgo(5 * 60_000),
+      replayFrames: 1
+    },
+    replayChaos: { status: "watch", replayCoverage: 0.66, notes: ["watch replay drift"] }
+  };
+  bot.journal = {
+    trades: [
+      { id: "t1", symbol: "BTCUSDT", entryAt: "2026-03-19T09:00:00.000Z", exitAt: "2026-03-19T10:00:00.000Z", pnlQuote: 4, netPnlPct: 0.01, replayCheckpoints: [{ at: "2026-03-19T09:30:00.000Z", price: 65000 }] },
+      { id: "t2", symbol: "ETHUSDT", entryAt: "2026-03-19T09:10:00.000Z", exitAt: "2026-03-19T10:05:00.000Z", pnlQuote: -2, netPnlPct: -0.004, replayCheckpoints: [] },
+      { id: "t3", symbol: "SOLUSDT", entryAt: "2026-03-19T09:20:00.000Z", exitAt: "2026-03-19T10:10:00.000Z", pnlQuote: 3, netPnlPct: 0.006, replayCheckpoints: [{ at: "2026-03-19T09:45:00.000Z", price: 140 }] }
+    ],
+    scaleOuts: [],
+    blockedSetups: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: []
+  };
+  bot.broker = {
+    getBalance: async () => ({ quoteFree: 1000 }),
+    doctor: async () => ({ ok: true })
+  };
+  bot.health = { getStatus: () => ({ ok: true }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = { getCalibrationSummary: () => ({}), getDeploymentSummary: () => ({}) };
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  const freshRecorderSummary = { lastRecordAt: isoAgo(5_000), replayFrames: 2 };
+  bot.dataRecorder = { getSummary: () => freshRecorderSummary };
+  bot.buildResearchView = () => null;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.markReportDirty = TradingBot.prototype.markReportDirty;
+  bot.buildOperationalReadiness = () => ({ status: "ready", reasons: [] });
+  bot.buildDoctorChecks = TradingBot.prototype.buildDoctorChecks;
+  bot.buildTradeView = (trade) => trade;
+  bot.buildScaleOutView = (item) => item;
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.scanCandidatesReadOnly = async () => [];
+  bot.buildTradeReplayView = TradingBot.prototype.buildTradeReplayView;
+  bot.buildTradeReplayDigest = TradingBot.prototype.buildTradeReplayDigest;
+  const doctor = await bot.runDoctor();
+  assert.equal(doctor.replayChaos.status, "watch");
+  assert.equal(doctor.explainability.replays.length, 3);
+  assert.equal(doctor.dataRecorder.lastRecordAt, freshRecorderSummary.lastRecordAt);
+  assert.equal(doctor.checks.checks.find((item) => item.id === "data_recorder_fresh").passed, true);
+  assert.equal(doctor.checks.checks.find((item) => item.id === "trade_replay_coverage").passed, true);
+});
+
+await runCheck("safeRecordDataRecorder degrades recorder write failures into telemetry", async () => {
+  const warnings = [];
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = { dataRecorder: { lastRecordAt: "stale" } };
+  bot.journal = { events: [] };
+  bot.logger = { warn: (message, payload) => warnings.push({ message, payload }) };
+  bot.markReportDirty = () => {};
+  bot.dataRecorder = { getSummary: () => ({ lastRecordAt: "fresh", replayFrames: 4 }) };
+  bot.recordEvent = TradingBot.prototype.recordEvent;
+  const success = await TradingBot.prototype.safeRecordDataRecorder.call(bot, "research", async () => null);
+  assert.equal(success, true);
+  assert.equal(bot.runtime.dataRecorder.lastRecordAt, "fresh");
+  const failure = await TradingBot.prototype.safeRecordDataRecorder.call(bot, "cycle", async () => {
+    throw new Error("disk full");
+  });
+  assert.equal(failure, false);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].payload.action, "cycle");
+  assert.equal(bot.journal.events.at(-1).type, "data_recorder_write_failed");
+});
+
+await runCheck("data recorder tracks replay frames separately from snapshot manifests", async () => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-recorder-"));
+  const recorder = new DataRecorder({
+    runtimeDir,
+    config: makeConfig({ dataRecorderEnabled: true, dataRecorderRetentionDays: 21, dataRecorderColdRetentionDays: 90 }),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+  await recorder.init();
+  await recorder.recordSnapshotManifest({
+    at: "2026-03-19T12:00:00.000Z",
+    mode: "paper",
+    overview: { equity: 1000, quoteFree: 1000, openPositions: 0 },
+    ops: {},
+    report: {}
+  });
+  await recorder.recordTradeReplaySnapshot({
+    symbol: "BTCUSDT",
+    entryAt: "2026-03-19T11:00:00.000Z",
+    exitAt: "2026-03-19T12:05:00.000Z",
+    pnlQuote: 8,
+    netPnlPct: 0.01,
+    entryPrice: 65000,
+    exitPrice: 65600,
+    entryRationale: {},
+    replayCheckpoints: [{ at: "2026-03-19T11:30:00.000Z", price: 65300 }]
+  });
+  const summary = recorder.getSummary();
+  assert.equal(summary.snapshotFrames, 2);
+  assert.equal(summary.replayFrames, 1);
+  assert.equal(summary.snapshotFrames - summary.replayFrames, 1);
 });
 
 await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local-book universe", async () => {
@@ -7523,6 +7922,8 @@ await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local
       enabled: true,
       learningFrames: 8,
       decisionFrames: 14,
+      replayFrames: 1,
+      snapshotFrames: 2,
       newsFrames: 3,
       contextFrames: 2,
       datasetFrames: 1,
@@ -7691,6 +8092,80 @@ await runCheck("trading bot stores resolve notes and operator probe-only state",
   assert.equal(bot.runtime.probeOnly.enabled, true);
 });
 
+await runCheck("manageOpenPositions preserves protect_only and flags missing live protection", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "live", enableExchangeProtection: true, enableExitIntelligence: false, enableMarketSentimentContext: false, enableOnChainLiteContext: false, enableCrossTimeframeConsensus: false });
+  bot.config.symbolMetadata = {};
+  bot.runtime = {
+    openPositions: [
+      {
+        id: "pos-protect",
+        symbol: "BTCUSDT",
+        quantity: 1,
+        entryPrice: 100,
+        totalCost: 100,
+        stopLossPrice: 95,
+        highestPrice: 100,
+        lowestPrice: 95,
+        brokerMode: "live",
+        operatorMode: "protect_only",
+        lifecycleState: "protect_only",
+        manualReviewRequired: false,
+        reconcileRequired: false,
+        protectiveOrderListId: null
+      },
+      {
+        id: "pos-unprotected",
+        symbol: "ETHUSDT",
+        quantity: 1,
+        entryPrice: 100,
+        totalCost: 100,
+        stopLossPrice: 95,
+        highestPrice: 100,
+        lowestPrice: 95,
+        brokerMode: "live",
+        operatorMode: "normal",
+        lifecycleState: "open",
+        manualReviewRequired: false,
+        reconcileRequired: false,
+        protectiveOrderListId: null
+      }
+    ],
+    offlineTrainer: {},
+    sourceReliability: {}
+  };
+  bot.journal = { trades: [], scaleOuts: [], events: [] };
+  bot.symbolRules = {
+    BTCUSDT: { minQty: 0.0001, minNotional: 5 },
+    ETHUSDT: { minQty: 0.0001, minNotional: 5 }
+  };
+  bot.broker = { reconcileRuntime: async () => ({ closedTrades: [], recoveredPositions: [], warnings: [] }) };
+  bot.applyReconciliation = async () => {};
+  bot.getMarketSnapshot = async (symbol) => ({
+    symbol,
+    book: { mid: 100, spreadBps: 2, bookPressure: 0.1 },
+    market: {},
+    stream: {}
+  });
+  bot.news = { getSymbolSummary: async () => ({ riskScore: 0 }) };
+  bot.exchangeNotices = { getSymbolSummary: async () => ({ riskScore: 0 }) };
+  bot.calendar = { getSymbolSummary: async () => ({}) };
+  bot.marketStructure = { getSymbolSummary: async () => ({ signalScore: 0, riskScore: 0 }) };
+  bot.marketSentiment = { getSummary: async () => ({}) };
+  bot.onChainLite = { getSummary: async () => ({ stressScore: 0 }) };
+  bot.model = { inferRegime: () => ({ reasons: [] }), scoreExit: () => ({}) };
+  bot.risk = { evaluateExit: () => ({ updatedHigh: 100, updatedLow: 95, shouldScaleOut: false, shouldExit: false, exitPolicy: null }) };
+  bot.stream = { estimateFill: () => null, getSymbolStreamFeatures: () => ({}) };
+  bot.recordEvent = () => {};
+  bot.syncOrderLifecycleState = () => ({});
+  bot.logger = { warn() {} };
+  await TradingBot.prototype.manageOpenPositions.call(bot);
+  assert.equal(bot.runtime.openPositions[0].operatorMode, "protect_only");
+  assert.equal(bot.runtime.openPositions[0].lifecycleState, "protect_only");
+  assert.equal(bot.runtime.openPositions[1].operatorMode, "normal");
+  assert.equal(bot.runtime.openPositions[1].lifecycleState, "protection_pending");
+});
+
 await runCheck("trading bot diagnostics actions reset external feeds and keep audit history", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig();
@@ -7850,7 +8325,27 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   bot.rlPolicy = { getSummary: () => ({}) };
   bot.strategyOptimizer = { buildSnapshot: () => ({}) };
   bot.backupManager = { getSummary: () => ({ backupCount: 0 }) };
-  bot.dataRecorder = { getSummary: () => ({}) };
+  const freshDashboardRecorderSummary = {
+    schemaVersion: 6,
+    enabled: true,
+    learningFrames: 8,
+    decisionFrames: 14,
+    replayFrames: 5,
+    snapshotFrames: 7,
+    newsFrames: 3,
+    contextFrames: 2,
+    datasetFrames: 1,
+    archivedFiles: 4,
+    lineageCoverage: 0.81,
+    averageRecordQuality: 0.74,
+    latestRecordQuality: { kind: "learning", score: 0.77, tier: "medium" },
+    qualityByKind: [{ kind: "learning", count: 8, averageScore: 0.74, high: 2, medium: 5, low: 1 }],
+    sourceCoverage: [{ provider: "coindesk", count: 3, avgReliability: 0.82, avgFreshnessScore: 0.88, lastSeenAt: "2026-03-12T08:10:00.000Z", channels: [["news", 3]] }],
+    contextCoverage: [{ kind: "calendar", count: 2, avgCoverage: 0.71, avgConfidence: 0.66, avgRiskScore: 0.3, highImpactCount: 1, lastSeenAt: "2026-03-12T08:15:00.000Z", nextEventAt: "2026-03-12T13:30:00.000Z" }],
+    retention: { hotRetentionDays: 21, coldRetentionDays: 90, lastCompactionAt: "2026-03-12T08:00:00.000Z" },
+    lastRecordAt: "2026-03-12T10:00:00.000Z"
+  };
+  bot.dataRecorder = { getSummary: () => freshDashboardRecorderSummary };
   bot.health = { getStatus: () => ({}) };
   bot.stream = { getStatus: () => ({}) };
   bot.maybeRunExchangeTruthLoop = async () => null;
@@ -7867,6 +8362,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
       enabled: true,
       learningFrames: 8,
       decisionFrames: 14,
+      replayFrames: 1,
+      snapshotFrames: 2,
       newsFrames: 3,
       contextFrames: 2,
       datasetFrames: 1,
@@ -7947,6 +8444,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
   assert.equal(snapshot.ops.paperLearning.status, "active");
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
+  assert.equal(snapshot.dataRecorder.replayFrames, 5);
   assert.equal(snapshot.sourceReliability.externalFeeds.providerCount, 1);
   assert.equal(snapshot.sourceReliability.externalFeeds.providers[0].group, "calendar");
   assert.equal(snapshot.operatorDiagnostics.counts.blocked, 0);
@@ -10287,24 +10785,6 @@ await runCheck("performance report exposes trade quality review and scorecards",
 });
 
 console.log("All checks passed.");
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

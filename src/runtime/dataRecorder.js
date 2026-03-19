@@ -698,6 +698,7 @@ export class DataRecorder {
       learningFrames: 0,
       researchFrames: 0,
       snapshotFrames: 0,
+      replayFrames: 0,
       newsFrames: 0,
       contextFrames: 0,
       datasetFrames: 0,
@@ -757,6 +758,7 @@ export class DataRecorder {
       learningFrames: fileTruthCounts.learning || 0,
       researchFrames: fileTruthCounts.research || 0,
       snapshotFrames: fileTruthCounts.snapshots || 0,
+      replayFrames: safeStateNumber(restored.replayFrames, this.state.replayFrames),
       newsFrames: fileTruthCounts.news || 0,
       contextFrames: fileTruthCounts.contexts || 0,
       datasetFrames: fileTruthCounts.datasets || 0,
@@ -1031,6 +1033,7 @@ export class DataRecorder {
     };
     await this.write("snapshots", at, payload);
     this.state.snapshotFrames += 1;
+    this.state.replayFrames += 1;
     return payload;
   }
 
@@ -1399,6 +1402,7 @@ export class DataRecorder {
     const rebuiltSourceCoverage = newsRecords.reduce((current, payload) => updateSourceCoverage(current, payload), {});
     const rebuiltContextCoverage = contextRecords.reduce((current, payload) => updateContextCoverage(current, payload), {});
     const rebuiltQualityState = summarizeQualityStateFromRecords(qualityRecords);
+    const replayFrames = qualityRecords.filter((item) => item?.frameType === "trade_replay").length;
     this.state = {
       ...this.state,
       filesWritten: Object.values(counts).reduce((total, value) => total + (value || 0), 0),
@@ -1408,6 +1412,7 @@ export class DataRecorder {
       learningFrames: counts.learning || 0,
       researchFrames: counts.research || 0,
       snapshotFrames: counts.snapshots || 0,
+      replayFrames,
       newsFrames: counts.news || 0,
       contextFrames: counts.contexts || 0,
       datasetFrames: counts.datasets || 0,

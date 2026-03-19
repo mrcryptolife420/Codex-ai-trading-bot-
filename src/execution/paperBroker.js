@@ -320,7 +320,10 @@ export class PaperBroker {
       latencyMs: this.config.paperLatencyMs,
       calibration: resolveExecutionCalibration(runtime, exitPlan)
     });
-    const executedQuantity = fillEstimate.executedQuantity || quantity;
+    const executedQuantity = Math.max(0, Math.min(Number(fillEstimate.executedQuantity || 0), quantity, position.quantity));
+    if (!executedQuantity) {
+      throw new Error(`Paper scale-out for ${position.symbol} returned no filled quantity.`);
+    }
     const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.bid;
     const grossProceeds = executedQuantity * executionPrice;
     const fee = grossProceeds * this.feeRate;
@@ -392,13 +395,18 @@ export class PaperBroker {
       latencyMs: this.config.paperLatencyMs,
       calibration: resolveExecutionCalibration(runtime, exitPlan)
     });
-    const executedQuantity = fillEstimate.executedQuantity || position.quantity;
+    const originalQuantity = Number(position.quantity || 0);
+    const executedQuantity = Math.max(0, Math.min(Number(fillEstimate.executedQuantity || 0), originalQuantity));
+    if (!executedQuantity) {
+      throw new Error(`Paper exit for ${position.symbol} returned no filled quantity.`);
+    }
     const executionPrice = fillEstimate.fillPrice || marketSnapshot.book.bid;
     const grossProceeds = executedQuantity * executionPrice;
     const fee = grossProceeds * this.feeRate;
     const netProceeds = grossProceeds - fee;
-    const pnlQuote = netProceeds - position.totalCost;
-    const netPnlPct = position.totalCost ? pnlQuote / position.totalCost : 0;
+    const allocatedCost = position.totalCost * (executedQuantity / Math.max(originalQuantity, 1e-9));
+    const pnlQuote = netProceeds - allocatedCost;
+    const netPnlPct = allocatedCost ? pnlQuote / allocatedCost : 0;
     const captureEfficiency = position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0;
     const mfePct = position.entryPrice
       ? Math.max(0, (position.highestPrice - position.entryPrice) / position.entryPrice)
@@ -432,7 +440,21 @@ export class PaperBroker {
     runtime.paperPortfolio.quoteFree += netProceeds;
     runtime.paperPortfolio.feesPaid += fee;
     runtime.paperPortfolio.realizedPnl += pnlQuote;
-    runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+    if (executedQuantity >= originalQuantity) {
+      runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+    } else {
+      const remainingQuantity = Math.max(0, originalQuantity - executedQuantity);
+      position.quantity = remainingQuantity;
+      position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+      position.notional = position.entryPrice * position.quantity;
+      position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * (executedQuantity / Math.max(originalQuantity, 1e-9)));
+      position.lastMarkedPrice = marketSnapshot.book.mid || position.lastMarkedPrice;
+      const partialExitError = new Error(`Paper exit for ${position.symbol} partially filled; ${remainingQuantity} remains open.`);
+      partialExitError.positionSafeguarded = true;
+      partialExitError.remainingQuantity = remainingQuantity;
+      partialExitError.executedQuantity = executedQuantity;
+      throw partialExitError;
+    }
 
     return {
       id: position.id,
@@ -442,7 +464,7 @@ export class PaperBroker {
       entryPrice: position.entryPrice,
       exitPrice: executionPrice,
       quantity: executedQuantity,
-      totalCost: position.totalCost,
+      totalCost: allocatedCost,
       proceeds: netProceeds,
       pnlQuote,
       netPnlPct,
@@ -482,3 +504,4 @@ export class PaperBroker {
     };
   }
 }
+

@@ -1413,11 +1413,26 @@ function renderDiagnostics(snapshot) {
 
 function renderExplainability(snapshot) {
   const explainability = snapshot?.dashboard?.explainability || {};
+  const replayChaos = snapshot?.dashboard?.ops?.replayChaos || explainability.replayChaos || {};
+  const replayPlan = replayChaos.deterministicReplayPlan || {};
+  const dataRecorder = snapshot?.dashboard?.dataRecorder || {};
+  const research = snapshot?.dashboard?.research || {};
   const decisions = explainability.decisions || [];
   const replays = explainability.replays || [];
   if (!elements.explainabilityList) {
     return;
   }
+  const recorderQuality = dataRecorder.latestRecordQuality || {};
+  const recorderFoot = [
+    `${dataRecorder.replayFrames || 0} replays`,
+    `${dataRecorder.snapshotManifestFrames || 0} manifests`,
+    dataRecorder.lastRecordAt ? formatDate(dataRecorder.lastRecordAt) : null
+  ].filter(Boolean).join(" | ");
+  const researchFoot = [
+    `${research.totalTrades || 0} trades`,
+    research.averageSharpe != null ? `Sharpe ${number(research.averageSharpe, 2)}` : null,
+    research.generatedAt ? formatDate(research.generatedAt) : null
+  ].filter(Boolean).join(" | ");
   const items = [
     makeKeyValueCard({
       className: "risk-card",
@@ -1425,6 +1440,36 @@ function renderExplainability(snapshot) {
       value: `${decisions.length} decisions`,
       foot: explainability.note || "Nog geen explainability-data.",
       valueClassName: decisions.length ? "positive" : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Replay chaos",
+      value: titleize(replayChaos.status || replayPlan.status || "idle"),
+      foot: replayPlan.operatorGoal
+        || [
+          replayChaos.replayCoverage != null ? `Coverage ${formatPct(replayChaos.replayCoverage, 0)}` : null,
+          replayPlan.nextPackType ? `Next ${titleize(replayPlan.nextPackType)}` : null
+        ].filter(Boolean).join(" | ")
+        || "Nog geen replay-prioriteit actief.",
+      valueClassName: statusTone(replayChaos.status || replayPlan.status || "idle")
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Recorder",
+      value: dataRecorder.enabled === false
+        ? "Uit"
+        : `${dataRecorder.replayFrames || 0} replays`,
+      foot: recorderFoot || "Nog geen recorder-activiteit zichtbaar.",
+      valueClassName: dataRecorder.enabled === false
+        ? "neutral"
+        : statusTone(recorderQuality.tier || (dataRecorder.averageRecordQuality >= 0.7 ? "ready" : "watch"))
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Research",
+      value: research.bestSymbol || `${research.symbolCount || 0} symbols`,
+      foot: researchFoot || "Nog geen recente research-run zichtbaar.",
+      valueClassName: research.bestSymbol || research.symbolCount ? "positive" : "neutral"
     })
   ];
   const decisionCards = decisions.length
@@ -1948,3 +1993,4 @@ async function init() {
 }
 
 init();
+

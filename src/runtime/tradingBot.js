@@ -2773,6 +2773,8 @@ function summarizeCapitalPolicy({ capitalLadder = {}, capitalGovernor = {} } = {
 }
 
 function summarizeDataRecorder(summary = {}) {
+  const replayFrames = summary.replayFrames || 0;
+  const snapshotFrames = summary.snapshotFrames || 0;
   return {
     schemaVersion: summary.schemaVersion || null,
     enabled: Boolean(summary.enabled),
@@ -2783,7 +2785,9 @@ function summarizeDataRecorder(summary = {}) {
     tradeFrames: summary.tradeFrames || 0,
     learningFrames: summary.learningFrames || 0,
     researchFrames: summary.researchFrames || 0,
-    snapshotFrames: summary.snapshotFrames || 0,
+    snapshotFrames,
+    replayFrames,
+    snapshotManifestFrames: Math.max(0, snapshotFrames - replayFrames),
     newsFrames: summary.newsFrames || 0,
     contextFrames: summary.contextFrames || 0,
     datasetFrames: summary.datasetFrames || 0,
@@ -3185,6 +3189,12 @@ export class TradingBot {
     const portfolioAgeMs = this.runtime.lastPortfolioUpdateAt ? now.getTime() - new Date(this.runtime.lastPortfolioUpdateAt).getTime() : Number.POSITIVE_INFINITY;
     const balanceDelta = Math.abs((balance?.quoteFree || 0) - (this.runtime.lastKnownBalance || 0));
     const ackAlerts = arr(this.runtime.ops?.alerts?.alerts || []).filter((item) => requiresOperatorAck(item, this.config.botMode));
+    const dataRecorderSummary = this.dataRecorder.getSummary();
+    const dataRecorderAgeMs = dataRecorderSummary?.lastRecordAt ? now.getTime() - new Date(dataRecorderSummary.lastRecordAt).getTime() : Number.POSITIVE_INFINITY;
+    const recentClosedTrades = arr(this.journal.trades || []).slice(-12);
+    const replayCoverage = recentClosedTrades.length
+      ? recentClosedTrades.filter((trade) => arr(trade.replayCheckpoints || []).length > 0).length / recentClosedTrades.length
+      : 1;
     const checks = [
       {
         id: "analysis_fresh",
@@ -3221,6 +3231,22 @@ export class TradingBot {
         passed: Number.isFinite(report.openExposure || 0),
         severity: "high",
         detail: `Open exposure ${num(report.openExposure || 0, 2)} USD.`
+      },
+      {
+        id: "data_recorder_fresh",
+        passed: !this.config.dataRecorderEnabled || (Number.isFinite(dataRecorderAgeMs) && dataRecorderAgeMs <= thresholdMs * 2),
+        severity: "medium",
+        detail: !this.config.dataRecorderEnabled
+          ? "Data recorder uitgeschakeld."
+          : dataRecorderSummary?.lastRecordAt
+            ? `Laatste recorder-frame ${Math.round(dataRecorderAgeMs / 1000)}s geleden.`
+            : "Nog geen data-recorder frames beschikbaar."
+      },
+      {
+        id: "trade_replay_coverage",
+        passed: recentClosedTrades.length < 3 || replayCoverage >= 0.5,
+        severity: "low",
+        detail: `${Math.round(replayCoverage * 100)}% replay coverage over ${recentClosedTrades.length} recente trades.`
       },
       {
         id: "preview_candidates_available",
@@ -3878,6 +3904,18 @@ export class TradingBot {
     this.markReportDirty();
   }
 
+  async safeRecordDataRecorder(action, write) {
+    try {
+      await write();
+      this.runtime.dataRecorder = this.dataRecorder.getSummary();
+      return true;
+    } catch (error) {
+      this.logger.warn("Data recorder write failed", { action, error: error.message });
+      this.recordEvent("data_recorder_write_failed", { action, error: error.message });
+      return false;
+    }
+  }
+
   resetExecutionPolicy(reason = "self_heal") {
     this.rlPolicy = new ReinforcementExecutionPolicy(undefined, this.config);
     this.runtime.executionPolicyState = null;
@@ -4116,15 +4154,6 @@ export class TradingBot {
       journal: this.journal,
       nowIso: referenceNow
     }));
-    void this.dataRecorder.recordDatasetCuration({
-      at: referenceNow,
-      journal: this.journal,
-      newsCache: this.runtime.newsCache || {},
-      sourceReliability: this.runtime.sourceReliability || {},
-      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
-    }).catch((error) => {
-      this.logger.warn("Dataset curation record failed", { error: error.message });
-    });
     this.runtime.capitalLadder = summarizeCapitalLadder(this.capitalLadder.buildSnapshot({
       botMode: this.config.botMode,
       modelRegistry: this.runtime.modelRegistry || {},
@@ -4139,6 +4168,17 @@ export class TradingBot {
     this.updateThresholdTuningState(offlineTrainerSummary, referenceNow);
     this.syncOrderLifecycleState("governance_refresh");
     this.refreshOperationalViews({ report, nowIso: referenceNow });
+    void this.dataRecorder.recordDatasetCuration({
+      at: referenceNow,
+      journal: this.journal,
+      newsCache: this.runtime.newsCache || {},
+      sourceReliability: this.runtime.sourceReliability || {},
+      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
+    }).then(() => {
+      this.runtime.dataRecorder = this.dataRecorder.getSummary();
+    }).catch((error) => {
+      this.logger.warn("Dataset curation record failed", { error: error.message });
+    });
     return { report, rawResearchRegistry, rawStrategyResearch, divergenceSummary, offlineTrainerSummary, executionCalibration, parameterGovernor };
   }
 
@@ -7002,9 +7042,9 @@ export class TradingBot {
       this.maybeCaptureStableModelSnapshot(learning.promotion ? "promotion_snapshot" : "post_trade_snapshot", undefined, Boolean(learning.promotion));
     }
 
-    await this.dataRecorder.recordTrade(trade);
-    await this.dataRecorder.recordTradeReplaySnapshot(trade);
-    await this.dataRecorder.recordLearningEvent({ trade, learning });
+    await this.safeRecordDataRecorder("trade", async () => this.dataRecorder.recordTrade(trade));
+    await this.safeRecordDataRecorder("trade_replay", async () => this.dataRecorder.recordTradeReplaySnapshot(trade));
+    await this.safeRecordDataRecorder("learning_event", async () => this.dataRecorder.recordLearningEvent({ trade, learning }));
     this.refreshGovernanceViews(nowIso());
 
     this.logger.info(logLabel, {
@@ -8132,9 +8172,17 @@ export class TradingBot {
         position.lastReviewedAt = nowIso();
         if (!position.manualReviewRequired && !position.reconcileRequired) {
           position.managementFailureCount = 0;
-          position.operatorMode = "normal";
-          if (!position.lifecycleState || ["protect_only", "manual_review", "reconcile_required"].includes(position.lifecycleState)) {
-            position.lifecycleState = position.protectiveOrderListId ? "protected" : ((position.brokerMode || this.config.botMode) === "live" ? "open" : "simulated_open");
+          const brokerMode = position.brokerMode || this.config.botMode;
+          const protectionMissing = brokerMode === "live" && this.config.enableExchangeProtection && !position.protectiveOrderListId;
+          if (position.operatorMode === "protect_only") {
+            position.lifecycleState = "protect_only";
+          } else {
+            position.operatorMode = "normal";
+            if (protectionMissing) {
+              position.lifecycleState = "protection_pending";
+            } else if (!position.lifecycleState || ["protect_only", "manual_review", "reconcile_required", "protection_pending"].includes(position.lifecycleState)) {
+              position.lifecycleState = position.protectiveOrderListId ? "protected" : (brokerMode === "live" ? "open" : "simulated_open");
+            }
           }
         }
         if (exitDecision.shouldScaleOut) {
@@ -8827,11 +8875,17 @@ export class TradingBot {
   async runResearch(options = {}) {
     const symbols = (options.symbols || []).map((symbol) => `${symbol}`.trim().toUpperCase()).filter(Boolean);
     const result = await runResearchLab({ config: this.config, logger: this.logger, symbols });
-    const fetchedCandidates = await this.strategyResearchMiner.fetchWhitelistedCandidates();
     this.runtime.researchLab = {
       lastRunAt: result.generatedAt,
       latestSummary: result
     };
+    let fetchedCandidates = [];
+    try {
+      fetchedCandidates = await this.strategyResearchMiner.fetchWhitelistedCandidates();
+    } catch (error) {
+      this.logger.warn("Strategy research imports failed", { error: error.message });
+      this.recordEvent("strategy_research_import_failed", { error: error.message });
+    }
     if (fetchedCandidates.length) {
       this.runtime.strategyResearch = this.strategyResearchMiner.buildSummary({
         journal: this.journal,
@@ -8846,8 +8900,8 @@ export class TradingBot {
     }
     this.journal.researchRuns.push(result);
     this.markReportDirty();
-    await this.dataRecorder.recordResearch(result);
-    this.refreshGovernanceViews(nowIso());
+    await this.safeRecordDataRecorder("research", async () => this.dataRecorder.recordResearch(result));
+    this.refreshGovernanceViews(result.generatedAt);
     this.recordEvent("research_run_completed", {
       symbolCount: result.symbolCount,
       bestSymbol: result.bestSymbol,
@@ -8921,8 +8975,8 @@ export class TradingBot {
       watchdogStatus: "running"
     };
     const governance = this.refreshGovernanceViews(cycleAt);
-    await this.dataRecorder.recordDecisions({ at: cycleAt, candidates });
-    await this.dataRecorder.recordCycle({
+    await this.safeRecordDataRecorder("decisions", async () => this.dataRecorder.recordDecisions({ at: cycleAt, candidates }));
+    await this.safeRecordDataRecorder("cycle", async () => this.dataRecorder.recordCycle({
       at: cycleAt,
       mode: this.config.botMode,
       candidates,
@@ -8940,8 +8994,8 @@ export class TradingBot {
       },
       marketSentiment: this.runtime.marketSentiment,
       volatility: this.runtime.volatilityContext
-    });
-    await this.dataRecorder.recordSnapshotManifest({
+    }));
+    await this.safeRecordDataRecorder("snapshot_manifest", async () => this.dataRecorder.recordSnapshotManifest({
       at: cycleAt,
       mode: this.config.botMode,
       candidates,
@@ -8958,14 +9012,14 @@ export class TradingBot {
         capitalGovernor: this.runtime.capitalGovernor || {}
       },
       report: governance.report || {}
-    });
-    await this.dataRecorder.recordDatasetCuration({
+    }));
+    await this.safeRecordDataRecorder("dataset_curation", async () => this.dataRecorder.recordDatasetCuration({
       at: cycleAt,
       journal: this.journal,
       newsCache: this.runtime.newsCache || {},
       sourceReliability: this.runtime.sourceReliability || {},
       paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
-    });
+    }));
     await this.dispatchOperatorAlerts(cycleAt);
     await this.backupManager.maybeBackup({
       runtime: this.runtime,
@@ -10155,6 +10209,7 @@ export class TradingBot {
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
+      replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       sourceReliability: this.buildSourceReliabilitySnapshot(),
       exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       session: summarizeSession(this.runtime.session || {}),
@@ -10162,11 +10217,15 @@ export class TradingBot {
       onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
       volatility: summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT),
       stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
-      dataRecorder: summarizeDataRecorder(this.runtime.dataRecorder || this.dataRecorder.getSummary()),
+      dataRecorder: summarizeDataRecorder(this.dataRecorder.getSummary()),
       readiness: this.buildOperationalReadiness(),
       checks,
       report: this.buildPublicReportView(report),
       research: this.buildResearchView(),
+      explainability: {
+        replays: arr(report.recentTrades || []).slice(0, 3).map((trade) => this.buildTradeReplayDigest(this.buildTradeReplayView(trade))),
+        replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {})
+      },
       universe: summarizeUniverseSelection(this.runtime.universe || {}),
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
@@ -10183,7 +10242,7 @@ export class TradingBot {
     const fullPositions = this.runtime.openPositions.map((position) => this.buildPositionView(position));
     const positions = fullPositions.map((position) => this.buildDashboardPositionView(position));
     const totalUnrealizedPnl = fullPositions.reduce((total, position) => total + position.unrealizedPnl, 0);
-    const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    const report = this.getPerformanceReport();
     const fullTopDecisions = arr(this.runtime.latestDecisions).slice(0, this.config.dashboardDecisionLimit || 12);
     const fullBlockedSetups = arr(this.runtime.latestBlockedSetups).slice(0, this.config.dashboardDecisionLimit || 12);
     const topDecision = fullTopDecisions[0] || {};
@@ -10338,7 +10397,7 @@ export class TradingBot {
       research: this.buildResearchView(),
       strategyResearch: summarizeStrategyResearch(this.runtime.strategyResearch || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
-      dataRecorder: summarizeDataRecorder(this.runtime.dataRecorder || this.dataRecorder.getSummary()),
+      dataRecorder: summarizeDataRecorder(this.dataRecorder.getSummary()),
       report: {
         tradeQualityReview: report.tradeQualityReview || null,
         recentReviews: arr(report.recentReviews || []).slice(0, 12),
@@ -10430,6 +10489,11 @@ export class TradingBot {
       qualityQuorum: dashboard.qualityQuorum,
       offlineTrainer: dashboard.offlineTrainer,
       strategyResearch: dashboard.strategyResearch,
+      research: dashboard.research,
+      dataRecorder: dashboard.dataRecorder,
+      explainability: dashboard.explainability,
+      promotionPipeline: dashboard.promotionPipeline,
+      operatorDiagnostics: dashboard.operatorDiagnostics,
       calendar: dashboard.calendar,
       safety: dashboard.safety,
       ops: dashboard.ops,
@@ -10446,3 +10510,4 @@ export class TradingBot {
     return this.buildPublicReportView(this.getPerformanceReport());
   }
 }
+
