@@ -22,7 +22,7 @@ import { ReferenceVenueService } from "../market/referenceVenueService.js";
 import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
 import { ParameterGovernor } from "../ai/parameterGovernor.js";
-import { StateStore } from "../storage/stateStore.js";
+import { StateStore, migrateJournal, migrateRuntime } from "../storage/stateStore.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { DataRecorder } from "./dataRecorder.js";
 import { ModelRegistry } from "./modelRegistry.js";
@@ -3052,6 +3052,10 @@ function buildHealth() {
   };
 }
 
+function isCorruptStateLoadError(error) {
+  return error instanceof SyntaxError || error?.name === "SyntaxError";
+}
+
 export class TradingBot {
   constructor({ config, logger }) {
     this.config = config;
@@ -3128,6 +3132,79 @@ export class TradingBot {
     }
   }
 
+  buildRecoveredStateBundle(backup = null, sourceError = null) {
+    const restoredAt = backup?.at || nowIso();
+    const payload = backup?.payload || {};
+    const hasRecoverableState = payload && typeof payload === "object" && (payload.runtime || payload.journal || payload.modelState);
+    if (!hasRecoverableState) {
+      const error = new Error("Geen geldige state-backup beschikbaar voor herstel.");
+      error.cause = sourceError || null;
+      throw error;
+    }
+    const runtime = migrateRuntime(payload.runtime || clone(DEFAULT_RUNTIME));
+    const journal = migrateJournal(payload.journal || clone(DEFAULT_JOURNAL));
+    const modelState = payload.modelState && typeof payload.modelState === "object"
+      ? payload.modelState
+      : structuredClone(DEFAULT_MODEL);
+    const modelBackups = arr(payload.modelBackups || []);
+    runtime.recovery = {
+      ...(runtime.recovery || {}),
+      uncleanShutdownDetected: true,
+      restoredFromBackupAt: restoredAt,
+      latestBackupAt: restoredAt
+    };
+    runtime.stateBackups = {
+      ...(runtime.stateBackups || {}),
+      restoredFromBackupAt: restoredAt,
+      lastBackupAt: restoredAt
+    };
+    journal.events = arr(journal.events);
+    journal.events.push({
+      at: restoredAt,
+      type: "state_restored_from_backup",
+      reason: sourceError?.message || "corrupt_primary_state"
+    });
+    return {
+      runtime,
+      journal,
+      modelState,
+      modelBackups,
+      restoredFromBackupAt: restoredAt
+    };
+  }
+
+  async loadPersistedStateWithBackupFallback() {
+    try {
+      return {
+        runtime: await this.store.loadRuntime(),
+        modelBackups: arr(await this.store.loadModelBackups()),
+        journal: await this.store.loadJournal(),
+        modelState: await this.store.loadModel(),
+        restoredFromBackupAt: null
+      };
+    } catch (error) {
+      if (!isCorruptStateLoadError(error)) {
+        throw error;
+      }
+      this.logger?.warn?.("Primary state load failed, attempting backup restore", {
+        error: error.message
+      });
+      const backup = await this.backupManager.loadLatestBackup();
+      const recovered = this.buildRecoveredStateBundle(backup, error);
+      try {
+        await this.store.saveRuntime(recovered.runtime);
+        await this.store.saveJournal(recovered.journal);
+        await this.store.saveModel(recovered.modelState);
+        await this.store.saveModelBackups(recovered.modelBackups);
+      } catch (persistError) {
+        this.logger?.warn?.("Recovered state could not be persisted immediately", {
+          error: persistError.message
+        });
+      }
+      return recovered;
+    }
+  }
+
   async init() {
     const validation = assertValidConfig(this.config);
     for (const warning of validation.warnings) {
@@ -3135,7 +3212,9 @@ export class TradingBot {
     }
 
     await this.store.init();
-    this.runtime = await this.store.loadRuntime();
+    await this.backupManager.init(null);
+    const persistedState = await this.loadPersistedStateWithBackupFallback();
+    this.runtime = persistedState.runtime;
     this.runtime.openPositions = arr(this.runtime.openPositions);
     this.runtime.latestDecisions = arr(this.runtime.latestDecisions);
     this.runtime.newsCache = this.runtime.newsCache || {};
@@ -3200,8 +3279,8 @@ export class TradingBot {
     this.runtime.stream = this.runtime.stream || this.stream.getStatus();
     this.runtime.lastKnownBalance = Number.isFinite(this.runtime.lastKnownBalance) ? this.runtime.lastKnownBalance : null;
     this.runtime.lastKnownEquity = Number.isFinite(this.runtime.lastKnownEquity) ? this.runtime.lastKnownEquity : null;
-    this.modelBackups = arr(await this.store.loadModelBackups());
-    this.journal = await this.store.loadJournal();
+    this.modelBackups = arr(persistedState.modelBackups);
+    this.journal = persistedState.journal;
     this.journal.trades = arr(this.journal.trades);
     this.journal.scaleOuts = arr(this.journal.scaleOuts);
     this.journal.blockedSetups = arr(this.journal.blockedSetups);
@@ -3215,10 +3294,13 @@ export class TradingBot {
     await this.dataRecorder.init(this.runtime.dataRecorder || null);
     const historicalBootstrap = await this.dataRecorder.loadHistoricalBootstrap();
     await this.backupManager.init(this.runtime.stateBackups || null);
+    if (persistedState.restoredFromBackupAt) {
+      await this.backupManager.noteRestore(persistedState.restoredFromBackupAt);
+    }
     this.applyHistoricalBootstrap(historicalBootstrap);
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
-    this.model = new AdaptiveTradingModel(await this.store.loadModel(), this.config);
+    this.model = new AdaptiveTradingModel(persistedState.modelState, this.config);
     this.rlPolicy = new ReinforcementExecutionPolicy(this.runtime.executionPolicyState, this.config);
     this.news = new NewsService({
       config: this.config,

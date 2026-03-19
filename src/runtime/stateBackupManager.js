@@ -102,17 +102,24 @@ export class StateBackupManager {
       return null;
     }
     const files = await listFiles(this.backupDir);
-    const latest = [...files].sort().reverse()[0] || null;
-    if (!latest) {
-      return null;
+    const orderedFiles = [...files].sort().reverse();
+    for (const latest of orderedFiles) {
+      try {
+        const payload = await loadJson(latest, null);
+        if (!payload) {
+          continue;
+        }
+        this.state.latestFile = latest;
+        this.state.lastBackupAt = payload.at || this.state.lastBackupAt;
+        return payload;
+      } catch (error) {
+        this.logger?.warn?.("Skipping unreadable backup file", {
+          filePath: latest,
+          error: error.message
+        });
+      }
     }
-    const payload = await loadJson(latest, null);
-    if (!payload) {
-      return null;
-    }
-    this.state.latestFile = latest;
-    this.state.lastBackupAt = payload.at || this.state.lastBackupAt;
-    return payload;
+    return null;
   }
 
   async noteRestore(at) {

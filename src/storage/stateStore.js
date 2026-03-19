@@ -187,7 +187,7 @@ function mergeDefaultShape(base, loaded) {
   return merged;
 }
 
-function migrateRuntime(runtime) {
+export function migrateRuntime(runtime) {
   const merged = mergeDefaultShape(clone(DEFAULT_RUNTIME), runtime);
   merged.schemaVersion = RUNTIME_SCHEMA_VERSION;
   merged.openPositions = Array.isArray(merged.openPositions) ? merged.openPositions : [];
@@ -213,7 +213,7 @@ function migrateRuntime(runtime) {
   return merged;
 }
 
-function migrateJournal(journal) {
+export function migrateJournal(journal) {
   const merged = mergeDefaultShape(clone(DEFAULT_JOURNAL), journal);
   merged.schemaVersion = JOURNAL_SCHEMA_VERSION;
   for (const key of ["trades", "scaleOuts", "blockedSetups", "counterfactuals", "universeRuns", "researchRuns", "equitySnapshots", "cycles", "events"]) {

@@ -4616,6 +4616,29 @@ await runCheck("state store removes stale temp files during init", async () => {
   }
 });
 
+await runCheck("state backup manager skips corrupt latest backup files", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-backup-corrupt-"));
+  try {
+    const manager = new StateBackupManager({
+      runtimeDir: tempDir,
+      config: { stateBackupEnabled: true, stateBackupRetention: 6, stateBackupIntervalMinutes: 30 },
+      logger: { info() {}, warn() {} }
+    });
+    await fs.mkdir(path.join(tempDir, "backups"), { recursive: true });
+    await fs.writeFile(path.join(tempDir, "backups", "backup-2026-03-10T09-11-49.918Z.json"), "{broken");
+    await fs.writeFile(
+      path.join(tempDir, "backups", "backup-2026-03-10T08-11-49.918Z.json"),
+      JSON.stringify({ at: "2026-03-10T08:11:49.918Z", payload: { runtime: { lastCycleAt: "2026-03-10T08:00:00.000Z" } } })
+    );
+    await manager.init({ backupCount: 0 });
+    const restored = await manager.loadLatestBackup();
+    assert.equal(restored.at, "2026-03-10T08:11:49.918Z");
+    assert.equal(manager.getSummary().latestFile?.includes("08-11-49.918Z"), true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 await runCheck("state store migrates runtime and journal schemas forward", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-state-store-migrate-"));
   try {
@@ -4651,6 +4674,58 @@ await runCheck("state store migrates runtime and journal schemas forward", async
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+await runCheck("trading bot restores corrupted primary state from backup", async () => {
+  const saved = [];
+  const bot = Object.create(TradingBot.prototype);
+  bot.store = {
+    async loadRuntime() {
+      throw new SyntaxError("Unexpected token");
+    },
+    async loadModelBackups() {
+      return [];
+    },
+    async loadJournal() {
+      return { events: [] };
+    },
+    async loadModel() {
+      return { bias: 0, weights: {} };
+    },
+    async saveRuntime(runtime) {
+      saved.push(["runtime", runtime]);
+    },
+    async saveJournal(journal) {
+      saved.push(["journal", journal]);
+    },
+    async saveModel(model) {
+      saved.push(["model", model]);
+    },
+    async saveModelBackups(backups) {
+      saved.push(["modelBackups", backups]);
+    }
+  };
+  bot.backupManager = {
+    async loadLatestBackup() {
+      return {
+        at: "2026-03-10T08:11:49.918Z",
+        payload: {
+          runtime: { lastCycleAt: "2026-03-10T08:00:00.000Z", recovery: {} },
+          journal: { events: [] },
+          modelState: { bias: 1, weights: { trend: 0.5 } },
+          modelBackups: [{ at: "2026-03-09T08:00:00.000Z" }]
+        }
+      };
+    }
+  };
+  bot.logger = { warn() {} };
+  const recovered = await bot.loadPersistedStateWithBackupFallback();
+  assert.equal(recovered.runtime.lastCycleAt, "2026-03-10T08:00:00.000Z");
+  assert.equal(recovered.runtime.recovery.restoredFromBackupAt, "2026-03-10T08:11:49.918Z");
+  assert.equal(recovered.modelState.bias, 1);
+  assert.equal(recovered.modelBackups.length, 1);
+  assert.equal(recovered.journal.events.at(-1).type, "state_restored_from_backup");
+  assert.deepEqual(saved.map(([kind]) => kind), ["runtime", "journal", "model", "modelBackups"]);
 });
 
 await runCheck("data recorder stores rich learning events for paper retraining", async () => {
