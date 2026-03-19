@@ -1141,6 +1141,53 @@ await runCheck("binance api-key requests retry non-json failures", async () => {
   assert.equal(attempts, 3);
 });
 
+await runCheck("binance signed order writes do not retry retriable transport failures", async () => {
+  let attempts = 0;
+  const client = new BinanceClient({
+    apiKey: "test-key",
+    apiSecret: "test-secret",
+    baseUrl: "https://api.binance.com",
+    fetchImpl: async () => {
+      attempts += 1;
+      const error = new Error("socket hang up");
+      error.code = "ECONNRESET";
+      throw error;
+    }
+  });
+  await assert.rejects(
+    () => client.placeOrder({ symbol: "BTCUSDT", side: "BUY", type: "MARKET", quoteOrderQty: "100.00" }),
+    /socket hang up/
+  );
+  assert.equal(attempts, 1);
+});
+
+await runCheck("binance signed reads still retry retriable transport failures", async () => {
+  let attempts = 0;
+  const client = new BinanceClient({
+    apiKey: "test-key",
+    apiSecret: "test-secret",
+    baseUrl: "https://api.binance.com",
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error("temporary reset");
+        error.code = "ECONNRESET";
+        throw error;
+      }
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ balances: [] });
+        }
+      };
+    }
+  });
+  const payload = await client.getAccountInfo();
+  assert.deepEqual(payload, { balances: [] });
+  assert.equal(attempts, 3);
+});
+
 await runCheck("health monitor uses sync quality instead of raw clock offset", async () => {
   const runtime = { health: { warnings: [] } };
   const monitor = new HealthMonitor(makeConfig({ maxServerTimeDriftMs: 100 }), { warn() {} });
@@ -8276,6 +8323,62 @@ await runCheck("stream coordinator close clears live connection flags immediatel
   assert.equal(status.futuresStreamConnected, false);
   assert.equal(status.userStreamConnected, false);
   assert.equal(status.userStreamSessionActive, false);
+});
+
+await runCheck("stream coordinator clears stale listen key and keepalive on user stream close", async () => {
+  const originalWebSocket = globalThis.WebSocket;
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+    }
+
+    addEventListener(type, handler) {
+      const bucket = this.listeners.get(type) || [];
+      bucket.push(handler);
+      this.listeners.set(type, bucket);
+    }
+
+    emit(type, payload = {}) {
+      for (const handler of this.listeners.get(type) || []) {
+        handler(payload);
+      }
+    }
+
+    close() {}
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const coordinator = new StreamCoordinator({
+      client: {
+        async createUserDataListenKey() {
+          return "listen-1";
+        },
+        async keepAliveUserDataListenKey() {
+          return true;
+        },
+        getStreamBaseUrl() {
+          return "wss://stream.binance.com:9443";
+        },
+        getFuturesStreamBaseUrl() {
+          return "wss://fstream.binance.com";
+        }
+      },
+      config: makeConfig({ watchlist: ["BTCUSDT"], botMode: "live", binanceApiKey: "key" }),
+      logger: { warn() {}, info() {} }
+    });
+    await coordinator.startUserStream();
+    const socket = coordinator.userSocket;
+    socket.emit("open");
+    assert.equal(coordinator.getStatus().userStreamSessionActive, true);
+    socket.emit("close");
+    const status = coordinator.getStatus();
+    assert.equal(status.userStreamConnected, false);
+    assert.equal(status.userStreamSessionActive, false);
+    assert.equal(coordinator.keepAliveTimer, null);
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
 });
 
 await runCheck("dashboard server rejects oversized JSON bodies", async () => {

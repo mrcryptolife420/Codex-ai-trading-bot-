@@ -19,6 +19,10 @@ function isRetriableNetworkError(error) {
   return ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "EACCES"].includes(error?.cause?.code) || ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN"].includes(error?.code);
 }
 
+function isSafeRetryMethod(method) {
+  return ["GET", "HEAD"].includes(`${method || ""}`.toUpperCase());
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -141,6 +145,7 @@ export class BinanceClient {
 
   async request(method, pathname, params = {}, signed = false, extraHeaders = {}) {
     let lastError = null;
+    const safeToRetry = !signed || isSafeRetryMethod(method);
     for (let attempt = 1; attempt <= this.maxRetries; attempt += 1) {
       try {
         if (signed && (!this.apiKey || !this.apiSecret)) {
@@ -189,7 +194,10 @@ export class BinanceClient {
         if (signed && binanceCode === -1021) {
           await this.syncServerTime(true);
         }
-        const shouldRetry = attempt < this.maxRetries && (isRetriableStatus(error.status || 0) || isRetriableNetworkError(error) || binanceCode === -1021);
+        const shouldRetry = attempt < this.maxRetries && (
+          binanceCode === -1021 ||
+          (safeToRetry && (isRetriableStatus(error.status || 0) || isRetriableNetworkError(error)))
+        );
         if (!shouldRetry) {
           break;
         }

@@ -518,6 +518,19 @@ export class StreamCoordinator {
   }
 
   async startUserStream() {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+    const previousSocket = this.userSocket;
+    if (previousSocket) {
+      this.userSocket = null;
+      try {
+        previousSocket.close();
+      } catch {
+        // ignore local websocket close errors before reconnecting
+      }
+    }
     const listenKey = await this.client.createUserDataListenKey();
     this.state.listenKey = listenKey;
     const socket = new WebSocket(`${this.client.getStreamBaseUrl()}/ws/${listenKey}`);
@@ -544,6 +557,13 @@ export class StreamCoordinator {
         return;
       }
       this.state.userStreamConnected = false;
+      if (this.state.listenKey === listenKey) {
+        this.state.listenKey = null;
+      }
+      if (this.keepAliveTimer) {
+        clearInterval(this.keepAliveTimer);
+        this.keepAliveTimer = null;
+      }
       this.userSocket = null;
     });
     socket.addEventListener("error", (error) => {
@@ -552,6 +572,13 @@ export class StreamCoordinator {
       }
       this.state.lastError = error.message || "user_stream_error";
       this.state.userStreamConnected = false;
+      if (this.state.listenKey === listenKey) {
+        this.state.listenKey = null;
+      }
+      if (this.keepAliveTimer) {
+        clearInterval(this.keepAliveTimer);
+        this.keepAliveTimer = null;
+      }
       this.userSocket = null;
     });
     this.keepAliveTimer = setInterval(() => {
