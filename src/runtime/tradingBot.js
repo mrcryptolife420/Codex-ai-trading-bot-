@@ -1879,7 +1879,8 @@ function summarizePaperLearning(summary = {}) {
       readinessScore: num(item.readinessScore || 0, 4),
       status: item.status || "warmup",
       goodRate: num(item.goodRate || 0, 4),
-      weakRate: num(item.weakRate || 0, 4)
+      weakRate: num(item.weakRate || 0, 4),
+      source: item.source || "probe_trades"
     })),
     thresholdSandbox: summary.thresholdSandbox ? {
       status: summary.thresholdSandbox.status || "observe",
@@ -1968,13 +1969,15 @@ function summarizePaperLearning(summary = {}) {
         id: summary.scopeCoaching.strongest.id || null,
         status: summary.scopeCoaching.strongest.status || "warmup",
         score: num(summary.scopeCoaching.strongest.score || 0, 4),
-        action: summary.scopeCoaching.strongest.action || "observe"
+        action: summary.scopeCoaching.strongest.action || "observe",
+        source: summary.scopeCoaching.strongest.source || "probe_trades"
       } : null,
       weakest: summary.scopeCoaching.weakest ? {
         id: summary.scopeCoaching.weakest.id || null,
         status: summary.scopeCoaching.weakest.status || "warmup",
         score: num(summary.scopeCoaching.weakest.score || 0, 4),
-        action: summary.scopeCoaching.weakest.action || "observe"
+        action: summary.scopeCoaching.weakest.action || "observe",
+        source: summary.scopeCoaching.weakest.source || "probe_trades"
       } : null,
       note: summary.scopeCoaching.note || null
     } : null,
@@ -2026,6 +2029,13 @@ function summarizePaperLearning(summary = {}) {
       topBranch: summary.counterfactualBranches.topBranch || null,
       branchCount: summary.counterfactualBranches.branchCount || 0,
       note: summary.counterfactualBranches.note || null
+    } : null,
+    primaryScope: summary.primaryScope ? {
+      id: summary.primaryScope.id || null,
+      type: summary.primaryScope.type || null,
+      status: summary.primaryScope.status || "warmup",
+      score: num(summary.primaryScope.score || 0, 4),
+      source: summary.primaryScope.source || "probe_trades"
     } : null,
     dailyBudget: summary.dailyBudget || null,
     topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
@@ -4493,46 +4503,75 @@ export class TradingBot {
       .sort((left, right) => right[1] - left[1])
       .slice(0, 4)
       .map(([id, count]) => ({ id, count }));
-    const recentOutcomes = Object.entries(outcomeCounts)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 6)
-      .map(([id, count]) => ({ id, count }));
-    const readinessByScope = (records, type, pickId) => Object.entries(
-      records.reduce((acc, trade) => {
-        const id = pickId(trade);
+    const summarizeScopeReadiness = (records, type, pickId, options = {}) => Object.entries(
+      records.reduce((acc, record) => {
+        const id = pickId(record);
         if (!id) {
           return acc;
         }
         acc[id] = acc[id] || [];
-        acc[id].push(trade);
+        acc[id].push(record);
         return acc;
       }, {})
     )
-      .map(([id, trades]) => {
-        const goodCount = trades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
-        const weakCount = trades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
-        const goodRate = goodCount / Math.max(trades.length, 1);
-        const weakRate = weakCount / Math.max(trades.length, 1);
-        const freshness = weightedAverage(trades, () => 1, (trade) => trade.exitAt || trade.entryAt, 0.4);
-        const readinessScore = clamp(0.26 + Math.min(0.24, trades.length / 10) + goodRate * 0.26 - weakRate * 0.2 + freshness * 0.14, 0, 1);
+      .map(([id, items]) => {
+        if (options.evidenceOnly) {
+          const avgLearning = average(items.map((item) => item.learningValueScore || 0), 0);
+          const avgNovelty = average(items.map((item) => item.paperLearning?.noveltyScore || 0), 0);
+          const avgActive = average(items.map((item) => item.paperLearning?.activeLearning?.score || 0), 0);
+          const freshness = weightedAverage(
+            items,
+            () => 1,
+            (item) => item.resolvedAt || item.queuedAt || item.generatedAt || referenceNow,
+            0.45
+          );
+          const readinessScore = clamp(
+            0.18 +
+              Math.min(0.24, items.length / 8) +
+              avgLearning * 0.22 +
+              avgNovelty * 0.16 +
+              avgActive * 0.16 +
+              freshness * 0.12,
+            0,
+            1
+          );
+          return {
+            id,
+            type,
+            count: items.length,
+            readinessScore,
+            status: readinessScore >= 0.68 ? "building" : readinessScore >= 0.48 ? "warming" : "warmup",
+            goodRate: avgActive,
+            weakRate: Math.max(0, 1 - avgLearning),
+            freshness,
+            source: options.source || "shadow_learning"
+          };
+        }
+        const goodCount = items.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
+        const weakCount = items.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
+        const goodRate = goodCount / Math.max(items.length, 1);
+        const weakRate = weakCount / Math.max(items.length, 1);
+        const freshness = weightedAverage(items, () => 1, (trade) => trade.exitAt || trade.entryAt, 0.4);
+        const readinessScore = clamp(0.26 + Math.min(0.24, items.length / 10) + goodRate * 0.26 - weakRate * 0.2 + freshness * 0.14, 0, 1);
         return {
           id,
           type,
-          count: trades.length,
+          count: items.length,
           readinessScore,
           status: readinessScore >= 0.72 ? "paper_ready" : readinessScore >= 0.54 ? "building" : "warmup",
           goodRate,
           weakRate,
-          freshness
+          freshness,
+          source: options.source || "probe_trades"
         };
       })
       .sort((left, right) => right.readinessScore - left.readinessScore)
       .slice(0, 2);
-    const scopeReadiness = [
-      ...readinessByScope(recentProbeTrades, "strategy_family", (trade) => trade.strategyFamily || null),
-      ...readinessByScope(recentProbeTrades, "regime", (trade) => trade.regimeAtEntry || null),
-      ...readinessByScope(recentProbeTrades, "session", (trade) => trade.sessionAtEntry || null)
-    ].sort((left, right) => right.readinessScore - left.readinessScore).slice(0, 6);
+    const probeScopeReadiness = [
+      ...summarizeScopeReadiness(recentProbeTrades, "strategy_family", (trade) => trade.strategyFamily || null),
+      ...summarizeScopeReadiness(recentProbeTrades, "regime", (trade) => trade.regimeAtEntry || null),
+      ...summarizeScopeReadiness(recentProbeTrades, "session", (trade) => trade.sessionAtEntry || null)
+    ];
     const sandboxStates = learningEntries
       .map((item) => item.paperThresholdSandbox || item.paperLearning?.thresholdSandbox)
       .filter((item) => item?.status && item.status !== "warmup")
@@ -4626,6 +4665,39 @@ export class TradingBot {
           }
         }))
     ];
+    const shadowOutcomeCounts = {};
+    for (const item of counterfactuals) {
+      if (!item?.outcome) {
+        continue;
+      }
+      shadowOutcomeCounts[item.outcome] = (shadowOutcomeCounts[item.outcome] || 0) + 1;
+    }
+    for (const item of arr(this.runtime?.counterfactualQueue || []).filter((entry) => (entry.brokerMode || "paper") === "paper" && isShadowReviewCase(entry))) {
+      shadowOutcomeCounts.shadow_watch = (shadowOutcomeCounts.shadow_watch || 0) + 1;
+    }
+    const recentOutcomes = Object.entries({
+      ...outcomeCounts,
+      ...Object.fromEntries(
+        Object.entries(shadowOutcomeCounts).map(([id, count]) => [id, count + (outcomeCounts[id] || 0)])
+      )
+    })
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([id, count]) => ({ id, count }));
+    const evidenceScopeReadiness = [
+      ...summarizeScopeReadiness(shadowLearningEvidence, "strategy_family", (item) => item.paperLearning?.scope?.family || item.strategy?.family || null, { evidenceOnly: true }),
+      ...summarizeScopeReadiness(shadowLearningEvidence, "regime", (item) => item.paperLearning?.scope?.regime || item.regime || null, { evidenceOnly: true }),
+      ...summarizeScopeReadiness(shadowLearningEvidence, "session", (item) => item.paperLearning?.scope?.session || item.session?.session || null, { evidenceOnly: true })
+    ];
+    const scopeReadiness = [...probeScopeReadiness, ...evidenceScopeReadiness]
+      .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id && candidate.type === item.type) === index)
+      .sort((left, right) => {
+        if ((left.source === "probe_trades") !== (right.source === "probe_trades")) {
+          return left.source === "probe_trades" ? -1 : 1;
+        }
+        return right.readinessScore - left.readinessScore;
+      })
+      .slice(0, 6);
     const scoredLearningEntries = [...learningEntries, ...shadowLearningEvidence]
       .filter((item) => item && (item.symbol || item.learningValueScore || item.paperLearning?.activeLearning?.score))
       .filter((item, index, all) => {
@@ -4678,20 +4750,21 @@ export class TradingBot {
       : readinessScore >= 0.54
         ? "building"
         : "warmup";
+    const promotedScope = probeScopeReadiness[0] || scopeReadiness[0] || null;
     const paperToLiveReadiness = {
-      status: scopeReadiness[0]?.status || readinessStatus,
+      status: promotedScope?.status || readinessStatus,
       score: clamp(
         readinessScore * 0.52 +
-        (scopeReadiness[0]?.readinessScore || 0) * 0.28 +
+        (promotedScope?.readinessScore || 0) * 0.28 +
         (promotionReady ? 0.12 : 0) -
         ((topBlockers[0]?.count || 0) >= 3 ? 0.08 : 0),
         0,
         1
       ),
-      topScope: scopeReadiness[0]?.id || null,
+      topScope: promotedScope?.id || null,
       blocker: topBlockers[0]?.id || null,
-      note: scopeReadiness[0]
-        ? `${scopeReadiness[0].id} is momenteel de beste paper-scope voor een volgende probationstap.`
+      note: promotedScope
+        ? `${promotedScope.id} is momenteel de beste paper-scope voor een volgende probationstap.`
         : "Nog geen duidelijke paper-scope klaar voor een volgende stap."
     };
     const counterfactualTuning = tuningRecommendation
@@ -4829,7 +4902,8 @@ export class TradingBot {
             id: scopeReadiness[0].id,
             status: scopeReadiness[0].status,
             score: scopeReadiness[0].readinessScore || 0,
-            action: scopeReadiness[0].status === "paper_ready" ? "probation" : "sandbox"
+            action: scopeReadiness[0].status === "paper_ready" ? "probation" : "sandbox",
+            source: scopeReadiness[0].source || "probe_trades"
           }
         : null,
       weakest: scopeReadiness.length
@@ -4837,11 +4911,14 @@ export class TradingBot {
             id: scopeReadiness[scopeReadiness.length - 1].id,
             status: scopeReadiness[scopeReadiness.length - 1].status,
             score: scopeReadiness[scopeReadiness.length - 1].readinessScore || 0,
-            action: "collect_more_data"
+            action: "collect_more_data",
+            source: scopeReadiness[scopeReadiness.length - 1].source || "probe_trades"
           }
         : null,
       note: scopeReadiness[0]
-        ? `${scopeReadiness[0].id} is nu het sterkst; ${scopeReadiness[scopeReadiness.length - 1]?.id || "andere scopes"} hebben nog meer leerdata nodig.`
+        ? scopeReadiness[0].source === "shadow_learning"
+          ? `${scopeReadiness[0].id} springt nu uit de shadow-learning data; bevestig dit nog met extra probes.`
+          : `${scopeReadiness[0].id} is nu het sterkst; ${scopeReadiness[scopeReadiness.length - 1]?.id || "andere scopes"} hebben nog meer leerdata nodig.`
         : "Nog geen duidelijke scope-coaching beschikbaar."
     };
     const activeLearning = {
@@ -5101,6 +5178,23 @@ export class TradingBot {
       coaching,
       reviewQueue,
       counterfactualBranches,
+      primaryScope: scopeReadiness[0]
+        ? {
+            id: scopeReadiness[0].id,
+            type: scopeReadiness[0].type,
+            status: scopeReadiness[0].status,
+            score: scopeReadiness[0].readinessScore || 0,
+            source: scopeReadiness[0].source || "probe_trades"
+          }
+        : focusScopes[0]
+          ? {
+              id: focusScopes[0].id,
+              type: "active_learning",
+              status: activeLearning.status || "observe",
+              score: focusScopes[0].score || 0,
+              source: "active_learning"
+            }
+          : null,
       dailyBudget: budget,
       topFamilies: Object.entries(familyCounts)
         .sort((left, right) => right[1] - left[1])
@@ -5131,7 +5225,9 @@ export class TradingBot {
           ? `Paper threshold sandbox ${thresholdSandbox.status} in ${thresholdSandbox.scopeLabel || "scope onbekend"} (${num(thresholdSandbox.thresholdShift * 100, 1)}% shift).`
           : "Geen actieve paper threshold sandbox.",
         scopeReadiness[0]
-          ? `Sterkste paper-scope: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
+          ? scopeReadiness[0].source === "shadow_learning"
+            ? `Sterkste leerscope komt nu uit shadow-learning: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
+            : `Sterkste paper-scope: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
           : "Nog geen paper-scope readiness zichtbaar.",
         paperToLiveReadiness.topScope
           ? `Paper-to-live readiness focust nu op ${paperToLiveReadiness.topScope}.`

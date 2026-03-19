@@ -586,7 +586,24 @@ function learningFocusText(snapshot) {
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const retrainPlan = snapshot?.dashboard?.offlineTrainer?.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
-  const topScope = paperLearning.scopeReadiness?.[0];
+  const topScope =
+    paperLearning.primaryScope ||
+    paperLearning.scopeReadiness?.[0] ||
+    (paperLearning.activeLearning?.focusScopes?.[0]
+      ? {
+          ...paperLearning.activeLearning.focusScopes[0],
+          status: paperLearning.activeLearning?.status || "observe",
+          source: "active_learning"
+        }
+      : null) ||
+    (paperLearning.experimentScopes?.[0]
+      ? {
+          id: paperLearning.experimentScopes[0].id,
+          status: paperLearning.experimentScopes[0].status || "observe",
+          score: paperLearning.experimentScopes[0].score || 0,
+          source: paperLearning.experimentScopes[0].source || "experiment"
+        }
+      : null);
   const topBlocker = paperLearning.topBlockers?.[0];
   const latestOutcome = paperLearning.recentOutcomes?.[0];
 
@@ -594,7 +611,12 @@ function learningFocusText(snapshot) {
     return `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`;
   }
   if (topScope?.id) {
-    return `Leert nu vooral op ${titleize(topScope.id)} in ${titleize(topScope.status || "building")}.`;
+    const sourceLabel = topScope.source === "shadow_learning"
+      ? "via shadow-learning"
+      : topScope.source === "active_learning"
+        ? "via active learning"
+        : "in paper readiness";
+    return `Leert nu vooral op ${titleize(topScope.id)} ${sourceLabel}.`;
   }
   if (replayPlan.nextPackType) {
     return `Replay-focus ligt op ${titleize(replayPlan.nextPackType)}.`;
@@ -696,7 +718,24 @@ function renderLearning(snapshot) {
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
-  const topScope = paperLearning.scopeReadiness?.[0];
+  const topScope =
+    paperLearning.primaryScope ||
+    paperLearning.scopeReadiness?.[0] ||
+    (paperLearning.activeLearning?.focusScopes?.[0]
+      ? {
+          ...paperLearning.activeLearning.focusScopes[0],
+          status: paperLearning.activeLearning?.status || "observe",
+          source: "active_learning"
+        }
+      : null) ||
+    (paperLearning.experimentScopes?.[0]
+      ? {
+          id: paperLearning.experimentScopes[0].id,
+          status: paperLearning.experimentScopes[0].status || "observe",
+          score: paperLearning.experimentScopes[0].score || 0,
+          source: paperLearning.experimentScopes[0].source || "experiment"
+        }
+      : null);
   const topBlocker = paperLearning.topBlockers?.[0];
   const topOutcome = paperLearning.recentOutcomes?.[0];
   const latestTrade = latestTradeSummary(snapshot);
@@ -716,7 +755,9 @@ function renderLearning(snapshot) {
     ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
     : "Er is nog geen dominante rem in de huidige learning-data.";
   const scopeMeaning = topScope?.id
-    ? `${titleize(topScope.id)} is nu de sterkste leerscope.`
+    ? topScope.source === "shadow_learning"
+      ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-learning; bevestig dit nog met extra probes.`
+      : `${titleize(topScope.id)} is nu de sterkste leerscope.`
     : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
   const nextStep =
     retrainPlan.operatorAction ||
@@ -741,6 +782,7 @@ function renderLearning(snapshot) {
         <p class="learning-copy">${escapeHtml(focusText)}</p>
         <div class="learning-strip-grid">
           <span class="tag">${escapeHtml(laneText)}</span>
+          <span class="tag">${escapeHtml(`Snapshot: ${formatDate(paperLearning.generatedAt)}`)}</span>
           <span class="tag">${escapeHtml(`Top blocker: ${topBlockerText}`)}</span>
           <span class="tag">${escapeHtml(`Top outcome: ${topOutcomeText}`)}</span>
         </div>
@@ -749,7 +791,7 @@ function renderLearning(snapshot) {
         <article class="learning-detail">
           <span class="metric-label">Leert nu</span>
           <strong>${escapeHtml(topScope?.id ? titleize(topScope.id) : "Warmup dataset")}</strong>
-          <span class="metric-foot">${escapeHtml(topScope?.status ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || 0, 0)}` : "Nog geen sterke scope zichtbaar.")}</span>
+          <span class="metric-foot">${escapeHtml(topScope?.status ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 0)} · ${titleize(topScope.source || "probe_trades")}` : "Nog geen sterke scope zichtbaar.")}</span>
           <p class="learning-note">${escapeHtml(scopeMeaning)}</p>
         </article>
         <article class="learning-detail">
