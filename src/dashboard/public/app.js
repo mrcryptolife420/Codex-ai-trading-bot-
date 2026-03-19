@@ -1553,8 +1553,8 @@ function renderPromotion(snapshot) {
   const activePromotionRows = (pipeline.activePromotions || []).length
     ? pipeline.activePromotions.map((item) => makeEventRow({
       title: `${item.symbol || titleize(item.scope || item.id || "-")} · ${titleize(item.stage || "guarded_live_probation")}`,
-      detail: item.note || `Governance ${formatPct(item.governanceScore || 0, 0)} · actief sinds ${formatDate(item.approvedAt)}`,
-      tone: "positive"
+      detail: item.note || `Governance ${formatPct(item.governanceScore || 0, 0)} · ${item.completedTrades || 0}/${item.targetSampleCount || 0} trades · expiry ${formatDate(item.expiresAt)}`,
+      tone: item.rollbackRecommended || item.expired ? "negative" : item.status === "ready_for_review" ? "positive" : "positive"
     }))
     : [makeEmptyState("Nog geen actieve guarded-live probation.")];
   const rollbackActions = (pipeline.activePromotions || []).length
@@ -1579,6 +1579,13 @@ function renderPromotion(snapshot) {
       tone: item.status === "rolled_back" ? "negative" : item.status === "approved" ? "positive" : "neutral"
     }))
     : [makeEmptyState("Nog geen promotion history.")];
+  const probationRows = (pipeline.probationGuardrails || []).length
+    ? pipeline.probationGuardrails.map((item) => makeEventRow({
+      title: `${titleize(item.label || "-")} · ${titleize(item.status || "active")}`,
+      detail: item.detail || "Probation guardrail actief.",
+      tone: item.status === "rollback_recommended" || item.status === "expired" ? "negative" : item.status === "ready_for_review" ? "positive" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen probation guardrails actief.")];
   const guardrailTags = [
     ...(pipeline.guardrails || []).map((item) => makeTag(titleize(item), "tag negative")),
     ...((pipeline.activeOverrides || []).map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive")))
@@ -1619,6 +1626,14 @@ function renderPromotion(snapshot) {
         makeSectionHead("Actieve probation", "Operator-goedgekeurde guarded-live overrides"),
         ...activePromotionRows,
         rollbackActions || makeEmptyState("Geen rollback acties actief.")
+      );
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Probation guardrails", "Sample targets, expiry en rollback-triggers"),
+        ...probationRows
       );
       return section;
     })(),

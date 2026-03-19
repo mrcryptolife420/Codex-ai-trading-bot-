@@ -7542,6 +7542,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.promotionPipeline.activePromotions[0].symbol, "BTCUSDT");
   assert.equal(snapshot.promotionPipeline.promotionHistory[0].action, "approve_guarded_live");
   assert.ok(Array.isArray(snapshot.promotionPipeline.rolloutCandidates));
+  assert.ok(Array.isArray(snapshot.promotionPipeline.probationGuardrails));
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
   assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");
@@ -8464,6 +8465,38 @@ await runCheck("trading bot approves and rolls back guarded scope rollout candid
   await bot.rollbackPromotionScope({ scopeId: "trend_following · trend · asia", note: "rollback scoped probation", at: "2026-03-12T13:00:00.000Z" });
   assert.equal(bot.runtime.ops.promotionState.active.length, 0);
   assert.equal(bot.runtime.ops.promotionState.history[0].action, "rollback_guarded_scope");
+});
+
+await runCheck("promotion probations track sample targets expiry and rollback guardrails", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    ops: {
+      promotionState: {
+        active: [
+          {
+            symbol: "BTCUSDT",
+            stage: "guarded_live_probation",
+            approvedAt: "2026-03-12T10:00:00.000Z",
+            expiresAt: "2026-03-15T10:00:00.000Z",
+            targetSampleCount: 3,
+            weakLossLimit: 2,
+            governanceScore: 0.74
+          }
+        ],
+        history: []
+      }
+    }
+  };
+  bot.journal = {
+    trades: [
+      { symbol: "BTCUSDT", exitAt: "2026-03-12T11:00:00.000Z", paperLearningOutcome: { outcome: "early_exit" } },
+      { symbol: "BTCUSDT", exitAt: "2026-03-12T12:00:00.000Z", paperLearningOutcome: { outcome: "bad_trade" } }
+    ]
+  };
+  const state = bot.evaluatePromotionProbations("2026-03-12T13:00:00.000Z");
+  assert.equal(state.active.length, 0);
+  assert.equal(state.history[0].action, "guardrail_live_rollback_recommended");
+  assert.equal(state.history[0].status, "rollback_recommended");
 });
 
 await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {

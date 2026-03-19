@@ -4050,6 +4050,84 @@ export class TradingBot {
     return this.runtime.ops.promotionState;
   }
 
+  evaluatePromotionProbations(referenceNow = nowIso()) {
+    const promotionState = this.ensurePromotionState();
+    const nowMs = new Date(referenceNow).getTime();
+    const active = [];
+    const history = arr(promotionState.history || []);
+    for (const item of arr(promotionState.active || [])) {
+      const approvedAtMs = new Date(item.approvedAt || 0).getTime();
+      const sinceApproved = Number.isFinite(approvedAtMs)
+        ? arr(this.journal?.trades || []).filter((trade) => {
+            const exitMs = new Date(trade.exitAt || trade.entryAt || 0).getTime();
+            if (!Number.isFinite(exitMs) || exitMs < approvedAtMs) {
+              return false;
+            }
+            if (item.symbol) {
+              return `${trade.symbol || ""}`.trim().toUpperCase() === `${item.symbol || ""}`.trim().toUpperCase();
+            }
+            const family = trade.strategyFamily || trade.strategyDecision?.family || null;
+            const regime = trade.regimeAtEntry || null;
+            const session = trade.sessionAtEntry || null;
+            const scopeId = [family, regime, session].filter(Boolean).join(" · ");
+            return scopeId === item.scope || `${trade.strategyAtEntry || ""}`.trim() === `${item.id || ""}`.trim();
+          })
+        : [];
+      const completedTrades = sinceApproved.filter((trade) => Boolean(trade.exitAt));
+      const weakTrades = completedTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade)));
+      const goodTrades = completedTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade)));
+      const targetSampleCount = Math.max(2, Number(item.targetSampleCount || 3));
+      const weakLossLimit = Math.max(1, Number(item.weakLossLimit || 2));
+      const expiresAtMs = new Date(item.expiresAt || 0).getTime();
+      const expired = Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs;
+      const rollbackRecommended = weakTrades.length >= weakLossLimit;
+      const complete = completedTrades.length >= targetSampleCount && !rollbackRecommended;
+      const next = {
+        ...item,
+        completedTrades: completedTrades.length,
+        goodTrades: goodTrades.length,
+        weakTrades: weakTrades.length,
+        rollbackRecommended,
+        expired,
+        targetSampleCount,
+        weakLossLimit,
+        status: rollbackRecommended
+          ? "rollback_recommended"
+          : expired
+            ? "expired"
+            : complete
+              ? "ready_for_review"
+              : "active",
+        note: item.note || null
+      };
+      if (rollbackRecommended || expired || complete) {
+        history.unshift({
+          at: referenceNow,
+          action: rollbackRecommended
+            ? (item.scope ? "guardrail_scope_rollback_recommended" : "guardrail_live_rollback_recommended")
+            : expired
+              ? "guardrail_probation_expired"
+              : "guardrail_probation_ready",
+          symbol: item.symbol || null,
+          scope: item.scope || null,
+          stage: item.stage || null,
+          status: next.status,
+          governanceScore: num(item.governanceScore || 0, 4),
+          note: rollbackRecommended
+            ? "Rollback guardrail geraakt door zwakke probation-uitkomsten."
+            : expired
+              ? "Probation verstreken zonder expliciete operatorbeslissing."
+              : "Probation haalde het sample-doel en is klaar voor review."
+        });
+      } else {
+        active.push(next);
+      }
+    }
+    promotionState.active = active.slice(0, 12);
+    promotionState.history = history.slice(0, 80);
+    return promotionState;
+  }
+
   recordDiagnosticsAction({
     action = null,
     target = null,
@@ -4374,6 +4452,9 @@ export class TradingBot {
       governanceScore: num(candidate.governanceScore || 0, 4),
       candidateStatus: candidate.status || "observe",
       approvedAt: at,
+      expiresAt: new Date(new Date(at).getTime() + 72 * 60 * 60 * 1000).toISOString(),
+      targetSampleCount: 3,
+      weakLossLimit: 2,
       note: note || null
     });
     promotionState.active = promotionState.active.slice(0, 12);
@@ -4421,6 +4502,9 @@ export class TradingBot {
       governanceScore: num(candidate.confidence || 0, 4),
       candidateStatus: candidate.action || "observe",
       approvedAt: at,
+      expiresAt: new Date(new Date(at).getTime() + 72 * 60 * 60 * 1000).toISOString(),
+      targetSampleCount: 3,
+      weakLossLimit: 2,
       note: note || null
     });
     promotionState.active = promotionState.active.slice(0, 12);
@@ -6388,6 +6472,7 @@ export class TradingBot {
 
   refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
     const evaluation = report || buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    const existingOps = this.runtime.ops || {};
     this.runtime.capitalPolicy = buildCapitalPolicySnapshot({
       journal: this.journal,
       runtime: this.runtime,
@@ -6413,6 +6498,7 @@ export class TradingBot {
     }
     this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
     this.runtime.paperLearning = this.buildPaperLearningSummary(arr(this.runtime.latestDecisions), referenceNow);
+    const promotionState = this.evaluatePromotionProbations(referenceNow);
     const readiness = this.buildOperationalReadiness(referenceNow);
     const alerts = summarizeOperatorAlerts(buildOperatorAlerts({
       runtime: this.runtime,
@@ -6431,16 +6517,19 @@ export class TradingBot {
       nowIso: referenceNow
     }));
     this.runtime.ops = {
+      ...existingOps,
       lastUpdatedAt: referenceNow,
       incidentTimeline: this.buildIncidentTimeline(referenceNow),
       runbooks: this.buildOperatorRunbooks(evaluation),
       performanceChange: this.buildPerformanceChangeView(evaluation),
       readiness,
       alerts,
-      alertState: this.runtime.ops?.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
+      alertState: existingOps.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
       alertDelivery,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
-      paperLearning: summarizePaperLearning(this.runtime.paperLearning || {})
+      paperLearning: summarizePaperLearning(this.runtime.paperLearning || {}),
+      diagnosticsActions: existingOps.diagnosticsActions || { history: [] },
+      promotionState
     };
     this.runtime.service = {
       ...(this.runtime.service || {}),
@@ -9651,6 +9740,14 @@ export class TradingBot {
       status: item.status || "active",
       governanceScore: num(item.governanceScore || 0, 4),
       approvedAt: item.approvedAt || null,
+      expiresAt: item.expiresAt || null,
+      targetSampleCount: item.targetSampleCount || 0,
+      weakLossLimit: item.weakLossLimit || 0,
+      completedTrades: item.completedTrades || 0,
+      goodTrades: item.goodTrades || 0,
+      weakTrades: item.weakTrades || 0,
+      rollbackRecommended: Boolean(item.rollbackRecommended),
+      expired: Boolean(item.expired),
       note: item.note || null
     }));
     const promotionHistory = arr(promotionState.history || []).slice(0, 8).map((item) => ({
@@ -9700,6 +9797,17 @@ export class TradingBot {
       activePromotions,
       promotionHistory,
       activeOverrides,
+      probationGuardrails: activePromotions.map((item) => ({
+        key: item.key || item.symbol || item.scope || item.id,
+        label: item.symbol || item.scope || item.id || null,
+        status: item.status || "active",
+        detail: item.rollbackRecommended
+          ? `${item.weakTrades}/${item.weakLossLimit} zwakke trades sinds approve.`
+          : item.expired
+            ? "Probation expired."
+            : `${item.completedTrades}/${item.targetSampleCount} gesloten trades verzameld.`,
+        expiresAt: item.expiresAt || null
+      })),
       guardrails
     };
   }
