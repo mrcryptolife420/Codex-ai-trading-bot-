@@ -7,40 +7,12 @@ import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
 import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
-
-function buildSyntheticBook(candle, market, config) {
-  const latencyBps = Math.max(0.4, (config.backtestLatencyMs || 0) / 1000 * 1.6);
-  const spreadBps = Math.max(config.paperSlippageBps * 1.6, 4 + Math.abs(market.momentum5 || 0) * 10_000 * 0.04);
-  const mid = candle.close;
-  const halfSpread = spreadBps / 20_000;
-  const depthNotional = config.backtestSyntheticDepthUsd * Math.max(0.35, 1 - (market.realizedVolPct || 0));
-  return {
-    bid: mid * (1 - halfSpread),
-    ask: mid * (1 + halfSpread),
-    mid,
-    spreadBps,
-    depthImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 90)),
-    weightedDepthImbalance: Math.max(-1, Math.min(1, (market.momentum20 || 0) * 70)),
-    tradeFlowImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 120)),
-    microTrend: market.momentum5 || 0,
-    recentTradeCount: 8,
-    bookPressure: Math.max(-1, Math.min(1, (market.momentum20 || 0) * 85)),
-    microPriceEdgeBps: latencyBps,
-    depthConfidence: Math.max(0.34, 1 - (market.realizedVolPct || 0) * 8),
-    totalDepthNotional: depthNotional,
-    queueImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 100)),
-    queueRefreshScore: Math.max(0, 0.4 + (market.volumeZ || 0) * 0.08),
-    resilienceScore: Math.max(0, 0.45 - (market.realizedVolPct || 0) * 2),
-    localBook: {
-      synced: true,
-      depthConfidence: Math.max(0.34, 1 - (market.realizedVolPct || 0) * 8),
-      totalDepthNotional: depthNotional,
-      queueImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 100)),
-      queueRefreshScore: Math.max(0, 0.4 + (market.volumeZ || 0) * 0.08),
-      resilienceScore: Math.max(0, 0.45 - (market.realizedVolPct || 0) * 2)
-    }
-  };
-}
+import {
+  buildSyntheticBook,
+  buildExitExecutionBook,
+  resolveCandleIntervalMinutes,
+  resolveEntryExecution
+} from "./backtestExecution.js";
 
 function buildNewsSummary() {
   return {
@@ -112,14 +84,56 @@ export async function runBacktest({ config, logger, symbol }) {
 
   let quoteFree = config.startingCash;
   let position = null;
+  let pendingEntry = null;
   const trades = [];
   const equitySnapshots = [];
   const feeRate = config.paperFeeBps / 10000;
+  const candleIntervalMinutes = resolveCandleIntervalMinutes(candles, 1, 15);
 
   for (let index = 60; index < candles.length; index += 1) {
     const window = candles.slice(0, index + 1);
     const candle = candles[index];
     const context = buildBacktestContext({ window, candle, symbol, model, config });
+
+    if (!position && pendingEntry && pendingEntry.entryIndex === index) {
+      const entryBook = buildSyntheticBook(candle, context.market, config, { anchorPrice: candle.open });
+      const fillEstimate = execution.simulatePaperFill({
+        marketSnapshot: { market: context.market, book: entryBook },
+        side: "BUY",
+        requestedQuoteAmount: pendingEntry.quoteAmount,
+        plan: pendingEntry.plan,
+        latencyMs: config.backtestLatencyMs
+      });
+      const grossCost = fillEstimate.executedQuote;
+      const fee = grossCost * feeRate;
+      const totalCost = grossCost + fee;
+      const quantity = fillEstimate.executedQuantity;
+      if (grossCost >= config.minTradeUsdt && totalCost <= quoteFree) {
+        quoteFree -= totalCost;
+        position = {
+          entryTime: pendingEntry.entryTimeMs || candle.openTime || candle.closeTime,
+          entryIndex: index,
+          entryPrice: fillEstimate.fillPrice,
+          quantity,
+          notional: grossCost,
+          totalCost,
+          stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
+          takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
+          highestPrice: fillEstimate.fillPrice,
+          lowestPrice: fillEstimate.fillPrice,
+          rawFeatures: pendingEntry.rawFeatures,
+          transformerDecision: pendingEntry.transformerDecision,
+          strategyAtEntry: pendingEntry.strategyAtEntry,
+          regimeAtEntry: pendingEntry.regimeAtEntry,
+          entrySpreadBps: entryBook.spreadBps,
+          executionPlan: pendingEntry.plan,
+          entryFillEstimate: fillEstimate,
+          probabilityAtEntry: pendingEntry.probabilityAtEntry,
+          requestedQuoteAmount: pendingEntry.quoteAmount
+        };
+      }
+      pendingEntry = null;
+    }
 
     if (position) {
       position.highestPrice = Math.max(position.highestPrice, candle.high);
@@ -132,14 +146,22 @@ export async function runBacktest({ config, logger, symbol }) {
         exitReason = "take_profit";
       } else if (position.highestPrice > position.entryPrice * 1.004 && candle.low <= trailingStopPrice) {
         exitReason = "trailing_stop";
-      } else if ((index - position.entryIndex) * 15 >= config.maxHoldMinutes) {
+      } else if ((index - position.entryIndex) * candleIntervalMinutes >= config.maxHoldMinutes) {
         exitReason = "time_stop";
       }
 
       if (exitReason) {
+        const exitBook = buildExitExecutionBook({
+          candle,
+          market: context.market,
+          config,
+          position,
+          exitReason,
+          trailingStopPrice
+        });
         const exitPlan = { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false };
         const fillEstimate = execution.simulatePaperFill({
-          marketSnapshot: { market: context.market, book: context.book },
+          marketSnapshot: { market: context.market, book: exitBook },
           side: "SELL",
           requestedQuantity: position.quantity,
           plan: exitPlan,
@@ -164,11 +186,11 @@ export async function runBacktest({ config, logger, symbol }) {
           netPnlPct,
           mfePct: position.entryPrice ? Math.max(0, (position.highestPrice - position.entryPrice) / position.entryPrice) : 0,
           maePct: position.entryPrice ? Math.min(0, (position.lowestPrice - position.entryPrice) / position.entryPrice) : 0,
-          executionQualityScore: execution.buildExecutionQuality({ marketSnapshot: { book: context.book }, fillPrice: fillEstimate.fillPrice, side: "SELL" }),
+          executionQualityScore: execution.buildExecutionQuality({ marketSnapshot: { book: exitBook }, fillPrice: fillEstimate.fillPrice, side: "SELL" }),
           captureEfficiency: position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0,
           regimeAtEntry: position.regimeAtEntry,
           entrySpreadBps: position.entrySpreadBps,
-          exitSpreadBps: context.book.spreadBps,
+          exitSpreadBps: exitBook.spreadBps,
           reason: exitReason,
           rawFeatures: position.rawFeatures,
           strategyAtEntry: position.strategyAtEntry || null,
@@ -186,7 +208,7 @@ export async function runBacktest({ config, logger, symbol }) {
           }),
           exitExecutionAttribution: execution.buildExecutionAttribution({
             plan: exitPlan,
-            marketSnapshot: { market: context.market, book: context.book },
+            marketSnapshot: { market: context.market, book: exitBook },
             side: "SELL",
             fillPrice: fillEstimate.fillPrice,
             requestedQuoteAmount: position.totalCost,
@@ -212,7 +234,11 @@ export async function runBacktest({ config, logger, symbol }) {
         streamFeatures: { tradeFlowImbalance: context.book.tradeFlowImbalance, microTrend: context.book.microTrend },
         bookFeatures: context.book
       });
-      if (!score.shouldAbstain && score.probability >= config.modelThreshold && context.market.realizedVolPct <= config.maxRealizedVolPct) {
+      if (!pendingEntry && !score.shouldAbstain && score.probability >= config.modelThreshold && context.market.realizedVolPct <= config.maxRealizedVolPct) {
+        const entryExecution = resolveEntryExecution(candles, index, context.market, config);
+        if (!entryExecution) {
+          continue;
+        }
         const stopLossPct = Math.max(config.stopLossPct, context.market.atrPct * 1.2, 0.01);
         const takeProfitPct = Math.max(config.takeProfitPct, stopLossPct * (context.regimeSummary.regime === "trend" ? 1.9 : 1.5));
         const quoteAmount = Math.min(
@@ -232,41 +258,19 @@ export async function runBacktest({ config, logger, symbol }) {
             committeeSummary: score.committee,
             rlAdvice: { action: "balanced" }
           });
-          const fillEstimate = execution.simulatePaperFill({
-            marketSnapshot: { market: context.market, book: context.book },
-            side: "BUY",
-            requestedQuoteAmount: quoteAmount,
+          pendingEntry = {
+            entryIndex: index + 1,
+            entryTimeMs: entryExecution.entryTimeMs || entryExecution.candle.openTime || entryExecution.candle.closeTime,
+            quoteAmount,
+            stopLossPct,
+            takeProfitPct,
+            rawFeatures: context.rawFeatures,
+            transformerDecision: score.transformer,
+            strategyAtEntry: context.strategySummary.activeStrategy,
+            regimeAtEntry: context.regimeSummary.regime,
             plan,
-            latencyMs: config.backtestLatencyMs
-          });
-          const grossCost = fillEstimate.executedQuote;
-          const fee = grossCost * feeRate;
-          const totalCost = grossCost + fee;
-          const quantity = fillEstimate.executedQuantity;
-          if (grossCost >= config.minTradeUsdt && totalCost <= quoteFree) {
-            quoteFree -= totalCost;
-            position = {
-              entryTime: candle.closeTime,
-              entryIndex: index,
-              entryPrice: fillEstimate.fillPrice,
-              quantity,
-              notional: grossCost,
-              totalCost,
-              stopLossPrice: fillEstimate.fillPrice * (1 - stopLossPct),
-              takeProfitPrice: fillEstimate.fillPrice * (1 + takeProfitPct),
-              highestPrice: fillEstimate.fillPrice,
-              lowestPrice: fillEstimate.fillPrice,
-              rawFeatures: context.rawFeatures,
-              transformerDecision: score.transformer,
-              strategyAtEntry: context.strategySummary.activeStrategy,
-              regimeAtEntry: context.regimeSummary.regime,
-              entrySpreadBps: context.book.spreadBps,
-              executionPlan: plan,
-              entryFillEstimate: fillEstimate,
-              probabilityAtEntry: score.probability,
-              requestedQuoteAmount: quoteAmount
-            };
-          }
+            probabilityAtEntry: score.probability
+          };
         }
       }
     }

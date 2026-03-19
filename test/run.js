@@ -49,6 +49,12 @@ import { buildSessionSummary } from "../src/runtime/sessionManager.js";
 import { DriftMonitor } from "../src/runtime/driftMonitor.js";
 import { SelfHealManager } from "../src/runtime/selfHealManager.js";
 import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtime/researchLab.js";
+import {
+  buildSyntheticBook as buildBacktestSyntheticBook,
+  resolveCandleIntervalMinutes,
+  resolveEntryExecution,
+  resolveExitAnchorPrice
+} from "../src/runtime/backtestExecution.js";
 import { DataRecorder } from "../src/runtime/dataRecorder.js";
 import { StateBackupManager } from "../src/runtime/stateBackupManager.js";
 import { StateStore } from "../src/storage/stateStore.js";
@@ -5984,6 +5990,46 @@ await runCheck("research lab builds walk-forward windows and summary", async () 
   assert.ok(windows.length >= 1);
   assert.equal(report.symbol, "BTCUSDT");
   assert.ok(report.experimentCount >= 1);
+});
+
+await runCheck("backtest execution uses next candle open and realistic gap anchors", async () => {
+  const candles = [
+    { openTime: 0, closeTime: 900000, open: 100, high: 101, low: 99, close: 100.5, volume: 10 },
+    { openTime: 900000, closeTime: 1800000, open: 97, high: 98, low: 94, close: 95, volume: 12 }
+  ];
+  const config = makeConfig();
+  const market = { momentum5: 0.01, momentum20: 0.02, realizedVolPct: 0.01, volumeZ: 0.2 };
+  const entryExecution = resolveEntryExecution(candles, 0, market, config);
+  assert.equal(entryExecution.book.mid, 97);
+  assert.equal(resolveCandleIntervalMinutes(candles, 1, 15), 15);
+  assert.equal(resolveExitAnchorPrice({
+    candle: candles[1],
+    exitReason: "stop_loss",
+    position: { stopLossPrice: 99 }
+  }), 97);
+  assert.equal(resolveExitAnchorPrice({
+    candle: { ...candles[1], open: 105, high: 106, low: 103, close: 104 },
+    exitReason: "take_profit",
+    position: { takeProfitPrice: 103 }
+  }), 105);
+  const exitBook = buildBacktestSyntheticBook(candles[1], market, config, { anchorPrice: 97 });
+  assert.equal(exitBook.mid, 97);
+});
+
+await runCheck("research labels use next candle open to avoid close-to-close leakage", async () => {
+  const candles = Array.from({ length: 420 }, (_, index) => ({
+    openTime: 1772960000000 + index * 900000 - 900000,
+    closeTime: 1772960000000 + index * 900000,
+    open: 100 + index * 0.2 + 0.05,
+    high: 100.4 + index * 0.2 + (index % 7 === 0 ? 0.8 : 0.2),
+    low: 99.8 + index * 0.2 - (index % 5 === 0 ? 0.6 : 0.15),
+    close: 100.2 + index * 0.2 + (index % 6 === 0 ? 0.35 : 0),
+    volume: 12 + (index % 20)
+  }));
+  const config = makeConfig({ researchTrainCandles: 180, researchTestCandles: 48, researchStepCandles: 48, researchMaxWindows: 2 });
+  const report = runWalkForwardExperiment({ candles, config, symbol: "BTCUSDT" });
+  assert.ok(report.experimentCount >= 1);
+  assert.ok(Array.isArray(report.strategyScorecards));
 });
 
 await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {

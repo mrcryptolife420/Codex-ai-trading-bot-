@@ -1,0 +1,105 @@
+function safePrice(value, fallback) {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+export function buildSyntheticBook(candle, market, config, options = {}) {
+  const latencyBps = Number.isFinite(options.latencyBps)
+    ? options.latencyBps
+    : Math.max(0.4, (config.backtestLatencyMs || 0) / 1000 * 1.6);
+  const spreadBps = Math.max(config.paperSlippageBps * 1.6, 4 + Math.abs(market.momentum5 || 0) * 10_000 * 0.04);
+  const mid = safePrice(options.anchorPrice, candle.close);
+  const halfSpread = spreadBps / 20_000;
+  const depthNotional = config.backtestSyntheticDepthUsd * Math.max(0.35, 1 - (market.realizedVolPct || 0));
+  return {
+    bid: mid * (1 - halfSpread),
+    ask: mid * (1 + halfSpread),
+    mid,
+    spreadBps,
+    depthImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 90)),
+    weightedDepthImbalance: Math.max(-1, Math.min(1, (market.momentum20 || 0) * 70)),
+    tradeFlowImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 120)),
+    microTrend: market.momentum5 || 0,
+    recentTradeCount: 8,
+    bookPressure: Math.max(-1, Math.min(1, (market.momentum20 || 0) * 85)),
+    microPriceEdgeBps: latencyBps,
+    depthConfidence: Math.max(0.34, 1 - (market.realizedVolPct || 0) * 8),
+    totalDepthNotional: depthNotional,
+    queueImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 100)),
+    queueRefreshScore: Math.max(0, 0.4 + (market.volumeZ || 0) * 0.08),
+    resilienceScore: Math.max(0, 0.45 - (market.realizedVolPct || 0) * 2),
+    localBook: {
+      synced: true,
+      depthConfidence: Math.max(0.34, 1 - (market.realizedVolPct || 0) * 8),
+      totalDepthNotional: depthNotional,
+      queueImbalance: Math.max(-1, Math.min(1, (market.momentum5 || 0) * 100)),
+      queueRefreshScore: Math.max(0, 0.4 + (market.volumeZ || 0) * 0.08),
+      resilienceScore: Math.max(0, 0.45 - (market.realizedVolPct || 0) * 2)
+    }
+  };
+}
+
+export function resolveCandleIntervalMinutes(candles = [], index = 0, fallbackMinutes = 15) {
+  const current = candles[index] || null;
+  const previous = index > 0 ? candles[index - 1] : null;
+  const closeDeltaMs = current && previous ? Number(current.closeTime) - Number(previous.closeTime) : NaN;
+  if (Number.isFinite(closeDeltaMs) && closeDeltaMs > 0) {
+    return Math.max(1, closeDeltaMs / 60_000);
+  }
+  const openCloseMs = current ? Number(current.closeTime) - Number(current.openTime) : NaN;
+  if (Number.isFinite(openCloseMs) && openCloseMs > 0) {
+    return Math.max(1, openCloseMs / 60_000);
+  }
+  return fallbackMinutes;
+}
+
+export function resolveCandleOpenTime(candles = [], index = 0, fallbackMinutes = 15) {
+  const candle = candles[index] || null;
+  if (!candle) {
+    return null;
+  }
+  if (Number.isFinite(Number(candle.openTime))) {
+    return Number(candle.openTime);
+  }
+  const closeTime = Number(candle.closeTime);
+  if (!Number.isFinite(closeTime)) {
+    return null;
+  }
+  return closeTime - resolveCandleIntervalMinutes(candles, index, fallbackMinutes) * 60_000;
+}
+
+export function resolveEntryExecution(candles = [], signalIndex = 0, market = {}, config = {}, options = {}) {
+  const executionCandle = candles[signalIndex + 1] || null;
+  if (!executionCandle) {
+    return null;
+  }
+  return {
+    candle: executionCandle,
+    entryTimeMs: resolveCandleOpenTime(candles, signalIndex + 1),
+    book: buildSyntheticBook(executionCandle, market, config, {
+      anchorPrice: executionCandle.open,
+      latencyBps: options.latencyBps
+    })
+  };
+}
+
+export function resolveExitAnchorPrice({ candle = {}, exitReason = null, position = {}, trailingStopPrice = null }) {
+  const candleOpen = safePrice(candle.open, candle.close);
+  const candleClose = safePrice(candle.close, candleOpen);
+  if (exitReason === "stop_loss") {
+    return candleOpen <= safePrice(position.stopLossPrice, candleClose) ? candleOpen : safePrice(position.stopLossPrice, candleClose);
+  }
+  if (exitReason === "trailing_stop") {
+    return candleOpen <= safePrice(trailingStopPrice, candleClose) ? candleOpen : safePrice(trailingStopPrice, candleClose);
+  }
+  if (exitReason === "take_profit") {
+    return candleOpen >= safePrice(position.takeProfitPrice, candleClose) ? candleOpen : safePrice(position.takeProfitPrice, candleClose);
+  }
+  return candleClose;
+}
+
+export function buildExitExecutionBook({ candle = {}, market = {}, config = {}, position = {}, exitReason = null, trailingStopPrice = null, options = {} }) {
+  return buildSyntheticBook(candle, market, config, {
+    anchorPrice: resolveExitAnchorPrice({ candle, exitReason, position, trailingStopPrice }),
+    latencyBps: options.latencyBps
+  });
+}
