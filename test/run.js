@@ -52,6 +52,7 @@ import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtim
 import {
   buildSyntheticBook as buildBacktestSyntheticBook,
   buildSimulationEntryDecision,
+  buildSimulationExitDecision,
   resolveCandleIntervalMinutes,
   resolveEntryExecution,
   resolveExitAnchorPrice
@@ -6069,6 +6070,30 @@ await runCheck("simulation entry decision reuses risk manager guardrails", async
   });
   assert.equal(decision.allow, false);
   assert.ok(decision.reasons.includes("spread_too_wide"));
+});
+
+await runCheck("simulation exit decision reuses risk manager scale-out logic", async () => {
+  const config = makeConfig();
+  const decision = buildSimulationExitDecision({
+    config,
+    position: {
+      entryAt: "2026-03-08T08:00:00.000Z",
+      entryPrice: 100,
+      highestPrice: 104,
+      lowestPrice: 99,
+      quantity: 1,
+      totalCost: 100,
+      trailingStopPct: 0.01,
+      scaleOutFraction: 0.4,
+      scaleOutTriggerPrice: 101.2,
+      strategyAtEntry: "ema_trend",
+      regimeAtEntry: "trend"
+    },
+    currentPrice: 102.4,
+    marketSnapshot: { book: { spreadBps: 3, bookPressure: 0.08 }, market: { bearishPatternScore: 0.08 } },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.shouldScaleOut, true);
 });
 
 await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {

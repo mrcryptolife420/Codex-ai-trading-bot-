@@ -220,3 +220,27 @@ export function buildSimulationEntryDecision({
   });
   return decision;
 }
+
+export function buildSimulationExitDecision({
+  config = {},
+  position = {},
+  currentPrice = 0,
+  marketSnapshot = {},
+  nowIso,
+  overrides = {}
+} = {}) {
+  const risk = new RiskManager({ ...config, botMode: "paper" });
+  return risk.evaluateExit({
+    position,
+    currentPrice,
+    newsSummary: overrides.newsSummary || { riskScore: 0, sentimentScore: 0 },
+    announcementSummary: overrides.announcementSummary || { riskScore: 0 },
+    marketStructureSummary: overrides.marketStructureSummary || { riskScore: 0, signalScore: 0, liquidationCount: 0, liquidationImbalance: 0 },
+    calendarSummary: overrides.calendarSummary || { riskScore: 0, proximityHours: 999 },
+    marketSnapshot,
+    exitIntelligenceSummary: overrides.exitIntelligenceSummary || {},
+    exitPolicySummary: overrides.exitPolicySummary || {},
+    parameterGovernorSummary: overrides.parameterGovernorSummary || {},
+    nowIso
+  });
+}

@@ -12,7 +12,8 @@ import {
   buildExitExecutionBook,
   resolveCandleIntervalMinutes,
   resolveEntryExecution,
-  buildSimulationEntryDecision
+  buildSimulationEntryDecision,
+  buildSimulationExitDecision
 } from "./backtestExecution.js";
 
 function buildNewsSummary() {
@@ -87,6 +88,7 @@ export async function runBacktest({ config, logger, symbol }) {
   let position = null;
   let pendingEntry = null;
   const trades = [];
+  const scaleOuts = [];
   const equitySnapshots = [];
   const feeRate = config.paperFeeBps / 10000;
   const candleIntervalMinutes = resolveCandleIntervalMinutes(candles, 1, 15);
@@ -122,6 +124,10 @@ export async function runBacktest({ config, logger, symbol }) {
           stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
           takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
           maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
+          scaleOutTriggerPrice: fillEstimate.fillPrice * (1 + (pendingEntry.scaleOutTriggerPct || config.scaleOutTriggerPct)),
+          scaleOutFraction: pendingEntry.scaleOutFraction || config.scaleOutFraction,
+          scaleOutTrailOffsetPct: pendingEntry.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct,
+          scaleOutCompletedAt: null,
           highestPrice: fillEstimate.fillPrice,
           lowestPrice: fillEstimate.fillPrice,
           rawFeatures: pendingEntry.rawFeatures,
@@ -139,27 +145,66 @@ export async function runBacktest({ config, logger, symbol }) {
     }
 
     if (position) {
-      position.highestPrice = Math.max(position.highestPrice, candle.high);
-      position.lowestPrice = Math.min(position.lowestPrice, candle.low);
-      const trailingStopPrice = position.highestPrice * (1 - config.trailingStopPct);
-      let exitReason = null;
-      if (candle.low <= position.stopLossPrice) {
-        exitReason = "stop_loss";
-      } else if (candle.high >= position.takeProfitPrice) {
-        exitReason = "take_profit";
-      } else if (position.highestPrice > position.entryPrice * 1.004 && candle.low <= trailingStopPrice) {
-        exitReason = "trailing_stop";
-      } else if ((index - position.entryIndex) * candleIntervalMinutes >= (position.maxHoldMinutes || config.maxHoldMinutes)) {
-        exitReason = "time_stop";
+      const exitDecision = buildSimulationExitDecision({
+        config,
+        position,
+        currentPrice: context.book.mid,
+        marketSnapshot: { market: context.market, book: context.book },
+        nowIso: new Date(candle.closeTime).toISOString()
+      });
+      position.highestPrice = exitDecision.updatedHigh;
+      position.lowestPrice = exitDecision.updatedLow;
+      const trailingStopPrice = position.highestPrice * (1 - (position.trailingStopPct || config.trailingStopPct));
+
+      if (exitDecision.shouldScaleOut) {
+        const exitBook = buildSyntheticBook(candle, context.market, config, { anchorPrice: candle.close });
+        const requestedQuantity = position.quantity * exitDecision.scaleOutFraction;
+        const fillEstimate = execution.simulatePaperFill({
+          marketSnapshot: { market: context.market, book: exitBook },
+          side: "SELL",
+          requestedQuantity,
+          plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
+          latencyMs: config.backtestLatencyMs
+        });
+        const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, position.quantity));
+        if (executedQuantity > 0 && executedQuantity < position.quantity) {
+          const grossProceeds = executedQuantity * fillEstimate.fillPrice;
+          const fee = grossProceeds * feeRate;
+          const netProceeds = grossProceeds - fee;
+          const proportion = executedQuantity / position.quantity;
+          const allocatedCost = position.totalCost * proportion;
+          quoteFree += netProceeds;
+          position.quantity -= executedQuantity;
+          position.totalCost -= allocatedCost;
+          position.notional = position.entryPrice * position.quantity;
+          position.scaleOutCompletedAt = new Date(candle.closeTime).toISOString();
+          position.scaleOutCount = (position.scaleOutCount || 0) + 1;
+          position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct)));
+          scaleOuts.push({
+            id: `${symbol}:scaleout:${index}`,
+            symbol,
+            at: new Date(candle.closeTime).toISOString(),
+            fraction: executedQuantity / (executedQuantity + position.quantity),
+            quantity: executedQuantity,
+            price: fillEstimate.fillPrice,
+            grossProceeds,
+            netProceeds,
+            fee,
+            allocatedCost,
+            realizedPnl: netProceeds - allocatedCost,
+            reason: exitDecision.scaleOutReason,
+            brokerMode: "backtest"
+          });
+        }
       }
 
-      if (exitReason) {
+      if (exitDecision.shouldExit) {
         const exitBook = buildExitExecutionBook({
           candle,
           market: context.market,
           config,
           position,
-          exitReason,
+          exitReason: exitDecision.reason,
           trailingStopPrice
         });
         const exitPlan = { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false };
@@ -194,7 +239,7 @@ export async function runBacktest({ config, logger, symbol }) {
           regimeAtEntry: position.regimeAtEntry,
           entrySpreadBps: position.entrySpreadBps,
           exitSpreadBps: exitBook.spreadBps,
-          reason: exitReason,
+          reason: exitDecision.reason,
           rawFeatures: position.rawFeatures,
           strategyAtEntry: position.strategyAtEntry || null,
           transformerDecision: position.transformerDecision || null,
@@ -272,7 +317,10 @@ export async function runBacktest({ config, logger, symbol }) {
             regimeAtEntry: context.regimeSummary.regime,
             plan: decision.executionPlan,
             probabilityAtEntry: score.probability,
-            maxHoldMinutes: decision.maxHoldMinutes
+            maxHoldMinutes: decision.maxHoldMinutes,
+            scaleOutTriggerPct: decision.scaleOutPlan?.triggerPct,
+            scaleOutFraction: decision.scaleOutPlan?.fraction,
+            scaleOutTrailOffsetPct: decision.scaleOutPlan?.trailOffsetPct
           };
         }
       }
@@ -288,7 +336,7 @@ export async function runBacktest({ config, logger, symbol }) {
   }
 
   const report = buildPerformanceReport({
-    journal: { trades, equitySnapshots },
+    journal: { trades, equitySnapshots, scaleOuts },
     runtime: { openPositions: position ? [position] : [] },
     config
   });

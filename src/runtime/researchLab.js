@@ -8,7 +8,7 @@ import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
-import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision } from "./backtestExecution.js";
+import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision, buildSimulationExitDecision } from "./backtestExecution.js";
 
 function num(value, decimals = 4, fallback = 0) {
   return Number.isFinite(value) ? Number(value.toFixed(decimals)) : fallback;
@@ -237,6 +237,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
     let position = null;
     let pendingEntry = null;
     const trades = [];
+    const scaleOuts = [];
     const equitySnapshots = [];
 
     for (let index = window.testStart; index < window.testEnd; index += 1) {
@@ -269,6 +270,10 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
             stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
             takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
             maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
+            scaleOutTriggerPrice: fillEstimate.fillPrice * (1 + (pendingEntry.scaleOutTriggerPct || config.scaleOutTriggerPct)),
+            scaleOutFraction: pendingEntry.scaleOutFraction || config.scaleOutFraction,
+            scaleOutTrailOffsetPct: pendingEntry.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct,
+            scaleOutCompletedAt: null,
             highestPrice: fillEstimate.fillPrice,
             lowestPrice: fillEstimate.fillPrice,
             rawFeatures: pendingEntry.rawFeatures,
@@ -291,29 +296,66 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
       });
 
       if (position) {
-        position.highestPrice = Math.max(position.highestPrice, context.candle.high);
-        position.lowestPrice = Math.min(position.lowestPrice, context.candle.low);
-        const ageCandles = index - position.entryIndex;
-        const trailingStopPrice = position.highestPrice * (1 - config.trailingStopPct);
-        let exitReason = null;
+        const exitDecision = buildSimulationExitDecision({
+          config,
+          position,
+          currentPrice: context.book.mid,
+          marketSnapshot: { market: context.market, book: context.book },
+          nowIso: new Date(context.candle.closeTime).toISOString()
+        });
+        position.highestPrice = exitDecision.updatedHigh;
+        position.lowestPrice = exitDecision.updatedLow;
+        const trailingStopPrice = position.highestPrice * (1 - (position.trailingStopPct || config.trailingStopPct));
 
-        if (context.candle.low <= position.stopLossPrice) {
-          exitReason = "stop_loss";
-        } else if (context.candle.high >= position.takeProfitPrice) {
-          exitReason = "take_profit";
-        } else if (position.highestPrice > position.entryPrice * 1.004 && context.candle.low <= trailingStopPrice) {
-          exitReason = "trailing_stop";
-        } else if (ageCandles * candleIntervalMinutes >= (position.maxHoldMinutes || config.maxHoldMinutes || horizon * candleIntervalMinutes)) {
-          exitReason = "time_stop";
+        if (exitDecision.shouldScaleOut) {
+          const exitBook = buildSyntheticBook(context.candle, context.market, config, { anchorPrice: context.candle.close, latencyBps: 0.4 });
+          const requestedQuantity = position.quantity * exitDecision.scaleOutFraction;
+          const fillEstimate = execution.simulatePaperFill({
+            marketSnapshot: { market: context.market, book: exitBook },
+            side: "SELL",
+            requestedQuantity,
+            plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
+            latencyMs: config.backtestLatencyMs
+          });
+          const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, position.quantity));
+          if (executedQuantity > 0 && executedQuantity < position.quantity) {
+            const grossProceeds = executedQuantity * fillEstimate.fillPrice;
+            const fee = grossProceeds * feeRate;
+            const netProceeds = grossProceeds - fee;
+            const proportion = executedQuantity / position.quantity;
+            const allocatedCost = position.totalCost * proportion;
+            quoteFree += netProceeds;
+            position.quantity -= executedQuantity;
+            position.totalCost -= allocatedCost;
+            position.notional = position.entryPrice * position.quantity;
+            position.scaleOutCompletedAt = new Date(context.candle.closeTime).toISOString();
+            position.scaleOutCount = (position.scaleOutCount || 0) + 1;
+            position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct)));
+            scaleOuts.push({
+              id: `${symbol}-${window.testStart}-${index}:scaleout`,
+              symbol,
+              at: new Date(context.candle.closeTime).toISOString(),
+              fraction: executedQuantity / (executedQuantity + position.quantity),
+              quantity: executedQuantity,
+              price: fillEstimate.fillPrice,
+              grossProceeds,
+              netProceeds,
+              fee,
+              allocatedCost,
+              realizedPnl: netProceeds - allocatedCost,
+              reason: exitDecision.scaleOutReason,
+              brokerMode: "research"
+            });
+          }
         }
 
-        if (exitReason) {
+        if (exitDecision.shouldExit) {
           const exitBook = buildExitExecutionBook({
             candle: context.candle,
             market: context.market,
             config,
             position,
-            exitReason,
+            exitReason: exitDecision.reason,
             trailingStopPrice,
             options: { latencyBps: 0.4 }
           });
@@ -346,7 +388,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
             maePct: position.entryPrice ? Math.min(0, (position.lowestPrice - position.entryPrice) / position.entryPrice) : 0,
             regimeAtEntry: position.regimeAtEntry,
             strategyAtEntry: position.strategyAtEntry,
-            reason: exitReason,
+            reason: exitDecision.reason,
             brokerMode: "research",
             entryExecutionAttribution: execution.buildExecutionAttribution({
               plan: position.executionPlan,
@@ -418,7 +460,10 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
             regimeAtEntry: context.regimeSummary.regime,
             plan: decision.executionPlan,
             probabilityAtEntry: score.probability,
-            maxHoldMinutes: decision.maxHoldMinutes
+            maxHoldMinutes: decision.maxHoldMinutes,
+            scaleOutTriggerPct: decision.scaleOutPlan?.triggerPct,
+            scaleOutFraction: decision.scaleOutPlan?.fraction,
+            scaleOutTrailOffsetPct: decision.scaleOutPlan?.trailOffsetPct
           };
         }
       }
@@ -432,7 +477,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
     }
 
     const report = buildPerformanceReport({
-      journal: { trades, equitySnapshots, scaleOuts: [], blockedSetups: [], researchRuns: [], counterfactuals: [] },
+      journal: { trades, equitySnapshots, scaleOuts, blockedSetups: [], researchRuns: [], counterfactuals: [] },
       runtime: { openPositions: position ? [position] : [] },
       config
     });
