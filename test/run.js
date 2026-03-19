@@ -4624,6 +4624,54 @@ await runCheck("performance report summarizes journal metrics", async () => {
   assert.ok(report.executionSummary.avgEntryTouchSlippageBps >= 0);
 });
 
+await runCheck("performance report includes scale-out pnl in realized totals without changing trade stats", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        {
+          id: "paper-trade-1",
+          brokerMode: "paper",
+          entryAt: "2026-03-09T08:00:00.000Z",
+          exitAt: "2026-03-09T10:00:00.000Z",
+          pnlQuote: 20,
+          netPnlPct: 0.02,
+          entryExecutionAttribution: { entryStyle: "market" },
+          exitExecutionAttribution: { entryStyle: "market_exit" }
+        },
+        {
+          id: "live-trade-1",
+          brokerMode: "live",
+          entryAt: "2026-03-07T08:00:00.000Z",
+          exitAt: "2026-03-07T10:00:00.000Z",
+          pnlQuote: -8,
+          netPnlPct: -0.008,
+          entryExecutionAttribution: { entryStyle: "market" },
+          exitExecutionAttribution: { entryStyle: "market_exit" }
+        }
+      ],
+      scaleOuts: [
+        { positionId: "paper-trade-1", brokerMode: "paper", at: "2026-03-09T09:00:00.000Z", realizedPnl: 6, fraction: 0.4 },
+        { positionId: "live-trade-1", brokerMode: "live", at: "2026-03-07T09:00:00.000Z", realizedPnl: -3, fraction: 0.3 }
+      ],
+      equitySnapshots: []
+    },
+    runtime: { openPositions: [] },
+    config: { reportLookbackTrades: 50 },
+    now: new Date("2026-03-09T12:00:00.000Z")
+  });
+  assert.equal(report.tradeCount, 2);
+  assert.equal(report.realizedPnl, 15);
+  assert.equal(report.windows.today.tradeCount, 1);
+  assert.equal(report.windows.today.realizedPnl, 26);
+  assert.equal(report.windows.days7.realizedPnl, 15);
+  assert.equal(report.windows.allTime.realizedPnl, 15);
+  assert.equal(report.modes.paper.tradeCount, 1);
+  assert.equal(report.modes.paper.realizedPnl, 26);
+  assert.equal(report.modes.live.tradeCount, 1);
+  assert.equal(report.modes.live.realizedPnl, -11);
+  assert.equal(report.scaleOutSummary.realizedPnl, 3);
+});
+
 await runCheck("performance report keeps open exposure finite with invalid positions", async () => {
   const report = buildPerformanceReport({
     journal: {

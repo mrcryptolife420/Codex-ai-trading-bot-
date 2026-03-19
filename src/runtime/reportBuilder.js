@@ -6,9 +6,10 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function buildTradeStats(trades) {
+function buildTradeStats(trades, options = {}) {
+  const realizedPnlAdjustment = safeNumber(options.realizedPnlAdjustment, 0);
   let winCount = 0;
-  let realizedPnl = 0;
+  let realizedPnl = realizedPnlAdjustment;
   let grossProfit = 0;
   let grossLossAbs = 0;
   let totalPnlPct = 0;
@@ -49,11 +50,34 @@ function startOfLocalDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-function buildWindowSummaries(trades, thresholds = {}) {
+function buildScaleOutPnlSummary(scaleOuts = [], thresholds = {}) {
+  const totals = {
+    allTime: scaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0)
+  };
+  for (const name of Object.keys(thresholds)) {
+    totals[name] = 0;
+  }
+  for (const item of scaleOuts) {
+    const eventMs = parseTimestampMs(item.at || item.exitAt || item.createdAt);
+    if (!Number.isFinite(eventMs)) {
+      continue;
+    }
+    const realizedPnl = safeNumber(item.realizedPnl, 0);
+    for (const [name, startMs] of Object.entries(thresholds)) {
+      if (eventMs >= startMs) {
+        totals[name] += realizedPnl;
+      }
+    }
+  }
+  return totals;
+}
+
+function buildWindowSummaries(trades, thresholds = {}, options = {}) {
+  const scaleOutPnlSummary = options.scaleOutPnlSummary || {};
   const buckets = Object.fromEntries(
     Object.entries(thresholds).map(([name]) => [name, {
       tradeCount: 0,
-      realizedPnl: 0,
+      realizedPnl: safeNumber(scaleOutPnlSummary[name], 0),
       totalPnlPct: 0,
       winCount: 0,
       grossProfit: 0,
@@ -121,6 +145,37 @@ function buildScaleOutSummary(scaleOuts = []) {
     realizedPnl: scaleOuts.reduce((total, item) => total + (item.realizedPnl || 0), 0),
     averageFraction: average(scaleOuts.map((item) => item.fraction || 0))
   };
+}
+
+function buildRecentScaleOuts(scaleOuts = [], lookbackTrades = [], limit = 50) {
+  if (!scaleOuts.length || limit <= 0) {
+    return [];
+  }
+  if (!lookbackTrades.length) {
+    return scaleOuts.slice(-limit);
+  }
+  const lookbackTradeIds = new Set(lookbackTrades.map((trade) => trade.id).filter(Boolean));
+  const linked = lookbackTradeIds.size
+    ? scaleOuts.filter((item) => item.positionId && lookbackTradeIds.has(item.positionId))
+    : [];
+  const lookbackStartMs = lookbackTrades.reduce((min, trade) => {
+    const tradeMs = parseTimestampMs(trade.exitAt || trade.entryAt);
+    return Number.isFinite(tradeMs) ? Math.min(min, tradeMs) : min;
+  }, Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(lookbackStartMs)) {
+    return linked.length ? linked : scaleOuts.slice(-limit);
+  }
+  const matched = scaleOuts.filter((item) => parseTimestampMs(item.at || item.exitAt || item.createdAt) >= lookbackStartMs);
+  if (linked.length) {
+    const merged = [...linked];
+    for (const item of matched) {
+      if (!merged.includes(item)) {
+        merged.push(item);
+      }
+    }
+    return merged;
+  }
+  return matched.length ? matched : scaleOuts.slice(-limit);
 }
 
 function parseTimestampMs(value) {
@@ -447,9 +502,12 @@ function buildPnlDecomposition(trades = []) {
   };
 }
 
-function buildModeStats(trades = [], brokerMode = "paper") {
+function buildModeStats(trades = [], brokerMode = "paper", scaleOuts = []) {
   const filtered = trades.filter((trade) => (trade.brokerMode || "paper") === brokerMode);
-  const stats = buildTradeStats(filtered);
+  const realizedPnlAdjustment = scaleOuts
+    .filter((item) => (item.brokerMode || "paper") === brokerMode)
+    .reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
+  const stats = buildTradeStats(filtered, { realizedPnlAdjustment });
   return {
     ...stats,
     averageExecutionQuality: average(filtered.map((trade) => trade.executionQualityScore || 0))
@@ -677,6 +735,14 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   );
   const nowMs = now.getTime();
   const localDayStartMs = startOfLocalDay(now);
+  const scaleOutPnlSummary = buildScaleOutPnlSummary(scaleOuts, {
+    today: localDayStartMs,
+    days7: nowMs - 7 * 86_400_000,
+    days15: nowMs - 15 * 86_400_000,
+    days30: nowMs - 30 * 86_400_000
+  });
+  const lookbackScaleOuts = buildRecentScaleOuts(scaleOuts, lookbackTrades, config.reportLookbackTrades || 0);
+  const lookbackScaleOutPnl = lookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
   const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
   const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config);
   const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
@@ -685,10 +751,12 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     days7: nowMs - 7 * 86_400_000,
     days15: nowMs - 15 * 86_400_000,
     days30: nowMs - 30 * 86_400_000
+  }, {
+    scaleOutPnlSummary
   });
 
   return {
-    ...buildTradeStats(lookbackTrades),
+    ...buildTradeStats(lookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl }),
     maxDrawdownPct: buildDrawdown(equitySnapshots),
     openExposure,
     openPositions: (runtime.openPositions || []).length,
@@ -712,11 +780,11 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
       days7: windowSummaries.days7,
       days15: windowSummaries.days15,
       days30: windowSummaries.days30,
-      allTime: buildTradeStats(trades)
+      allTime: buildTradeStats(trades, { realizedPnlAdjustment: scaleOutPnlSummary.allTime })
     },
     modes: {
-      paper: buildModeStats(trades, "paper"),
-      live: buildModeStats(trades, "live")
+      paper: buildModeStats(trades, "paper", scaleOuts),
+      live: buildModeStats(trades, "live", scaleOuts)
     },
     equitySeries: equitySnapshots.slice(-(config.dashboardEquityPointLimit || 240)),
     cycleSeries: [...(journal.cycles || [])].slice(-(config.dashboardCyclePointLimit || 120)),
