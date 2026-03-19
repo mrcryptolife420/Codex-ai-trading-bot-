@@ -417,6 +417,16 @@ export class BotManager {
     });
   }
 
+  async revertPolicyTransition(id, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.revertPolicyTransition({ id, note });
+      return this.getSnapshot();
+    });
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();

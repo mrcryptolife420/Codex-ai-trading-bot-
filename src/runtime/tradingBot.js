@@ -2125,6 +2125,24 @@ function summarizePaperLearning(summary = {}) {
       safeAutoActions: arr(summary.operatorGuardrails.safeAutoActions || []).slice(0, 4),
       note: summary.operatorGuardrails.note || null
     } : null,
+    operatorActions: summary.operatorActions ? {
+      status: summary.operatorActions.status || "idle",
+      activeOverrides: arr(summary.operatorActions.activeOverrides || []).slice(0, 6).map((item) => ({
+        id: item.id || null,
+        status: item.status || null,
+        note: item.note || null,
+        approvedAt: item.approvedAt || null
+      })),
+      history: arr(summary.operatorActions.history || []).slice(0, 10).map((item) => ({
+        id: item.id || null,
+        action: item.action || null,
+        note: item.note || null,
+        at: item.at || null,
+        scope: item.scope || null,
+        status: item.status || null
+      })),
+      note: summary.operatorActions.note || null
+    } : null,
     reviewQueue: arr(summary.reviewQueue || []).slice(0, 4).map((item) => ({
       type: item.type || null,
       id: item.id || null,
@@ -3873,10 +3891,12 @@ export class TradingBot {
     this.runtime.operatorPolicyState = this.runtime.operatorPolicyState || {
       approvals: [],
       dismissals: [],
+      history: [],
       strategyOverrides: {}
     };
     this.runtime.operatorPolicyState.approvals = arr(this.runtime.operatorPolicyState.approvals).slice(0, 40);
     this.runtime.operatorPolicyState.dismissals = arr(this.runtime.operatorPolicyState.dismissals).slice(0, 40);
+    this.runtime.operatorPolicyState.history = arr(this.runtime.operatorPolicyState.history).slice(0, 80);
     this.runtime.operatorPolicyState.strategyOverrides = this.runtime.operatorPolicyState.strategyOverrides && typeof this.runtime.operatorPolicyState.strategyOverrides === "object"
       ? this.runtime.operatorPolicyState.strategyOverrides
       : {};
@@ -3968,6 +3988,15 @@ export class TradingBot {
       approvedAt: at
     });
     state.approvals = state.approvals.slice(0, 40);
+    state.history.unshift({
+      id: transitionId,
+      action: normalizedAction,
+      note: note || null,
+      at,
+      scope: candidate.scope || null,
+      status: "approved"
+    });
+    state.history = state.history.slice(0, 80);
     state.dismissals = state.dismissals.filter((item) => !(item.id === transitionId && item.action === normalizedAction));
     if (candidate.type === "strategy" && ["retire_candidate", "cooldown_candidate"].includes(normalizedAction)) {
       state.strategyOverrides[transitionId] = {
@@ -4005,6 +4034,15 @@ export class TradingBot {
       dismissedAt: at
     });
     state.dismissals = state.dismissals.slice(0, 40);
+    state.history.unshift({
+      id: transitionId,
+      action: normalizedAction,
+      note: note || null,
+      at,
+      scope: null,
+      status: "rejected"
+    });
+    state.history = state.history.slice(0, 80);
     this.recordEvent("operator_policy_transition_rejected", {
       at,
       id: transitionId,
@@ -4016,6 +4054,35 @@ export class TradingBot {
       rejected: true,
       id: transitionId,
       action: normalizedAction
+    };
+  }
+
+  async revertPolicyTransition({ id, note = null, at = nowIso() } = {}) {
+    const transitionId = `${id || ""}`.trim();
+    if (!transitionId) {
+      throw new Error("Ongeldige policy transition.");
+    }
+    const state = this.ensureOperatorPolicyState();
+    delete state.strategyOverrides[transitionId];
+    state.approvals = state.approvals.filter((item) => item.id !== transitionId);
+    state.history.unshift({
+      id: transitionId,
+      action: "revert_override",
+      note: note || null,
+      at,
+      scope: transitionId,
+      status: "reverted"
+    });
+    state.history = state.history.slice(0, 80);
+    this.recordEvent("operator_policy_transition_reverted", {
+      at,
+      id: transitionId,
+      note: note || null
+    });
+    this.refreshGovernanceViews(at);
+    return {
+      reverted: true,
+      id: transitionId
     };
   }
 
@@ -5610,6 +5677,29 @@ export class TradingBot {
         ? "Policy-overgangen zijn bewust alleen advisory totdat promotion, retirement en execution-guardrails tegelijk groen zijn."
         : "Nog geen policy-overgangen die operator-review vragen."
     };
+    const activeOverrides = Object.entries(operatorPolicyState.strategyOverrides || {}).map(([id, item]) => ({
+      id,
+      status: item.status || null,
+      note: item.note || null,
+      approvedAt: item.approvedAt || null
+    }));
+    const operatorActions = {
+      status: activeOverrides.length ? "active_overrides" : (operatorPolicyState.history?.length ? "history" : "idle"),
+      activeOverrides,
+      history: arr(operatorPolicyState.history || []).slice(0, 10).map((item) => ({
+        id: item.id || null,
+        action: item.action || null,
+        note: item.note || null,
+        at: item.at || null,
+        scope: item.scope || null,
+        status: item.status || null
+      })),
+      note: activeOverrides.length
+        ? `${activeOverrides.length} operator override(s) zijn nu actief.`
+        : operatorPolicyState.history?.length
+          ? "Eerdere operator-acties blijven zichtbaar in de history."
+          : "Nog geen operator-acties uitgevoerd op policy-transitions."
+    };
     const policyTransitions = {
       status: scopedTransitionCandidates.length ? "candidate_actions" : "observe",
       autoApplyEnabled: false,
@@ -5785,6 +5875,7 @@ export class TradingBot {
       executionInsights,
       policyTransitions,
       operatorGuardrails,
+      operatorActions,
       challengerScorecards,
       abExperiments,
       reviewQueue,

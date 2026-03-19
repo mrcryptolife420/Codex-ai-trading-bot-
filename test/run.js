@@ -7385,6 +7385,7 @@ await runCheck("trading bot paper learning summary exposes operator intelligence
   assert.ok(summary.policyTransitions.candidates.some((item) => item.action === "promote_candidate"));
   assert.equal(summary.operatorGuardrails.requireManualApproval, true);
   assert.ok(summary.operatorGuardrails.blockedBy.includes("sample_size_low"));
+  assert.ok(summary.operatorActions.note.length > 10);
   assert.equal(summary.promotionRoadmap.readyLevel, "paper");
   assert.equal(summary.promotionRoadmap.promotionHint.symbol, "BTCUSDT");
   assert.ok(summary.executionInsights.averageExecutionScore > 0);
@@ -7413,6 +7414,9 @@ await runCheck("trading bot approves strategy policy transitions and applies ope
   assert.equal(bot.runtime.operatorPolicyState.approvals[0].id, "ema_trend");
   assert.equal(bot.runtime.strategyRetirement.policies[0].status, "retire");
   assert.equal(bot.runtime.strategyRetirement.policies[0].note, "approved by operator");
+  await bot.revertPolicyTransition({ id: "ema_trend", note: "reverted", at: "2026-03-12T12:30:00.000Z" });
+  assert.equal(bot.runtime.operatorPolicyState.approvals.length, 0);
+  assert.equal(bot.runtime.operatorPolicyState.history[0].action, "revert_override");
 });
 
 await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {

@@ -1037,6 +1037,37 @@ function renderLearning(snapshot) {
             "Guardrails verschijnen zodra de bot overgangskandidaten ziet tussen policies of scopes."
           )}</p>
         </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Operator overrides</span>
+          <div class="tag-list">
+            ${(paperLearning.operatorActions?.activeOverrides || []).length
+              ? paperLearning.operatorActions.activeOverrides.map((item) => `<span class="tag positive">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status || "override")}`)}</span>`).join("")
+              : `<span class="tag">Geen actieve overrides</span>`}
+          </div>
+          ${(paperLearning.operatorActions?.activeOverrides || []).length
+            ? `
+            <div class="tag-list">
+              ${paperLearning.operatorActions.activeOverrides.map((item) => `<button class="tag negative" data-policy-action="revert" data-transition-id="${escapeHtml(item.id)}">Revert ${escapeHtml(titleize(item.id))}</button>`).join("")}
+            </div>
+          `
+            : ""}
+          <p>${escapeHtml(
+            paperLearning.operatorActions?.note ||
+            "Nog geen operator overrides actief."
+          )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Operator history</span>
+          <div class="tag-list">
+            ${(paperLearning.operatorActions?.history || []).length
+              ? paperLearning.operatorActions.history.slice(0, 4).map((item) => `<span class="tag">${escapeHtml(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`)}</span>`).join("")
+              : `<span class="tag">Nog geen history</span>`}
+          </div>
+          <p>${escapeHtml(
+            paperLearning.operatorActions?.history?.[0]?.note ||
+            "Goedgekeurde, afgewezen en teruggedraaide policy-acties verschijnen hier."
+          )}</p>
+        </article>
       </section>
       <section class="learning-review-grid">
         <article class="learning-review-column">
@@ -1314,7 +1345,9 @@ function bindEvents() {
     const id = `${target.getAttribute("data-transition-id") || ""}`.trim();
     const action = `${target.getAttribute("data-transition-kind") || ""}`.trim();
     if (!policyAction || !id || !action) {
-      return;
+      if (policyAction !== "revert" || !id) {
+        return;
+      }
     }
     const note = window.prompt(`Optionele notitie voor ${policyAction} ${id}:`, "") || null;
     if (policyAction === "approve") {
@@ -1323,6 +1356,10 @@ function bindEvents() {
     }
     if (policyAction === "reject") {
       await runAction("/api/policies/reject", { id, action, note });
+      return;
+    }
+    if (policyAction === "revert") {
+      await runAction("/api/policies/revert", { id, note });
     }
   });
 
