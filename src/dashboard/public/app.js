@@ -26,7 +26,6 @@ const elements = {
   positionsList: document.querySelector("#positionsList"),
   learningList: document.querySelector("#learningList"),
   opsSummary: document.querySelector("#opsSummary"),
-  opsLearning: document.querySelector("#opsLearning"),
   opsList: document.querySelector("#opsList"),
   missedTradesList: document.querySelector("#missedTradesList"),
   tradesBody: document.querySelector("#tradesBody"),
@@ -979,20 +978,18 @@ function renderLearning(snapshot) {
       text: learningStatus
     })
   );
+  const stripGrid = makeTagList([
+    makeTag(laneText),
+    makeTag(`Snapshot: ${formatDate(paperLearning.generatedAt)}`),
+    makeTag(`Top blocker: ${topBlockerText}`),
+    makeTag(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)
+  ]);
+  stripGrid.className = "learning-strip-grid";
   hero.append(
     heroTitle,
     makeNode("p", { className: "learning-copy", text: focusText }),
-    makeTagList([
-      makeTag(laneText),
-      makeTag(`Snapshot: ${formatDate(paperLearning.generatedAt)}`),
-      makeTag(`Top blocker: ${topBlockerText}`),
-      makeTag(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)
-    ].map((node) => {
-      node.classList.add("tag");
-      return node;
-    }))
+    stripGrid
   );
-  hero.lastChild.className = "learning-strip-grid";
 
   const summaryGrid = makeNode("section", { className: "learning-summary-grid" });
   summaryGrid.append(
@@ -1220,11 +1217,6 @@ function renderOps(snapshot) {
     foot: item.foot,
     valueClassName: item.tone || ""
   })));
-
-  if (elements.opsLearning) {
-    replaceChildren(elements.opsLearning, []);
-  }
-
   const events = buildOpsEvents(snapshot);
   if (!events.length) {
     replaceChildren(elements.opsList, [makeEmptyState("Geen operationele aandachtspunten.")]);
