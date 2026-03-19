@@ -11,7 +11,7 @@ import { BinanceClient } from "../src/binance/client.js";
 import { buildSymbolRules, resolveMarketBuyQuantity } from "../src/binance/symbolFilters.js";
 import { scoreHeadline, summarizeNews } from "../src/news/sentiment.js";
 import { NewsService } from "../src/news/newsService.js";
-import { parseProviderItems } from "../src/news/rssFeed.js";
+import { fetchXml, parseProviderItems } from "../src/news/rssFeed.js";
 import { BinanceAnnouncementService, normalizeCmsArticles } from "../src/events/binanceAnnouncementService.js";
 import { summarizeMarketStructure } from "../src/market/marketStructureService.js";
 import { MarketSentimentService, summarizeMarketSentiment } from "../src/market/marketSentimentService.js";
@@ -764,6 +764,29 @@ await runCheck("atom parser supports blockworks style feeds", async () => {
   assert.equal(items.length, 1);
   assert.equal(items[0].provider, "blockworks");
   assert.equal(items[0].source, "Blockworks");
+});
+
+await runCheck("rss fetch uses shared request budget when provided", async () => {
+  let delegated = false;
+  const xml = await fetchXml("https://example.com/feed", {
+    requestBudget: {
+      async fetchJson(url, options) {
+        delegated = true;
+        assert.equal(url, "https://example.com/feed");
+        assert.equal(options.key, "news:test_feed");
+        return {
+          ok: true,
+          async text() {
+            return "<rss></rss>";
+          }
+        };
+      }
+    },
+    runtime: {},
+    key: "news:test_feed"
+  });
+  assert.equal(xml, "<rss></rss>");
+  assert.equal(delegated, true);
 });
 
 await runCheck("binance cms articles normalize into official notice items", async () => {

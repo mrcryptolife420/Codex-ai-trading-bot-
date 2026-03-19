@@ -7,6 +7,7 @@ import { DecryptProvider } from "./decryptProvider.js";
 import { GoogleNewsProvider } from "./googleNewsProvider.js";
 import { summarizeNews } from "./sentiment.js";
 import { mapWithConcurrency } from "../utils/async.js";
+import { RequestBudget } from "../utils/requestBudget.js";
 
 const EMPTY_SUMMARY = {
   coverage: 0,
@@ -52,6 +53,14 @@ export class NewsService {
     this.recordEvent = typeof recordEvent === "function" ? recordEvent : null;
     this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
     this.reliability = new SourceReliabilityEngine(config);
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: Math.max(1, Number(config.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+      maxCooldownMs: Math.max(1, Number(config.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+      registry: this.reliability.registry,
+      runtime,
+      group: "news"
+    });
     this.providers = [
       { id: "google_news", client: new GoogleNewsProvider(logger) },
       { id: "coindesk", client: new CoinDeskProvider(logger) },
@@ -136,7 +145,10 @@ export class NewsService {
             symbol,
             aliases,
             lookbackHours: this.config.newsLookbackHours,
-            limit: this.config.newsHeadlineLimit
+            limit: this.config.newsHeadlineLimit,
+            requestBudget: this.requestBudget,
+            runtime: this.runtime,
+            providerId: provider.id
           });
           this.reliability.noteSuccess(this.runtime, provider.id, nowIso());
           successfulProviders += 1;

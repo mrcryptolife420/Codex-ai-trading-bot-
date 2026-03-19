@@ -11,11 +11,11 @@ export class GoogleNewsProvider {
     this.logger = logger;
   }
 
-  async fetchNews({ symbol, aliases, lookbackHours, limit }) {
+  async fetchNews({ symbol, aliases, lookbackHours, limit, requestBudget = null, runtime = null, providerId = "google_news" }) {
     const query = buildQuery(aliases, lookbackHours);
     const url = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
     try {
-      const xml = await fetchXml(url);
+      const xml = await fetchXml(url, { requestBudget, runtime, key: `news:${providerId}` });
       return parseProviderItems(
         xml,
         {

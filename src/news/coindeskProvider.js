@@ -7,8 +7,8 @@ export class CoinDeskProvider {
     this.logger = logger;
   }
 
-  async fetchNews({ aliases, lookbackHours, limit }) {
-    const xml = await fetchXml(COINDESK_FEED_URL);
+  async fetchNews({ aliases, lookbackHours, limit, requestBudget = null, runtime = null, providerId = "coindesk" }) {
+    const xml = await fetchXml(COINDESK_FEED_URL, { requestBudget, runtime, key: `news:${providerId}` });
     return parseProviderItems(
       xml,
       {

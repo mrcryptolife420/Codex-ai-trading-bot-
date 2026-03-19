@@ -616,46 +616,56 @@ function renderMissedTrades(snapshot) {
   const blocked = (snapshot?.dashboard?.blockedSetups || [])
     .filter((item) => item?.missedTradeAnalysis?.available)
     .slice(0, 4);
-  elements.missedTradesList.innerHTML = blocked.length
-    ? blocked.map((decision) => {
-      const analysis = decision.missedTradeAnalysis || {};
-      const blockerLabel = analysis.blockerId ? titleize(analysis.blockerId) : "Gemengde blokkade";
-      return `
-        <article class="signal-card missed-card">
-          <div class="card-summary">
-            <div class="card-header">
-              <div>
-                <p class="eyebrow">Gemiste setup</p>
-                <h3>${escapeHtml(decision.symbol || "-")}</h3>
-              </div>
-              <span class="pill negative">${escapeHtml(blockerLabel)}</span>
-            </div>
-            <p class="card-copy">${escapeHtml(analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar.")}</p>
-            <div class="decision-reasons">
-              <div class="reason-row">
-                <strong>Setup</strong>
-                <span class="reason-copy">${escapeHtml(formatDecisionType(decision))}</span>
-              </div>
-              <div class="reason-row">
-                <strong>Hoe wel</strong>
-                <span class="reason-copy">${escapeHtml(hypotheticalTradeText(decision))}</span>
-              </div>
-              <div class="reason-row">
-                <strong>Les</strong>
-                <span class="reason-copy">${escapeHtml(analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad.")}</span>
-              </div>
-            </div>
-            <div class="tag-list">
-              ${analysis.badVetoRate != null ? `<span class="tag negative">Te streng ${escapeHtml(formatPct(analysis.badVetoRate, 0))}</span>` : ""}
-              ${analysis.goodVetoRate != null ? `<span class="tag ${analysis.goodVetoRate >= analysis.badVetoRate ? "positive" : ""}">Terecht ${escapeHtml(formatPct(analysis.goodVetoRate, 0))}</span>` : ""}
-              ${analysis.averageMissedMovePct != null ? `<span class="tag">${escapeHtml(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`)}</span>` : ""}
-              ${analysis.recentMatches ? `<span class="tag">${escapeHtml(`${analysis.recentMatches} cases`)}</span>` : ""}
-            </div>
-          </div>
-        </article>
-      `;
-    }).join("")
-    : `<div class="empty">Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades.</div>`;
+  if (!blocked.length) {
+    replaceChildren(elements.missedTradesList, [makeNode("div", { className: "empty", text: "Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades." })]);
+    return;
+  }
+  replaceChildren(elements.missedTradesList, blocked.map((decision) => {
+    const analysis = decision.missedTradeAnalysis || {};
+    const blockerLabel = analysis.blockerId ? titleize(analysis.blockerId) : "Gemengde blokkade";
+    const article = makeNode("article", { className: "signal-card missed-card" });
+    const summary = makeNode("div", { className: "card-summary" });
+    const header = makeNode("div", { className: "card-header" });
+    const left = makeNode("div");
+    left.append(
+      makeNode("p", { className: "eyebrow", text: "Gemiste setup" }),
+      makeNode("h3", { text: decision.symbol || "-" })
+    );
+    header.append(
+      left,
+      makeNode("span", { className: "pill negative", text: blockerLabel })
+    );
+    const reasons = makeNode("div", { className: "decision-reasons" });
+    const rows = [
+      ["Setup", formatDecisionType(decision)],
+      ["Hoe wel", hypotheticalTradeText(decision)],
+      ["Les", analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad."]
+    ];
+    reasons.append(...rows.map(([label, text]) => {
+      const row = makeNode("div", { className: "reason-row" });
+      row.append(
+        makeNode("strong", { text: label }),
+        makeNode("span", { className: "reason-copy", text })
+      );
+      return row;
+    }));
+    const tags = makeNode("div", { className: "tag-list" });
+    const tagNodes = [
+      analysis.badVetoRate != null ? makeTag(`Te streng ${formatPct(analysis.badVetoRate, 0)}`, "tag negative") : null,
+      analysis.goodVetoRate != null ? makeTag(`Terecht ${formatPct(analysis.goodVetoRate, 0)}`, `tag ${analysis.goodVetoRate >= analysis.badVetoRate ? "positive" : ""}`.trim()) : null,
+      analysis.averageMissedMovePct != null ? makeTag(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`) : null,
+      analysis.recentMatches ? makeTag(`${analysis.recentMatches} cases`) : null
+    ].filter(Boolean);
+    tags.append(...tagNodes);
+    summary.append(
+      header,
+      makeNode("p", { className: "card-copy", text: analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar." }),
+      reasons,
+      tags
+    );
+    article.append(summary);
+    return article;
+  }));
 }
 
 function learningFocusText(snapshot) {

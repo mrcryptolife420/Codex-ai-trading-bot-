@@ -7,8 +7,8 @@ export class CointelegraphProvider {
     this.logger = logger;
   }
 
-  async fetchNews({ aliases, lookbackHours, limit }) {
-    const xml = await fetchXml(COINTELEGRAPH_FEED_URL);
+  async fetchNews({ aliases, lookbackHours, limit, requestBudget = null, runtime = null, providerId = "cointelegraph" }) {
+    const xml = await fetchXml(COINTELEGRAPH_FEED_URL, { requestBudget, runtime, key: `news:${providerId}` });
     return parseProviderItems(
       xml,
       {

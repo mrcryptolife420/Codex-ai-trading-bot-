@@ -86,13 +86,22 @@ function filterItems(items, { aliases = [], lookbackHours = 24, limit = 12 }) {
     .slice(0, limit);
 }
 
-export async function fetchXml(url) {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 trading-bot"
-    },
-    signal: AbortSignal.timeout(8_000)
-  });
+export async function fetchXml(url, { requestBudget = null, runtime = null, key = url, fetchImpl = globalThis.fetch } = {}) {
+  const response = requestBudget
+    ? await requestBudget.fetchJson(url, {
+        key,
+        runtime,
+        fetchImpl,
+        headers: {
+          "User-Agent": "Mozilla/5.0 trading-bot"
+        }
+      })
+    : await fetchImpl(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 trading-bot"
+        },
+        signal: AbortSignal.timeout(8_000)
+      });
 
   if (!response.ok) {
     throw new Error(`RSS fetch failed: ${response.status}`);
