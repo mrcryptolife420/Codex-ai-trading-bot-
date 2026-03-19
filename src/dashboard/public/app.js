@@ -71,13 +71,16 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function escapeAttr(value) {
-  return escapeHtml(value).replace(/[\r\n]/g, " ");
-}
-
-function renderActionTag({ action, kind = "", id, label, tone = "" }) {
-  const classes = ["tag", tone].filter(Boolean).join(" ");
-  return `<button class="${classes}" data-policy-action="${escapeAttr(action)}" data-transition-id="${escapeAttr(id)}"${kind ? ` data-transition-kind="${escapeAttr(kind)}"` : ""}>${escapeHtml(label)}</button>`;
+function makeActionButton({ action, kind = "", id, label, tone = "" }) {
+  return makeNode("button", {
+    className: ["tag", tone].filter(Boolean).join(" "),
+    text: label,
+    attrs: {
+      "data-policy-action": action,
+      "data-transition-id": id,
+      "data-transition-kind": kind || null
+    }
+  });
 }
 
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
@@ -105,6 +108,12 @@ function replaceChildren(element, children = []) {
 
 function makeTag(text, className = "tag") {
   return makeNode("span", { className, text });
+}
+
+function makeTagList(items = []) {
+  const list = makeNode("div", { className: "tag-list" });
+  list.append(...items.filter(Boolean));
+  return list;
 }
 
 function readStoredBoolean(key, fallback = false) {
@@ -790,40 +799,70 @@ function latestTradeSummary(snapshot) {
   };
 }
 
-function renderProbeReviews(reviews = []) {
-  if (!reviews.length) {
-    return `
-      <article class="learning-review-card">
-        <span class="metric-label">Probe review</span>
-        <p class="learning-note">Nog geen recente probe-trades om te tonen.</p>
-      </article>
-    `;
+function makeLearningReviewCard({
+  title,
+  outcome,
+  metrics = [],
+  note,
+  foot
+}) {
+  const article = makeNode("article", { className: "learning-review-card" });
+  if (title) {
+    const head = makeNode("div", { className: "learning-review-head" });
+    head.append(
+      makeNode("strong", { text: title }),
+      makeNode("span", { className: `pill ${statusTone(outcome)}`, text: titleize(outcome || "observe") })
+    );
+    article.append(head);
   }
-  return reviews.map((review) => `
-    <article class="learning-review-card">
-      <div class="learning-review-head">
-        <strong>${escapeHtml(review.symbol || "Probe")}</strong>
-        <span class="pill ${statusTone(review.outcome)}">${escapeHtml(titleize(review.outcome || "observe"))}</span>
-      </div>
-      <div class="learning-review-metrics">
-        <span class="tag ${toneClass(review.pnlQuote)}">${escapeHtml(formatMoney(review.pnlQuote || 0))}</span>
-        <span class="tag ${toneClass(review.netPnlPct)}">${escapeHtml(formatSignedPct(review.netPnlPct || 0, 1))}</span>
-        <span class="tag">${escapeHtml(titleize(review.reason || review.learningLane || "probe"))}</span>
-      </div>
-      <p class="learning-note">${escapeHtml(review.lesson || "Deze probe voedt de paper-leerlus.")}</p>
-      <span class="metric-foot">${escapeHtml(`Gesloten ${formatDate(review.closedAt)}`)}</span>
-    </article>
-  `).join("");
+  if (metrics.length) {
+    article.append(makeTagList(metrics.map((item) => makeTag(item.text, item.className || "tag"))));
+  }
+  article.append(makeNode("p", { className: "learning-note", text: note }));
+  if (foot) {
+    article.append(makeNode("span", { className: "metric-foot", text: foot }));
+  }
+  return article;
 }
 
-function renderShadowReviews(reviews = []) {
+function renderProbeReviewNodes(reviews = []) {
   if (!reviews.length) {
-    return `
-      <article class="learning-review-card">
-        <span class="metric-label">Shadow review</span>
-        <p class="learning-note">Nog geen recente shadow-cases om te tonen.</p>
-      </article>
-    `;
+    return [
+      (() => {
+        const article = makeNode("article", { className: "learning-review-card" });
+        article.append(
+          makeNode("span", { className: "metric-label", text: "Probe review" }),
+          makeNode("p", { className: "learning-note", text: "Nog geen recente probe-trades om te tonen." })
+        );
+        return article;
+      })()
+    ];
+  }
+  return reviews.map((review) => makeLearningReviewCard({
+    title: review.symbol || "Probe",
+    outcome: review.outcome || "observe",
+    metrics: [
+      { text: formatMoney(review.pnlQuote || 0), className: `tag ${toneClass(review.pnlQuote)}`.trim() },
+      { text: formatSignedPct(review.netPnlPct || 0, 1), className: `tag ${toneClass(review.netPnlPct)}`.trim() },
+      { text: titleize(review.reason || review.learningLane || "probe"), className: "tag" }
+    ],
+    note: review.lesson || "Deze probe voedt de paper-leerlus.",
+    foot: `Gesloten ${formatDate(review.closedAt)}`
+  }));
+}
+
+function renderShadowReviewNodes(reviews = []) {
+  if (!reviews.length) {
+    return [
+      (() => {
+        const article = makeNode("article", { className: "learning-review-card" });
+        article.append(
+          makeNode("span", { className: "metric-label", text: "Shadow review" }),
+          makeNode("p", { className: "learning-note", text: "Nog geen recente shadow-cases om te tonen." })
+        );
+        return article;
+      })()
+    ];
   }
   return reviews.map((review) => {
     const branchText = review.bestBranch?.id
@@ -834,21 +873,17 @@ function renderShadowReviews(reviews = []) {
     const moveText = Number.isFinite(review.realizedMovePct)
       ? `Move ${formatPct(review.realizedMovePct || 0, 1)}`
       : "Nog in review";
-    return `
-      <article class="learning-review-card">
-        <div class="learning-review-head">
-          <strong>${escapeHtml(review.symbol || "Shadow")}</strong>
-          <span class="pill ${statusTone(review.outcome)}">${escapeHtml(titleize(review.outcome || "observe"))}</span>
-        </div>
-        <div class="learning-review-metrics">
-          <span class="tag">${escapeHtml(moveText)}</span>
-          <span class="tag">${escapeHtml(titleize(review.blocker || "geen blocker"))}</span>
-        </div>
-        <p class="learning-note">${escapeHtml(review.lesson || "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.")}</p>
-        <span class="metric-foot">${escapeHtml(branchText)}</span>
-      </article>
-    `;
-  }).join("");
+    return makeLearningReviewCard({
+      title: review.symbol || "Shadow",
+      outcome: review.outcome || "observe",
+      metrics: [
+        { text: moveText, className: "tag" },
+        { text: titleize(review.blocker || "geen blocker"), className: "tag" }
+      ],
+      note: review.lesson || "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.",
+      foot: branchText
+    });
+  });
 }
 
 function renderLearning(snapshot) {
@@ -910,8 +945,6 @@ function renderLearning(snapshot) {
     paperLearning.notes?.[0] ||
     "Nog geen directe leeractie nodig.";
   const focusText = learningFocusText(snapshot);
-  const probeReviewMarkup = renderProbeReviews(paperLearning.recentProbeReviews || []);
-  const shadowReviewMarkup = renderShadowReviews(paperLearning.recentShadowReviews || []);
   const compactReviewTags = reviewQueue.length
     ? reviewQueue.map((item) => `<span class="tag ${item.priority === "high" ? "negative" : ""}">${escapeHtml(`${titleize(item.type)} · ${item.id}`)}</span>`).join("")
     : `<span class="tag">Geen review queue</span>`;
@@ -921,15 +954,6 @@ function renderLearning(snapshot) {
   const compactOverrideTags = activeOverrides.length
     ? activeOverrides.map((item) => `<span class="tag positive">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status || "override")}`)}</span>`).join("")
     : `<span class="tag">Geen actieve override</span>`;
-  const operatorActionButtons = policyCandidates.length
-    ? policyCandidates.map((item) => item.approved
-      ? `<span class="tag positive">${escapeHtml(`Approved · ${titleize(item.id)}`)}</span>`
-      : `${renderActionTag({ action: "approve", kind: item.action, id: item.id, label: `Approve ${titleize(item.id)}` })}${renderActionTag({ action: "reject", kind: item.action, id: item.id, label: "Reject", tone: "negative" })}`
-    ).join("")
-    : "";
-  const revertButtons = activeOverrides.length
-    ? activeOverrides.map((item) => renderActionTag({ action: "revert", id: item.id, label: `Revert ${titleize(item.id)}`, tone: "negative" })).join("")
-    : "";
 
   elements.learningList.innerHTML = `
     <article class="learning-board">
@@ -1010,17 +1034,13 @@ function renderLearning(snapshot) {
             paperLearning.operatorActions?.note ||
             "Nog geen policy-wijziging of override die operator-ingreep vraagt."
           )}</p>
-          ${operatorGuardrails.length ? `<div class="tag-list">${operatorGuardrails.map((item) => `<span class="tag negative">${escapeHtml(titleize(item))}</span>`).join("")}</div>` : ""}
-          ${operatorActionButtons ? `<div class="tag-list">${operatorActionButtons}</div>` : ""}
-          ${revertButtons ? `<div class="tag-list">${revertButtons}</div>` : ""}
+          <div class="tag-list" data-learning-guardrails></div>
+          <div class="tag-list" data-learning-actions></div>
+          <div class="tag-list" data-learning-reverts></div>
         </article>
         <article class="learning-list-item">
           <span class="metric-label">Laatste operatorlog</span>
-          <div class="tag-list">
-            ${operatorHistory.length
-              ? operatorHistory.map((item) => `<span class="tag">${escapeHtml(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`)}</span>`).join("")
-              : `<span class="tag">Nog geen operator history</span>`}
-          </div>
+          <div class="tag-list" data-learning-history></div>
           <p>${escapeHtml(
             operatorHistory[0]?.note ||
             paperLearning.coaching?.nextReview ||
@@ -1034,18 +1054,44 @@ function renderLearning(snapshot) {
             <span class="metric-label">Probe trades</span>
             <span class="metric-foot">Hoe echte paper-probes liepen</span>
           </div>
-          ${probeReviewMarkup}
+          <div data-learning-probes></div>
         </article>
         <article class="learning-review-column">
           <div class="learning-section-head">
             <span class="metric-label">Shadow cases</span>
             <span class="metric-foot">Wat geblokkeerde setups waarschijnlijk deden</span>
           </div>
-          ${shadowReviewMarkup}
+          <div data-learning-shadow></div>
         </article>
       </section>
     </article>
   `;
+  const probesContainer = elements.learningList.querySelector("[data-learning-probes]");
+  const shadowContainer = elements.learningList.querySelector("[data-learning-shadow]");
+  const guardrailsContainer = elements.learningList.querySelector("[data-learning-guardrails]");
+  const actionsContainer = elements.learningList.querySelector("[data-learning-actions]");
+  const revertsContainer = elements.learningList.querySelector("[data-learning-reverts]");
+  const historyContainer = elements.learningList.querySelector("[data-learning-history]");
+  replaceChildren(probesContainer, renderProbeReviewNodes(paperLearning.recentProbeReviews || []));
+  replaceChildren(shadowContainer, renderShadowReviewNodes(paperLearning.recentShadowReviews || []));
+  replaceChildren(guardrailsContainer, operatorGuardrails.length ? operatorGuardrails.map((item) => makeTag(titleize(item), "tag negative")) : []);
+  replaceChildren(actionsContainer, policyCandidates.length
+    ? policyCandidates.map((item) => item.approved
+      ? makeTag(`Approved · ${titleize(item.id)}`, "tag positive")
+      : [
+          makeActionButton({ action: "approve", kind: item.action, id: item.id, label: `Approve ${titleize(item.id)}` }),
+          makeActionButton({ action: "reject", kind: item.action, id: item.id, label: "Reject", tone: "negative" })
+        ]).flat()
+    : []);
+  replaceChildren(revertsContainer, activeOverrides.map((item) => makeActionButton({
+    action: "revert",
+    id: item.id,
+    label: `Revert ${titleize(item.id)}`,
+    tone: "negative"
+  })));
+  replaceChildren(historyContainer, operatorHistory.length
+    ? operatorHistory.map((item) => makeTag(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`))
+    : [makeTag("Nog geen operator history")]);
 }
 
 function buildOpsCards(snapshot) {
