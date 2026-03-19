@@ -2019,6 +2019,67 @@ function summarizePaperLearning(summary = {}) {
       tooLoose: summary.coaching.tooLoose || null,
       nextReview: summary.coaching.nextReview || null
     } : null,
+    blockerAttribution: summary.blockerAttribution ? {
+      status: summary.blockerAttribution.status || "observe",
+      dominantBlocker: summary.blockerAttribution.dominantBlocker || null,
+      strictestBlocker: summary.blockerAttribution.strictestBlocker ? {
+        id: summary.blockerAttribution.strictestBlocker.id || null,
+        badVetoRate: num(summary.blockerAttribution.strictestBlocker.badVetoRate || 0, 4),
+        governanceScore: num(summary.blockerAttribution.strictestBlocker.governanceScore || 0, 4),
+        affectedStrategies: arr(summary.blockerAttribution.strictestBlocker.affectedStrategies || []).slice(0, 3),
+        affectedRegimes: arr(summary.blockerAttribution.strictestBlocker.affectedRegimes || []).slice(0, 3)
+      } : null,
+      safestBlocker: summary.blockerAttribution.safestBlocker ? {
+        id: summary.blockerAttribution.safestBlocker.id || null,
+        goodVetoRate: num(summary.blockerAttribution.safestBlocker.goodVetoRate || 0, 4),
+        governanceScore: num(summary.blockerAttribution.safestBlocker.governanceScore || 0, 4)
+      } : null,
+      nextAction: summary.blockerAttribution.nextAction || "observe",
+      note: summary.blockerAttribution.note || null
+    } : null,
+    challengerPolicy: summary.challengerPolicy ? {
+      status: summary.challengerPolicy.status || "observe",
+      leadingLane: summary.challengerPolicy.leadingLane || null,
+      challengerEdge: num(summary.challengerPolicy.challengerEdge || 0, 4),
+      targetScope: summary.challengerPolicy.targetScope || null,
+      recommendation: summary.challengerPolicy.recommendation || "observe",
+      note: summary.challengerPolicy.note || null
+    } : null,
+    promotionRoadmap: summary.promotionRoadmap ? {
+      status: summary.promotionRoadmap.status || "blocked",
+      allowPromotion: Boolean(summary.promotionRoadmap.allowPromotion),
+      readyLevel: summary.promotionRoadmap.readyLevel || null,
+      blockerReasons: arr(summary.promotionRoadmap.blockerReasons || []).slice(0, 4),
+      nextGate: summary.promotionRoadmap.nextGate || null,
+      promotionHint: summary.promotionRoadmap.promotionHint ? {
+        symbol: summary.promotionRoadmap.promotionHint.symbol || null,
+        governanceScore: num(summary.promotionRoadmap.promotionHint.governanceScore || 0, 4),
+        status: summary.promotionRoadmap.promotionHint.status || "observe"
+      } : null,
+      note: summary.promotionRoadmap.note || null
+    } : null,
+    executionInsights: summary.executionInsights ? {
+      status: summary.executionInsights.status || "watch",
+      averageSetupScore: num(summary.executionInsights.averageSetupScore || 0, 4),
+      averageExecutionScore: num(summary.executionInsights.averageExecutionScore || 0, 4),
+      averageOutcomeScore: num(summary.executionInsights.averageOutcomeScore || 0, 4),
+      executionDragCount: summary.executionInsights.executionDragCount || 0,
+      setupDragCount: summary.executionInsights.setupDragCount || 0,
+      followThroughDragCount: summary.executionInsights.followThroughDragCount || 0,
+      averageSlippageDeltaBps: num(summary.executionInsights.averageSlippageDeltaBps || 0, 4),
+      averageLatencyBps: num(summary.executionInsights.averageLatencyBps || 0, 4),
+      bestExecutionStyle: summary.executionInsights.bestExecutionStyle ? {
+        id: summary.executionInsights.bestExecutionStyle.id || null,
+        realizedPnl: num(summary.executionInsights.bestExecutionStyle.realizedPnl || 0, 2),
+        winRate: num(summary.executionInsights.bestExecutionStyle.winRate || 0, 4)
+      } : null,
+      weakestExecutionStyle: summary.executionInsights.weakestExecutionStyle ? {
+        id: summary.executionInsights.weakestExecutionStyle.id || null,
+        realizedPnl: num(summary.executionInsights.weakestExecutionStyle.realizedPnl || 0, 2),
+        winRate: num(summary.executionInsights.weakestExecutionStyle.winRate || 0, 4)
+      } : null,
+      note: summary.executionInsights.note || null
+    } : null,
     reviewQueue: arr(summary.reviewQueue || []).slice(0, 4).map((item) => ({
       type: item.type || null,
       id: item.id || null,
@@ -4931,6 +4992,38 @@ export class TradingBot {
         ? `${rankedActiveCandidates[0].symbol || "De top candidate"} is nu het meest informatieve leergeval door ${titleize(rankedActiveCandidates[0].reason || "active learning")}.`
         : "Nog geen uitgesproken active-learning kandidaat zichtbaar."
     };
+    const performanceReport = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    const paperReportTrades = arr(performanceReport.recentTrades || []).filter((trade) => (trade.brokerMode || "paper") === "paper");
+    const paperTradeQualityReviews = paperReportTrades.map((trade) => ({ trade, review: buildTradeQualityReview(trade) }));
+    const averageSetupReviewScore = average(paperTradeQualityReviews.map((item) => item.review.setupScore || 0), 0);
+    const averageExecutionReviewScore = average(paperTradeQualityReviews.map((item) => item.review.executionScore || 0), 0);
+    const averageOutcomeReviewScore = average(paperTradeQualityReviews.map((item) => item.review.outcomeScore || 0), 0);
+    const executionDragCount = paperTradeQualityReviews.filter((item) => item.review.verdict === "execution_drag").length;
+    const setupDragCount = paperTradeQualityReviews.filter((item) => item.review.verdict === "weak_setup").length;
+    const followThroughDragCount = paperTradeQualityReviews.filter((item) => item.review.verdict === "follow_through_failed").length;
+    const slippageSamples = paperReportTrades
+      .map((trade) => trade.entryExecutionAttribution?.slippageDeltaBps)
+      .filter((value) => Number.isFinite(value));
+    const latencySamples = paperReportTrades
+      .map((trade) => trade.entryExecutionAttribution?.latencyBps)
+      .filter((value) => Number.isFinite(value));
+    const avgSlippageDeltaBps = average(slippageSamples, 0);
+    const avgLatencyBps = average(latencySamples, 0);
+    const bestExecutionStyle = performanceReport.attribution?.executionStyles?.[0] || null;
+    const weakestExecutionStyle = [...arr(performanceReport.attribution?.executionStyles || [])]
+      .sort((left, right) => (left.realizedPnl || 0) - (right.realizedPnl || 0))[0] || null;
+    const blockerScorecards = arr(offlineTrainer.blockerScorecards || []);
+    const strictestBlocker = [...blockerScorecards]
+      .sort((left, right) => {
+        const strictnessDelta = (right.badVetoRate || 0) - (left.badVetoRate || 0);
+        return strictnessDelta !== 0 ? strictnessDelta : (left.governanceScore || 0) - (right.governanceScore || 0);
+      })[0] || null;
+    const safestBlocker = [...blockerScorecards]
+      .sort((left, right) => {
+        const safetyDelta = (right.goodVetoRate || 0) - (left.goodVetoRate || 0);
+        return safetyDelta !== 0 ? safetyDelta : (right.governanceScore || 0) - (left.governanceScore || 0);
+      })[0] || null;
+    const thresholdRecommendation = offlineTrainer.thresholdPolicy?.topRecommendation || null;
     const branchStats = new Map();
     for (const item of counterfactuals) {
       for (const branch of arr(item.branches || [])) {
@@ -5017,6 +5110,137 @@ export class TradingBot {
               : expandedBenchmarkEntries[0]?.id === "fixed_threshold"
                 ? "Een eenvoudige threshold-benchmark blijft nu verrassend competitief."
             : "Shadow-skip blijft voorlopig de veiligste benchmark."
+    };
+    const modelPromotionPolicy = this.runtime?.modelRegistry?.promotionPolicy || {};
+    const promotionHint = this.runtime?.modelRegistry?.promotionHint || this.runtime?.researchRegistry?.governance?.promotionCandidates?.[0] || null;
+    const benchmarkLeader = benchmarkLanes.rankedLanes?.[0] || null;
+    const blockerAttribution = {
+      status: strictestBlocker?.status || (topBlockers[0] ? "review" : "observe"),
+      dominantBlocker: topBlockers[0]?.id || null,
+      strictestBlocker: strictestBlocker
+        ? {
+            id: strictestBlocker.id || null,
+            badVetoRate: strictestBlocker.badVetoRate || 0,
+            governanceScore: strictestBlocker.governanceScore || 0,
+            affectedStrategies: arr(strictestBlocker.affectedStrategies || []).slice(0, 3),
+            affectedRegimes: arr(strictestBlocker.affectedRegimes || []).slice(0, 3)
+          }
+        : null,
+      safestBlocker: safestBlocker
+        ? {
+            id: safestBlocker.id || null,
+            goodVetoRate: safestBlocker.goodVetoRate || 0,
+            governanceScore: safestBlocker.governanceScore || 0
+          }
+        : null,
+      nextAction: thresholdRecommendation?.action || ((strictestBlocker?.badVetoRate || 0) > 0.4 ? "relax_review" : "observe"),
+      note: thresholdRecommendation?.rationale ||
+        (strictestBlocker
+          ? `${titleize(strictestBlocker.id)} lijkt nu de meeste false negatives te veroorzaken.`
+          : topBlockers[0]?.id
+            ? `${titleize(topBlockers[0].id)} domineert de blokkades, maar heeft nog onvoldoende veto-review data.`
+            : "Nog geen duidelijke blocker-attribution beschikbaar.")
+    };
+    const challengerPolicy = {
+      status: benchmarkLeader?.id && benchmarkLeader.id !== "probe_lane"
+        ? "candidate"
+        : rankedActiveCandidates.length
+          ? "observe"
+          : "warmup",
+      leadingLane: benchmarkLeader?.id || null,
+      challengerEdge: modelPromotionPolicy.challengerEdge != null
+        ? modelPromotionPolicy.challengerEdge
+        : benchmarkLeader?.deltaVsProbe || 0,
+      targetScope: experimentScopes[0]?.id || focusScopes[0]?.id || null,
+      recommendation: benchmarkLeader?.id === "always_take"
+        ? "review_thresholds"
+        : benchmarkLeader?.id === "shadow_take"
+          ? "sample_more_shadow"
+          : benchmarkLeader?.id === "safe_lane"
+            ? "stabilize_execution"
+            : benchmarkLeader?.id === "fixed_threshold"
+              ? "compare_simple_policy"
+              : rankedActiveCandidates[0]
+                ? "keep_probe_champion"
+                : "observe",
+      note: benchmarkLeader?.id === "always_take"
+        ? "De challenger suggereert dat de huidige gating mogelijk te streng is tegenover een eenvoudige take-policy."
+        : benchmarkLeader?.id === "shadow_take"
+          ? "Shadow-take cases verslaan nu de probe-lane; extra shadow sampling kan leerwaarde opleveren."
+          : benchmarkLeader?.id === "safe_lane"
+            ? "De veilige lane is voorlopig stabieler dan agressievere challengers."
+            : benchmarkLeader?.id === "fixed_threshold"
+              ? "Een simpele threshold challenger blijft competitief en verdient side-by-side review."
+              : rankedActiveCandidates[0]
+                ? `${rankedActiveCandidates[0].symbol || "De top candidate"} blijft de beste challenger-case voor extra data.`
+                : "Nog geen uitgesproken challenger zichtbaar."
+    };
+    const promotionRoadmap = {
+      status: modelPromotionPolicy.allowPromotion
+        ? modelPromotionPolicy.readyLevel || "ready"
+        : modelPromotionPolicy.readyLevel || "blocked",
+      allowPromotion: Boolean(modelPromotionPolicy.allowPromotion),
+      readyLevel: modelPromotionPolicy.readyLevel || null,
+      blockerReasons: arr(modelPromotionPolicy.blockerReasons || []).slice(0, 4),
+      nextGate: modelPromotionPolicy.allowPromotion
+        ? modelPromotionPolicy.readyLevel === "paper"
+          ? "guarded_live_probation"
+          : modelPromotionPolicy.readyLevel === "probation"
+            ? "finish_probation"
+            : "promote"
+        : modelPromotionPolicy.blockerReasons?.[0] || "collect_more_data",
+      promotionHint: promotionHint
+        ? {
+            symbol: promotionHint.symbol || null,
+            governanceScore: promotionHint.governanceScore || 0,
+            status: promotionHint.status || "observe"
+          }
+        : null,
+      note: modelPromotionPolicy.allowPromotion
+        ? modelPromotionPolicy.readyLevel === "paper"
+          ? "Paper-resultaten zijn rijp voor guarded live probation, maar nog niet voor volledige promotie."
+          : "Promotiebeleid staat grotendeels groen; bewaak nu vooral probation en execution-kwaliteit."
+        : modelPromotionPolicy.blockerReasons?.length
+          ? `Promotie wacht nu vooral op ${titleize(modelPromotionPolicy.blockerReasons[0])}.`
+          : paperToLiveReadiness.topScope
+            ? `${paperToLiveReadiness.topScope} bouwt richting promotie, maar het formele policy-signaal is nog niet groen.`
+            : "Nog geen duidelijke promotieroute zichtbaar."
+    };
+    const executionInsights = {
+      status: averageExecutionReviewScore >= 0.62 && avgSlippageDeltaBps <= 1.5
+        ? "stable"
+        : averageExecutionReviewScore >= 0.48
+          ? "watch"
+          : "repair",
+      averageSetupScore: averageSetupReviewScore,
+      averageExecutionScore: averageExecutionReviewScore,
+      averageOutcomeScore: averageOutcomeReviewScore,
+      executionDragCount,
+      setupDragCount,
+      followThroughDragCount,
+      averageSlippageDeltaBps: avgSlippageDeltaBps,
+      averageLatencyBps: avgLatencyBps,
+      bestExecutionStyle: bestExecutionStyle
+        ? {
+            id: bestExecutionStyle.id || null,
+            realizedPnl: bestExecutionStyle.realizedPnl || 0,
+            winRate: bestExecutionStyle.winRate || 0
+          }
+        : null,
+      weakestExecutionStyle: weakestExecutionStyle
+        ? {
+            id: weakestExecutionStyle.id || null,
+            realizedPnl: weakestExecutionStyle.realizedPnl || 0,
+            winRate: weakestExecutionStyle.winRate || 0
+          }
+        : null,
+      note: executionDragCount > setupDragCount && executionDragCount > 0
+        ? "Execution is momenteel vaker de beperkende factor dan setupkwaliteit."
+        : followThroughDragCount > executionDragCount && followThroughDragCount > 0
+          ? "Setups komen door, maar de follow-through blijft te zwak na entry."
+          : averageExecutionReviewScore >= 0.62
+            ? "Execution-kwaliteit is voorlopig stabiel genoeg om challengers inhoudelijk te vergelijken."
+            : "Execution heeft nog toezicht nodig voordat policy-vergelijkingen echt zuiver zijn."
     };
     const miscalibrationSamples = recentPaperTrades
       .filter((trade) => Number.isFinite(trade.probabilityAtEntry))
@@ -5176,6 +5400,10 @@ export class TradingBot {
       miscalibration,
       failureLibrary,
       coaching,
+      blockerAttribution,
+      challengerPolicy,
+      promotionRoadmap,
+      executionInsights,
       reviewQueue,
       counterfactualBranches,
       primaryScope: scopeReadiness[0]

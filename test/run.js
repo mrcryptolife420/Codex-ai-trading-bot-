@@ -7270,6 +7270,121 @@ await runCheck("trading bot paper learning summary counts shadow outcomes in rec
   assert.ok(summary.recentOutcomes.some((item) => item.id === "shadow_watch" && item.count === 1));
 });
 
+await runCheck("trading bot paper learning summary exposes operator intelligence for blockers challengers promotion and execution", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "BTCUSDT",
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.78,
+        paperLearning: {
+          noveltyScore: 0.66,
+          activeLearning: { score: 0.74, focusReason: "threshold_near_miss" },
+          scope: { family: "trend_following", regime: "trend", session: "asia" }
+        }
+      }
+    ],
+    openPositions: [],
+    counterfactualQueue: [],
+    offlineTrainer: {
+      blockerScorecards: [
+        { id: "committee_veto", badVetoRate: 0.52, goodVetoRate: 0.18, governanceScore: 0.36, affectedStrategies: ["ema_trend"], affectedRegimes: ["trend"], status: "review" },
+        { id: "execution_cost_budget_exceeded", badVetoRate: 0.08, goodVetoRate: 0.64, governanceScore: 0.61, status: "observe" }
+      ],
+      thresholdPolicy: {
+        topRecommendation: {
+          id: "committee_veto",
+          action: "relax",
+          adjustment: -0.004,
+          confidence: 0.67,
+          rationale: "Committee veto laat te veel winners liggen."
+        }
+      }
+    },
+    modelRegistry: {
+      promotionPolicy: {
+        allowPromotion: false,
+        readyLevel: "paper",
+        challengerEdge: 0.031,
+        blockerReasons: ["sample_size_low"]
+      },
+      promotionHint: {
+        symbol: "BTCUSDT",
+        governanceScore: 0.73,
+        status: "promote"
+      }
+    },
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [
+      {
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        entryAt: "2026-03-12T06:00:00.000Z",
+        exitAt: "2026-03-12T07:00:00.000Z",
+        pnlQuote: 12,
+        netPnlPct: 0.011,
+        executionQualityScore: 0.68,
+        captureEfficiency: 0.56,
+        mfePct: 0.015,
+        maePct: -0.004,
+        paperLearningOutcome: { outcome: "good_trade" },
+        entryExecutionAttribution: { entryStyle: "maker", slippageDeltaBps: 1.2, latencyBps: 0.6, realizedTouchSlippageBps: 1.4, makerFillRatio: 0.8 }
+      },
+      {
+        symbol: "ETHUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        entryAt: "2026-03-12T08:00:00.000Z",
+        exitAt: "2026-03-12T09:00:00.000Z",
+        pnlQuote: -6,
+        netPnlPct: -0.005,
+        executionQualityScore: 0.34,
+        captureEfficiency: 0.18,
+        mfePct: 0.009,
+        maePct: -0.01,
+        paperLearningOutcome: { outcome: "early_exit" },
+        entryExecutionAttribution: { entryStyle: "market", slippageDeltaBps: 3.8, latencyBps: 2.4, realizedTouchSlippageBps: 3.5, makerFillRatio: 0 }
+      }
+    ],
+    counterfactuals: [
+      {
+        symbol: "SOLUSDT",
+        brokerMode: "paper",
+        learningLane: "shadow",
+        outcome: "bad_veto",
+        blockerReasons: ["committee_veto"],
+        strategyFamily: "trend_following",
+        regime: "trend",
+        sessionAtEntry: "asia",
+        branches: [{ id: "base", outcome: "winner", adjustedMovePct: 0.024 }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T10:00:00.000Z");
+  assert.equal(summary.blockerAttribution.strictestBlocker.id, "committee_veto");
+  assert.equal(summary.blockerAttribution.nextAction, "relax");
+  assert.ok(summary.challengerPolicy.leadingLane);
+  assert.equal(summary.promotionRoadmap.readyLevel, "paper");
+  assert.equal(summary.promotionRoadmap.promotionHint.symbol, "BTCUSDT");
+  assert.ok(summary.executionInsights.averageExecutionScore > 0);
+  assert.equal(summary.executionInsights.bestExecutionStyle.id, "maker");
+  assert.equal(summary.executionInsights.weakestExecutionStyle.id, "market");
+});
+
 await runCheck("refresh analysis resolves counterfactual queue so shadow cases stay current", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {

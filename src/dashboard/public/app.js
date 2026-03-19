@@ -867,6 +867,56 @@ function renderLearning(snapshot) {
           </div>
         </article>
       </section>
+      <section class="learning-grid learning-grid-secondary">
+        <article class="learning-detail">
+          <span class="metric-label">Blocker attribution</span>
+          <strong>${escapeHtml(titleize(paperLearning.blockerAttribution?.strictestBlocker?.id || paperLearning.blockerAttribution?.dominantBlocker || "nog geen blocker-focus"))}</strong>
+          <span class="metric-foot">${escapeHtml(
+            paperLearning.blockerAttribution?.strictestBlocker
+              ? `${formatPct(paperLearning.blockerAttribution.strictestBlocker.badVetoRate || 0, 0)} bad veto · ${titleize(paperLearning.blockerAttribution.nextAction || "observe")}`
+              : "Nog geen sterke blocker-attribution beschikbaar."
+          )}</span>
+          <p class="learning-note">${escapeHtml(paperLearning.blockerAttribution?.note || "De bot heeft nog onvoldoende veto-review data voor een duidelijke blockeranalyse.")}</p>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Challenger policy</span>
+          <strong>${escapeHtml(titleize(paperLearning.challengerPolicy?.leadingLane || "nog geen challenger"))}</strong>
+          <span class="metric-foot">${escapeHtml(
+            paperLearning.challengerPolicy?.leadingLane
+              ? `${titleize(paperLearning.challengerPolicy.recommendation || "observe")} · edge ${formatPct(paperLearning.challengerPolicy.challengerEdge || 0, 0)}`
+              : "Nog geen duidelijke benchmarkuitdager."
+          )}</span>
+          <p class="learning-note">${escapeHtml(paperLearning.challengerPolicy?.note || "De bot bouwt nog challenger-vergelijkingen op tussen lanes en policies.")}</p>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Promotion roadmap</span>
+          <strong>${escapeHtml(titleize(paperLearning.promotionRoadmap?.readyLevel || paperLearning.promotionRoadmap?.status || "blocked"))}</strong>
+          <span class="metric-foot">${escapeHtml(
+            paperLearning.promotionRoadmap?.nextGate
+              ? `${titleize(paperLearning.promotionRoadmap.nextGate)} · ${paperLearning.promotionRoadmap.allowPromotion ? "groen" : "nog geblokkeerd"}`
+              : "Nog geen duidelijke promotion gate."
+          )}</span>
+          <p class="learning-note">${escapeHtml(
+            paperLearning.promotionRoadmap?.promotionHint?.symbol
+              ? `${paperLearning.promotionRoadmap.promotionHint.symbol} is nu de sterkste promotiekandidaat. ${paperLearning.promotionRoadmap.note || ""}`.trim()
+              : paperLearning.promotionRoadmap?.note || "De bot heeft nog geen heldere promotion-roadmap opgebouwd."
+          )}</p>
+        </article>
+        <article class="learning-detail">
+          <span class="metric-label">Execution insights</span>
+          <strong>${escapeHtml(titleize(paperLearning.executionInsights?.status || "watch"))}</strong>
+          <span class="metric-foot">${escapeHtml(
+            paperLearning.executionInsights
+              ? `${formatPct(paperLearning.executionInsights.averageExecutionScore || 0, 0)} exec · ${number(paperLearning.executionInsights.averageSlippageDeltaBps || 0, 1)}bps slip`
+              : "Nog geen execution-attributie beschikbaar."
+          )}</span>
+          <p class="learning-note">${escapeHtml(paperLearning.executionInsights?.note || "Execution-attributie verschijnt zodra er genoeg recente trades zijn.")}</p>
+          <div class="tag-list">
+            ${paperLearning.executionInsights?.bestExecutionStyle?.id ? `<span class="tag">${escapeHtml(`Best: ${titleize(paperLearning.executionInsights.bestExecutionStyle.id)}`)}</span>` : ""}
+            ${paperLearning.executionInsights?.weakestExecutionStyle?.id ? `<span class="tag negative">${escapeHtml(`Zwak: ${titleize(paperLearning.executionInsights.weakestExecutionStyle.id)}`)}</span>` : ""}
+          </div>
+        </article>
+      </section>
       <section class="learning-list">
         <article class="learning-list-item">
           <span class="metric-label">Wat de bot nu precies doet</span>
