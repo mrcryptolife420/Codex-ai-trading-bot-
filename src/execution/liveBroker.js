@@ -658,17 +658,46 @@ export class LiveBroker {
     if (!quantity) {
       throw new Error(`Unable to normalize recovery sell quantity for ${position.symbol}.`);
     }
-    const order = await this.client.placeOrder({
+    const submittedOrder = await this.client.placeOrder({
       symbol: position.symbol,
       side: "SELL",
       type: "MARKET",
       quantity: formatQuantity(quantity, rules, true),
       ...this.buildOrderRequestMeta(plan || position.executionPlan || {}, rules, "FULL")
     });
+    const settled = await this.settleTerminalOrder({
+      symbol: position.symbol,
+      order: submittedOrder,
+      defaultTrades: submittedOrder.fills || []
+    });
+    const order = settled.order;
+    const trades = settled.trades;
+    const executedQty = Math.max(0, Math.min(Number(order.executedQty || 0), position.quantity || 0));
+    const remainingQuantity = Math.max(0, (position.quantity || 0) - executedQty);
+    const remainingNotional = remainingQuantity * (marketSnapshot?.book?.mid || position.entryPrice || 0);
+    if (remainingQuantity > 0 && !this.isDustRemainder({ quantity: remainingQuantity, notional: remainingNotional, rules })) {
+      throw new Error(`Recovery flatten for ${position.symbol} partially filled and left ${remainingQuantity} open.`);
+    }
     const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]).catch(() => ({}));
-    const trade = this.buildTradeFromOrder(position, order, order.fills || [], reason, reason, marketSnapshot, orderTelemetry);
+    const trade = this.buildTradeFromOrder(position, order, trades, reason, reason, marketSnapshot, orderTelemetry);
     trade.recoveredEntry = true;
     return trade;
+  }
+
+  async recoverPositionProtection(position, rules, runtime, origin = "protective_rebuild") {
+    if (!position?.quantity || !this.config.enableExchangeProtection) {
+      return { safeguarded: false, warning: null };
+    }
+    try {
+      await this.ensureProtectiveOrder(position, rules, runtime, origin);
+      return { safeguarded: true, warning: null };
+    } catch (rebuildError) {
+      this.logger?.warn?.("Protective order recovery failed", { symbol: position.symbol, error: rebuildError.message, origin });
+      this.clearProtectiveOrderState(position);
+      position.reconcileRequired = true;
+      position.lifecycleState = "reconcile_required";
+      return { safeguarded: false, warning: rebuildError.message };
+    }
   }
 
   async enterPosition({ symbol, rules, quoteAmount, marketSnapshot, decision, score, rawFeatures, strategySummary, newsSummary, entryRationale, runtime }) {
@@ -1235,101 +1264,120 @@ export class LiveBroker {
       positionId: position.id || null,
       stage: "submit"
     });
-    const originalQuantity = Number(position.quantity || 0);
-    const requestedFraction = Math.min(Math.max(fraction || this.config.scaleOutFraction, 0.05), 0.95);
-    const requestedQuantity = normalizeQuantity(originalQuantity * requestedFraction, rules, "floor", true);
-    if (!requestedQuantity || requestedQuantity >= originalQuantity) {
-      throw new Error(`Unable to normalize scale-out quantity for ${position.symbol}.`);
-    }
-    const remainingQuantity = originalQuantity - requestedQuantity;
-    const remainingNotional = remainingQuantity * (marketSnapshot.book.mid || position.entryPrice);
-    if (remainingQuantity < (rules.minQty || 0) || remainingNotional < Math.max(rules.minNotional || 0, this.config.scaleOutMinNotionalUsd)) {
-      throw new Error(`Scale-out would leave an invalid remainder for ${position.symbol}.`);
-    }
-
-    await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
-
-    const submittedOrder = await this.client.placeOrder({
-      symbol: position.symbol,
-      side: "SELL",
-      type: "MARKET",
-      quantity: formatQuantity(requestedQuantity, rules, true),
-      ...this.buildOrderRequestMeta(position.executionPlan || {}, rules, "FULL")
-    });
-    const settled = await this.settleTerminalOrder({
-      symbol: position.symbol,
-      order: submittedOrder,
-      defaultTrades: submittedOrder.fills || []
-    });
-    const order = settled.order;
-    const trades = settled.trades;
-    const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
-    const executedQty = Number(order.executedQty || requestedQuantity);
-    const quoteReceived = Number(order.cummulativeQuoteQty || 0);
-    const averagePrice = executedQty ? quoteReceived / executedQty : marketSnapshot.book.bid;
-    const fee = sumTradeCommissionsToQuote(trades, rules.baseAsset, rules.quoteAsset);
-    const netProceeds = quoteReceived - fee;
-    const proportion = executedQty / Math.max(originalQuantity, 1e-9);
-    const allocatedCost = position.totalCost * proportion;
-    const realizedPnl = netProceeds - allocatedCost;
-    position.quantity = Math.max(0, originalQuantity - executedQty);
-    position.totalCost = Math.max(0, position.totalCost - allocatedCost);
-    position.notional = position.entryPrice * position.quantity;
-    position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
-    position.scaleOutCompletedAt = nowIso();
-    position.scaleOutCount = (position.scaleOutCount || 0) + 1;
-    position.lastMarkedPrice = marketSnapshot.book.mid;
-    position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || this.config.scaleOutTrailOffsetPct)));
-    this.clearProtectiveOrderState(position);
-
-    let protectionWarning = null;
     try {
-      await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
-    } catch (error) {
-      protectionWarning = error.message;
-      this.logger?.warn?.("Protective order rebuild after scale-out failed", { symbol: position.symbol, error: error.message });
-      this.clearProtectiveOrderState(position);
-      position.reconcileRequired = true;
-      position.lifecycleState = "reconcile_required";
-    }
+      const originalQuantity = Number(position.quantity || 0);
+      const requestedFraction = Math.min(Math.max(fraction || this.config.scaleOutFraction, 0.05), 0.95);
+      const requestedQuantity = normalizeQuantity(originalQuantity * requestedFraction, rules, "floor", true);
+      if (!requestedQuantity || requestedQuantity >= originalQuantity) {
+        throw new Error(`Unable to normalize scale-out quantity for ${position.symbol}.`);
+      }
+      const remainingQuantity = originalQuantity - requestedQuantity;
+      const remainingNotional = remainingQuantity * (marketSnapshot.book.mid || position.entryPrice);
+      if (remainingQuantity < (rules.minQty || 0) || remainingNotional < Math.max(rules.minNotional || 0, this.config.scaleOutMinNotionalUsd)) {
+        throw new Error(`Scale-out would leave an invalid remainder for ${position.symbol}.`);
+      }
 
-    finishLifecycleAction(runtime, scaleOutActionId, {
-      status: protectionWarning ? "warning" : "completed",
-      stage: protectionWarning ? "protection_pending" : "scaled_out",
-      severity: protectionWarning ? "negative" : "positive",
-      detail: reason || "partial_take_profit"
-    });
+      await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
 
-    return {
-      id: `${position.id}:scaleout:${Date.now()}`,
-      positionId: position.id,
-      symbol: position.symbol,
-      at: nowIso(),
-      fraction: proportion,
-      quantity: executedQty,
-      price: averagePrice,
-      grossProceeds: quoteReceived,
-      netProceeds,
-      fee,
-      allocatedCost,
-      realizedPnl,
-      reason,
-      brokerMode: "live",
-      protectionWarning,
-      executionAttribution: this.execution.buildExecutionAttribution({
-        plan: this.buildExitPlan(position, "bot_partial_exit"),
-        marketSnapshot,
+      const submittedOrder = await this.client.placeOrder({
+        symbol: position.symbol,
         side: "SELL",
-        fillPrice: averagePrice,
-        requestedQuoteAmount: allocatedCost,
-        executedQuote: quoteReceived,
-        executedQuantity: executedQty,
-        orderResponses: [order],
-        orderTelemetry,
-        fillEstimate: marketSnapshot.book.exitEstimate || null,
-        brokerMode: "live"
-      })
-    };
+        type: "MARKET",
+        quantity: formatQuantity(requestedQuantity, rules, true),
+        ...this.buildOrderRequestMeta(position.executionPlan || {}, rules, "FULL")
+      });
+      const settled = await this.settleTerminalOrder({
+        symbol: position.symbol,
+        order: submittedOrder,
+        defaultTrades: submittedOrder.fills || []
+      });
+      const order = settled.order;
+      const trades = settled.trades;
+      const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
+      const executedQty = Number(order.executedQty || requestedQuantity);
+      const quoteReceived = Number(order.cummulativeQuoteQty || 0);
+      const averagePrice = executedQty ? quoteReceived / executedQty : marketSnapshot.book.bid;
+      const fee = sumTradeCommissionsToQuote(trades, rules.baseAsset, rules.quoteAsset);
+      const netProceeds = quoteReceived - fee;
+      const proportion = executedQty / Math.max(originalQuantity, 1e-9);
+      const allocatedCost = position.totalCost * proportion;
+      const realizedPnl = netProceeds - allocatedCost;
+      position.quantity = Math.max(0, originalQuantity - executedQty);
+      position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+      position.notional = position.entryPrice * position.quantity;
+      position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
+      position.scaleOutCompletedAt = nowIso();
+      position.scaleOutCount = (position.scaleOutCount || 0) + 1;
+      position.lastMarkedPrice = marketSnapshot.book.mid;
+      position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || this.config.scaleOutTrailOffsetPct)));
+      this.clearProtectiveOrderState(position);
+
+      let protectionWarning = null;
+      try {
+        await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
+      } catch (error) {
+        protectionWarning = error.message;
+        this.logger?.warn?.("Protective order rebuild after scale-out failed", { symbol: position.symbol, error: error.message });
+        this.clearProtectiveOrderState(position);
+        position.reconcileRequired = true;
+        position.lifecycleState = "reconcile_required";
+      }
+
+      finishLifecycleAction(runtime, scaleOutActionId, {
+        status: protectionWarning ? "warning" : "completed",
+        stage: protectionWarning ? "protection_pending" : "scaled_out",
+        severity: protectionWarning ? "negative" : "positive",
+        detail: reason || "partial_take_profit"
+      });
+
+      return {
+        id: `${position.id}:scaleout:${Date.now()}`,
+        positionId: position.id,
+        symbol: position.symbol,
+        at: nowIso(),
+        fraction: proportion,
+        quantity: executedQty,
+        price: averagePrice,
+        grossProceeds: quoteReceived,
+        netProceeds,
+        fee,
+        allocatedCost,
+        realizedPnl,
+        reason,
+        brokerMode: "live",
+        protectionWarning,
+        executionAttribution: this.execution.buildExecutionAttribution({
+          plan: this.buildExitPlan(position, "bot_partial_exit"),
+          marketSnapshot,
+          side: "SELL",
+          fillPrice: averagePrice,
+          requestedQuoteAmount: allocatedCost,
+          executedQuote: quoteReceived,
+          executedQuantity: executedQty,
+          orderResponses: [order],
+          orderTelemetry,
+          fillEstimate: marketSnapshot.book.exitEstimate || null,
+          brokerMode: "live"
+        })
+      };
+    } catch (error) {
+      let recovery = { safeguarded: false, warning: null };
+      if (!position.protectiveOrderListId && (position.quantity || 0) > 0) {
+        recovery = await this.recoverPositionProtection(position, rules, runtime, "protective_recover_after_scale_out_error");
+      }
+      finishLifecycleAction(runtime, scaleOutActionId, {
+        status: recovery.safeguarded || recovery.warning ? "warning" : "failed",
+        stage: recovery.warning ? "reconcile_required" : recovery.safeguarded ? "protected_after_error" : "error",
+        severity: "negative",
+        error: recovery.warning || error.message,
+        detail: reason || "partial_take_profit"
+      });
+      error.positionSafeguarded = Boolean(recovery.safeguarded || recovery.warning);
+      if (recovery.warning) {
+        error.protectionWarning = recovery.warning;
+      }
+      throw error;
+    }
   }
 
   async exitPosition({ position, rules, marketSnapshot, reason, runtime }) {
@@ -1339,65 +1387,86 @@ export class LiveBroker {
       positionId: position.id || null,
       stage: "submit"
     });
-    const quantity = normalizeQuantity(position.quantity, rules, "floor", true);
-    if (!quantity) {
-      throw new Error(`Unable to normalize sell quantity for ${position.symbol}.`);
-    }
-    await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
-    const submittedOrder = await this.client.placeOrder({
-      symbol: position.symbol,
-      side: "SELL",
-      type: "MARKET",
-      quantity: formatQuantity(quantity, rules, true),
-      ...this.buildOrderRequestMeta(position.executionPlan || {}, rules, "FULL")
-    });
-    const settled = await this.settleTerminalOrder({
-      symbol: position.symbol,
-      order: submittedOrder,
-      defaultTrades: submittedOrder.fills || []
-    });
-    const order = settled.order;
-    const trades = settled.trades;
-    const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
-    const executedQty = Math.max(0, Math.min(Number(order.executedQty || 0), position.quantity));
-    const remainingQuantity = Math.max(0, position.quantity - executedQty);
-    const remainingNotional = remainingQuantity * (marketSnapshot.book.mid || position.entryPrice || 0);
-    if (remainingQuantity > 0 && !this.isDustRemainder({ quantity: remainingQuantity, notional: remainingNotional, rules })) {
-      const proportion = executedQty / Math.max(position.quantity, 1e-9);
-      const allocatedCost = position.totalCost * proportion;
-      position.quantity = remainingQuantity;
-      position.totalCost = Math.max(0, position.totalCost - allocatedCost);
-      position.notional = position.entryPrice * position.quantity;
-      position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
-      position.lastMarkedPrice = marketSnapshot.book.mid || position.lastMarkedPrice;
-      let protectionWarning = null;
-      try {
-        await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
-      } catch (error) {
-        protectionWarning = error.message;
-        position.reconcileRequired = true;
-        position.lifecycleState = "reconcile_required";
+    try {
+      const quantity = normalizeQuantity(position.quantity, rules, "floor", true);
+      if (!quantity) {
+        throw new Error(`Unable to normalize sell quantity for ${position.symbol}.`);
       }
-      finishLifecycleAction(runtime, exitActionId, {
-        status: "warning",
-        stage: protectionWarning ? "reconcile_required" : "partial_fill_protected",
-        severity: "negative",
-        detail: `${reason || "bot_market_exit"}:${remainingQuantity}`
+      await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
+      const submittedOrder = await this.client.placeOrder({
+        symbol: position.symbol,
+        side: "SELL",
+        type: "MARKET",
+        quantity: formatQuantity(quantity, rules, true),
+        ...this.buildOrderRequestMeta(position.executionPlan || {}, rules, "FULL")
       });
-      const partialExitError = new Error(`Exit order for ${position.symbol} partially filled; ${remainingQuantity} remains open.`);
-      partialExitError.positionSafeguarded = true;
-      partialExitError.remainingQuantity = remainingQuantity;
-      partialExitError.executedQuantity = executedQty;
-      partialExitError.protectionWarning = protectionWarning;
-      throw partialExitError;
+      const settled = await this.settleTerminalOrder({
+        symbol: position.symbol,
+        order: submittedOrder,
+        defaultTrades: submittedOrder.fills || []
+      });
+      const order = settled.order;
+      const trades = settled.trades;
+      const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
+      const executedQty = Math.max(0, Math.min(Number(order.executedQty || 0), position.quantity));
+      const remainingQuantity = Math.max(0, position.quantity - executedQty);
+      const remainingNotional = remainingQuantity * (marketSnapshot.book.mid || position.entryPrice || 0);
+      if (remainingQuantity > 0 && !this.isDustRemainder({ quantity: remainingQuantity, notional: remainingNotional, rules })) {
+        const proportion = executedQty / Math.max(position.quantity, 1e-9);
+        const allocatedCost = position.totalCost * proportion;
+        position.quantity = remainingQuantity;
+        position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+        position.notional = position.entryPrice * position.quantity;
+        position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
+        position.lastMarkedPrice = marketSnapshot.book.mid || position.lastMarkedPrice;
+        let protectionWarning = null;
+        try {
+          await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
+        } catch (error) {
+          protectionWarning = error.message;
+          position.reconcileRequired = true;
+          position.lifecycleState = "reconcile_required";
+        }
+        finishLifecycleAction(runtime, exitActionId, {
+          status: "warning",
+          stage: protectionWarning ? "reconcile_required" : "partial_fill_protected",
+          severity: "negative",
+          detail: `${reason || "bot_market_exit"}:${remainingQuantity}`
+        });
+        const partialExitError = new Error(`Exit order for ${position.symbol} partially filled; ${remainingQuantity} remains open.`);
+        partialExitError.positionSafeguarded = true;
+        partialExitError.remainingQuantity = remainingQuantity;
+        partialExitError.executedQuantity = executedQty;
+        partialExitError.protectionWarning = protectionWarning;
+        throw partialExitError;
+      }
+      runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+      finishLifecycleAction(runtime, exitActionId, {
+        status: "completed",
+        stage: "closed",
+        severity: "positive",
+        detail: reason || "bot_market_exit"
+      });
+      return this.buildTradeFromOrder(position, order, trades, reason, "bot_market_exit", marketSnapshot, orderTelemetry);
+    } catch (error) {
+      let recovery = { safeguarded: false, warning: null };
+      if (!position.protectiveOrderListId && (position.quantity || 0) > 0) {
+        recovery = await this.recoverPositionProtection(position, rules, runtime, "protective_recover_after_exit_error");
+      }
+      if (runtime?.orderLifecycle?.activeActions?.[exitActionId]) {
+        finishLifecycleAction(runtime, exitActionId, {
+          status: recovery.safeguarded || recovery.warning ? "warning" : "failed",
+          stage: recovery.warning ? "reconcile_required" : recovery.safeguarded ? "protected_after_error" : "error",
+          severity: "negative",
+          error: recovery.warning || error.message,
+          detail: reason || "bot_market_exit"
+        });
+      }
+      error.positionSafeguarded = Boolean(error.positionSafeguarded || recovery.safeguarded || recovery.warning);
+      if (!error.protectionWarning && recovery.warning) {
+        error.protectionWarning = recovery.warning;
+      }
+      throw error;
     }
-    runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
-    finishLifecycleAction(runtime, exitActionId, {
-      status: "completed",
-      stage: "closed",
-      severity: "positive",
-      detail: reason || "bot_market_exit"
-    });
-    return this.buildTradeFromOrder(position, order, trades, reason, "bot_market_exit", marketSnapshot, orderTelemetry);
   }
 }

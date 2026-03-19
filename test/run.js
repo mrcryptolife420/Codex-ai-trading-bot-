@@ -1726,6 +1726,193 @@ await runCheck("live broker keeps the remainder managed after a partial exit fil
   assert.equal(rebuiltProtection, 1);
 });
 
+await runCheck("live broker re-protects a position when exit submission fails after canceling protection", async () => {
+  let rebuiltProtection = 0;
+  const client = {
+    async cancelOrderList() {
+      return { orderListId: 77, listStatusType: "ALL_DONE" };
+    },
+    async placeOrder() {
+      throw new Error("exchange sell unavailable");
+    },
+    async placeOrderListOco() {
+      rebuiltProtection += 1;
+      return {
+        orderListId: 880,
+        listClientOrderId: "reprotect-1",
+        orders: [{ orderId: 91 }, { orderId: 92 }],
+        listStatusType: "EXEC_STARTED"
+      };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        quantity: 0.01,
+        entryPrice: 70000,
+        totalCost: 700.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        protectiveOrderListId: 123,
+        protectiveOrders: [{ orderId: 11 }, { orderId: 12 }],
+        protectiveOrderStatus: "NEW",
+        executionPlan: { strategyId: "ema_trend", strategyType: "trend_following" },
+        operatorMode: "normal",
+        brokerMode: "live"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  await assert.rejects(
+    broker.exitPosition({
+      position: runtime.openPositions[0],
+      rules,
+      marketSnapshot: { book: { bid: 71990, ask: 72010, mid: 72000, spreadBps: 2 } },
+      reason: "risk_exit",
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.positionSafeguarded, true);
+      assert.equal(error.message, "exchange sell unavailable");
+      return true;
+    }
+  );
+
+  assert.equal(rebuiltProtection, 1);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, 880);
+  assert.equal(runtime.openPositions[0].reconcileRequired, false);
+  assert.equal(Object.keys(runtime.orderLifecycle?.activeActions || {}).length, 0);
+  assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "exit_position" && item.stage === "protected_after_error"));
+});
+
+await runCheck("live broker re-protects a position when scale-out submission fails after canceling protection", async () => {
+  let rebuiltProtection = 0;
+  const client = {
+    async cancelOrderList() {
+      return { orderListId: 77, listStatusType: "ALL_DONE" };
+    },
+    async placeOrder() {
+      throw new Error("scale-out sell unavailable");
+    },
+    async placeOrderListOco() {
+      rebuiltProtection += 1;
+      return {
+        orderListId: 990,
+        listClientOrderId: "reprotect-2",
+        orders: [{ orderId: 191 }, { orderId: 192 }],
+        listStatusType: "EXEC_STARTED"
+      };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        quantity: 0.01,
+        entryPrice: 70000,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        scaleOutTrailOffsetPct: 0.003,
+        protectiveOrderListId: 123,
+        protectiveOrders: [{ orderId: 11 }, { orderId: 12 }],
+        protectiveOrderStatus: "NEW",
+        executionPlan: { strategyId: "ema_trend", strategyType: "trend_following" },
+        operatorMode: "normal",
+        brokerMode: "live"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  await assert.rejects(
+    broker.scaleOutPosition({
+      position: runtime.openPositions[0],
+      rules,
+      marketSnapshot: { book: { bid: 71990, ask: 72010, mid: 72000, spreadBps: 2 } },
+      fraction: 0.4,
+      reason: "partial_take_profit",
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.positionSafeguarded, true);
+      assert.equal(error.message, "scale-out sell unavailable");
+      return true;
+    }
+  );
+
+  assert.equal(rebuiltProtection, 1);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, 990);
+  assert.equal(runtime.openPositions[0].quantity, 0.01);
+  assert.equal(Object.keys(runtime.orderLifecycle?.activeActions || {}).length, 0);
+  assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "scale_out" && item.stage === "protected_after_error"));
+});
+
+await runCheck("live broker recovery flatten rejects non-dust partial fills", async () => {
+  const client = {
+    async placeOrder() {
+      return {
+        orderId: 701,
+        status: "PARTIALLY_FILLED",
+        executedQty: "0.00400000",
+        cummulativeQuoteQty: "280.00",
+        fills: []
+      };
+    },
+    async getOrder() {
+      return {
+        orderId: 701,
+        status: "PARTIALLY_FILLED",
+        executedQty: "0.00400000",
+        cummulativeQuoteQty: "280.00"
+      };
+    },
+    async getMyTrades() {
+      return [{ price: "70000", commission: "0.18", commissionAsset: "USDT" }];
+    }
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  await assert.rejects(
+    broker.emergencyFlattenPosition({
+      position: {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        quantity: 0.01,
+        entryPrice: 70000,
+        totalCost: 700.7,
+        notional: 700,
+        latestSpreadBps: 2
+      },
+      rules,
+      marketSnapshot: { book: { mid: 70000 } }
+    }),
+    /partially filled and left/
+  );
+});
+
 await runCheck("strategy router selects a mean reversion setup in range conditions", async () => {
   const summary = evaluateStrategySet({
     symbol: "BTCUSDT",
