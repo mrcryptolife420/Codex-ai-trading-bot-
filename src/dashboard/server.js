@@ -127,6 +127,15 @@ async function handleApi(request, response, manager) {
     const readiness = await manager.getOperationalReadiness();
     return sendJson(response, readiness.ok ? 200 : 503, readiness);
   }
+  if (request.method === "GET" && url.pathname === "/api/status") {
+    return sendJson(response, 200, await manager.getStatus());
+  }
+  if (request.method === "GET" && url.pathname === "/api/doctor") {
+    return sendJson(response, 200, await manager.getDoctor());
+  }
+  if (request.method === "GET" && url.pathname === "/api/report") {
+    return sendJson(response, 200, await manager.getReport());
+  }
 
   if (request.method !== "POST") {
     return sendJson(response, 405, { error: "Method not allowed" });

@@ -3715,6 +3715,7 @@ export class TradingBot {
               adjustedMovePct: null
             }))
           });
+          this.markReportDirty();
           this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: "invalid_counterfactual_snapshot" });
           continue;
         }
@@ -3772,6 +3773,7 @@ export class TradingBot {
           outcome,
           branches
         });
+        this.markReportDirty();
       } catch (error) {
         const retryCount = (item.retryCount || 0) + 1;
         if (retryCount <= 3) {
@@ -3797,6 +3799,7 @@ export class TradingBot {
             adjustedMovePct: null
           }))
         });
+        this.markReportDirty();
         this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: error.message });
       }
     }
@@ -7028,6 +7031,7 @@ export class TradingBot {
     }
     for (const position of reconciliation.recoveredPositions || []) {
       this.recordEvent("recovered_position", { symbol: position.symbol, quantity: position.quantity });
+      this.markReportDirty();
     }
     for (const trade of reconciliation.closedTrades || []) {
       this.journal.trades.push(trade);
@@ -8629,6 +8633,7 @@ export class TradingBot {
           metaScore: candidate.metaSummary?.score || 0,
           canaryActive: Boolean(candidate.metaSummary?.canaryActive)
         });
+        this.markReportDirty();
         attempt.status = "opened";
         attempt.selectedSymbol = candidate.symbol;
         attempt.openedPosition = position;
@@ -8732,6 +8737,7 @@ export class TradingBot {
     }
     if (this.journal.counterfactuals.length > 2000) {
       this.journal.counterfactuals = this.journal.counterfactuals.slice(-2000);
+      trimmed = true;
     }
     if (this.journal.universeRuns.length > 1000) {
       this.journal.universeRuns = this.journal.universeRuns.slice(-1000);
@@ -10128,8 +10134,8 @@ export class TradingBot {
   }
 
   async runDoctor() {
-    const balance = await this.broker.getBalance(this.runtime);
     await this.maybeRunExchangeTruthLoop();
+    const balance = await this.broker.getBalance(this.runtime);
     const report = this.getPerformanceReport();
     const previewCandidates = await this.scanCandidatesReadOnly(balance);
     const checks = this.buildDoctorChecks({ report, balance, previewCandidates, now: new Date() });

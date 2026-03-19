@@ -4995,6 +4995,23 @@ await runCheck("bot manager preserves dashboard readiness reasons in snapshot re
   assert.ok(readiness.reasons.includes("capital_ladder_shadow_only"));
 });
 
+await runCheck("bot manager exposes status doctor and report wrappers", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  manager.config = makeConfig();
+  manager.bot = {
+    getStatus: async () => ({ mode: "paper", report: { realizedPnl: 12 } }),
+    runDoctor: async () => ({ mode: "paper", checks: { status: "ready" } }),
+    getReport: async () => ({ realizedPnl: 12, tradeCount: 2 })
+  };
+  const status = await manager.getStatus();
+  const doctor = await manager.getDoctor();
+  const report = await manager.getReport();
+  assert.equal(status.manager.currentMode, "paper");
+  assert.equal(status.status.mode, "paper");
+  assert.equal(doctor.doctor.mode, "paper");
+  assert.equal(report.report.tradeCount, 2);
+});
+
 await runCheck("env file updater rejects newline injection and invalid keys", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-env-"));
   try {
@@ -7351,6 +7368,30 @@ await runCheck("trading bot caches performance report until report state changes
   bot.recordEvent("test_event", { ok: true });
   const third = bot.getPerformanceReport();
   assert.notEqual(third, second);
+});
+
+await runCheck("counterfactual updates invalidate the cached performance report", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ reportLookbackTrades: 50 });
+  bot.observabilityCache = { reportVersion: 0, reportBuiltVersion: -1, report: null };
+  bot.journal = {
+    trades: [],
+    scaleOuts: [],
+    blockedSetups: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: [],
+    counterfactuals: []
+  };
+  bot.runtime = { openPositions: [] };
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.markReportDirty = TradingBot.prototype.markReportDirty;
+  const first = bot.getPerformanceReport();
+  bot.journal.counterfactuals.push({ outcome: "missed_winner", strategy: "ema_trend" });
+  bot.markReportDirty();
+  const second = bot.getPerformanceReport();
+  assert.notEqual(first, second);
 });
 
 await runCheck("trading bot getReport keeps full report metrics instead of dashboard subset", async () => {

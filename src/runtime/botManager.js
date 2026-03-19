@@ -340,6 +340,52 @@ export class BotManager {
     return this.buildOperationalReadiness(await this.getSnapshot());
   }
 
+  async getStatus() {
+    if (!this.bot) {
+      await this.reinitializeBot();
+    }
+    return {
+      manager: {
+        runState: this.runState,
+        currentMode: this.config.botMode,
+        lastStartAt: this.lastStartAt,
+        lastStopAt: this.lastStopAt,
+        lastModeSwitchAt: this.lastModeSwitchAt,
+        stopReason: this.stopReason || null,
+        lastError: publicError(this.lastError)
+      },
+      status: await this.bot.getStatus()
+    };
+  }
+
+  async getDoctor() {
+    if (!this.bot) {
+      await this.reinitializeBot();
+    }
+    return {
+      manager: {
+        runState: this.runState,
+        currentMode: this.config.botMode,
+        lastError: publicError(this.lastError)
+      },
+      doctor: await this.bot.runDoctor()
+    };
+  }
+
+  async getReport() {
+    if (!this.bot) {
+      await this.reinitializeBot();
+    }
+    return {
+      manager: {
+        runState: this.runState,
+        currentMode: this.config.botMode,
+        lastError: publicError(this.lastError)
+      },
+      report: await this.bot.getReport()
+    };
+  }
+
   async acknowledgeAlert(id, acknowledged = true, note = null) {
     return this.withLock(async () => {
       if (!this.bot) {
