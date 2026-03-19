@@ -51,6 +51,7 @@ import { SelfHealManager } from "../src/runtime/selfHealManager.js";
 import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtime/researchLab.js";
 import {
   buildSyntheticBook as buildBacktestSyntheticBook,
+  buildSimulationEntryDecision,
   resolveCandleIntervalMinutes,
   resolveEntryExecution,
   resolveExitAnchorPrice
@@ -6030,6 +6031,44 @@ await runCheck("research labels use next candle open to avoid close-to-close lea
   const report = runWalkForwardExperiment({ candles, config, symbol: "BTCUSDT" });
   assert.ok(report.experimentCount >= 1);
   assert.ok(Array.isArray(report.strategyScorecards));
+});
+
+await runCheck("simulation entry decision reuses risk manager guardrails", async () => {
+  const config = makeConfig({ maxSpreadBps: 20 });
+  const execution = new ExecutionEngine(config);
+  const now = new Date("2026-03-19T12:00:00.000Z");
+  const marketSnapshot = {
+    candles: [],
+    market: { realizedVolPct: 0.02, atrPct: 0.012, bullishPatternScore: 0.1, bearishPatternScore: 0.05 },
+    book: {
+      bid: 100,
+      ask: 100.5,
+      mid: 100.25,
+      spreadBps: 45,
+      bookPressure: 0.4,
+      tradeFlowImbalance: 0.1,
+      localBook: { synced: true, depthConfidence: 0.8, totalDepthNotional: 100000, queueImbalance: 0.2, queueRefreshScore: 0.5, resilienceScore: 0.6 }
+    }
+  };
+  const decision = buildSimulationEntryDecision({
+    config,
+    symbol: "BTCUSDT",
+    now,
+    score: { probability: 0.72, confidence: 0.7, shouldAbstain: false, committee: { vetoes: [], confidence: 0, probability: 0.5, netScore: 0, agreement: 1 } },
+    marketSnapshot,
+    newsSummary: { riskScore: 0.1, sentimentScore: 0.1 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7, confidence: 0.7, blockers: [] },
+    regimeSummary: { regime: "trend", confidence: 0.7 },
+    trendStateSummary: { direction: "uptrend", phase: "expansion", dataConfidenceScore: 0.8 },
+    marketStateSummary: { phase: "healthy_trend" },
+    journal: { trades: [], scaleOuts: [], blockedSetups: [], counterfactuals: [] },
+    runtime: { openPositions: [] },
+    balance: { quoteFree: 10000 },
+    symbolStats: {},
+    execution
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("spread_too_wide"));
 });
 
 await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {

@@ -1,3 +1,6 @@
+import { RiskManager } from "../risk/riskManager.js";
+import { buildSessionSummary } from "./sessionManager.js";
+
 function safePrice(value, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
@@ -102,4 +105,118 @@ export function buildExitExecutionBook({ candle = {}, market = {}, config = {}, 
     anchorPrice: resolveExitAnchorPrice({ candle, exitReason, position, trailingStopPrice }),
     latencyBps: options.latencyBps
   });
+}
+
+function buildNeutralSummary() {
+  return {
+    riskScore: 0,
+    sentimentScore: 0,
+    confidence: 0,
+    reasons: [],
+    blockerReasons: []
+  };
+}
+
+export function buildSimulationEntryDecision({
+  config = {},
+  symbol,
+  now,
+  score = {},
+  marketSnapshot = {},
+  newsSummary = {},
+  strategySummary = {},
+  regimeSummary = {},
+  trendStateSummary = {},
+  marketStateSummary = {},
+  journal = {},
+  runtime = {},
+  balance = { quoteFree: 0 },
+  symbolStats = {},
+  execution,
+  overrides = {}
+} = {}) {
+  const risk = new RiskManager({ ...config, botMode: "paper" });
+  const neutral = buildNeutralSummary();
+  const sessionSummary = config.enableSessionLogic
+    ? buildSessionSummary({ now, marketSnapshot, marketStructureSummary: neutral, config })
+    : { session: "disabled", sessionLabel: "Disabled", sizeMultiplier: 1, thresholdPenalty: 0, reasons: [], blockerReasons: [] };
+  const committeeSummary = score.committee || { vetoes: [], confidence: 0, probability: 0.5, netScore: 0, agreement: 1 };
+  const portfolioSummary = {
+    sizeMultiplier: 1,
+    reasons: [],
+    maxCorrelation: 0,
+    allocatorScore: 0.5,
+    ...(overrides.portfolioSummary || {})
+  };
+  const qualityQuorumSummary = {
+    status: "ready",
+    quorumScore: 1,
+    averageScore: 1,
+    observeOnly: false,
+    ...(overrides.qualityQuorumSummary || {})
+  };
+  const venueConfirmationSummary = {
+    status: "pending",
+    confirmed: false,
+    blockerReasons: [],
+    ...(overrides.venueConfirmationSummary || {})
+  };
+  const decision = risk.evaluateEntry({
+    symbol,
+    score,
+    marketSnapshot,
+    newsSummary,
+    announcementSummary: overrides.announcementSummary || neutral,
+    marketStructureSummary: overrides.marketStructureSummary || neutral,
+    marketSentimentSummary: overrides.marketSentimentSummary || neutral,
+    volatilitySummary: overrides.volatilitySummary || neutral,
+    calendarSummary: overrides.calendarSummary || { ...neutral, proximityHours: null },
+    committeeSummary,
+    rlAdvice: overrides.rlAdvice || { action: "balanced", sizeMultiplier: 1, expectedReward: 0 },
+    strategySummary,
+    sessionSummary,
+    driftSummary: overrides.driftSummary || { severity: 0, reasons: [], blockerReasons: [] },
+    selfHealState: overrides.selfHealState || { mode: "normal", sizeMultiplier: 1, thresholdPenalty: 0, issues: [], learningAllowed: true },
+    metaSummary: overrides.metaSummary || { action: "allow", reasons: [], sizeMultiplier: 1, thresholdPenalty: 0, score: 0 },
+    runtime,
+    journal,
+    balance,
+    symbolStats,
+    portfolioSummary,
+    regimeSummary,
+    thresholdTuningSummary: overrides.thresholdTuningSummary || {},
+    parameterGovernorSummary: overrides.parameterGovernorSummary || {},
+    capitalLadderSummary: overrides.capitalLadderSummary || {},
+    capitalGovernorSummary: overrides.capitalGovernorSummary || {},
+    executionCostSummary: overrides.executionCostSummary || {},
+    strategyRetirementSummary: overrides.strategyRetirementSummary || {},
+    timeframeSummary: overrides.timeframeSummary || { alignmentScore: 0, higherBias: 0, blockerReasons: [] },
+    pairHealthSummary: overrides.pairHealthSummary || { score: 1, quarantined: false, reasons: [] },
+    onChainLiteSummary: overrides.onChainLiteSummary || { liquidityScore: 0.5, stressScore: 0, riskOffScore: 0, marketBreadthScore: 0.5, trendingScore: 0, majorsMomentumScore: 0 },
+    qualityQuorumSummary,
+    divergenceSummary: overrides.divergenceSummary || { averageScore: 0, blockerReasons: [] },
+    trendStateSummary,
+    marketStateSummary,
+    venueConfirmationSummary,
+    exchangeCapabilitiesSummary: overrides.exchangeCapabilitiesSummary || { spotEnabled: true, shortingEnabled: false },
+    strategyMetaSummary: score.strategyMeta || overrides.strategyMetaSummary || {},
+    nowIso: now.toISOString()
+  });
+  decision.executionPlan = execution.buildEntryPlan({
+    symbol,
+    marketSnapshot,
+    score,
+    decision,
+    regimeSummary,
+    strategySummary,
+    portfolioSummary,
+    committeeSummary,
+    rlAdvice: decision.rlAdvice || overrides.rlAdvice || { action: "balanced", sizeMultiplier: 1, expectedReward: 0 },
+    executionNeuralSummary: score.executionNeural || null,
+    strategyMetaSummary: score.strategyMeta || overrides.strategyMetaSummary || {},
+    capitalLadderSummary: overrides.capitalLadderSummary || {},
+    venueConfirmationSummary,
+    sessionSummary
+  });
+  return decision;
 }

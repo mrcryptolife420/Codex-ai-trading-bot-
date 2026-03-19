@@ -8,7 +8,7 @@ import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
-import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution } from "./backtestExecution.js";
+import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision } from "./backtestExecution.js";
 
 function num(value, decimals = 4, fallback = 0) {
   return Number.isFinite(value) ? Number(value.toFixed(decimals)) : fallback;
@@ -216,6 +216,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
   const feeRate = config.paperFeeBps / 10_000;
   const execution = new ExecutionEngine(config);
   const experiments = [];
+  const candleIntervalMinutes = resolveCandleIntervalMinutes(candles, 1, 15);
 
   for (const window of windows) {
     const model = new AdaptiveTradingModel(undefined, config);
@@ -240,6 +241,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
 
     for (let index = window.testStart; index < window.testEnd; index += 1) {
       const context = buildContext({ candles, index, symbol, model, config });
+      const balance = { quoteFree };
       if (!position && pendingEntry && pendingEntry.entryIndex === index) {
         const entryBook = buildSyntheticBook(context.candle, context.market, config, {
           anchorPrice: context.candle.open,
@@ -266,6 +268,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
             totalCost,
             stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
             takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
+            maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
             highestPrice: fillEstimate.fillPrice,
             lowestPrice: fillEstimate.fillPrice,
             rawFeatures: pendingEntry.rawFeatures,
@@ -300,7 +303,7 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
           exitReason = "take_profit";
         } else if (position.highestPrice > position.entryPrice * 1.004 && context.candle.low <= trailingStopPrice) {
           exitReason = "trailing_stop";
-        } else if (ageCandles >= horizon) {
+        } else if (ageCandles * candleIntervalMinutes >= (position.maxHoldMinutes || config.maxHoldMinutes || horizon * candleIntervalMinutes)) {
           exitReason = "time_stop";
         }
 
@@ -386,36 +389,36 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
         if (!entryExecution) {
           continue;
         }
-        const quoteAmount = Math.min(
-          quoteFree * config.maxPositionFraction,
-          (quoteFree * config.riskPerTrade) / Math.max(context.market.atrPct * 1.2, config.stopLossPct, 0.01)
-        );
-        if (quoteAmount >= config.minTradeUsdt) {
-          const stopLossPct = Math.max(config.stopLossPct, context.market.atrPct * 1.2, 0.01);
-          const takeProfitPct = Math.max(config.takeProfitPct, context.market.atrPct * 1.8);
-          const decision = { stopLossPct, takeProfitPct, regime: context.regimeSummary.regime, portfolioSummary: { sizeMultiplier: 1 } };
-          const plan = execution.buildEntryPlan({
-            symbol,
-            marketSnapshot: { market: context.market, book: context.book },
-            score,
-            decision,
-            regimeSummary: context.regimeSummary,
-            strategySummary: context.strategySummary,
-            portfolioSummary: { sizeMultiplier: 1 },
-            committeeSummary: score.committee,
-            rlAdvice: { action: "balanced" }
-          });
+        const decision = buildSimulationEntryDecision({
+          config,
+          symbol,
+          now: new Date(context.candle.closeTime),
+          score,
+          marketSnapshot: { candles: candles.slice(0, index + 1), market: context.market, book: context.book },
+          newsSummary: context.newsSummary,
+          strategySummary: context.strategySummary,
+          regimeSummary: context.regimeSummary,
+          trendStateSummary: context.trendStateSummary,
+          marketStateSummary: context.marketStateSummary,
+          journal: { trades, scaleOuts: [], blockedSetups: [], counterfactuals: [] },
+          runtime: { openPositions: position ? [position] : [] },
+          balance,
+          symbolStats: model.getSymbolStats(symbol),
+          execution
+        });
+        if (decision.allow && decision.quoteAmount >= config.minTradeUsdt) {
           pendingEntry = {
             entryIndex: index + 1,
             entryTimeMs: entryExecution.entryTimeMs || entryExecution.candle.openTime || entryExecution.candle.closeTime,
-            quoteAmount,
-            stopLossPct,
-            takeProfitPct,
+            quoteAmount: decision.quoteAmount,
+            stopLossPct: decision.stopLossPct,
+            takeProfitPct: decision.takeProfitPct,
             rawFeatures: context.rawFeatures,
             strategyAtEntry: context.strategySummary.activeStrategy || null,
             regimeAtEntry: context.regimeSummary.regime,
-            plan,
-            probabilityAtEntry: score.probability
+            plan: decision.executionPlan,
+            probabilityAtEntry: score.probability,
+            maxHoldMinutes: decision.maxHoldMinutes
           };
         }
       }

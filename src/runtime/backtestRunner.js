@@ -11,7 +11,8 @@ import {
   buildSyntheticBook,
   buildExitExecutionBook,
   resolveCandleIntervalMinutes,
-  resolveEntryExecution
+  resolveEntryExecution,
+  buildSimulationEntryDecision
 } from "./backtestExecution.js";
 
 function buildNewsSummary() {
@@ -94,6 +95,7 @@ export async function runBacktest({ config, logger, symbol }) {
     const window = candles.slice(0, index + 1);
     const candle = candles[index];
     const context = buildBacktestContext({ window, candle, symbol, model, config });
+    const balance = { quoteFree };
 
     if (!position && pendingEntry && pendingEntry.entryIndex === index) {
       const entryBook = buildSyntheticBook(candle, context.market, config, { anchorPrice: candle.open });
@@ -119,6 +121,7 @@ export async function runBacktest({ config, logger, symbol }) {
           totalCost,
           stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
           takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
+          maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
           highestPrice: fillEstimate.fillPrice,
           lowestPrice: fillEstimate.fillPrice,
           rawFeatures: pendingEntry.rawFeatures,
@@ -146,7 +149,7 @@ export async function runBacktest({ config, logger, symbol }) {
         exitReason = "take_profit";
       } else if (position.highestPrice > position.entryPrice * 1.004 && candle.low <= trailingStopPrice) {
         exitReason = "trailing_stop";
-      } else if ((index - position.entryIndex) * candleIntervalMinutes >= config.maxHoldMinutes) {
+      } else if ((index - position.entryIndex) * candleIntervalMinutes >= (position.maxHoldMinutes || config.maxHoldMinutes)) {
         exitReason = "time_stop";
       }
 
@@ -239,37 +242,37 @@ export async function runBacktest({ config, logger, symbol }) {
         if (!entryExecution) {
           continue;
         }
-        const stopLossPct = Math.max(config.stopLossPct, context.market.atrPct * 1.2, 0.01);
-        const takeProfitPct = Math.max(config.takeProfitPct, stopLossPct * (context.regimeSummary.regime === "trend" ? 1.9 : 1.5));
-        const quoteAmount = Math.min(
-          quoteFree * config.maxPositionFraction,
-          (quoteFree * config.riskPerTrade) / stopLossPct
-        );
-        if (quoteAmount >= config.minTradeUsdt) {
-          const decision = { stopLossPct, takeProfitPct, regime: context.regimeSummary.regime, portfolioSummary: { sizeMultiplier: 1 } };
-          const plan = execution.buildEntryPlan({
-            symbol,
-            marketSnapshot: { market: context.market, book: context.book },
-            score,
-            decision,
-            regimeSummary: context.regimeSummary,
-            strategySummary: context.strategySummary,
-            portfolioSummary: { sizeMultiplier: 1 },
-            committeeSummary: score.committee,
-            rlAdvice: { action: "balanced" }
-          });
+        const decision = buildSimulationEntryDecision({
+          config,
+          symbol,
+          now: new Date(candle.closeTime),
+          score,
+          marketSnapshot: { candles: window, market: context.market, book: context.book },
+          newsSummary: context.newsSummary,
+          strategySummary: context.strategySummary,
+          regimeSummary: context.regimeSummary,
+          trendStateSummary: context.trendStateSummary,
+          marketStateSummary: context.marketStateSummary,
+          journal: { trades, scaleOuts: [], blockedSetups: [], counterfactuals: [] },
+          runtime: { openPositions: position ? [position] : [] },
+          balance,
+          symbolStats: model.getSymbolStats(symbol),
+          execution
+        });
+        if (decision.allow && decision.quoteAmount >= config.minTradeUsdt) {
           pendingEntry = {
             entryIndex: index + 1,
             entryTimeMs: entryExecution.entryTimeMs || entryExecution.candle.openTime || entryExecution.candle.closeTime,
-            quoteAmount,
-            stopLossPct,
-            takeProfitPct,
+            quoteAmount: decision.quoteAmount,
+            stopLossPct: decision.stopLossPct,
+            takeProfitPct: decision.takeProfitPct,
             rawFeatures: context.rawFeatures,
             transformerDecision: score.transformer,
             strategyAtEntry: context.strategySummary.activeStrategy,
             regimeAtEntry: context.regimeSummary.regime,
-            plan,
-            probabilityAtEntry: score.probability
+            plan: decision.executionPlan,
+            probabilityAtEntry: score.probability,
+            maxHoldMinutes: decision.maxHoldMinutes
           };
         }
       }
