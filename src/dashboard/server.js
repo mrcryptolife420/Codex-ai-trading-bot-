@@ -186,6 +186,12 @@ async function handleApi(request, response, manager) {
   if (url.pathname === "/api/policies/revert") {
     return sendJson(response, 200, await manager.revertPolicyTransition(body.id, body.note || null));
   }
+  if (url.pathname === "/api/promotion/approve") {
+    return sendJson(response, 200, await manager.approvePromotionCandidate(body.symbol, body.note || null));
+  }
+  if (url.pathname === "/api/promotion/rollback") {
+    return sendJson(response, 200, await manager.rollbackPromotionCandidate(body.symbol, body.note || null));
+  }
 
   return sendJson(response, 404, { error: "Unknown API route" });
 }

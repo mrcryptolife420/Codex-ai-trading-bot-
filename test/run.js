@@ -7470,7 +7470,23 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
     openPositions: [],
     latestDecisions: [],
     latestBlockedSetups: [],
-    ops: { incidentTimeline: [], runbooks: [], alerts: {}, replayChaos: {}, service: {}, thresholdTuning: {}, executionCalibration: {}, capitalLadder: {}, capitalGovernor: {}, alertDelivery: {}, paperLearning: { status: "active", probeCount: 2, shadowCount: 1, notes: ["probe day"] } },
+    ops: {
+      incidentTimeline: [],
+      runbooks: [],
+      alerts: {},
+      replayChaos: {},
+      service: {},
+      thresholdTuning: {},
+      executionCalibration: {},
+      capitalLadder: {},
+      capitalGovernor: {},
+      alertDelivery: {},
+      paperLearning: { status: "active", probeCount: 2, shadowCount: 1, notes: ["probe day"] },
+      promotionState: {
+        active: [{ symbol: "BTCUSDT", stage: "guarded_live_probation", status: "active", governanceScore: 0.74, approvedAt: "2026-03-12T09:00:00.000Z" }],
+        history: [{ symbol: "BTCUSDT", action: "approve_guarded_live", status: "approved", stage: "guarded_live_probation", governanceScore: 0.74, at: "2026-03-12T09:00:00.000Z" }]
+      }
+    },
     thresholdTuning: { appliedRecommendation: { id: "trend_relax", status: "probation" } },
     parameterGovernor: { status: "active", strategyScopes: [{ scopeType: "strategy", id: "ema_trend", thresholdShift: -0.01 }], regimeScopes: [], notes: [] },
     modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: ["sample_size_low"] } },
@@ -7522,7 +7538,9 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.ok(Array.isArray(snapshot.explainability.decisions));
   assert.ok(Array.isArray(snapshot.explainability.replays));
   assert.equal(snapshot.promotionPipeline.allowPromotion, false);
-  assert.equal(snapshot.promotionPipeline.readyLevel, "paper");
+  assert.equal(snapshot.promotionPipeline.readyLevel, "guarded_live_probation");
+  assert.equal(snapshot.promotionPipeline.activePromotions[0].symbol, "BTCUSDT");
+  assert.equal(snapshot.promotionPipeline.promotionHistory[0].action, "approve_guarded_live");
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
   assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");
@@ -8388,6 +8406,31 @@ await runCheck("trading bot approves strategy policy transitions and applies ope
   await bot.revertPolicyTransition({ id: "ema_trend", note: "reverted", at: "2026-03-12T12:30:00.000Z" });
   assert.equal(bot.runtime.operatorPolicyState.approvals.length, 0);
   assert.equal(bot.runtime.operatorPolicyState.history[0].action, "revert_override");
+});
+
+await runCheck("trading bot approves and rolls back guarded live promotion candidates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    ops: {},
+    researchRegistry: {
+      governance: {
+        promotionCandidates: [
+          { symbol: "BTCUSDT", governanceScore: 0.74, status: "promote" }
+        ]
+      }
+    }
+  };
+  bot.recordEvent = () => {};
+  bot.refreshOperationalViews = () => {};
+  bot.store = { saveRuntime: async () => {} };
+  bot.getDashboardSnapshot = async () => ({ ok: true });
+  await bot.approvePromotionCandidate({ symbol: "BTCUSDT", note: "start guarded live", at: "2026-03-12T12:00:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active[0].symbol, "BTCUSDT");
+  assert.equal(bot.runtime.ops.promotionState.active[0].stage, "guarded_live_probation");
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "approve_guarded_live");
+  await bot.rollbackPromotionCandidate({ symbol: "BTCUSDT", note: "rollback after review", at: "2026-03-12T13:00:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active.length, 0);
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "rollback_guarded_live");
 });
 
 await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {

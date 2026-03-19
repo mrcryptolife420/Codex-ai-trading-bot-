@@ -4039,6 +4039,17 @@ export class TradingBot {
     return this.runtime.ops.diagnosticsActions;
   }
 
+  ensurePromotionState() {
+    this.runtime.ops = this.runtime.ops || {};
+    this.runtime.ops.promotionState = this.runtime.ops.promotionState || {
+      active: [],
+      history: []
+    };
+    this.runtime.ops.promotionState.active = arr(this.runtime.ops.promotionState.active).slice(0, 12);
+    this.runtime.ops.promotionState.history = arr(this.runtime.ops.promotionState.history).slice(0, 80);
+    return this.runtime.ops.promotionState;
+  }
+
   recordDiagnosticsAction({
     action = null,
     target = null,
@@ -4342,6 +4353,79 @@ export class TradingBot {
       };
     }
     throw new Error("Onbekende diagnostics action.");
+  }
+
+  async approvePromotionCandidate({ symbol, note = null, at = nowIso() } = {}) {
+    const candidateSymbol = `${symbol || ""}`.trim().toUpperCase();
+    if (!candidateSymbol) {
+      throw new Error("Promotion symbool ontbreekt.");
+    }
+    const promotionState = this.ensurePromotionState();
+    const researchCandidates = arr(this.runtime.researchRegistry?.governance?.promotionCandidates || []);
+    const candidate = researchCandidates.find((item) => `${item.symbol || ""}`.trim().toUpperCase() === candidateSymbol);
+    if (!candidate) {
+      throw new Error("Promotion kandidaat niet gevonden.");
+    }
+    promotionState.active = promotionState.active.filter((item) => item.symbol !== candidateSymbol);
+    promotionState.active.unshift({
+      symbol: candidateSymbol,
+      stage: "guarded_live_probation",
+      status: "active",
+      governanceScore: num(candidate.governanceScore || 0, 4),
+      candidateStatus: candidate.status || "observe",
+      approvedAt: at,
+      note: note || null
+    });
+    promotionState.active = promotionState.active.slice(0, 12);
+    promotionState.history.unshift({
+      at,
+      action: "approve_guarded_live",
+      symbol: candidateSymbol,
+      stage: "guarded_live_probation",
+      status: "approved",
+      governanceScore: num(candidate.governanceScore || 0, 4),
+      note: note || null
+    });
+    promotionState.history = promotionState.history.slice(0, 80);
+    this.recordEvent("operator_promotion_candidate_approved", {
+      at,
+      symbol: candidateSymbol,
+      note: note || null
+    });
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
+  async rollbackPromotionCandidate({ symbol, note = null, at = nowIso() } = {}) {
+    const candidateSymbol = `${symbol || ""}`.trim().toUpperCase();
+    if (!candidateSymbol) {
+      throw new Error("Promotion symbool ontbreekt.");
+    }
+    const promotionState = this.ensurePromotionState();
+    const active = promotionState.active.find((item) => item.symbol === candidateSymbol);
+    if (!active) {
+      throw new Error("Geen actieve guarded-live probation gevonden voor dit symbool.");
+    }
+    promotionState.active = promotionState.active.filter((item) => item.symbol !== candidateSymbol);
+    promotionState.history.unshift({
+      at,
+      action: "rollback_guarded_live",
+      symbol: candidateSymbol,
+      stage: active.stage || "guarded_live_probation",
+      status: "rolled_back",
+      governanceScore: num(active.governanceScore || 0, 4),
+      note: note || null
+    });
+    promotionState.history = promotionState.history.slice(0, 80);
+    this.recordEvent("operator_promotion_candidate_rolled_back", {
+      at,
+      symbol: candidateSymbol,
+      note: note || null
+    });
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
   }
 
   syncOrderLifecycleState(reason = "runtime_sync") {
@@ -9468,26 +9552,55 @@ export class TradingBot {
   buildPromotionPipelineSnapshot({
     paperLearning = {},
     modelRegistry = {},
-    researchRegistry = {}
+    researchRegistry = {},
+    promotionState = {}
   } = {}) {
     const roadmap = paperLearning.promotionRoadmap || {};
     const transitions = arr(paperLearning.policyTransitions?.candidates || []).slice(0, 6);
     const guardrails = arr(paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 4);
     const activeOverrides = arr(paperLearning.operatorActions?.activeOverrides || []).slice(0, 4);
     const researchCandidates = arr(researchRegistry.governance?.promotionCandidates || []).slice(0, 4);
+    const activePromotions = arr(promotionState.active || []).slice(0, 4).map((item) => ({
+      symbol: item.symbol || null,
+      stage: item.stage || "guarded_live_probation",
+      status: item.status || "active",
+      governanceScore: num(item.governanceScore || 0, 4),
+      approvedAt: item.approvedAt || null,
+      note: item.note || null
+    }));
+    const promotionHistory = arr(promotionState.history || []).slice(0, 8).map((item) => ({
+      at: item.at || null,
+      action: item.action || null,
+      symbol: item.symbol || null,
+      stage: item.stage || null,
+      status: item.status || null,
+      governanceScore: num(item.governanceScore || 0, 4),
+      note: item.note || null
+    }));
     return {
-      status: roadmap.status || modelRegistry.promotionPolicy?.readyLevel || "observe",
+      status: activePromotions.length
+        ? "guarded_live_active"
+        : roadmap.status || modelRegistry.promotionPolicy?.readyLevel || "observe",
       allowPromotion: Boolean(roadmap.allowPromotion || modelRegistry.promotionPolicy?.allowPromotion),
-      readyLevel: roadmap.readyLevel || modelRegistry.promotionPolicy?.readyLevel || null,
-      nextGate: roadmap.nextGate || null,
+      readyLevel: activePromotions.length
+        ? "guarded_live_probation"
+        : roadmap.readyLevel || modelRegistry.promotionPolicy?.readyLevel || null,
+      nextGate: activePromotions.length
+        ? "collect_guarded_live_outcomes"
+        : roadmap.nextGate || null,
       blockerReasons: arr(roadmap.blockerReasons || modelRegistry.promotionPolicy?.blockerReasons || []).slice(0, 4),
-      note: roadmap.note || "Nog geen duidelijke promotieroute.",
+      note: activePromotions.length
+        ? `${activePromotions.length} guarded-live probation override(s) actief.`
+        : roadmap.note || "Nog geen duidelijke promotieroute.",
       candidateTransitions: transitions,
       guardedLiveCandidates: researchCandidates.map((item) => ({
         symbol: item.symbol || null,
         governanceScore: num(item.governanceScore || 0, 4),
-        status: item.status || "observe"
+        status: item.status || "observe",
+        approved: activePromotions.some((promotion) => promotion.symbol === item.symbol)
       })),
+      activePromotions,
+      promotionHistory,
       activeOverrides,
       guardrails
     };
@@ -9660,7 +9773,8 @@ export class TradingBot {
     const promotionPipeline = this.buildPromotionPipelineSnapshot({
       paperLearning: paperLearningSummary,
       modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
-      researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {})
+      researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
+      promotionState: this.runtime.ops?.promotionState || {}
     });
 
     return {

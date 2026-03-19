@@ -96,6 +96,17 @@ function makeDiagnosticsActionButton({ action, target = "", label, tone = "" }) 
   });
 }
 
+function makePromotionActionButton({ action, symbol = "", label, tone = "" }) {
+  return makeNode("button", {
+    className: ["tag", tone].filter(Boolean).join(" "),
+    text: label,
+    attrs: {
+      "data-promotion-action": action,
+      "data-promotion-symbol": symbol || null
+    }
+  });
+}
+
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
   const node = document.createElement(tag);
   if (className) {
@@ -1501,6 +1512,38 @@ function renderPromotion(snapshot) {
       tone: item.status === "promote" ? "positive" : "neutral"
     }))
     : [makeEmptyState("Nog geen guarded-live kandidaten zichtbaar.")];
+  const candidateActions = (pipeline.guardedLiveCandidates || []).length
+    ? makeTagList((pipeline.guardedLiveCandidates || []).map((item) => item.approved
+      ? makeTag(`Approved · ${item.symbol}`, "tag positive")
+      : makePromotionActionButton({
+        action: "approve",
+        symbol: item.symbol || "",
+        label: `Approve ${item.symbol || "-"}`,
+        tone: item.status === "promote" ? "positive" : ""
+      })))
+    : null;
+  const activePromotionRows = (pipeline.activePromotions || []).length
+    ? pipeline.activePromotions.map((item) => makeEventRow({
+      title: `${item.symbol || "-"} · ${titleize(item.stage || "guarded_live_probation")}`,
+      detail: item.note || `Governance ${formatPct(item.governanceScore || 0, 0)} · actief sinds ${formatDate(item.approvedAt)}`,
+      tone: "positive"
+    }))
+    : [makeEmptyState("Nog geen actieve guarded-live probation.")];
+  const rollbackActions = (pipeline.activePromotions || []).length
+    ? makeTagList((pipeline.activePromotions || []).map((item) => makePromotionActionButton({
+      action: "rollback",
+      symbol: item.symbol || "",
+      label: `Rollback ${item.symbol || "-"}`,
+      tone: "negative"
+    })))
+    : null;
+  const historyRows = (pipeline.promotionHistory || []).length
+    ? pipeline.promotionHistory.map((item) => makeEventRow({
+      title: `${titleize(item.action || "actie")} · ${item.symbol || "-"}`,
+      detail: item.note || `${titleize(item.stage || "stage")} · ${titleize(item.status || "done")}`,
+      tone: item.status === "rolled_back" ? "negative" : item.status === "approved" ? "positive" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen promotion history.")];
   const guardrailTags = [
     ...(pipeline.guardrails || []).map((item) => makeTag(titleize(item), "tag negative")),
     ...((pipeline.activeOverrides || []).map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive")))
@@ -1519,7 +1562,28 @@ function renderPromotion(snapshot) {
     })(),
     (() => {
       const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Guarded live", "Kandidaten richting guarded live probation"), ...candidateRows);
+      section.append(
+        makeSectionHead("Guarded live", "Kandidaten richting guarded live probation"),
+        ...candidateRows,
+        candidateActions || makeEmptyState("Geen guarded-live approve actions klaar.")
+      );
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Actieve probation", "Operator-goedgekeurde guarded-live overrides"),
+        ...activePromotionRows,
+        rollbackActions || makeEmptyState("Geen rollback acties actief.")
+      );
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Promotion history", "Laatste approve en rollback acties"),
+        ...historyRows
+      );
       return section;
     })()
   ]);
@@ -1642,6 +1706,26 @@ function bindEvents() {
       target: diagnosticsTarget || null,
       note
     });
+  });
+
+  elements.promotionList?.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-promotion-action]");
+    if (!target) {
+      return;
+    }
+    const promotionAction = `${target.getAttribute("data-promotion-action") || ""}`.trim();
+    const symbol = `${target.getAttribute("data-promotion-symbol") || ""}`.trim();
+    if (!promotionAction || !symbol) {
+      return;
+    }
+    const note = window.prompt(`Optionele notitie voor ${promotionAction} ${symbol}:`, "") || null;
+    if (promotionAction === "approve") {
+      await runAction("/api/promotion/approve", { symbol, note });
+      return;
+    }
+    if (promotionAction === "rollback") {
+      await runAction("/api/promotion/rollback", { symbol, note });
+    }
   });
 
   elements.learningList?.addEventListener("click", async (event) => {

@@ -473,6 +473,26 @@ export class BotManager {
     });
   }
 
+  async approvePromotionCandidate(symbol, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.approvePromotionCandidate({ symbol, note });
+      return this.getSnapshot();
+    });
+  }
+
+  async rollbackPromotionCandidate(symbol, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.rollbackPromotionCandidate({ symbol, note });
+      return this.getSnapshot();
+    });
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();
