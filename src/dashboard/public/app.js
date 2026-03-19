@@ -1388,6 +1388,7 @@ function renderExplainability(snapshot) {
     ? decisions.map((item) => {
       const card = makeNode("article", { className: "signal-card" });
       const summary = makeNode("div", { className: "card-summary" });
+      const inputRows = makeReasonRows((item.inputs || []).map((step) => [step.label, step.detail]));
       summary.append(
         makeCardHeader({
           eyebrow: "Decision explainer",
@@ -1397,7 +1398,8 @@ function renderExplainability(snapshot) {
         }),
         makeNode("p", { className: "card-copy", text: item.headline || "Geen explainability headline." }),
         makeReasonRows((item.explainSteps || []).slice(0, 4).map((step) => [step.label, step.detail])),
-        makeTagList((item.blockerChain || []).slice(0, 4).map((blocker) => makeTag(titleize(blocker), "tag negative")))
+        inputRows,
+        makeTagList((item.guardrails || item.blockerChain || []).slice(0, 4).map((blocker) => makeTag(titleize(blocker), "tag negative")))
       );
       card.append(summary);
       return card;
@@ -1407,6 +1409,21 @@ function renderExplainability(snapshot) {
     ? replays.map((item) => {
       const card = makeNode("article", { className: "signal-card" });
       const summary = makeNode("div", { className: "card-summary" });
+      const compareRows = makeReasonRows((item.outcomeCompare || []).map((entry) => [
+        entry.label,
+        `${entry.baseline || "-"} -> ${entry.challenger || "-"}${entry.delta != null ? ` (${entry.delta > 0 ? "+" : ""}${number(entry.delta, 1)})` : ""}`
+      ]));
+      const timelineRows = (item.fullTimeline || []).length
+        ? makeNode("div", { className: "list-stack compact-list" })
+        : null;
+      if (timelineRows) {
+        timelineRows.append(
+          ...item.fullTimeline.slice(0, 8).map((stage) => makeEventRow({
+            title: `${titleize(stage.label || stage.type || "step")} · ${formatDate(stage.at)}`,
+            detail: stage.detail || "Geen detail."
+          }))
+        );
+      }
       summary.append(
         makeCardHeader({
           eyebrow: "Trade replay",
@@ -1418,9 +1435,13 @@ function renderExplainability(snapshot) {
         makeReasonRows([
           ["Open", item.whyOpened || "Onbekend."],
           ["Sluit", item.whyClosed || "Onbekend."],
-          ["Strategie", titleize(item.strategy || "unknown")]
+          ["Strategie", titleize(item.strategy || "unknown")],
+          ["Gate", item.gateSnapshot ? `p ${formatPct(item.gateSnapshot.probability || 0, 1)} · gate ${formatPct(item.gateSnapshot.threshold || 0, 1)}` : "Onbekend."]
         ]),
-        makeTagList((item.keyStages || []).slice(0, 4).map((stage) => makeTag(`${titleize(stage.label || stage.type || "step")} · ${truncate(stage.detail || "", 48)}`)))
+        makeReasonRows((item.decisionInputs || []).map((entry) => [entry.label, entry.detail])),
+        compareRows,
+        makeTagList((item.keyStages || []).slice(0, 4).map((stage) => makeTag(`${titleize(stage.label || stage.type || "step")} · ${truncate(stage.detail || "", 48)}`))),
+        timelineRows
       );
       card.append(summary);
       return card;

@@ -9076,6 +9076,60 @@ export class TradingBot {
         ? { label: "ai_trail", price: num(exitIntelligence.suggestedStopLossPrice || 0, 6), source: "exit_ai" }
         : null
     ].filter(Boolean);
+    const replayCheckpoints = arr(trade.replayCheckpoints || []).slice(-12).map((item) => ({
+      at: item.at || null,
+      price: num(item.price || 0, 6),
+      label: item.label || null,
+      note: item.note || null
+    }));
+    const bestAlternateExit = alternateExits
+      .filter((item) => Number.isFinite(item.price))
+      .sort((left, right) => Math.abs((right.price || 0) - (trade.entryPrice || 0)) - Math.abs((left.price || 0) - (trade.entryPrice || 0)))[0] || null;
+    const actualMovePct = Number.isFinite(trade.netPnlPct) ? trade.netPnlPct : ((trade.entryPrice && trade.exitPrice) ? (trade.exitPrice / trade.entryPrice) - 1 : 0);
+    const alternateMovePct = bestAlternateExit?.price && Number.isFinite(trade.entryPrice) && trade.entryPrice > 0
+      ? (bestAlternateExit.price / trade.entryPrice) - 1
+      : null;
+    const review = buildTradeQualityReview(trade);
+    const decisionInputs = [
+      {
+        label: "Gate",
+        detail: `p ${num(rationale.probability || trade.probabilityAtEntry || 0, 3)} vs gate ${num(rationale.threshold || 0, 3)}`
+      },
+      {
+        label: "Confidence",
+        detail: `${num((rationale.confidence || rationale.confidenceBreakdown?.overallConfidence || 0) * 100, 1)}% overall`
+      },
+      {
+        label: "Markt",
+        detail: titleize(rationale.marketState?.phase || rationale.regimeSummary?.regime || trade.regimeAtEntry || "unknown")
+      },
+      {
+        label: "Execution",
+        detail: titleize(trade.entryExecutionAttribution?.entryStyle || rationale.executionStyle || "unknown")
+      }
+    ];
+    const outcomeCompare = [
+      {
+        label: "Verwacht vs echt",
+        baseline: `${num(((rationale.probability || trade.probabilityAtEntry || 0) - (rationale.threshold || 0)) * 100, 1)}% gate-edge`,
+        challenger: `${num(actualMovePct * 100, 1)}% realized`,
+        delta: num((((actualMovePct || 0) - ((rationale.probability || trade.probabilityAtEntry || 0) - (rationale.threshold || 0))) * 100), 1)
+      },
+      {
+        label: "Execution vs outcome",
+        baseline: `entry ${num(trade.entryExecutionAttribution?.realizedTouchSlippageBps || 0, 2)} bps`,
+        challenger: `${titleize(review.verdict || "observe")} · score ${num((review.compositeScore || 0) * 100, 1)}%`,
+        delta: num(((review.executionScore || 0) - (review.outcomeScore || 0)) * 100, 1)
+      },
+      bestAlternateExit
+        ? {
+            label: "Actual vs alternative",
+            baseline: `actual ${num(actualMovePct * 100, 1)}%`,
+            challenger: `${titleize(bestAlternateExit.label || bestAlternateExit.source || "alternative")} ${num((alternateMovePct || 0) * 100, 1)}%`,
+            delta: num((((alternateMovePct || 0) - (actualMovePct || 0)) * 100), 1)
+          }
+        : null
+    ].filter(Boolean);
     return {
       id: trade.id,
       symbol: trade.symbol,
@@ -9098,6 +9152,7 @@ export class TradingBot {
       metaNeural: summarizeMetaNeural(rationale.metaNeural || {}),
       sequence: summarizeSequence(rationale.sequence || {}),
       expertMix: summarizeExpertMix(rationale.expertMix || {}),
+      decisionInputs,
       blockersAtEntry: arr(rationale.blockerReasons || []).slice(0, 5),
       vetoChain: arr(rationale.blockerReasons || []).slice(0, 5),
       headlines,
@@ -9107,9 +9162,32 @@ export class TradingBot {
         provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
         captureEfficiency: num(trade.captureEfficiency || 0, 4)
       },
-      review: buildTradeQualityReview(trade),
+      review,
+      reviewScores: {
+        setup: num(review.setupScore || 0, 4),
+        execution: num(review.executionScore || 0, 4),
+        outcome: num(review.outcomeScore || 0, 4),
+        composite: num(review.compositeScore || 0, 4),
+        verdict: review.verdict || null
+      },
+      gateSnapshot: {
+        probability: num(rationale.probability || trade.probabilityAtEntry || 0, 4),
+        threshold: num(rationale.threshold || 0, 4),
+        edgeToThreshold: num((rationale.probability || trade.probabilityAtEntry || 0) - (rationale.threshold || 0), 4),
+        confidence: num(rationale.confidence || rationale.confidenceBreakdown?.overallConfidence || 0, 4),
+        committeeAgreement: num(committee.agreement || 0, 4),
+        committeeNetScore: num(committee.netScore || 0, 4)
+      },
+      executionSnapshot: {
+        entryStyle: trade.entryExecutionAttribution?.entryStyle || rationale.executionStyle || null,
+        exitStyle: trade.exitExecutionAttribution?.entryStyle || null,
+        entrySlippageBps: num(trade.entryExecutionAttribution?.realizedTouchSlippageBps || 0, 2),
+        exitSlippageBps: num(trade.exitExecutionAttribution?.realizedTouchSlippageBps || 0, 2),
+        scaleOutCount: scaleOuts.length
+      },
       alternateExits,
-      replayCheckpoints: arr(trade.replayCheckpoints || []).slice(-12),
+      replayCheckpoints,
+      outcomeCompare,
       timeline: [
         { at: trade.entryAt, type: "analysis", label: "Gate", detail: gateDetail },
         { at: trade.entryAt, type: "entry", label: "Entry", detail: rationale.summary || `${trade.symbol} entry` },
@@ -9118,6 +9196,12 @@ export class TradingBot {
         ...(rationale.expertMix ? [{ at: trade.entryAt, type: "experts", label: "Experts", detail: `${rationale.expertMix.dominantRegime || "range"} | ${((rationale.expertMix.confidence || 0) * 100).toFixed(0)}%` }] : []),
         ...(headlines.length ? [{ at: trade.entryAt, type: "news", label: "Nieuws", detail: headlines.join(" | ") }] : []),
         ...(arr(rationale.checks || []).slice(0, 3).map((check) => ({ at: trade.entryAt, type: "check", label: check.label || "Check", detail: `${check.passed ? "pass" : "fail"} | ${check.detail || ""}`.trim() }))),
+        ...replayCheckpoints.map((item) => ({
+          at: item.at,
+          type: "checkpoint",
+          label: item.label || "Checkpoint",
+          detail: `${num(item.price || 0, 6)}${item.note ? ` | ${item.note}` : ""}`
+        })),
         ...scaleOuts.map((event) => ({ at: event.at, type: "scale_out", label: "Scale-out", detail: `${event.reason || "partial_exit"} | ${num((event.fraction || 0) * 100, 1)}% | ${num(event.realizedPnl || 0, 2)} USD` })),
         ...(trade.exitIntelligenceSummary ? [{ at: trade.exitAt, type: "exit_ai", label: "Exit AI", detail: `${trade.exitIntelligenceSummary.action || "hold"} | ${(trade.exitIntelligenceSummary.riskReasons || []).slice(0, 3).join(", ")}` }] : []),
         { at: trade.exitAt, type: "exit", label: "Exit", detail: `${trade.reason || "exit"} | ${num(trade.pnlQuote || 0, 2)} USD` }
@@ -9160,7 +9244,29 @@ export class TradingBot {
       qualityStatus: decision.dataQuality?.status || null,
       quorumStatus: decision.qualityQuorum?.status || null,
       confidence: num(decision.confidenceBreakdown?.overallConfidence || 0, 4),
-      explainSteps
+      explainSteps,
+      inputs: [
+        {
+          label: "Model",
+          detail: `p ${num(decision.probability || 0, 3)} vs gate ${num(decision.threshold || 0, 3)}`
+        },
+        {
+          label: "Kwaliteit",
+          detail: `${titleize(decision.dataQuality?.status || "unknown")} · signal ${num((decision.signalQuality?.overallScore || 0) * 100, 1)}%`
+        },
+        {
+          label: "Regime",
+          detail: titleize(decision.marketState?.phase || decision.regime || decision.trendState?.phase || "unknown")
+        },
+        {
+          label: "Execution",
+          detail: titleize(decision.executionStyle || decision.executionBudget?.status || "unknown")
+        }
+      ],
+      guardrails: [
+        ...arr(decision.blockerReasons || []).slice(0, 3),
+        ...arr(decision.qualityQuorum?.blockerReasons || []).slice(0, 2)
+      ].slice(0, 4)
     };
   }
 
@@ -9180,9 +9286,15 @@ export class TradingBot {
       netPnlPct: num(replay.netPnlPct || 0, 4),
       whyOpened: replay.whyOpened || null,
       whyClosed: replay.whyClosed || null,
+      decisionInputs: arr(replay.decisionInputs || []).slice(0, 4),
       blockersAtEntry: arr(replay.blockersAtEntry || []).slice(0, 4),
+      reviewScores: replay.reviewScores || null,
+      gateSnapshot: replay.gateSnapshot || null,
+      executionSnapshot: replay.executionSnapshot || null,
+      outcomeCompare: arr(replay.outcomeCompare || []).slice(0, 3),
       alternateExits: arr(replay.alternateExits || []).slice(0, 3),
       keyStages: stages,
+      fullTimeline: arr(replay.timeline || []).slice(0, 10),
       keyTakeaway: replay.review?.summary || replay.whyClosed || replay.whyOpened || "Replay beschikbaar."
     };
   }

@@ -7343,6 +7343,61 @@ await runCheck("trading bot diagnostics actions reset external feeds and keep au
   assert.equal(bot.runtime.ops.diagnosticsActions.history[0].target, "calendar");
 });
 
+await runCheck("trade replay digest exposes full timeline and decision outcome comparisons", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.journal = {
+    scaleOuts: [
+      {
+        positionId: "trade-1",
+        id: "scale-1",
+        at: "2026-03-19T10:30:00.000Z",
+        fraction: 0.4,
+        realizedPnl: 12,
+        reason: "tp1"
+      }
+    ]
+  };
+  const trade = {
+    id: "trade-1",
+    symbol: "BTCUSDT",
+    entryAt: "2026-03-19T10:00:00.000Z",
+    exitAt: "2026-03-19T11:00:00.000Z",
+    entryPrice: 100,
+    exitPrice: 104,
+    pnlQuote: 18,
+    netPnlPct: 0.04,
+    captureEfficiency: 0.63,
+    regimeAtEntry: "trend",
+    strategyAtEntry: "ema_trend",
+    reason: "take_profit",
+    replayCheckpoints: [
+      { at: "2026-03-19T10:15:00.000Z", price: 101, note: "held above VWAP" },
+      { at: "2026-03-19T10:45:00.000Z", price: 103.2, note: "momentum expanded" }
+    ],
+    entryExecutionAttribution: { entryStyle: "limit_maker", realizedTouchSlippageBps: 1.8 },
+    exitExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 2.6 },
+    exitIntelligenceSummary: { action: "take_profit", riskReasons: ["momentum_rollover"] },
+    entryRationale: {
+      summary: "Trend breakout with strong committee alignment.",
+      probability: 0.62,
+      threshold: 0.55,
+      confidence: 0.64,
+      executionStyle: "limit_maker",
+      marketState: { phase: "trend" },
+      committee: { agreement: 0.78, netScore: 0.41, vetoes: [] },
+      checks: [{ label: "Quorum", passed: true, detail: "all primary feeds healthy" }],
+      headlines: [{ title: "ETF inflows supportive" }]
+    }
+  };
+  const replay = bot.buildTradeReplayView(trade);
+  const digest = bot.buildTradeReplayDigest(replay);
+  assert.ok(replay.timeline.some((item) => item.type === "checkpoint"));
+  assert.equal(digest.decisionInputs.length, 4);
+  assert.ok(digest.outcomeCompare.some((item) => item.label === "Verwacht vs echt"));
+  assert.ok(digest.fullTimeline.length >= 6);
+  assert.equal(digest.executionSnapshot.entryStyle, "limit_maker");
+});
+
 await runCheck("capital policy engine summarizes budgets and family kill switches", async () => {
   const snapshot = buildCapitalPolicySnapshot({
     journal: {
