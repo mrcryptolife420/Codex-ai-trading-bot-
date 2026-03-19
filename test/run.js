@@ -2542,10 +2542,12 @@ await runCheck("reference venue service blocks large cross-venue divergence", as
 });
 
 await runCheck("reference venue service applies timeout budget cooldown after failures", async () => {
+  const runtime = {};
   const service = new ReferenceVenueService(makeConfig({
     referenceVenueFetchEnabled: true,
     referenceVenueQuoteUrls: ["https://quotes.example/{symbol}"]
   }), { warn() {} });
+  service.setRuntime(runtime);
   let calls = 0;
   service.requestBudget.fetchJson = async () => {
     calls += 1;
@@ -2557,13 +2559,13 @@ await runCheck("reference venue service applies timeout budget cooldown after fa
     error.cooldownUntil = "2026-03-19T10:00:00.000Z";
     throw error;
   };
-  service.requestBudget.noteFailure = () => ({ cooldownUntil: "2026-03-19T10:00:00.000Z" });
 
   const first = await service.fetchReferenceQuotes("BTCUSDT");
   const second = await service.fetchReferenceQuotes("BTCUSDT");
   assert.deepEqual(first, []);
   assert.deepEqual(second, []);
   assert.equal(calls, 2);
+  assert.ok(Object.keys(runtime.externalFeedHealth || {}).length >= 1);
 });
 
 await runCheck("parameter governor builds scoped adjustments from closed trades", async () => {
@@ -8798,6 +8800,26 @@ await runCheck("source reliability engine cools down providers after rate limits
   const gate = engine.shouldUseProvider(runtime, "reddit_search", "2026-03-10T10:01:00.000Z");
   assert.equal(gate.allow, false);
   assert.equal(gate.reason, "provider_cooldown_active");
+});
+
+await runCheck("source reliability summary carries non-news external feed health", async () => {
+  const engine = new SourceReliabilityEngine(makeConfig({ sourceReliabilityMinOperationalScore: 0.2 }));
+  const runtime = {
+    externalFeedHealth: {
+      "calendar:bls_calendar": {
+        group: "calendar",
+        feed: "bls_calendar",
+        score: 0.12,
+        recentFailures: 2,
+        cooldownUntil: "2026-03-10T10:15:00.000Z",
+        lastError: "timeout"
+      }
+    }
+  };
+  const summary = engine.buildSummary(runtime, "2026-03-10T10:01:00.000Z");
+  assert.equal(summary.externalFeeds.providerCount, 1);
+  assert.equal(summary.externalFeeds.providers[0].group, "calendar");
+  assert.equal(summary.externalFeeds.coolingDownCount, 1);
 });
 
 await runCheck("offline trainer summarizes learning readiness and counterfactuals", async () => {

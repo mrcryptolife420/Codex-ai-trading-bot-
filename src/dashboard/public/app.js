@@ -80,6 +80,29 @@ function renderActionTag({ action, kind = "", id, label, tone = "" }) {
   return `<button class="${classes}" data-policy-action="${escapeAttr(action)}" data-transition-id="${escapeAttr(id)}"${kind ? ` data-transition-kind="${escapeAttr(kind)}"` : ""}>${escapeHtml(label)}</button>`;
 }
 
+function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
+  const node = document.createElement(tag);
+  if (className) {
+    node.className = className;
+  }
+  if (text) {
+    node.textContent = text;
+  }
+  for (const [name, value] of Object.entries(attrs)) {
+    if (value != null && value !== "") {
+      node.setAttribute(name, `${value}`);
+    }
+  }
+  return node;
+}
+
+function replaceChildren(element, children = []) {
+  if (!element) {
+    return;
+  }
+  element.replaceChildren(...children.filter(Boolean));
+}
+
 function readStoredBoolean(key, fallback = false) {
   try {
     const raw = window.localStorage.getItem(key);
@@ -1011,43 +1034,60 @@ function buildOpsEvents(snapshot) {
 
 function renderOps(snapshot) {
   const cards = buildOpsCards(snapshot);
-  elements.opsSummary.innerHTML = cards.map((item) => `
-    <article class="risk-card">
-      <span class="metric-label">${escapeHtml(item.label)}</span>
-      <strong class="metric-value ${item.tone || ""}">${escapeHtml(item.value)}</strong>
-      <span class="metric-foot">${escapeHtml(item.foot)}</span>
-    </article>
-  `).join("");
+  replaceChildren(elements.opsSummary, cards.map((item) => {
+    const card = makeNode("article", { className: "risk-card" });
+    card.append(
+      makeNode("span", { className: "metric-label", text: item.label }),
+      makeNode("strong", { className: ["metric-value", item.tone || ""].filter(Boolean).join(" "), text: item.value }),
+      makeNode("span", { className: "metric-foot", text: item.foot })
+    );
+    return card;
+  }));
 
   if (elements.opsLearning) {
-    elements.opsLearning.innerHTML = "";
+    replaceChildren(elements.opsLearning, []);
   }
 
   const events = buildOpsEvents(snapshot);
-  elements.opsList.innerHTML = events.length
-    ? events.map((item) => `
-        <article class="event-row ${item.tone || ""}">
-          <strong>${escapeHtml(item.title)}</strong>
-          <span class="meta">${escapeHtml(truncate(item.detail, 120))}</span>
-        </article>
-      `).join("")
-    : `<div class="empty">Geen operationele aandachtspunten.</div>`;
+  if (!events.length) {
+    replaceChildren(elements.opsList, [makeNode("div", { className: "empty", text: "Geen operationele aandachtspunten." })]);
+    return;
+  }
+  replaceChildren(elements.opsList, events.map((item) => {
+    const row = makeNode("article", { className: ["event-row", item.tone || ""].filter(Boolean).join(" ") });
+    row.append(
+      makeNode("strong", { text: item.title }),
+      makeNode("span", { className: "meta", text: truncate(item.detail, 120) })
+    );
+    return row;
+  }));
 }
 
 function renderTrades(snapshot) {
   const trades = (snapshot?.dashboard?.report?.recentTrades || []).slice(0, TRADE_LIMIT);
-  elements.tradesBody.innerHTML = trades.length
-    ? trades.map((trade) => `
-        <tr>
-          <td>${escapeHtml(trade.symbol || "-")}</td>
-          <td>${escapeHtml(number(trade.entryPrice, 4))}</td>
-          <td>${escapeHtml(number(trade.exitPrice, 4))}</td>
-          <td>${escapeHtml(titleize(trade.reason || "-"))}</td>
-          <td class="${toneClass(trade.pnlQuote)}">${escapeHtml(formatMoney(trade.pnlQuote))}</td>
-          <td class="${toneClass(trade.netPnlPct)}">${escapeHtml(formatSignedPct(trade.netPnlPct))}</td>
-        </tr>
-      `).join("")
-    : `<tr><td colspan="6" class="empty">Nog geen recente trades beschikbaar.</td></tr>`;
+  if (!trades.length) {
+    const emptyRow = makeNode("tr");
+    emptyRow.append(makeNode("td", {
+      className: "empty",
+      text: "Nog geen recente trades beschikbaar.",
+      attrs: { colspan: "6" }
+    }));
+    replaceChildren(elements.tradesBody, [emptyRow]);
+    return;
+  }
+  replaceChildren(elements.tradesBody, trades.map((trade) => {
+    const row = makeNode("tr");
+    const fields = [
+      { text: trade.symbol || "-" },
+      { text: number(trade.entryPrice, 4) },
+      { text: number(trade.exitPrice, 4) },
+      { text: titleize(trade.reason || "-") },
+      { text: formatMoney(trade.pnlQuote), className: toneClass(trade.pnlQuote) },
+      { text: formatSignedPct(trade.netPnlPct), className: toneClass(trade.netPnlPct) }
+    ];
+    row.append(...fields.map((field) => makeNode("td", { className: field.className || "", text: field.text })));
+    return row;
+  }));
 }
 
 function render(snapshot) {

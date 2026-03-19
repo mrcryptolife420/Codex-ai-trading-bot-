@@ -1338,11 +1338,27 @@ function summarizeSourceReliability(summary = {}) {
     coolingDownCount: summary.coolingDownCount || 0,
     providers: arr(summary.providers || []).slice(0, 8).map((item) => ({
       provider: item.provider || null,
+      group: item.group || "news",
       score: num(item.score || 0, 4),
       coolingDown: Boolean(item.coolingDown),
       recentFailures: item.recentFailures || 0,
       lastError: item.lastError || null
     })),
+    externalFeeds: summary.externalFeeds ? {
+      providerCount: summary.externalFeeds.providerCount || 0,
+      averageScore: num(summary.externalFeeds.averageScore || 0, 4),
+      degradedCount: summary.externalFeeds.degradedCount || 0,
+      coolingDownCount: summary.externalFeeds.coolingDownCount || 0,
+      providers: arr(summary.externalFeeds.providers || []).slice(0, 8).map((item) => ({
+        provider: item.provider || null,
+        group: item.group || "external",
+        score: num(item.score || 0, 4),
+        coolingDown: Boolean(item.coolingDown),
+        recentFailures: item.recentFailures || 0,
+        lastError: item.lastError || null
+      })),
+      notes: [...(summary.externalFeeds.notes || [])]
+    } : null,
     notes: [...(summary.notes || [])]
   };
 }
@@ -3221,6 +3237,7 @@ export class TradingBot {
     this.runtime.newsCache = this.runtime.newsCache || {};
     this.runtime.exchangeNoticeCache = this.runtime.exchangeNoticeCache || {};
     this.runtime.marketStructureCache = this.runtime.marketStructureCache || {};
+    this.runtime.externalFeedHealth = this.runtime.externalFeedHealth || {};
     this.runtime.marketSentimentCache = this.runtime.marketSentimentCache || null;
     this.runtime.volatilityContextCache = this.runtime.volatilityContextCache || null;
     this.runtime.calendarCache = this.runtime.calendarCache || null;
@@ -3303,6 +3320,8 @@ export class TradingBot {
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.model = new AdaptiveTradingModel(persistedState.modelState, this.config);
     this.rlPolicy = new ReinforcementExecutionPolicy(this.runtime.executionPolicyState, this.config);
+    this.referenceVenue.setRuntime?.(this.runtime);
+    this.strategyResearchMiner.setRuntime?.(this.runtime);
     this.news = new NewsService({
       config: this.config,
       runtime: this.runtime,
@@ -3987,7 +4006,7 @@ export class TradingBot {
     }));
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
-    this.runtime.sourceReliability = summarizeSourceReliability(this.runtime.sourceReliability || {});
+    this.runtime.sourceReliability = this.buildSourceReliabilitySnapshot();
     this.updateThresholdTuningState(offlineTrainerSummary, referenceNow);
     this.syncOrderLifecycleState("governance_refresh");
     this.refreshOperationalViews({ report, nowIso: referenceNow });
@@ -7025,7 +7044,7 @@ export class TradingBot {
       : summarizeTimeframeConsensus({ enabled: false });
     const pairHealthSummary = context.pairHealthSummary || this.pairHealthMonitor.evaluateSymbol(context.pairHealthSnapshot || {}, { symbol, marketSnapshot, newsSummary, timeframeSummary });
     const divergenceSummary = context.divergenceSummary || this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
-    const sourceReliabilitySummary = context.sourceReliabilitySummary || summarizeSourceReliability(this.runtime.sourceReliability || {});
+    const sourceReliabilitySummary = context.sourceReliabilitySummary || this.buildSourceReliabilitySnapshot();
     const strategyMetaSummary = this.model.scoreStrategyMeta({
       score: {
         probability: strategySummary.fitScore || 0.5,
@@ -7652,7 +7671,7 @@ export class TradingBot {
     const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: this.config.watchlist, nowIso: now.toISOString() });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
     const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: now.toISOString() });
-    const sourceReliabilitySummary = summarizeSourceReliability(this.runtime.sourceReliability || {});
+    const sourceReliabilitySummary = this.buildSourceReliabilitySnapshot();
     if (!readOnly) {
       this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
       this.runtime.strategyAttribution = summarizeAttributionSnapshot(attributionSnapshot);
@@ -9025,6 +9044,10 @@ export class TradingBot {
       .map((entry) => ({ name: entry.name, weight: num(entry.weight, 4) }));
   }
 
+  buildSourceReliabilitySnapshot() {
+    return summarizeSourceReliability(this.news?.reliability?.buildSummary(this.runtime) || this.runtime.sourceReliability || {});
+  }
+
   buildPortfolioView() {
     const clusters = {};
     const sectors = {};
@@ -9061,7 +9084,7 @@ export class TradingBot {
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
-      sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
+      sourceReliability: this.buildSourceReliabilitySnapshot(),
       exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       session: summarizeSession(this.runtime.session || {}),
       marketSentiment: summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT),
@@ -9187,7 +9210,7 @@ export class TradingBot {
       volatility: volatilityOverview,
       onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
       calendar: calendarOverview,
-      sourceReliability: summarizeSourceReliability(this.runtime.sourceReliability || {}),
+      sourceReliability: this.buildSourceReliabilitySnapshot(),
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),

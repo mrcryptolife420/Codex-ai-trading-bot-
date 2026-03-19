@@ -1,5 +1,7 @@
 import { summarizeNews } from "../news/sentiment.js";
 import { nowIso } from "../utils/time.js";
+import { RequestBudget } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 const CMS_CATALOGS = [
   { catalogId: 49, label: "latest_binance_news", category: "announcement" },
@@ -106,8 +108,10 @@ function aliasTestText(text) {
   return `${text || ""}`;
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, {
+async function fetchJson(url, requestBudget, runtime, key) {
+  const response = await requestBudget.fetchJson(url, {
+    key,
+    runtime,
     headers: {
       "Accept": "application/json, text/plain, */*",
       "Accept-Language": "en-US,en;q=0.9",
@@ -116,8 +120,7 @@ async function fetchJson(url) {
       "Pragma": "no-cache",
       "Referer": "https://www.binance.com/en/support/announcement/",
       "User-Agent": "Mozilla/5.0 trading-bot"
-    },
-    signal: AbortSignal.timeout(8_000)
+    }
   });
   if (!response.ok) {
     throw new Error(`Binance CMS fetch failed: ${response.status}`);
@@ -125,16 +128,21 @@ async function fetchJson(url) {
   return response.json();
 }
 
-async function fetchCatalogArticles(catalog, pageSize) {
+async function fetchCatalogArticles(catalog, pageSize, requestBudget, runtime) {
   const attempts = [normalizePageSize(pageSize), 8, 5, 3]
     .filter((value, index, items) => items.indexOf(value) === index);
   let lastError = null;
   for (const size of attempts) {
     try {
-      const payload = await fetchJson(buildCmsUrl(catalog.catalogId, size));
+      const feedKey = `binance_cms:${catalog.catalogId}`;
+      const payload = await fetchJson(buildCmsUrl(catalog.catalogId, size), requestBudget, runtime, feedKey);
+      requestBudget.noteSuccess(feedKey, runtime);
       return normalizeCmsArticles(payload, catalog);
     } catch (error) {
       lastError = error;
+      if (error.code !== "REQUEST_BUDGET_COOLDOWN") {
+        requestBudget.noteFailure(`binance_cms:${catalog.catalogId}`, Date.now(), runtime, error.message);
+      }
       if (error?.message?.includes("400") && size > 3) {
         continue;
       }
@@ -166,6 +174,14 @@ export class BinanceAnnouncementService {
     this.runtime = runtime;
     this.logger = logger;
     this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: Math.max(1, Number(config.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+      maxCooldownMs: Math.max(1, Number(config.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+      registry: new ExternalFeedRegistry(config),
+      runtime,
+      group: "announcements"
+    });
   }
 
   isFresh(cacheEntry) {
@@ -223,7 +239,7 @@ export class BinanceAnnouncementService {
     }
 
     try {
-      const responses = await Promise.allSettled(CMS_CATALOGS.map((catalog) => fetchCatalogArticles(catalog, this.config.newsHeadlineLimit)));
+      const responses = await Promise.allSettled(CMS_CATALOGS.map((catalog) => fetchCatalogArticles(catalog, this.config.newsHeadlineLimit, this.requestBudget, this.runtime)));
       const items = [];
       let fulfilledCatalogs = 0;
       for (const response of responses) {

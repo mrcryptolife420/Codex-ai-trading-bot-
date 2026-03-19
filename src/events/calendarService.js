@@ -3,6 +3,8 @@ import path from "node:path";
 import { defaultCalendarEvents } from "../data/eventCalendarSeed.js";
 import { clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
+import { RequestBudget } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 const BLS_CALENDAR_URL = "https://www.bls.gov/schedule/news_release/bls.ics";
 
@@ -123,12 +125,13 @@ function isRelevantToSymbol(event, symbol, aliases = []) {
   return event.symbols.includes(symbol) || event.symbols.some((candidate) => upperAliases.includes(candidate));
 }
 
-async function fetchText(url) {
-  const response = await fetch(url, {
+async function fetchText(url, requestBudget, runtime) {
+  const response = await requestBudget.fetchJson(url, {
+    key: "bls_calendar",
+    runtime,
     headers: {
       "User-Agent": "Mozilla/5.0 trading-bot"
-    },
-    signal: AbortSignal.timeout(8_000)
+    }
   });
   if (!response.ok) {
     throw new Error(`Calendar fetch failed: ${response.status}`);
@@ -218,6 +221,14 @@ export class CalendarService {
       ? path.join(config.runtimeDir, "event-calendar.json")
       : path.join(process.cwd(), "runtime", "event-calendar.json");
     this.recordHistory = typeof recordHistory === "function" ? recordHistory : null;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: Math.max(1, Number(config.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+      maxCooldownMs: Math.max(1, Number(config.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+      registry: new ExternalFeedRegistry(config),
+      runtime,
+      group: "calendar"
+    });
   }
 
   isFresh(cacheEntry) {
@@ -273,8 +284,12 @@ export class CalendarService {
     try {
       let fetchFailed = false;
       const [ics, userEvents] = await Promise.all([
-        fetchText(BLS_CALENDAR_URL).catch((error) => {
+        fetchText(BLS_CALENDAR_URL, this.requestBudget, this.runtime).then((value) => {
+          this.requestBudget.noteSuccess("bls_calendar", this.runtime);
+          return value;
+        }).catch((error) => {
           fetchFailed = true;
+          this.requestBudget.noteFailure("bls_calendar", Date.now(), this.runtime, error.message);
           this.logger.warn("BLS calendar fetch failed", { error: error.message });
           return "";
         }),

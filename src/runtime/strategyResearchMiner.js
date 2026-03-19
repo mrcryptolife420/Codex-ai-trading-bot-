@@ -2,6 +2,7 @@ import { normalizeStrategyDsl, summarizeStrategyDsl } from "../research/strategy
 import { evaluateStrategyStress } from "./stressLab.js";
 import { buildStrategyGenome } from "./strategyGenome.js";
 import { RequestBudget, maskUrl } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "./externalFeedRegistry.js";
 
 function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -124,14 +125,23 @@ function buildPromotionStage(status = "observe", overallScore = 0) {
 }
 
 export class StrategyResearchMiner {
-  constructor(config, logger = console) {
+  constructor(config, logger = console, runtime = null) {
     this.config = config;
     this.logger = logger;
+    this.runtime = runtime || null;
     this.requestBudget = new RequestBudget({
       timeoutMs: 8_000,
       baseCooldownMs: 30_000,
-      maxCooldownMs: 5 * 60_000
+      maxCooldownMs: 5 * 60_000,
+      registry: new ExternalFeedRegistry(config),
+      runtime: this.runtime,
+      group: "strategy_research"
     });
+  }
+
+  setRuntime(runtime = null) {
+    this.runtime = runtime || null;
+    this.requestBudget.runtime = this.runtime;
   }
 
   async fetchWhitelistedCandidates() {
@@ -143,6 +153,7 @@ export class StrategyResearchMiner {
       try {
         const response = await this.requestBudget.fetchJson(url, {
           key: `strategy_research:${url}`,
+          runtime: this.runtime,
           headers: {
             "Accept": "application/json, text/plain, */*",
             "User-Agent": "Mozilla/5.0 trading-bot"
@@ -152,13 +163,13 @@ export class StrategyResearchMiner {
           throw new Error(`HTTP ${response.status}`);
         }
         const payload = await response.json();
-        this.requestBudget.noteSuccess(`strategy_research:${url}`);
+        this.requestBudget.noteSuccess(`strategy_research:${url}`, this.runtime);
         const items = Array.isArray(payload) ? payload : Array.isArray(payload?.strategies) ? payload.strategies : [];
         candidates.push(...items.map((item) => normalizeStrategyDsl({ ...item, source: url, sourceType: "whitelisted_feed" })));
       } catch (error) {
         const failure = error.code === "REQUEST_BUDGET_COOLDOWN"
           ? { cooldownUntil: error.cooldownUntil }
-          : this.requestBudget.noteFailure(`strategy_research:${url}`);
+          : this.requestBudget.noteFailure(`strategy_research:${url}`, Date.now(), this.runtime, error.message);
         this.logger.warn?.("Strategy research feed failed", {
           url: maskUrl(url),
           error: error.message,

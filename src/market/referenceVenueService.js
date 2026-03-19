@@ -1,4 +1,5 @@
 import { RequestBudget, maskUrl } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -30,14 +31,23 @@ function average(values = [], fallback = 0) {
 }
 
 export class ReferenceVenueService {
-  constructor(config, logger = console) {
+  constructor(config, logger = console, runtime = null) {
     this.config = config;
     this.logger = logger;
+    this.runtime = runtime || null;
     this.requestBudget = new RequestBudget({
       timeoutMs: 8_000,
       baseCooldownMs: 30_000,
-      maxCooldownMs: 5 * 60_000
+      maxCooldownMs: 5 * 60_000,
+      registry: new ExternalFeedRegistry(config),
+      runtime: this.runtime,
+      group: "reference"
     });
+  }
+
+  setRuntime(runtime = null) {
+    this.runtime = runtime || null;
+    this.requestBudget.runtime = this.runtime;
   }
 
   async fetchReferenceQuotes(symbol) {
@@ -49,6 +59,7 @@ export class ReferenceVenueService {
       try {
         const response = await this.requestBudget.fetchJson(url, {
           key: `reference:${template}`,
+          runtime: this.runtime,
           headers: {
             "User-Agent": "Mozilla/5.0 trading-bot"
           }
@@ -57,13 +68,13 @@ export class ReferenceVenueService {
           throw new Error(`HTTP ${response.status}`);
         }
         const payload = await response.json();
-        this.requestBudget.noteSuccess(`reference:${template}`);
+        this.requestBudget.noteSuccess(`reference:${template}`, this.runtime);
         const items = Array.isArray(payload) ? payload : Array.isArray(payload?.quotes) ? payload.quotes : [payload];
         return items.map(normalizeQuote);
       } catch (error) {
         const failure = error.code === "REQUEST_BUDGET_COOLDOWN"
           ? { cooldownUntil: error.cooldownUntil }
-          : this.requestBudget.noteFailure(`reference:${template}`);
+          : this.requestBudget.noteFailure(`reference:${template}`, Date.now(), this.runtime, error.message);
         this.logger.warn?.("Reference venue fetch failed", {
           symbol,
           url: maskUrl(url),
