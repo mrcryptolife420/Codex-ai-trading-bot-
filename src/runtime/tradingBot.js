@@ -8994,6 +8994,192 @@ export class TradingBot {
     };
   }
 
+  buildDecisionExplanationView(decision = {}) {
+    const blockerChain = arr(decision.blockerReasons || []).slice(0, 5);
+    const explainSteps = [
+      {
+        label: "Setup",
+        detail: decision.summary || decision.setupStyle || `${decision.symbol || "Setup"} wordt geëvalueerd.`
+      },
+      {
+        label: decision.allow ? "Waarom nu" : "Waarom niet",
+        detail: decision.allow
+          ? decision.operatorAction || decision.reasons?.[0] || "De setup haalde de huidige gating."
+          : decision.operatorAction || blockerChain[0] || "De setup haalde de gating niet."
+      },
+      {
+        label: "Data & kwaliteit",
+        detail: `${titleize(decision.dataQuality?.status || "unknown")} · quorum ${num((decision.qualityQuorum?.quorumScore || 0) * 100, 1)}% · confidence ${num((decision.confidenceBreakdown?.overallConfidence || 0) * 100, 1)}%`
+      },
+      {
+        label: "Volgende actie",
+        detail: decision.autoRecovery || decision.operatorAction || "Geen directe operatoractie nodig."
+      }
+    ];
+    return {
+      symbol: decision.symbol || null,
+      status: decision.allow ? "tradeable" : "blocked",
+      headline: decision.allow
+        ? `${decision.symbol || "Setup"} is tradebaar binnen ${titleize(decision.marketState?.phase || decision.regime || "huidige regime")}.`
+        : `${decision.symbol || "Setup"} werd geblokkeerd door ${titleize(blockerChain[0] || "onduidelijke gating")}.`,
+      setup: decision.setupStyle || decision.strategy?.strategyLabel || decision.strategy?.familyLabel || null,
+      blockerChain,
+      operatorAction: decision.operatorAction || null,
+      autoRecovery: decision.autoRecovery || null,
+      qualityStatus: decision.dataQuality?.status || null,
+      quorumStatus: decision.qualityQuorum?.status || null,
+      confidence: num(decision.confidenceBreakdown?.overallConfidence || 0, 4),
+      explainSteps
+    };
+  }
+
+  buildTradeReplayDigest(replay = {}) {
+    const stages = arr(replay.timeline || []).slice(0, 6).map((item) => ({
+      at: item.at || null,
+      type: item.type || null,
+      label: item.label || null,
+      detail: item.detail || null
+    }));
+    return {
+      id: replay.id || null,
+      symbol: replay.symbol || null,
+      strategy: replay.strategy || null,
+      regime: replay.regime || null,
+      pnlQuote: num(replay.pnlQuote || 0, 2),
+      netPnlPct: num(replay.netPnlPct || 0, 4),
+      whyOpened: replay.whyOpened || null,
+      whyClosed: replay.whyClosed || null,
+      blockersAtEntry: arr(replay.blockersAtEntry || []).slice(0, 4),
+      alternateExits: arr(replay.alternateExits || []).slice(0, 3),
+      keyStages: stages,
+      keyTakeaway: replay.review?.summary || replay.whyClosed || replay.whyOpened || "Replay beschikbaar."
+    };
+  }
+
+  buildOperatorDiagnosticsSnapshot({
+    topDecisions = [],
+    blockedSetups = [],
+    tradeReplays = [],
+    readiness = {},
+    alerts = {},
+    sourceReliability = {},
+    qualityQuorum = {},
+    safety = {},
+    paperLearning = {}
+  } = {}) {
+    const openAlerts = arr(alerts.alerts || []).filter((item) => !item.resolvedAt);
+    const blockerCounts = new Map();
+    const noteBlocker = (value) => {
+      if (!value) {
+        return;
+      }
+      blockerCounts.set(value, (blockerCounts.get(value) || 0) + 1);
+    };
+    arr(readiness.reasons || []).forEach(noteBlocker);
+    blockedSetups.forEach((decision) => arr(decision.blockerReasons || []).forEach(noteBlocker));
+    openAlerts.forEach((alert) => noteBlocker(alert.id || alert.type || alert.severity));
+    const dominantBlockers = [...blockerCounts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([id, count]) => ({
+        id,
+        count,
+        category: /local_book|provider|calendar|reference|feed|quorum/.test(id) ? "infra"
+          : /capital|committee|model|policy|retire|promot/.test(id) ? "governance"
+            : /reconcile|exchange|protect|manual_review|alert/.test(id) ? "safety"
+              : /execution|spread|slippage/.test(id) ? "execution"
+                : "market"
+      }));
+    const actionItems = [
+      readiness.reasons?.[0]
+        ? {
+            title: "Readiness",
+            detail: titleize(readiness.reasons[0]),
+            tone: statusTone(readiness.status || "unknown")
+          }
+        : null,
+      dominantBlockers[0]
+        ? {
+            title: "Dominante rem",
+            detail: `${titleize(dominantBlockers[0].id)} · ${dominantBlockers[0].count}x`,
+            tone: dominantBlockers[0].category === "infra" || dominantBlockers[0].category === "safety" ? "negative" : "neutral"
+          }
+        : null,
+      (sourceReliability.externalFeeds?.coolingDownCount || 0) > 0
+        ? {
+            title: "External feeds",
+            detail: `${sourceReliability.externalFeeds.coolingDownCount} cooldown actief`,
+            tone: "negative"
+          }
+        : null,
+      (qualityQuorum.observeOnly || qualityQuorum.status === "observe_only")
+        ? {
+            title: "Quality quorum",
+            detail: `Observe only door ${titleize((qualityQuorum.blockerReasons || [])[0] || "kwaliteit")}`,
+            tone: "negative"
+          }
+        : null,
+      safety.orderLifecycle?.pendingActions?.[0]
+        ? {
+            title: "Lifecycle",
+            detail: `${titleize(safety.orderLifecycle.pendingActions[0].state || "pending")} · ${safety.orderLifecycle.pendingActions[0].symbol || "actie open"}`,
+            tone: "negative"
+          }
+        : null,
+      paperLearning.promotionRoadmap?.note
+        ? {
+            title: "Promotion",
+            detail: paperLearning.promotionRoadmap.note,
+            tone: paperLearning.promotionRoadmap.allowPromotion ? "positive" : "neutral"
+          }
+        : null
+    ].filter(Boolean).slice(0, 6);
+    const tradeableCount = topDecisions.filter((item) => item.allow).length;
+    return {
+      status: readiness.status || "unknown",
+      headline: tradeableCount
+        ? `${tradeableCount} tradebare setup(s), ${blockedSetups.length} geblokkeerd en ${openAlerts.length} open alert(s).`
+        : `${blockedSetups.length} geblokkeerde setup(s) en ${openAlerts.length} open alert(s) sturen nu de bot.`,
+      dominantBlockers,
+      actionItems,
+      counts: {
+        tradeable: tradeableCount,
+        blocked: blockedSetups.length,
+        alerts: openAlerts.length,
+        replays: tradeReplays.length
+      },
+      nextOperatorFocus: actionItems[0]?.detail || paperLearning.coaching?.nextReview || "Geen directe operatorfocus."
+    };
+  }
+
+  buildPromotionPipelineSnapshot({
+    paperLearning = {},
+    modelRegistry = {},
+    researchRegistry = {}
+  } = {}) {
+    const roadmap = paperLearning.promotionRoadmap || {};
+    const transitions = arr(paperLearning.policyTransitions?.candidates || []).slice(0, 6);
+    const guardrails = arr(paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 4);
+    const activeOverrides = arr(paperLearning.operatorActions?.activeOverrides || []).slice(0, 4);
+    const researchCandidates = arr(researchRegistry.governance?.promotionCandidates || []).slice(0, 4);
+    return {
+      status: roadmap.status || modelRegistry.promotionPolicy?.readyLevel || "observe",
+      allowPromotion: Boolean(roadmap.allowPromotion || modelRegistry.promotionPolicy?.allowPromotion),
+      readyLevel: roadmap.readyLevel || modelRegistry.promotionPolicy?.readyLevel || null,
+      nextGate: roadmap.nextGate || null,
+      blockerReasons: arr(roadmap.blockerReasons || modelRegistry.promotionPolicy?.blockerReasons || []).slice(0, 4),
+      note: roadmap.note || "Nog geen duidelijke promotieroute.",
+      candidateTransitions: transitions,
+      guardedLiveCandidates: researchCandidates.map((item) => ({
+        symbol: item.symbol || null,
+        governanceScore: num(item.governanceScore || 0, 4),
+        status: item.status || "observe"
+      })),
+      activeOverrides,
+      guardrails
+    };
+  }
+
   buildResearchView(summary = this.runtime.researchLab?.latestSummary || null) {
     if (!summary) {
       return null;
@@ -9125,6 +9311,43 @@ export class TradingBot {
     const marketSentimentOverview = topDecision.marketSentiment || leadPosition?.entryRationale?.marketSentiment || summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT);
     const volatilityOverview = topDecision.volatility || leadPosition?.entryRationale?.volatility || summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT);
     const calendarOverview = topDecision.calendar || leadPosition?.entryRationale?.calendar || summarizeCalendarSummary(EMPTY_CALENDAR);
+    const dashboardTopDecisions = fullTopDecisions.map((decision) => this.buildDashboardDecisionView(decision));
+    const dashboardBlockedSetups = fullBlockedSetups.map((decision) => this.buildDashboardDecisionView(decision));
+    const tradeReplays = report.recentTrades.slice(0, 6).map((trade) => this.buildTradeReplayView(trade));
+    const opsAlerts = summarizeOperatorAlerts(this.runtime.ops?.alerts || {});
+    const sourceReliabilitySummary = this.buildSourceReliabilitySnapshot();
+    const qualityQuorumSummary = summarizeQualityQuorum(this.runtime.qualityQuorum || {});
+    const orderLifecycleSummary = summarizeOrderLifecycle(this.runtime.orderLifecycle || {});
+    const exchangeTruthSummary = summarizeExchangeTruth(this.runtime.exchangeTruth || {});
+    const paperLearningSummary = summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {});
+    const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
+      topDecisions: dashboardTopDecisions,
+      blockedSetups: dashboardBlockedSetups,
+      tradeReplays,
+      readiness: this.runtime.ops?.readiness || {},
+      alerts: opsAlerts,
+      sourceReliability: sourceReliabilitySummary,
+      qualityQuorum: qualityQuorumSummary,
+      safety: {
+        orderLifecycle: orderLifecycleSummary,
+        exchangeTruth: exchangeTruthSummary
+      },
+      paperLearning: paperLearningSummary
+    });
+    const explainability = {
+      decisions: [...dashboardTopDecisions, ...dashboardBlockedSetups]
+        .slice(0, 4)
+        .map((decision) => this.buildDecisionExplanationView(decision)),
+      replays: tradeReplays.slice(0, 4).map((trade) => this.buildTradeReplayDigest(trade)),
+      note: tradeReplays.length
+        ? "Trade replays en decision explainers laten nu dezelfde beslisketen zien."
+        : "Explainability volgt zodra er recente trades of beslissingen zijn."
+    };
+    const promotionPipeline = this.buildPromotionPipelineSnapshot({
+      paperLearning: paperLearningSummary,
+      modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
+      researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {})
+    });
 
     return {
       generatedAt: nowIso(),
@@ -9220,9 +9443,12 @@ export class TradingBot {
       officialNotices: arr(topDecision.officialNotices || leadPosition?.entryRationale?.officialNotices || []).slice(0, 4),
       watchlist: this.runtime.watchlistSummary || null,
       positions,
-      topDecisions: fullTopDecisions.map((decision) => this.buildDashboardDecisionView(decision)),
-      blockedSetups: fullBlockedSetups.map((decision) => this.buildDashboardDecisionView(decision)),
-      tradeReplays: report.recentTrades.slice(0, 6).map((trade) => this.buildTradeReplayView(trade)),
+      topDecisions: dashboardTopDecisions,
+      blockedSetups: dashboardBlockedSetups,
+      tradeReplays,
+      operatorDiagnostics,
+      explainability,
+      promotionPipeline,
       universe: summarizeUniverseSelection(this.runtime.universe || {}),
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
       research: this.buildResearchView(),

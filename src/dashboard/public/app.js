@@ -29,18 +29,27 @@ const elements = {
   opsList: document.querySelector("#opsList"),
   missedTradesList: document.querySelector("#missedTradesList"),
   tradesBody: document.querySelector("#tradesBody"),
+  diagnosticsList: document.querySelector("#diagnosticsList"),
+  explainabilityList: document.querySelector("#explainabilityList"),
+  promotionList: document.querySelector("#promotionList"),
   signalsSection: document.querySelector("#signalsSection"),
   positionsSection: document.querySelector("#positionsSection"),
   learningSection: document.querySelector("#learningSection"),
   missedTradesSection: document.querySelector("#missedTradesSection"),
   riskSection: document.querySelector("#riskSection"),
   historySection: document.querySelector("#historySection"),
+  diagnosticsSection: document.querySelector("#diagnosticsSection"),
+  explainabilitySection: document.querySelector("#explainabilitySection"),
+  promotionSection: document.querySelector("#promotionSection"),
   signalsToggleBtn: document.querySelector("#signalsToggleBtn"),
   positionsToggleBtn: document.querySelector("#positionsToggleBtn"),
   learningToggleBtn: document.querySelector("#learningToggleBtn"),
   missedTradesToggleBtn: document.querySelector("#missedTradesToggleBtn"),
   riskToggleBtn: document.querySelector("#riskToggleBtn"),
-  historyToggleBtn: document.querySelector("#historyToggleBtn")
+  historyToggleBtn: document.querySelector("#historyToggleBtn"),
+  diagnosticsToggleBtn: document.querySelector("#diagnosticsToggleBtn"),
+  explainabilityToggleBtn: document.querySelector("#explainabilityToggleBtn"),
+  promotionToggleBtn: document.querySelector("#promotionToggleBtn")
 };
 
 let latestSnapshot = null;
@@ -58,7 +67,10 @@ const panelState = {
   learning: true,
   missedTrades: true,
   risk: true,
-  history: true
+  history: true,
+  diagnostics: true,
+  explainability: true,
+  promotion: true
 };
 
 function makeActionButton({ action, kind = "", id, label, tone = "" }) {
@@ -1252,6 +1264,201 @@ function renderTrades(snapshot) {
   }));
 }
 
+function renderDiagnostics(snapshot) {
+  const diagnostics = snapshot?.dashboard?.operatorDiagnostics || {};
+  const blockers = diagnostics.dominantBlockers || [];
+  const actions = diagnostics.actionItems || [];
+  if (!elements.diagnosticsList) {
+    return;
+  }
+  const cards = [
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Status",
+      value: titleize(diagnostics.status || "unknown"),
+      foot: diagnostics.headline || "Nog geen diagnostiek beschikbaar.",
+      valueClassName: statusTone(diagnostics.status || "unknown")
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Tradebaar",
+      value: `${diagnostics.counts?.tradeable || 0}`,
+      foot: `${diagnostics.counts?.blocked || 0} geblokkeerd`,
+      valueClassName: (diagnostics.counts?.tradeable || 0) > 0 ? "positive" : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Alerts",
+      value: `${diagnostics.counts?.alerts || 0}`,
+      foot: diagnostics.nextOperatorFocus || "Geen directe operatorfocus.",
+      valueClassName: (diagnostics.counts?.alerts || 0) > 0 ? "negative" : "neutral"
+    })
+  ];
+  const blockerRows = blockers.length
+    ? blockers.map((item) => makeEventRow({
+      title: `${titleize(item.id)} · ${item.count}x`,
+      detail: `${titleize(item.category)} blocker`,
+      tone: item.category === "infra" || item.category === "safety" ? "negative" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen dominante blockers zichtbaar.")];
+  const actionRows = actions.length
+    ? actions.map((item) => makeEventRow(item))
+    : [makeEmptyState("Nog geen operatoracties voorgesteld.")];
+  replaceChildren(elements.diagnosticsList, [
+    (() => {
+      const grid = makeNode("div", { className: "risk-grid" });
+      grid.append(...cards);
+      return grid;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(makeSectionHead("Dominante blockers", "Geaggregeerd uit readiness, alerts en blocked setups"), ...blockerRows);
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(makeSectionHead("Operatorfocus", "Wat nu als eerste aandacht vraagt"), ...actionRows);
+      return section;
+    })()
+  ]);
+}
+
+function renderExplainability(snapshot) {
+  const explainability = snapshot?.dashboard?.explainability || {};
+  const decisions = explainability.decisions || [];
+  const replays = explainability.replays || [];
+  if (!elements.explainabilityList) {
+    return;
+  }
+  const items = [
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Explainability",
+      value: `${decisions.length} decisions`,
+      foot: explainability.note || "Nog geen explainability-data.",
+      valueClassName: decisions.length ? "positive" : "neutral"
+    })
+  ];
+  const decisionCards = decisions.length
+    ? decisions.map((item) => {
+      const card = makeNode("article", { className: "signal-card" });
+      const summary = makeNode("div", { className: "card-summary" });
+      summary.append(
+        makeCardHeader({
+          eyebrow: "Decision explainer",
+          title: item.symbol || "-",
+          pillText: titleize(item.status || "observe"),
+          pillClassName: `pill ${item.status === "tradeable" ? "positive" : "negative"}`
+        }),
+        makeNode("p", { className: "card-copy", text: item.headline || "Geen explainability headline." }),
+        makeReasonRows((item.explainSteps || []).slice(0, 4).map((step) => [step.label, step.detail])),
+        makeTagList((item.blockerChain || []).slice(0, 4).map((blocker) => makeTag(titleize(blocker), "tag negative")))
+      );
+      card.append(summary);
+      return card;
+    })
+    : [makeEmptyState("Nog geen decision explainers beschikbaar.")];
+  const replayCards = replays.length
+    ? replays.map((item) => {
+      const card = makeNode("article", { className: "signal-card" });
+      const summary = makeNode("div", { className: "card-summary" });
+      summary.append(
+        makeCardHeader({
+          eyebrow: "Trade replay",
+          title: item.symbol || "-",
+          pillText: formatMoney(item.pnlQuote || 0),
+          pillClassName: `pill ${toneClass(item.pnlQuote)}`
+        }),
+        makeNode("p", { className: "card-copy", text: item.keyTakeaway || "Replay beschikbaar." }),
+        makeReasonRows([
+          ["Open", item.whyOpened || "Onbekend."],
+          ["Sluit", item.whyClosed || "Onbekend."],
+          ["Strategie", titleize(item.strategy || "unknown")]
+        ]),
+        makeTagList((item.keyStages || []).slice(0, 4).map((stage) => makeTag(`${titleize(stage.label || stage.type || "step")} · ${truncate(stage.detail || "", 48)}`)))
+      );
+      card.append(summary);
+      return card;
+    })
+    : [makeEmptyState("Nog geen trade replays beschikbaar.")];
+  replaceChildren(elements.explainabilityList, [
+    (() => {
+      const grid = makeNode("div", { className: "risk-grid" });
+      grid.append(...items);
+      return grid;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(makeSectionHead("Decision chain", "Waarom setups door of niet door de gating kwamen"), ...decisionCards);
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(makeSectionHead("Replay digest", "Wat de bot zag bij recente trades"), ...replayCards);
+      return section;
+    })()
+  ]);
+}
+
+function renderPromotion(snapshot) {
+  const pipeline = snapshot?.dashboard?.promotionPipeline || {};
+  if (!elements.promotionList) {
+    return;
+  }
+  const topCards = [
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Promotion",
+      value: titleize(pipeline.status || "observe"),
+      foot: pipeline.note || "Nog geen promotion pipeline beschikbaar.",
+      valueClassName: pipeline.allowPromotion ? "positive" : statusTone(pipeline.status || "unknown")
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Next gate",
+      value: titleize(pipeline.nextGate || "observe"),
+      foot: (pipeline.blockerReasons || [])[0] ? titleize(pipeline.blockerReasons[0]) : "Geen blocker",
+      valueClassName: pipeline.allowPromotion ? "positive" : "neutral"
+    })
+  ];
+  const transitionRows = (pipeline.candidateTransitions || []).length
+    ? pipeline.candidateTransitions.slice(0, 5).map((item) => makeEventRow({
+      title: `${titleize(item.action || "review")} · ${titleize(item.id || "-")}`,
+      detail: item.reason || item.scope || "Policy-transitie kandidaat",
+      tone: item.approved ? "positive" : item.blocker ? "negative" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen policytransities klaar.")];
+  const candidateRows = (pipeline.guardedLiveCandidates || []).length
+    ? pipeline.guardedLiveCandidates.map((item) => makeEventRow({
+      title: `${item.symbol || "-"} · ${titleize(item.status || "observe")}`,
+      detail: `Governance ${formatPct(item.governanceScore || 0, 0)}`,
+      tone: item.status === "promote" ? "positive" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen guarded-live kandidaten zichtbaar.")];
+  const guardrailTags = [
+    ...(pipeline.guardrails || []).map((item) => makeTag(titleize(item), "tag negative")),
+    ...((pipeline.activeOverrides || []).map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive")))
+  ];
+  replaceChildren(elements.promotionList, [
+    (() => {
+      const grid = makeNode("div", { className: "risk-grid" });
+      grid.append(...topCards);
+      return grid;
+    })(),
+    guardrailTags.length ? makeTagList(guardrailTags) : makeEmptyState("Geen actieve guardrails of overrides."),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(makeSectionHead("Pipeline actions", "Welke promotie- of cooldownstappen klaarstaan"), ...transitionRows);
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(makeSectionHead("Guarded live", "Kandidaten richting guarded live probation"), ...candidateRows);
+      return section;
+    })()
+  ]);
+}
+
 function render(snapshot) {
   latestSnapshot = snapshot;
   lastSnapshotReceivedAt = new Date().toISOString();
@@ -1263,6 +1470,9 @@ function render(snapshot) {
   renderMissedTrades(snapshot);
   renderOps(snapshot);
   renderTrades(snapshot);
+  renderDiagnostics(snapshot);
+  renderExplainability(snapshot);
+  renderPromotion(snapshot);
   syncControls(snapshot);
   syncPanels();
 }
@@ -1383,6 +1593,9 @@ function bindEvents() {
   bindPanelToggle("missedTrades", elements.missedTradesSection, elements.missedTradesToggleBtn);
   bindPanelToggle("risk", elements.riskSection, elements.riskToggleBtn);
   bindPanelToggle("history", elements.historySection, elements.historyToggleBtn);
+  bindPanelToggle("diagnostics", elements.diagnosticsSection, elements.diagnosticsToggleBtn);
+  bindPanelToggle("explainability", elements.explainabilitySection, elements.explainabilityToggleBtn);
+  bindPanelToggle("promotion", elements.promotionSection, elements.promotionToggleBtn);
 }
 
 function bindPanelToggle(key, section, button) {
@@ -1407,6 +1620,9 @@ function syncPanels() {
   syncPanel(elements.missedTradesSection, elements.missedTradesToggleBtn, panelState.missedTrades);
   syncPanel(elements.riskSection, elements.riskToggleBtn, panelState.risk);
   syncPanel(elements.historySection, elements.historyToggleBtn, panelState.history);
+  syncPanel(elements.diagnosticsSection, elements.diagnosticsToggleBtn, panelState.diagnostics);
+  syncPanel(elements.explainabilitySection, elements.explainabilityToggleBtn, panelState.explainability);
+  syncPanel(elements.promotionSection, elements.promotionToggleBtn, panelState.promotion);
 }
 
 async function init() {

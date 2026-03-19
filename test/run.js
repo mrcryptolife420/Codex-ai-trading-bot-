@@ -7392,6 +7392,11 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
   assert.equal(snapshot.sourceReliability.externalFeeds.providerCount, 1);
   assert.equal(snapshot.sourceReliability.externalFeeds.providers[0].group, "calendar");
+  assert.equal(snapshot.operatorDiagnostics.counts.blocked, 0);
+  assert.ok(Array.isArray(snapshot.explainability.decisions));
+  assert.ok(Array.isArray(snapshot.explainability.replays));
+  assert.equal(snapshot.promotionPipeline.allowPromotion, false);
+  assert.equal(snapshot.promotionPipeline.readyLevel, "paper");
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
   assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");
