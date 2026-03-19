@@ -84,6 +84,25 @@ function flattenReplaceResponse(response) {
   return [response.cancelResponse, response.newOrderResponse, response.amendedOrder, response].filter(Boolean);
 }
 
+function mergeExecutions(existing = [], incoming = []) {
+  const map = new Map();
+  for (const execution of [...existing, ...incoming]) {
+    const normalized = normalizeExecution(execution);
+    const orderId = normalized.order?.orderId;
+    const key = orderId == null ? crypto.randomUUID() : `${orderId}`;
+    map.set(key, normalized);
+  }
+  return [...map.values()];
+}
+
+function summarizeExecutions(executions = [], quoteAmount = 0) {
+  const executedQuote = executions.reduce((total, item) => total + Number(item.order?.cummulativeQuoteQty || 0), 0);
+  return {
+    executions,
+    remainingQuote: Math.max(0, quoteAmount - executedQuote)
+  };
+}
+
 const EMPTY_NEWS = {
   coverage: 0,
   sentimentScore: 0,
@@ -352,9 +371,11 @@ export class LiveBroker {
     const orderResponses = [order];
     let keepPriorityCount = 0;
     let amendmentCount = 0;
+    let executions = [];
     try {
       await sleep(Math.max(1200, plan?.makerPatienceMs || 3500));
       let settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+      executions = mergeExecutions(executions, settled.executions || []);
       const liveOrder = settled.order;
       const remainingQty = normalizeQuantity(Number(liveOrder.origQty || 0) - Number(liveOrder.executedQty || 0), rules, "floor", false);
 
@@ -372,6 +393,7 @@ export class LiveBroker {
             orderResponses.push(...flattenReplaceResponse(amend));
             await sleep(650);
             settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+            executions = mergeExecutions(executions, settled.executions || []);
           }
         } catch (error) {
           this.logger?.warn?.("Pegged keep-priority amend skipped", { symbol, error: error.message });
@@ -383,6 +405,7 @@ export class LiveBroker {
           const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
           orderResponses.push(cancel);
           settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+          executions = mergeExecutions(executions, settled.executions || []);
         }
       } catch (error) {
         this.logger?.warn?.("Pegged maker cancel failed", { symbol, error: error.message });
@@ -390,6 +413,7 @@ export class LiveBroker {
 
       return {
         ...settled,
+        ...summarizeExecutions(executions, quoteAmount),
         orderResponses,
         amendmentCount,
         cancelReplaceCount: 0,
@@ -423,10 +447,12 @@ export class LiveBroker {
     let amendmentCount = 0;
     let cancelReplaceCount = 0;
     let keepPriorityCount = 0;
+    let executions = [];
     const halfPatience = Math.max(1200, Math.round((plan?.makerPatienceMs || 3500) / 2));
     try {
       await sleep(halfPatience);
       let settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+      executions = mergeExecutions(executions, settled.executions || []);
       const firstOrder = settled.order;
       const remainingQty = normalizeQuantity(Number(firstOrder.origQty || 0) - Number(firstOrder.executedQty || 0), rules, "floor", false);
 
@@ -452,6 +478,7 @@ export class LiveBroker {
             workingOrderId = replace.newOrderResponse?.orderId || replace.orderId || workingOrderId;
             await sleep(Math.max(800, (plan?.makerPatienceMs || 3500) - halfPatience));
             settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+            executions = mergeExecutions(executions, settled.executions || []);
           } catch (error) {
             this.logger?.warn?.("Limit maker refresh failed", { symbol, error: error.message });
           }
@@ -479,6 +506,7 @@ export class LiveBroker {
           const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
           orderResponses.push(cancel);
           settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
+          executions = mergeExecutions(executions, settled.executions || []);
         }
       } catch (error) {
         this.logger?.warn?.("Limit maker cancel failed", { symbol, error: error.message });
@@ -486,6 +514,7 @@ export class LiveBroker {
 
       return {
         ...settled,
+        ...summarizeExecutions(executions, quoteAmount),
         orderResponses,
         amendmentCount,
         cancelReplaceCount,
@@ -1493,4 +1522,6 @@ export class LiveBroker {
     }
   }
 }
+
+
 
