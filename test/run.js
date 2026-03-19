@@ -16,7 +16,7 @@ import { BinanceAnnouncementService, normalizeCmsArticles } from "../src/events/
 import { summarizeMarketStructure } from "../src/market/marketStructureService.js";
 import { MarketSentimentService, summarizeMarketSentiment } from "../src/market/marketSentimentService.js";
 import { ReferenceVenueService } from "../src/market/referenceVenueService.js";
-import { summarizeVolatilityContext } from "../src/market/volatilityService.js";
+import { VolatilityService, summarizeVolatilityContext } from "../src/market/volatilityService.js";
 import { LocalOrderBookEngine } from "../src/market/localOrderBook.js";
 import { CalendarService, parseIcsEvents, summarizeCalendarEvents } from "../src/events/calendarService.js";
 import { normalizeStrategyDsl } from "../src/research/strategyDsl.js";
@@ -931,6 +931,44 @@ await runCheck("market sentiment service records external feed failures in share
   assert.ok(Object.keys(runtime.externalFeedHealth || {}).some((key) => key.includes("market_sentiment")));
 });
 
+await runCheck("market sentiment cooldown skips extra failure penalties", async () => {
+  const cooldownUntil = "2099-03-19T14:30:00.000Z";
+  const runtime = {
+    externalFeedHealth: {
+      "market_sentiment:market_sentiment:fear_greed": {
+        group: "market_sentiment",
+        feed: "market_sentiment:fear_greed",
+        failureCount: 2,
+        recentFailures: 2,
+        score: 0.18,
+        cooldownUntil
+      }
+    }
+  };
+  let calls = 0;
+  const service = new MarketSentimentService({
+    config: makeConfig(),
+    runtime,
+    logger: { warn() {} },
+    fetchImpl: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        async json() {
+          return { data: {} };
+        }
+      };
+    }
+  });
+  const summary = await service.getSummary();
+  assert.ok(summary);
+  assert.equal(calls, 1);
+  const state = runtime.externalFeedHealth["market_sentiment:market_sentiment:fear_greed"];
+  assert.equal(state.failureCount, 2);
+  assert.equal(state.cooldownUntil, cooldownUntil);
+  assert.ok(state.skipCount >= 1);
+});
+
 await runCheck("volatility context summarizes deribit option and historical vol", async () => {
   const summary = summarizeVolatilityContext({
     btcOptions: [
@@ -947,6 +985,58 @@ await runCheck("volatility context summarizes deribit option and historical vol"
   assert.ok(summary.marketHistoricalVol > 0);
   assert.ok(summary.ivPremium > 0);
   assert.ok(["elevated", "stress"].includes(summary.regime));
+});
+
+await runCheck("volatility service records shared feed health on partial failures", async () => {
+  let calls = 0;
+  const runtime = {};
+  const service = new VolatilityService({
+    config: makeConfig(),
+    runtime,
+    logger: { warn() {} },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 2) {
+        throw new Error("timeout");
+      }
+      return {
+        ok: true,
+        async json() {
+          return { result: [] };
+        }
+      };
+    }
+  });
+  const summary = await service.getSummary();
+  assert.ok(summary);
+  assert.ok(Object.keys(runtime.externalFeedHealth || {}).some((key) => key.includes("volatility")));
+});
+
+await runCheck("volatility service preserves cache when every upstream request fails", async () => {
+  const cachedSummary = summarizeVolatilityContext({
+    btcOptions: [{ mark_iv: 72, open_interest: 1200, underlying_price: 68000 }],
+    ethOptions: [{ mark_iv: 66, open_interest: 800, underlying_price: 3600 }],
+    btcHistoricalVol: [[1772963400000, 58]],
+    ethHistoricalVol: [[1772963400000, 52]]
+  });
+  const runtime = {
+    volatilityContextCache: {
+      fetchedAt: "2026-03-19T12:00:00.000Z",
+      payload: { btcOptions: [], ethOptions: [], btcHistoricalVol: [], ethHistoricalVol: [] },
+      summary: cachedSummary
+    }
+  };
+  const service = new VolatilityService({
+    config: makeConfig({ volatilityCacheMinutes: 0 }),
+    runtime,
+    logger: { warn() {} },
+    fetchImpl: async () => {
+      throw new Error("timeout");
+    }
+  });
+  const summary = await service.getSummary();
+  assert.equal(summary.marketOptionIv, cachedSummary.marketOptionIv);
+  assert.equal(runtime.volatilityContextCache.summary.marketOptionIv, cachedSummary.marketOptionIv);
 });
 
 await runCheck("calendar service parses ics events and summarizes imminent macro risk", async () => {

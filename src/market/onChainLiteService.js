@@ -1,6 +1,6 @@
 import { clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
-import { RequestBudget } from "../utils/requestBudget.js";
+import { RequestBudget, isRequestBudgetCooldownError } from "../utils/requestBudget.js";
 import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 const STABLECOIN_IDS = ["tether", "usd-coin", "dai", "first-digital-usd", "ethena-usde"];
@@ -202,7 +202,7 @@ export class OnChainLiteService {
       for (const [key, result] of outcomeMap) {
         if (result.status === "fulfilled") {
           this.requestBudget.noteSuccess(key, this.runtime);
-        } else {
+        } else if (!isRequestBudgetCooldownError(result.reason)) {
           this.requestBudget.noteFailure(key, Date.now(), this.runtime, result.reason?.message || String(result.reason));
         }
       }

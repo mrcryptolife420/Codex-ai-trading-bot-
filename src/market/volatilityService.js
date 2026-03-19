@@ -1,5 +1,7 @@
 ﻿import { average, clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
+import { RequestBudget, isRequestBudgetCooldownError } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 export const EMPTY_VOLATILITY_CONTEXT = {
   coverage: 0,
@@ -120,6 +122,14 @@ export class VolatilityService {
     this.runtime = runtime;
     this.logger = logger;
     this.fetchImpl = fetchImpl || fetch;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: Math.max(1, Number(config?.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+      maxCooldownMs: Math.max(1, Number(config?.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+      registry: new ExternalFeedRegistry(config || {}),
+      runtime,
+      group: "volatility"
+    });
   }
 
   isFresh(cacheEntry) {
@@ -130,13 +140,15 @@ export class VolatilityService {
     return ageMs <= (this.config.volatilityCacheMinutes || 15) * 60 * 1000;
   }
 
-  async requestResult(url) {
-    const response = await this.fetchImpl(url, {
+  async requestResult(url, key) {
+    const response = await this.requestBudget.fetchJson(url, {
+      key,
+      runtime: this.runtime,
+      fetchImpl: this.fetchImpl,
       headers: {
         "User-Agent": "Mozilla/5.0 trading-bot",
         Accept: "application/json"
-      },
-      signal: AbortSignal.timeout(8_000)
+      }
     });
     if (!response.ok) {
       throw new Error(`Volatility request failed: ${response.status}`);
@@ -155,11 +167,27 @@ export class VolatilityService {
       const configuredBaseUrl = `${this.config.deribitApiBaseUrl || "https://www.deribit.com/api/v2"}`.replace(/\/$/, "");
       const baseUrl = /\/api\/v2$/i.test(configuredBaseUrl) ? configuredBaseUrl : `${configuredBaseUrl}/api/v2`;
       const [btcOptions, ethOptions, btcHist, ethHist] = await Promise.allSettled([
-        this.requestResult(`${baseUrl}/public/get_book_summary_by_currency?currency=BTC&kind=option`),
-        this.requestResult(`${baseUrl}/public/get_book_summary_by_currency?currency=ETH&kind=option`),
-        this.requestResult(`${baseUrl}/public/get_historical_volatility?currency=BTC`),
-        this.requestResult(`${baseUrl}/public/get_historical_volatility?currency=ETH`)
+        this.requestResult(`${baseUrl}/public/get_book_summary_by_currency?currency=BTC&kind=option`, "volatility:btc_options"),
+        this.requestResult(`${baseUrl}/public/get_book_summary_by_currency?currency=ETH&kind=option`, "volatility:eth_options"),
+        this.requestResult(`${baseUrl}/public/get_historical_volatility?currency=BTC`, "volatility:btc_historical"),
+        this.requestResult(`${baseUrl}/public/get_historical_volatility?currency=ETH`, "volatility:eth_historical")
       ]);
+      const outcomeMap = [
+        ["volatility:btc_options", btcOptions],
+        ["volatility:eth_options", ethOptions],
+        ["volatility:btc_historical", btcHist],
+        ["volatility:eth_historical", ethHist]
+      ];
+      for (const [key, result] of outcomeMap) {
+        if (result.status === "fulfilled") {
+          this.requestBudget.noteSuccess(key, this.runtime);
+        } else if (!isRequestBudgetCooldownError(result.reason)) {
+          this.requestBudget.noteFailure(key, Date.now(), this.runtime, result.reason?.message || String(result.reason));
+        }
+      }
+      if (outcomeMap.every(([, result]) => result.status !== "fulfilled")) {
+        throw new Error("All volatility providers failed");
+      }
       const payload = {
         btcOptions: btcOptions.status === "fulfilled" ? btcOptions.value : [],
         ethOptions: ethOptions.status === "fulfilled" ? ethOptions.value : [],

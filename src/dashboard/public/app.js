@@ -503,6 +503,110 @@ function signalSummary(decision) {
   return decision.operatorAction || decision.blockerReasons?.[0] || decision.summary || "Nog niet tradebaar.";
 }
 
+function makeSignalStat(label, value, tone = "") {
+  const stat = makeNode("div", { className: "stat" });
+  stat.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("strong", { className: tone, text: value })
+  );
+  return stat;
+}
+
+function makeReasonRow(label, text) {
+  const row = makeNode("div", { className: "reason-row" });
+  row.append(
+    makeNode("strong", { text: label }),
+    makeNode("span", { className: "reason-copy", text })
+  );
+  return row;
+}
+
+function makeMissedTradeAnalysisNode(decision) {
+  const analysis = decision.missedTradeAnalysis;
+  if (decision.allow || !analysis?.available) {
+    return null;
+  }
+  const details = makeNode("details", { className: "analysis-box" });
+  details.append(makeNode("summary", { text: "Gemiste trade analyse" }));
+  details.append(makeNode("p", { text: analysis.summary || "Nog geen specifieke analyse beschikbaar." }));
+  const metrics = [
+    analysis.badVetoRate != null ? `Te streng ${formatPct(analysis.badVetoRate, 0)}` : null,
+    analysis.goodVetoRate != null ? `Terecht ${formatPct(analysis.goodVetoRate, 0)}` : null,
+    analysis.averageMissedMovePct != null ? `Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}` : null,
+    analysis.recentMatches ? `${analysis.recentMatches} vergelijkbare cases` : null
+  ].filter(Boolean);
+  if (metrics.length) {
+    const tags = makeNode("div", { className: "tag-list" });
+    tags.append(...metrics.map((item) => makeTag(item)));
+    details.append(tags);
+  }
+  details.append(makeNode("p", {
+    className: "analysis-note",
+    text: analysis.recommendation || "Gebruik dit als extra context bij geblokkeerde setups."
+  }));
+  return details;
+}
+
+function buildSignalCard(decision) {
+  const article = makeNode("article", { className: "signal-card" });
+  const summary = makeNode("div", { className: "card-summary" });
+  const header = makeNode("div", { className: "card-header" });
+  const left = makeNode("div");
+  left.append(
+    makeNode("p", { className: "eyebrow", text: formatDecisionType(decision) }),
+    makeNode("h3", { text: decision.symbol || "-" }),
+    makeNode("p", {
+      className: `signal-status ${decision.allow ? "positive" : "negative"}`,
+      text: signalStatusText(decision)
+    })
+  );
+  header.append(
+    left,
+    makeNode("span", {
+      className: `pill ${decision.allow ? "positive" : "negative"}`,
+      text: decision.allow ? "Tradebaar" : "Geblokkeerd"
+    })
+  );
+
+  const quickGrid = makeNode("div", { className: "quick-grid" });
+  quickGrid.append(
+    makeSignalStat("Kans", formatPct(decision.probability, 0)),
+    makeSignalStat("Confidence", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
+    makeSignalStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))
+  );
+
+  const overview = makeNode("div", { className: "signal-overview" });
+  const tags = [
+    makeTag(titleize(decision.marketState?.phase || decision.regime || "setup")),
+    decision.strategy?.strategyLabel ? makeTag(decision.strategy.strategyLabel) : null,
+    decision.executionStyle ? makeTag(titleize(decision.executionStyle)) : null,
+    decision.dataQuality?.status ? makeTag(titleize(decision.dataQuality.status), `tag ${statusTone(decision.dataQuality.status)}`.trim()) : null
+  ].filter(Boolean);
+  overview.append(...tags);
+
+  const reasons = makeNode("div", { className: "decision-reasons" });
+  reasons.append(
+    makeReasonRow("Setup", whyTradeable(decision) || formatDecisionType(decision)),
+    makeReasonRow(decision.allow ? "Waarom nu" : "Waarom niet", signalPrimaryReason(decision)),
+    makeReasonRow("Actie", signalSupportText(decision))
+  );
+
+  summary.append(
+    header,
+    makeNode("p", { className: "card-copy", text: truncate(signalPrimaryReason(decision), 190) }),
+    quickGrid,
+    overview,
+    reasons,
+    makeNode("p", { className: "signal-note", text: truncate(signalSummary(decision), 220) })
+  );
+  const analysisNode = makeMissedTradeAnalysisNode(decision);
+  if (analysisNode) {
+    summary.append(analysisNode);
+  }
+  article.append(summary);
+  return article;
+}
+
 function renderSignals(snapshot) {
   const filtered = filterDecisions(snapshot);
   const total = snapshot?.dashboard?.topDecisions?.length || 0;
@@ -510,59 +614,11 @@ function renderSignals(snapshot) {
   elements.decisionMeta.textContent = `${visible.length} van ${total} zichtbaar`;
   elements.decisionShowMoreBtn.textContent = showAllDecisions ? "Toon minder" : "Toon alles";
   elements.decisionShowMoreBtn.hidden = filtered.length <= SIGNAL_LIMIT;
-  elements.decisionsList.innerHTML = visible.length
-    ? visible.map((decision) => `
-        <article class="signal-card">
-          <div class="card-summary">
-            <div class="card-header">
-              <div>
-                <p class="eyebrow">${escapeHtml(formatDecisionType(decision))}</p>
-                <h3>${escapeHtml(decision.symbol || "-")}</h3>
-                <p class="signal-status ${decision.allow ? "positive" : "negative"}">${escapeHtml(signalStatusText(decision))}</p>
-              </div>
-              <span class="pill ${decision.allow ? "positive" : "negative"}">${escapeHtml(decision.allow ? "Tradebaar" : "Geblokkeerd")}</span>
-            </div>
-            <p class="card-copy">${escapeHtml(truncate(signalPrimaryReason(decision), 190))}</p>
-            <div class="quick-grid">
-              <div class="stat">
-                <span class="metric-label">Kans</span>
-                <strong>${escapeHtml(formatPct(decision.probability, 0))}</strong>
-              </div>
-              <div class="stat">
-                <span class="metric-label">Confidence</span>
-                <strong>${escapeHtml(formatPct(decision.confidenceBreakdown?.overallConfidence, 0))}</strong>
-              </div>
-              <div class="stat">
-                <span class="metric-label">Risk</span>
-                <strong>${escapeHtml(titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))}</strong>
-              </div>
-            </div>
-            <div class="signal-overview">
-              <span class="tag">${escapeHtml(titleize(decision.marketState?.phase || decision.regime || "setup"))}</span>
-              ${decision.strategy?.strategyLabel ? `<span class="tag">${escapeHtml(decision.strategy.strategyLabel)}</span>` : ""}
-              ${decision.executionStyle ? `<span class="tag">${escapeHtml(titleize(decision.executionStyle))}</span>` : ""}
-              ${decision.dataQuality?.status ? `<span class="tag ${statusTone(decision.dataQuality.status)}">${escapeHtml(titleize(decision.dataQuality.status))}</span>` : ""}
-            </div>
-            <div class="decision-reasons">
-              <div class="reason-row">
-                <strong>Setup</strong>
-                <span class="reason-copy">${escapeHtml(whyTradeable(decision) || formatDecisionType(decision))}</span>
-              </div>
-              <div class="reason-row">
-                <strong>${decision.allow ? "Waarom nu" : "Waarom niet"}</strong>
-                <span class="reason-copy">${escapeHtml(signalPrimaryReason(decision))}</span>
-              </div>
-              <div class="reason-row">
-                <strong>Actie</strong>
-                <span class="reason-copy">${escapeHtml(signalSupportText(decision))}</span>
-              </div>
-            </div>
-            <p class="signal-note">${escapeHtml(truncate(signalSummary(decision), 220))}</p>
-            ${renderMissedTradeAnalysis(decision)}
-          </div>
-        </article>
-      `).join("")
-    : `<div class="empty">Geen signalen passen bij de huidige filter.</div>`;
+  if (!visible.length) {
+    replaceChildren(elements.decisionsList, [makeNode("div", { className: "empty", text: "Geen signalen passen bij de huidige filter." })]);
+    return;
+  }
+  replaceChildren(elements.decisionsList, visible.map((decision) => buildSignalCard(decision)));
 }
 
 function renderPositions(snapshot) {

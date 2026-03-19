@@ -1,6 +1,6 @@
 ﻿import { clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
-import { RequestBudget } from "../utils/requestBudget.js";
+import { RequestBudget, isRequestBudgetCooldownError } from "../utils/requestBudget.js";
 import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 export const EMPTY_MARKET_SENTIMENT = {
@@ -174,12 +174,12 @@ export class MarketSentimentService {
       ]);
       if (fearGreed.status === "fulfilled") {
         this.requestBudget.noteSuccess("market_sentiment:fear_greed", this.runtime);
-      } else {
+      } else if (!isRequestBudgetCooldownError(fearGreed.reason)) {
         this.requestBudget.noteFailure("market_sentiment:fear_greed", Date.now(), this.runtime, fearGreed.reason?.message || String(fearGreed.reason));
       }
       if (global.status === "fulfilled") {
         this.requestBudget.noteSuccess("market_sentiment:global", this.runtime);
-      } else {
+      } else if (!isRequestBudgetCooldownError(global.reason)) {
         this.requestBudget.noteFailure("market_sentiment:global", Date.now(), this.runtime, global.reason?.message || String(global.reason));
       }
       const payload = {

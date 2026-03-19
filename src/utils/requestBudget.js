@@ -29,6 +29,10 @@ export function redactSensitiveText(text, secrets = []) {
   return output.replace(/(https?:\/\/)([^/\s]+)(\/[^\s]*)?/gi, (match) => maskUrl(match));
 }
 
+export function isRequestBudgetCooldownError(error) {
+  return error?.code === "REQUEST_BUDGET_COOLDOWN";
+}
+
 export class RequestBudget {
   constructor({
     timeoutMs = 8_000,

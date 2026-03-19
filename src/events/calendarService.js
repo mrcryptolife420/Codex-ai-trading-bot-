@@ -3,7 +3,7 @@ import path from "node:path";
 import { defaultCalendarEvents } from "../data/eventCalendarSeed.js";
 import { clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
-import { RequestBudget } from "../utils/requestBudget.js";
+import { RequestBudget, isRequestBudgetCooldownError } from "../utils/requestBudget.js";
 import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 const BLS_CALENDAR_URL = "https://www.bls.gov/schedule/news_release/bls.ics";
@@ -289,7 +289,9 @@ export class CalendarService {
           return value;
         }).catch((error) => {
           fetchFailed = true;
-          this.requestBudget.noteFailure("bls_calendar", Date.now(), this.runtime, error.message);
+          if (!isRequestBudgetCooldownError(error)) {
+            this.requestBudget.noteFailure("bls_calendar", Date.now(), this.runtime, error.message);
+          }
           this.logger.warn("BLS calendar fetch failed", { error: error.message });
           return "";
         }),
