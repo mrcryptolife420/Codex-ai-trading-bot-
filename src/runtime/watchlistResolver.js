@@ -1,5 +1,7 @@
 import { coinAliases } from "../data/coinAliases.js";
 import { getCoinProfile } from "../data/coinProfiles.js";
+import { RequestBudget, isRequestBudgetCooldownError } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "./externalFeedRegistry.js";
 
 const STABLE_OR_FIAT_ASSETS = new Set([
   "USDT",
@@ -140,11 +142,27 @@ async function fetchJson(url, fetchImpl = fetch) {
   return response.json();
 }
 
-async function fetchCoinGeckoTopMarkets({ config, fetchImpl }) {
+async function fetchCoinGeckoTopMarkets({ config, fetchImpl, requestBudget = null, runtime = null }) {
   const baseUrl = `${config.coinGeckoApiBaseUrl || "https://api.coingecko.com/api/v3"}`.replace(/\/$/, "");
   const perPage = clamp(config.watchlistFetchPerPage || 250, 50, 250);
   const url = `${baseUrl}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=1&sparkline=false`;
-  const payload = await fetchJson(url, fetchImpl);
+  const payload = requestBudget
+    ? await (async () => {
+      const response = await requestBudget.fetchJson(url, {
+        key: "dynamic_watchlist:coingecko_top_markets",
+        runtime,
+        fetchImpl,
+        headers: {
+          Accept: "application/json"
+        },
+        timeoutMs: 10_000
+      });
+      if (!response.ok) {
+        throw new Error(`Watchlist fetch failed with ${response.status}`);
+      }
+      return response.json();
+    })()
+    : await fetchJson(url, fetchImpl);
   return Array.isArray(payload) ? payload : [];
 }
 
@@ -248,10 +266,19 @@ function buildSelectedEntries({ tradableMap, markets, config, source }) {
   return entries.slice(0, config.watchlistTopN);
 }
 
-export async function resolveDynamicWatchlist({ client, config, logger, fetchImpl = fetch }) {
+export async function resolveDynamicWatchlist({ client, config, logger, fetchImpl = fetch, runtime = null }) {
   if (!config.enableDynamicWatchlist) {
     return null;
   }
+
+  const requestBudget = new RequestBudget({
+    timeoutMs: 10_000,
+    baseCooldownMs: Math.max(1, Number(config?.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+    maxCooldownMs: Math.max(1, Number(config?.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+    registry: new ExternalFeedRegistry(config || {}),
+    runtime,
+    group: "dynamic_watchlist"
+  });
 
   const exchangeInfo = await client.getExchangeInfo();
   const tradableMap = buildTradableUniverse(exchangeInfo, config.baseQuoteAsset);
@@ -262,7 +289,8 @@ export async function resolveDynamicWatchlist({ client, config, logger, fetchImp
   let selectedEntries = [];
 
   try {
-    const markets = await fetchCoinGeckoTopMarkets({ config, fetchImpl });
+    const markets = await fetchCoinGeckoTopMarkets({ config, fetchImpl, requestBudget, runtime });
+    requestBudget.noteSuccess("dynamic_watchlist:coingecko_top_markets", runtime);
     selectedEntries = buildSelectedEntries({
       tradableMap,
       markets,
@@ -271,6 +299,9 @@ export async function resolveDynamicWatchlist({ client, config, logger, fetchImp
     });
     notes.push(`CoinGecko leverde ${markets.length} market-cap records; ${selectedEntries.length} coins matchen Binance ${config.baseQuoteAsset} spot.`);
   } catch (error) {
+    if (!isRequestBudgetCooldownError(error)) {
+      requestBudget.noteFailure("dynamic_watchlist:coingecko_top_markets", Date.now(), runtime, error.message);
+    }
     notes.push(`CoinGecko fallback actief: ${error.message}`);
     logger?.warn?.("Dynamic watchlist CoinGecko fetch failed", { error: error.message });
   }

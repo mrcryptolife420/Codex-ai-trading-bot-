@@ -3365,7 +3365,8 @@ export class TradingBot {
         const resolvedWatchlist = await resolveDynamicWatchlist({
           client: this.client,
           config: this.config,
-          logger: this.logger
+          logger: this.logger,
+          runtime: this.runtime
         });
         if (resolvedWatchlist?.watchlist?.length) {
           this.config.watchlist = resolvedWatchlist.watchlist;

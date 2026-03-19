@@ -5988,6 +5988,7 @@ await runCheck("research lab builds walk-forward windows and summary", async () 
 
 await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {
   const config = makeConfig({ watchlistTopN: 5, dynamicWatchlistMinSymbols: 1 });
+  const runtime = {};
   const client = {
     async getExchangeInfo() {
       return {
@@ -6009,6 +6010,7 @@ await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", asy
   const watchlist = await resolveDynamicWatchlist({
     client,
     config,
+    runtime,
     logger: { warn() {} },
     fetchImpl: async () => ({
       ok: true,
@@ -6022,6 +6024,55 @@ await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", asy
     })
   });
   assert.deepEqual(watchlist.watchlist, ["BTCUSDT"]);
+  assert.ok(Object.keys(runtime.externalFeedHealth || {}).some((key) => key.includes("dynamic_watchlist")));
+});
+
+await runCheck("dynamic watchlist falls back cleanly during provider cooldown without extra penalties", async () => {
+  const runtime = {
+    externalFeedHealth: {
+      "dynamic_watchlist:dynamic_watchlist:coingecko_top_markets": {
+        group: "dynamic_watchlist",
+        feed: "dynamic_watchlist:coingecko_top_markets",
+        failureCount: 2,
+        recentFailures: 2,
+        score: 0.16,
+        cooldownUntil: "2099-03-19T14:30:00.000Z"
+      }
+    }
+  };
+  let fetchCalls = 0;
+  const config = makeConfig({ watchlistTopN: 3, dynamicWatchlistMinSymbols: 1 });
+  const client = {
+    async getExchangeInfo() {
+      return {
+        symbols: [
+          { symbol: "BTCUSDT", status: "TRADING", baseAsset: "BTC", quoteAsset: "USDT" },
+          { symbol: "ETHUSDT", status: "TRADING", baseAsset: "ETH", quoteAsset: "USDT" }
+        ]
+      };
+    },
+    async publicRequest() {
+      return [
+        { symbol: "BTCUSDT", quoteVolume: "150000000" },
+        { symbol: "ETHUSDT", quoteVolume: "120000000" }
+      ];
+    }
+  };
+  const watchlist = await resolveDynamicWatchlist({
+    client,
+    config,
+    runtime,
+    logger: { warn() {} },
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("should not fetch during cooldown");
+    }
+  });
+  assert.deepEqual(watchlist.watchlist, ["BTCUSDT", "ETHUSDT"]);
+  assert.equal(fetchCalls, 0);
+  const state = runtime.externalFeedHealth["dynamic_watchlist:dynamic_watchlist:coingecko_top_markets"];
+  assert.equal(state.failureCount, 2);
+  assert.ok(state.skipCount >= 1);
 });
 
 await runCheck("universe selector focuses liquid symbols and carries open positions", async () => {

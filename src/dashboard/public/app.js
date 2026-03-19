@@ -1253,12 +1253,16 @@ async function refreshSnapshot() {
     render(pickSnapshot(payload));
   } catch (error) {
     elements.controlHint.textContent = error.message;
-    elements.operatorSummary.innerHTML = `
-      <span class="hero-pill negative">
-        <strong>Dashboard</strong>
-        <span>Controleer of de dashboardserver nog draait.</span>
-      </span>
-    `;
+    replaceChildren(elements.operatorSummary, [
+      (() => {
+        const pill = makeNode("span", { className: "hero-pill negative" });
+        pill.append(
+          makeNode("strong", { text: "Dashboard" }),
+          makeNode("span", { text: "Controleer of de dashboardserver nog draait." })
+        );
+        return pill;
+      })()
+    ]);
   }
 }
 
