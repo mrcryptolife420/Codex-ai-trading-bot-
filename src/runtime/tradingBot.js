@@ -2103,6 +2103,27 @@ function summarizePaperLearning(summary = {}) {
       } : null,
       note: summary.executionInsights.note || null
     } : null,
+    policyTransitions: summary.policyTransitions ? {
+      status: summary.policyTransitions.status || "observe",
+      autoApplyEnabled: Boolean(summary.policyTransitions.autoApplyEnabled),
+      candidates: arr(summary.policyTransitions.candidates || []).slice(0, 6).map((item) => ({
+        id: item.id || null,
+        type: item.type || null,
+        action: item.action || "observe",
+        confidence: num(item.confidence || 0, 4),
+        scope: item.scope || null,
+        reason: item.reason || null,
+        blocker: item.blocker || null
+      })),
+      note: summary.policyTransitions.note || null
+    } : null,
+    operatorGuardrails: summary.operatorGuardrails ? {
+      status: summary.operatorGuardrails.status || "observe",
+      requireManualApproval: Boolean(summary.operatorGuardrails.requireManualApproval),
+      blockedBy: arr(summary.operatorGuardrails.blockedBy || []).slice(0, 4),
+      safeAutoActions: arr(summary.operatorGuardrails.safeAutoActions || []).slice(0, 4),
+      note: summary.operatorGuardrails.note || null
+    } : null,
     reviewQueue: arr(summary.reviewQueue || []).slice(0, 4).map((item) => ({
       type: item.type || null,
       id: item.id || null,
@@ -5372,8 +5393,63 @@ export class TradingBot {
         : followThroughDragCount > executionDragCount && followThroughDragCount > 0
           ? "Setups komen door, maar de follow-through blijft te zwak na entry."
           : averageExecutionReviewScore >= 0.62
-            ? "Execution-kwaliteit is voorlopig stabiel genoeg om challengers inhoudelijk te vergelijken."
+          ? "Execution-kwaliteit is voorlopig stabiel genoeg om challengers inhoudelijk te vergelijken."
             : "Execution heeft nog toezicht nodig voordat policy-vergelijkingen echt zuiver zijn."
+    };
+    const strategyRetirement = this.runtime?.strategyRetirement || {};
+    const retirementPolicies = arr(strategyRetirement.policies || []);
+    const scopedTransitionCandidates = [
+      ...challengerScorecards
+        .filter((item) => item.status === "challenger")
+        .slice(0, 2)
+        .map((item) => ({
+          id: item.id,
+          type: item.id.includes("lane") ? "policy_lane" : "policy",
+          action: "promote_candidate",
+          confidence: clamp(0.42 + Math.min(item.sampleCount || 0, 12) * 0.03 + Math.max(0, item.edgeVsProbe || 0) * 3, 0, 0.96),
+          scope: item.scope || null,
+          reason: `${titleize(item.id)} presteert nu beter dan de probe-baseline.`,
+          blocker: modelPromotionPolicy.allowPromotion ? null : (modelPromotionPolicy.blockerReasons || [])[0] || null
+        })),
+      ...retirementPolicies
+        .filter((item) => ["retire", "cooldown"].includes(item.status))
+        .slice(0, 3)
+        .map((item) => ({
+          id: item.id,
+          type: "strategy",
+          action: item.status === "retire" ? "retire_candidate" : "cooldown_candidate",
+          confidence: item.confidence || 0.5,
+          scope: item.id,
+          reason: item.note || `${item.id} vraagt governance-ingreep.`,
+          blocker: null
+        }))
+    ]
+      .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
+      .slice(0, 6);
+    const operatorGuardrails = {
+      status: scopedTransitionCandidates.length ? "review_required" : "observe",
+      requireManualApproval: true,
+      blockedBy: [
+        ...(modelPromotionPolicy.allowPromotion ? [] : arr(modelPromotionPolicy.blockerReasons || []).slice(0, 2)),
+        ...(retirementPolicies.some((item) => item.status === "retire") ? ["strategy_retirement_active"] : []),
+        ...(executionInsights.status === "repair" ? ["execution_quality_not_stable"] : [])
+      ].filter((item, index, all) => item && all.indexOf(item) === index).slice(0, 4),
+      safeAutoActions: [
+        "collect_more_samples",
+        "compare_simple_policy",
+        "sample_more_shadow"
+      ],
+      note: scopedTransitionCandidates.length
+        ? "Policy-overgangen zijn bewust alleen advisory totdat promotion, retirement en execution-guardrails tegelijk groen zijn."
+        : "Nog geen policy-overgangen die operator-review vragen."
+    };
+    const policyTransitions = {
+      status: scopedTransitionCandidates.length ? "candidate_actions" : "observe",
+      autoApplyEnabled: false,
+      candidates: scopedTransitionCandidates,
+      note: scopedTransitionCandidates[0]
+        ? `${titleize(scopedTransitionCandidates[0].id)} is nu de sterkste policy-overgangskandidaat.`
+        : "Nog geen policy-promotie of retirement die de huidige guardrails haalt."
     };
     const miscalibrationSamples = recentPaperTrades
       .filter((trade) => Number.isFinite(trade.probabilityAtEntry))
@@ -5537,6 +5613,8 @@ export class TradingBot {
       challengerPolicy,
       promotionRoadmap,
       executionInsights,
+      policyTransitions,
+      operatorGuardrails,
       challengerScorecards,
       abExperiments,
       reviewQueue,

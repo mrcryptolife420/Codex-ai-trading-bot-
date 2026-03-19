@@ -1003,6 +1003,30 @@ function renderLearning(snapshot) {
             "Nog geen duidelijke scope- of lanevergelijking met voldoende signaal."
           )}</p>
         </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Policy transitions</span>
+          <div class="tag-list">
+            ${(paperLearning.policyTransitions?.candidates || []).length
+              ? paperLearning.policyTransitions.candidates.slice(0, 4).map((item) => `<span class="tag ${item.action.includes("retire") ? "negative" : item.action.includes("promote") ? "positive" : ""}">${escapeHtml(`${titleize(item.action)} · ${titleize(item.id)} · ${formatPct(item.confidence || 0, 0)}`)}</span>`).join("")
+              : `<span class="tag">Nog geen policy-shifts</span>`}
+          </div>
+          <p>${escapeHtml(
+            paperLearning.policyTransitions?.note ||
+            "Nog geen policy-promotie of retirement die sterk genoeg is voor operator-review."
+          )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Operator guardrails</span>
+          <div class="tag-list">
+            ${(paperLearning.operatorGuardrails?.blockedBy || []).length
+              ? paperLearning.operatorGuardrails.blockedBy.map((item) => `<span class="tag negative">${escapeHtml(titleize(item))}</span>`).join("")
+              : `<span class="tag">Geen extra blokkades</span>`}
+          </div>
+          <p>${escapeHtml(
+            paperLearning.operatorGuardrails?.note ||
+            "Guardrails verschijnen zodra de bot overgangskandidaten ziet tussen policies of scopes."
+          )}</p>
+        </article>
       </section>
       <section class="learning-review-grid">
         <article class="learning-review-column">
