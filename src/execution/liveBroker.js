@@ -379,24 +379,94 @@ export class LiveBroker {
     }
   }
 
-  buildOrderRequestMeta(plan, rules, responseType = "RESULT") {
+  buildOrderRequestMeta(plan, rules, responseType = "RESULT", clientOrderId = null) {
     const stpMode = resolveStpMode(this.config.stpMode, rules);
     return {
       newOrderRespType: responseType,
+      newClientOrderId: clientOrderId || undefined,
       strategyId: plan?.strategyId || undefined,
       strategyType: plan?.strategyType || undefined,
       ...(stpMode && stpMode !== "NONE" ? { selfTradePreventionMode: stpMode } : {})
     };
   }
 
+  buildClientOrderId(symbol, scope = "entry") {
+    const normalizedScope = `${scope || "req"}`.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 4) || "req";
+    const normalizedSymbol = `${symbol || "sym"}`.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 8) || "sym";
+    const token = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+    return `cbx-${normalizedScope}-${normalizedSymbol}-${token}`.slice(0, 36);
+  }
+
+  isRetriableSubmitError(error) {
+    return ["AbortError", "TimeoutError"].includes(error?.name)
+      || ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNABORTED"].includes(error?.code)
+      || ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNABORTED"].includes(error?.cause?.code);
+  }
+
+  async recoverSubmittedEntryOrder({ symbol, clientOrderId, quoteAmount, rules }) {
+    if (!clientOrderId || !this.client.getOrder) {
+      return null;
+    }
+    try {
+      const recoveredOrder = await this.client.getOrder(symbol, { origClientOrderId: clientOrderId });
+      if (!recoveredOrder?.orderId) {
+        return null;
+      }
+      const orderType = `${recoveredOrder.type || ""}`.toUpperCase();
+      if (orderType === "LIMIT_MAKER") {
+        const settled = await this.settleMakerOrder({ symbol, orderId: recoveredOrder.orderId, quoteAmount, rules });
+        return {
+          executions: settled.executions || [],
+          remainingQuote: settled.remainingQuote ?? quoteAmount,
+          orderResponses: settled.order ? [settled.order] : []
+        };
+      }
+      const settled = await this.settleTerminalOrder({
+        symbol,
+        order: recoveredOrder,
+        defaultTrades: recoveredOrder.fills || []
+      });
+      const normalized = normalizeExecution({ order: settled.order, trades: settled.trades });
+      const executedQuote = Number(normalized.order.cummulativeQuoteQty || 0);
+      const executedQty = Number(normalized.order.executedQty || 0);
+      return {
+        executions: executedQuote > 0 || executedQty > 0 ? [normalized] : [],
+        remainingQuote: Math.max(0, quoteAmount - executedQuote),
+        orderResponses: [normalized.order]
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async placeMarketBuy({ symbol, quoteAmount, rules, plan }) {
-    const order = await this.client.placeOrder({
-      symbol,
-      side: "BUY",
-      type: "MARKET",
-      quoteOrderQty: Number(quoteAmount).toFixed(2),
-      ...this.buildOrderRequestMeta(plan, rules, "FULL")
-    });
+    const clientOrderId = this.buildClientOrderId(symbol, "entry");
+    let order;
+    try {
+      order = await this.client.placeOrder({
+        symbol,
+        side: "BUY",
+        type: "MARKET",
+        quoteOrderQty: Number(quoteAmount).toFixed(2),
+        ...this.buildOrderRequestMeta(plan, rules, "FULL", clientOrderId)
+      });
+    } catch (error) {
+      if (!this.isRetriableSubmitError(error)) {
+        throw error;
+      }
+      const recovered = await this.recoverSubmittedEntryOrder({ symbol, clientOrderId, quoteAmount, rules });
+      if (!recovered) {
+        throw error;
+      }
+      return {
+        executions: recovered.executions || [],
+        remainingQuote: recovered.remainingQuote ?? 0,
+        orderResponses: recovered.orderResponses || [],
+        amendmentCount: 0,
+        cancelReplaceCount: 0,
+        keepPriorityCount: 0
+      };
+    }
     return {
       executions: [normalizeExecution({ order, trades: order.fills || [] })],
       remainingQuote: 0,
@@ -427,15 +497,35 @@ export class LiveBroker {
       return this.placeMarketBuy({ symbol, quoteAmount, rules, plan });
     }
 
-    const order = await this.client.placeOrder({
-      symbol,
-      side: "BUY",
-      type: "LIMIT_MAKER",
-      quantity: formatQuantity(size.quantity, rules, false),
-      pegPriceType: plan.pegPriceType,
-      ...(plan.pegOffsetType && plan.pegOffsetValue != null ? { pegOffsetType: plan.pegOffsetType, pegOffsetValue: plan.pegOffsetValue } : {}),
-      ...this.buildOrderRequestMeta(plan, rules)
-    });
+    const clientOrderId = this.buildClientOrderId(symbol, "peg");
+    let order;
+    try {
+      order = await this.client.placeOrder({
+        symbol,
+        side: "BUY",
+        type: "LIMIT_MAKER",
+        quantity: formatQuantity(size.quantity, rules, false),
+        pegPriceType: plan.pegPriceType,
+        ...(plan.pegOffsetType && plan.pegOffsetValue != null ? { pegOffsetType: plan.pegOffsetType, pegOffsetValue: plan.pegOffsetValue } : {}),
+        ...this.buildOrderRequestMeta(plan, rules, "RESULT", clientOrderId)
+      });
+    } catch (error) {
+      if (!this.isRetriableSubmitError(error)) {
+        throw error;
+      }
+      const recovered = await this.recoverSubmittedEntryOrder({ symbol, clientOrderId, quoteAmount, rules });
+      if (!recovered) {
+        throw error;
+      }
+      return {
+        executions: recovered.executions || [],
+        remainingQuote: recovered.remainingQuote ?? quoteAmount,
+        orderResponses: recovered.orderResponses || [],
+        amendmentCount: 0,
+        cancelReplaceCount: 0,
+        keepPriorityCount: 0
+      };
+    }
 
     let workingOrderId = order.orderId;
     const orderResponses = [order];
@@ -503,14 +593,34 @@ export class LiveBroker {
       return this.placeMarketBuy({ symbol, quoteAmount, rules, plan });
     }
 
-    const order = await this.client.placeOrder({
-      symbol,
-      side: "BUY",
-      type: "LIMIT_MAKER",
-      quantity: formatQuantity(size.quantity, rules, false),
-      price: formatPrice(limitPrice, rules),
-      ...this.buildOrderRequestMeta(plan, rules)
-    });
+    const clientOrderId = this.buildClientOrderId(symbol, "maker");
+    let order;
+    try {
+      order = await this.client.placeOrder({
+        symbol,
+        side: "BUY",
+        type: "LIMIT_MAKER",
+        quantity: formatQuantity(size.quantity, rules, false),
+        price: formatPrice(limitPrice, rules),
+        ...this.buildOrderRequestMeta(plan, rules, "RESULT", clientOrderId)
+      });
+    } catch (error) {
+      if (!this.isRetriableSubmitError(error)) {
+        throw error;
+      }
+      const recovered = await this.recoverSubmittedEntryOrder({ symbol, clientOrderId, quoteAmount, rules });
+      if (!recovered) {
+        throw error;
+      }
+      return {
+        executions: recovered.executions || [],
+        remainingQuote: recovered.remainingQuote ?? quoteAmount,
+        orderResponses: recovered.orderResponses || [],
+        amendmentCount: 0,
+        cancelReplaceCount: 0,
+        keepPriorityCount: 0
+      };
+    }
 
     let workingOrderId = order.orderId;
     const orderResponses = [order];
@@ -531,6 +641,7 @@ export class LiveBroker {
         const freshBid = freshBook ? normalizePrice(Number(freshBook.bidPrice || 0), rules, "floor") : null;
         const currentPrice = Number(firstOrder.price || 0);
         if (freshBid && freshBid !== currentPrice) {
+          const replacementClientOrderId = this.buildClientOrderId(symbol, "refr");
           try {
             const replace = await this.client.cancelReplaceOrder({
               symbol,
@@ -540,6 +651,7 @@ export class LiveBroker {
               type: "LIMIT_MAKER",
               quantity: formatQuantity(remainingQty, rules, false),
               price: formatPrice(freshBid, rules),
+              newClientOrderId: replacementClientOrderId,
               ...this.buildOrderRequestMeta(plan, rules)
             });
             cancelReplaceCount += 1;
@@ -550,7 +662,24 @@ export class LiveBroker {
             settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
             executions = mergeExecutions(executions, settled.executions || []);
           } catch (error) {
-            this.logger?.warn?.("Limit maker refresh failed", { symbol, error: error.message });
+            let recovered = null;
+            if (this.isRetriableSubmitError(error)) {
+              recovered = await this.recoverSubmittedEntryOrder({ symbol, clientOrderId: replacementClientOrderId, quoteAmount, rules });
+            }
+            if (recovered) {
+              cancelReplaceCount += 1;
+              amendmentCount += 1;
+              orderResponses.push(...(recovered.orderResponses || []));
+              workingOrderId = recovered.orderResponses?.[0]?.orderId || workingOrderId;
+              settled = {
+                executions: recovered.executions || [],
+                remainingQuote: recovered.remainingQuote ?? quoteAmount,
+                order: recovered.orderResponses?.[0] || settled.order
+              };
+              executions = mergeExecutions(executions, settled.executions || []);
+            } else {
+              this.logger?.warn?.("Limit maker refresh failed", { symbol, error: error.message });
+            }
           }
         } else if (firstOrder.status === "PARTIALLY_FILLED" && plan?.allowKeepPriority) {
           try {

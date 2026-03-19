@@ -2064,6 +2064,106 @@ await runCheck("live broker handles cancel-replace wrappers that use newOrderRes
   assert.ok(result.executions.some((item) => item.order.orderId === 11));
   assert.ok(Math.abs(result.remainingQuote - 8.8) < 1e-9);
 });
+await runCheck("live broker recovers market entry after submit timeout via client order id", async () => {
+  let seenClientOrderId = null;
+  const broker = new LiveBroker({
+    client: {
+      async placeOrder(params) {
+        seenClientOrderId = params.newClientOrderId;
+        const error = new Error("timeout");
+        error.code = "ETIMEDOUT";
+        throw error;
+      },
+      async getOrder(_symbol, params) {
+        assert.equal(params.origClientOrderId, seenClientOrderId);
+        return {
+          orderId: 700,
+          symbol: "BTCUSDT",
+          type: "MARKET",
+          status: "FILLED",
+          executedQty: "0.01000000",
+          cummulativeQuoteQty: "700.00"
+        };
+      },
+      async getMyTrades() {
+        return [{ orderId: 700, price: "70000", qty: "0.01", commission: "0.70", commissionAsset: "USDT" }];
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const result = await broker.placeMarketBuy({
+    symbol: "BTCUSDT",
+    quoteAmount: 700,
+    rules,
+    plan: {}
+  });
+
+  assert.equal(result.executions.length, 1);
+  assert.equal(result.orderResponses[0].orderId, 700);
+  assert.equal(Number(result.executions[0].order.cummulativeQuoteQty), 700);
+});
+
+await runCheck("live broker recovers cancel-replace refresh after submit timeout via replacement client order id", async () => {
+  let replacementClientOrderId = null;
+  const orderState = new Map([
+    [21, { orderId: 21, status: "PARTIALLY_FILLED", origQty: "0.01000000", executedQty: "0.00400000", cummulativeQuoteQty: "280.00", price: "70000", type: "LIMIT_MAKER" }],
+    [22, { orderId: 22, status: "FILLED", origQty: "0.00600000", executedQty: "0.00600000", cummulativeQuoteQty: "421.20", price: "70200", type: "LIMIT_MAKER" }]
+  ]);
+  const broker = new LiveBroker({
+    client: {
+      async placeOrder() {
+        return { orderId: 21, status: "NEW", origQty: "0.01000000", executedQty: "0.00000000", cummulativeQuoteQty: "0.00", price: "70000", type: "LIMIT_MAKER" };
+      },
+      async getOrder(_symbol, params) {
+        if (params.orderId != null) {
+          return orderState.get(params.orderId);
+        }
+        assert.ok(params.origClientOrderId);
+        return orderState.get(22);
+      },
+      async getMyTrades(_symbol, { orderId }) {
+        if (orderId === 21) {
+          return [{ orderId: 21, price: "70000", qty: "0.004", commission: "0.28", commissionAsset: "USDT" }];
+        }
+        if (orderId === 22) {
+          return [{ orderId: 22, price: "70200", qty: "0.006", commission: "0.42", commissionAsset: "USDT" }];
+        }
+        return [];
+      },
+      async getBookTicker() {
+        return { bidPrice: "70200" };
+      },
+      async cancelReplaceOrder(params) {
+        replacementClientOrderId = params.newClientOrderId;
+        const error = new Error("timeout");
+        error.code = "ETIMEDOUT";
+        throw error;
+      },
+      async cancelOrder() {
+        throw new Error("should not cancel filled refreshed order");
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const result = await broker.placeLimitMakerBuy({
+    symbol: "BTCUSDT",
+    quoteAmount: 710,
+    rules,
+    marketSnapshot: { book: { bid: 70000, ask: 70010, mid: 70005, spreadBps: 2 } },
+    plan: { makerPatienceMs: 2000 }
+  });
+
+  assert.equal(result.executions.length, 2);
+  assert.ok(result.executions.some((item) => item.order.orderId === 21));
+  assert.ok(result.executions.some((item) => item.order.orderId === 22));
+  assert.ok(Math.abs(result.remainingQuote - 8.8) < 1e-9);
+});
 await runCheck("openBestCandidate skips symbols with unmatched exchange orders and opens the next safe candidate", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "live" });
