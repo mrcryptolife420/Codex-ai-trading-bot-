@@ -1137,6 +1137,7 @@ export class LiveBroker {
       const openOrders = this.client.getOpenOrders
         ? await this.client.getOpenOrders().catch(() => [])
         : [];
+      let trackedOpenOrders = Array.isArray(openOrders) ? [...openOrders] : [];
       const openOrderLists = this.client.getOpenOrderLists
         ? await this.client.getOpenOrderLists().catch(() => [])
         : [];
@@ -1256,12 +1257,37 @@ export class LiveBroker {
       }
     }
 
+    const restartRecoveryActive = Boolean(runtime.recovery?.uncleanShutdownDetected || runtime.recovery?.restoredFromBackupAt);
+    if (restartRecoveryActive && this.client.cancelOrder) {
+      const runtimeSymbolsForCleanup = new Set((runtime.openPositions || []).map((position) => position.symbol));
+      for (const order of [...trackedOpenOrders]) {
+        const symbol = order?.symbol || null;
+        const rules = symbol ? this.symbolRules[symbol] : null;
+        if (!symbol || !rules || runtimeSymbolsForCleanup.has(symbol)) {
+          continue;
+        }
+        const status = `${order?.status || ""}`.toUpperCase();
+        const side = `${order?.side || ""}`.toUpperCase();
+        const balance = assetMap[rules.baseAsset]?.total || 0;
+        if (side !== "BUY" || !["NEW", "PARTIALLY_FILLED", "PENDING_NEW"].includes(status) || balance >= Math.max(rules.minQty || 0, 0)) {
+          continue;
+        }
+        try {
+          await this.client.cancelOrder(symbol, { orderId: order.orderId });
+          trackedOpenOrders = trackedOpenOrders.filter((item) => !(item?.symbol === symbol && item?.orderId === order.orderId));
+          warnings.push({ symbol, issue: "stale_untracked_entry_order_canceled" });
+        } catch (error) {
+          warnings.push({ symbol, issue: "stale_untracked_entry_order_cancel_failed", error: error.message });
+        }
+      }
+    }
+
       const runtimeSymbols = new Set((runtime.openPositions || []).map((position) => position.symbol));
       const exchangeSymbols = Object.entries(this.symbolRules)
         .filter(([, rules]) => (assetMap[rules.baseAsset]?.total || 0) >= Math.max(rules.minQty || 0, 0))
         .map(([symbol]) => symbol);
-      const trackedTruthSymbols = [...new Set([...runtimeSymbols, ...exchangeSymbols, ...(openOrders || []).map((order) => order.symbol).filter(Boolean)])].slice(0, 12);
-      const unmatchedOrderSymbols = [...new Set((openOrders || []).map((order) => order.symbol).filter((symbol) => symbol && !runtimeSymbols.has(symbol)))];
+      const trackedTruthSymbols = [...new Set([...runtimeSymbols, ...exchangeSymbols, ...trackedOpenOrders.map((order) => order.symbol).filter(Boolean)])].slice(0, 12);
+      const unmatchedOrderSymbols = [...new Set(trackedOpenOrders.map((order) => order.symbol).filter((symbol) => symbol && !runtimeSymbols.has(symbol)))];
       const staleProtectiveSymbols = warnings
         .filter((warning) => warning.issue === "protective_order_state_stale")
         .map((warning) => warning.symbol)
@@ -1304,7 +1330,8 @@ export class LiveBroker {
             "position_sync_failed",
             "unmanaged_balance_detected",
             "position_quantity_mismatch",
-            "position_quantity_reduced_to_exchange_balance"
+            "position_quantity_reduced_to_exchange_balance",
+            "stale_untracked_entry_order_cancel_failed"
           ].includes(warning.issue))
           .map((warning) => warning.symbol)
           .filter(Boolean)
@@ -1317,7 +1344,7 @@ export class LiveBroker {
         mismatchCount,
         runtimePositionCount: runtime.openPositions.length,
         exchangePositionCount: exchangeSymbols.length,
-        openOrderCount: openOrders.length,
+        openOrderCount: trackedOpenOrders.length,
         openOrderListCount: openOrderLists.length,
         lastReconciledAt: truthAt,
         lastHealthyAt: mismatchCount === 0 ? truthAt : runtime.exchangeTruth?.lastHealthyAt || null,
