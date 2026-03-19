@@ -3099,6 +3099,7 @@ export class TradingBot {
     this.stream = new StreamCoordinator({ client: this.client, config, logger });
     this.symbolRules = {};
     this.marketCache = {};
+    this.persistPromise = null;
   }
 
   applyHistoricalBootstrap(bootstrap = null) {
@@ -3701,10 +3702,28 @@ export class TradingBot {
     this.runtime.executionPolicyState = this.rlPolicy.getState();
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
-    await this.store.saveRuntime(this.runtime);
-    await this.store.saveJournal(this.journal);
-    await this.store.saveModel(this.model.getState());
-    await this.store.saveModelBackups(this.modelBackups || []);
+    const runtimeSnapshot = structuredClone(this.runtime);
+    const journalSnapshot = structuredClone(this.journal);
+    const modelSnapshot = structuredClone(this.model.getState());
+    const modelBackupsSnapshot = structuredClone(this.modelBackups || []);
+
+    const chainedPersist = (this.persistPromise || Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        await this.store.saveRuntime(runtimeSnapshot);
+        await this.store.saveJournal(journalSnapshot);
+        await this.store.saveModel(modelSnapshot);
+        await this.store.saveModelBackups(modelBackupsSnapshot);
+      });
+
+    this.persistPromise = chainedPersist;
+    try {
+      await chainedPersist;
+    } finally {
+      if (this.persistPromise === chainedPersist) {
+        this.persistPromise = null;
+      }
+    }
   }
 
   recordEvent(type, payload) {
@@ -8091,6 +8110,9 @@ export class TradingBot {
     }
     if (this.journal.blockedSetups.length > 2000) {
       this.journal.blockedSetups = this.journal.blockedSetups.slice(-2000);
+    }
+    if (this.journal.counterfactuals.length > 2000) {
+      this.journal.counterfactuals = this.journal.counterfactuals.slice(-2000);
     }
     if (this.journal.universeRuns.length > 1000) {
       this.journal.universeRuns = this.journal.universeRuns.slice(-1000);

@@ -4962,6 +4962,81 @@ await runCheck("trading bot restores corrupted primary state from backup", async
   assert.deepEqual(saved.map(([kind]) => kind), ["runtime", "journal", "model", "modelBackups"]);
 });
 
+await runCheck("trading bot persist snapshots stay consistent across overlapping writes", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const writes = [];
+  let releaseFirstRuntimeSave;
+  const firstRuntimeSave = new Promise((resolve) => {
+    releaseFirstRuntimeSave = resolve;
+  });
+  let runtimeSaveCount = 0;
+  bot.store = {
+    async saveRuntime(runtime) {
+      runtimeSaveCount += 1;
+      writes.push(["runtime", runtime.seq, runtime.journalSeq]);
+      if (runtimeSaveCount === 1) {
+        await firstRuntimeSave;
+      }
+    },
+    async saveJournal(journal) {
+      writes.push(["journal", journal.seq]);
+    },
+    async saveModel(model) {
+      writes.push(["model", model.version]);
+    },
+    async saveModelBackups(backups) {
+      writes.push(["modelBackups", backups.at(-1)?.version || null]);
+    }
+  };
+  bot.stream = { getStatus: () => ({ connected: true }) };
+  bot.rlPolicy = { getState: () => ({ policySeq: bot.runtime.seq }) };
+  bot.dataRecorder = { getSummary: () => ({ recorderSeq: bot.runtime.seq }) };
+  bot.backupManager = { getSummary: () => ({ backupSeq: bot.runtime.seq }) };
+  bot.model = { getState: () => ({ version: bot.runtime.seq }) };
+  bot.modelBackups = [{ version: 1 }];
+  bot.runtime = { seq: 1, journalSeq: 1 };
+  bot.journal = { seq: 1 };
+
+  const firstPersist = bot.persist();
+  await Promise.resolve();
+  bot.runtime.seq = 2;
+  bot.runtime.journalSeq = 2;
+  bot.journal.seq = 2;
+  bot.modelBackups = [{ version: 2 }];
+  const secondPersist = bot.persist();
+  releaseFirstRuntimeSave();
+  await Promise.all([firstPersist, secondPersist]);
+
+  assert.deepEqual(writes, [
+    ["runtime", 1, 1],
+    ["journal", 1],
+    ["model", 1],
+    ["modelBackups", 1],
+    ["runtime", 2, 2],
+    ["journal", 2],
+    ["model", 2],
+    ["modelBackups", 2]
+  ]);
+});
+
+await runCheck("trading bot trimJournal also caps counterfactual history", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.journal = {
+    trades: [],
+    scaleOuts: [],
+    blockedSetups: [],
+    counterfactuals: Array.from({ length: 2105 }, (_, index) => ({ id: index })),
+    universeRuns: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: []
+  };
+  bot.trimJournal();
+  assert.equal(bot.journal.counterfactuals.length, 2000);
+  assert.equal(bot.journal.counterfactuals[0].id, 105);
+});
+
 await runCheck("data recorder stores rich learning events for paper retraining", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-"));
   try {
