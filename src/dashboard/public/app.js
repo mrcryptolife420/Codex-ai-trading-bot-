@@ -1010,6 +1010,16 @@ function renderLearning(snapshot) {
               ? paperLearning.policyTransitions.candidates.slice(0, 4).map((item) => `<span class="tag ${item.action.includes("retire") ? "negative" : item.action.includes("promote") ? "positive" : ""}">${escapeHtml(`${titleize(item.action)} · ${titleize(item.id)} · ${formatPct(item.confidence || 0, 0)}`)}</span>`).join("")
               : `<span class="tag">Nog geen policy-shifts</span>`}
           </div>
+          ${(paperLearning.policyTransitions?.candidates || []).length
+            ? `
+            <div class="tag-list">
+              ${paperLearning.policyTransitions.candidates.slice(0, 3).map((item) => item.approved
+                ? `<span class="tag positive">${escapeHtml(`Approved · ${titleize(item.id)}`)}</span>`
+                : `<button class="tag" data-policy-action="approve" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Approve ${escapeHtml(titleize(item.id))}</button><button class="tag negative" data-policy-action="reject" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Reject</button>`
+              ).join("")}
+            </div>
+          `
+            : ""}
           <p>${escapeHtml(
             paperLearning.policyTransitions?.note ||
             "Nog geen policy-promotie of retirement die sterk genoeg is voor operator-review."
@@ -1292,6 +1302,27 @@ function bindEvents() {
     writeStoredBoolean(STORAGE_KEYS.showAllDecisions, showAllDecisions);
     if (latestSnapshot) {
       renderSignals(latestSnapshot);
+    }
+  });
+
+  elements.learningList?.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-policy-action]");
+    if (!target) {
+      return;
+    }
+    const policyAction = `${target.getAttribute("data-policy-action") || ""}`.trim();
+    const id = `${target.getAttribute("data-transition-id") || ""}`.trim();
+    const action = `${target.getAttribute("data-transition-kind") || ""}`.trim();
+    if (!policyAction || !id || !action) {
+      return;
+    }
+    const note = window.prompt(`Optionele notitie voor ${policyAction} ${id}:`, "") || null;
+    if (policyAction === "approve") {
+      await runAction("/api/policies/approve", { id, action, note });
+      return;
+    }
+    if (policyAction === "reject") {
+      await runAction("/api/policies/reject", { id, action, note });
     }
   });
 

@@ -397,6 +397,26 @@ export class BotManager {
     });
   }
 
+  async approvePolicyTransition(id, action, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.approvePolicyTransition({ id, action, note });
+      return this.getSnapshot();
+    });
+  }
+
+  async rejectPolicyTransition(id, action, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.rejectPolicyTransition({ id, action, note });
+      return this.getSnapshot();
+    });
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();

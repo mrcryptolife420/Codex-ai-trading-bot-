@@ -154,6 +154,12 @@ async function handleApi(request, response, manager) {
   if (url.pathname === "/api/ops/probe-only") {
     return sendJson(response, 200, await manager.setProbeOnly(body.enabled !== false, body.minutes, body.note || null));
   }
+  if (url.pathname === "/api/policies/approve") {
+    return sendJson(response, 200, await manager.approvePolicyTransition(body.id, body.action, body.note || null));
+  }
+  if (url.pathname === "/api/policies/reject") {
+    return sendJson(response, 200, await manager.rejectPolicyTransition(body.id, body.action, body.note || null));
+  }
 
   return sendJson(response, 404, { error: "Unknown API route" });
 }

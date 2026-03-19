@@ -2113,7 +2113,8 @@ function summarizePaperLearning(summary = {}) {
         confidence: num(item.confidence || 0, 4),
         scope: item.scope || null,
         reason: item.reason || null,
-        blocker: item.blocker || null
+        blocker: item.blocker || null,
+        approved: Boolean(item.approved)
       })),
       note: summary.policyTransitions.note || null
     } : null,
@@ -2584,6 +2585,14 @@ function summarizeStrategyRetirement(summary = {}) {
     })),
     notes: [...(summary.notes || [])]
   };
+}
+
+function normalizePolicyTransitionAction(action = "") {
+  const normalized = `${action || ""}`.trim().toLowerCase();
+  if (["promote_candidate", "cooldown_candidate", "retire_candidate"].includes(normalized)) {
+    return normalized;
+  }
+  return "observe";
 }
 
 function summarizeReplayChaos(summary = {}) {
@@ -3829,6 +3838,7 @@ export class TradingBot {
       config: this.config,
       nowIso: referenceNow
     }));
+    this.applyOperatorPolicyOverrides(referenceNow);
     this.runtime.replayChaos = summarizeReplayChaos(buildReplayChaosSummary({
       journal: this.journal,
       nowIso: referenceNow
@@ -3857,6 +3867,156 @@ export class TradingBot {
     this.syncOrderLifecycleState("governance_refresh");
     this.refreshOperationalViews({ report, nowIso: referenceNow });
     return { report, rawResearchRegistry, rawStrategyResearch, divergenceSummary, offlineTrainerSummary, executionCalibration, parameterGovernor };
+  }
+
+  ensureOperatorPolicyState() {
+    this.runtime.operatorPolicyState = this.runtime.operatorPolicyState || {
+      approvals: [],
+      dismissals: [],
+      strategyOverrides: {}
+    };
+    this.runtime.operatorPolicyState.approvals = arr(this.runtime.operatorPolicyState.approvals).slice(0, 40);
+    this.runtime.operatorPolicyState.dismissals = arr(this.runtime.operatorPolicyState.dismissals).slice(0, 40);
+    this.runtime.operatorPolicyState.strategyOverrides = this.runtime.operatorPolicyState.strategyOverrides && typeof this.runtime.operatorPolicyState.strategyOverrides === "object"
+      ? this.runtime.operatorPolicyState.strategyOverrides
+      : {};
+    return this.runtime.operatorPolicyState;
+  }
+
+  applyOperatorPolicyOverrides(referenceNow = nowIso()) {
+    const state = this.ensureOperatorPolicyState();
+    const overrides = state.strategyOverrides || {};
+    const summary = this.runtime.strategyRetirement || { policies: [], notes: [] };
+    const policies = arr(summary.policies || []).map((item) => ({ ...item }));
+    for (const [id, override] of Object.entries(overrides)) {
+      if (!override?.status) {
+        continue;
+      }
+      const existingIndex = policies.findIndex((item) => item.id === id);
+      const next = existingIndex >= 0
+        ? {
+            ...policies[existingIndex],
+            status: override.status,
+            sizeMultiplier: override.status === "retire" ? 0 : override.status === "cooldown" ? Math.min(0.72, policies[existingIndex].sizeMultiplier || 0.72) : 1,
+            note: override.note || policies[existingIndex].note || "Operator policy override actief.",
+            overriddenByOperator: true,
+            approvedAt: override.approvedAt || referenceNow
+          }
+        : {
+            id,
+            tradeCount: 0,
+            realizedPnl: 0,
+            winRate: 0,
+            avgReviewScore: 0,
+            avgPnlPct: 0,
+            governanceScore: 0,
+            falsePositiveRate: 0,
+            falseNegativeRate: 0,
+            confidence: 0.5,
+            status: override.status,
+            sizeMultiplier: override.status === "retire" ? 0 : override.status === "cooldown" ? 0.72 : 1,
+            note: override.note || "Operator policy override actief.",
+            overriddenByOperator: true,
+            approvedAt: override.approvedAt || referenceNow
+          };
+      if (existingIndex >= 0) {
+        policies[existingIndex] = next;
+      } else {
+        policies.push(next);
+      }
+    }
+    policies.sort((left, right) => {
+      const severity = { retire: 0, cooldown: 1, observe: 2, active: 3 };
+      const delta = (severity[left.status] || 9) - (severity[right.status] || 9);
+      return delta !== 0 ? delta : (left.governanceScore || 0) - (right.governanceScore || 0);
+    });
+    summary.policies = policies.slice(0, 12);
+    summary.retireCount = policies.filter((item) => item.status === "retire").length;
+    summary.cooldownCount = policies.filter((item) => item.status === "cooldown").length;
+    summary.activeCount = policies.filter((item) => item.status === "active").length;
+    summary.blockedStrategies = policies.filter((item) => item.status === "retire").map((item) => item.id);
+    summary.cooldownStrategies = policies.filter((item) => item.status === "cooldown").map((item) => item.id);
+    summary.status = summary.retireCount ? "blocked" : summary.cooldownCount ? "watch" : policies.length ? "ready" : "warmup";
+    summary.notes = [
+      Object.keys(overrides).length
+        ? `${Object.keys(overrides).length} operator policy override(s) actief.`
+        : (summary.notes || [])[0] || "Geen operator policy overrides actief.",
+      ...(arr(summary.notes || []).slice(0, 2))
+    ].slice(0, 4);
+    this.runtime.strategyRetirement = summary;
+    return summary;
+  }
+
+  async approvePolicyTransition({ id, action, note = null, at = nowIso() } = {}) {
+    const transitionId = `${id || ""}`.trim();
+    const normalizedAction = normalizePolicyTransitionAction(action);
+    if (!transitionId || normalizedAction === "observe") {
+      throw new Error("Ongeldige policy transition.");
+    }
+    const state = this.ensureOperatorPolicyState();
+    const candidates = arr(this.runtime.paperLearning?.policyTransitions?.candidates || this.runtime.ops?.paperLearning?.policyTransitions?.candidates || []);
+    const candidate = candidates.find((item) => item.id === transitionId && item.action === normalizedAction);
+    if (!candidate) {
+      throw new Error("Policy transition kandidaat niet gevonden.");
+    }
+    state.approvals.unshift({
+      id: transitionId,
+      action: normalizedAction,
+      type: candidate.type || null,
+      scope: candidate.scope || null,
+      note: note || null,
+      approvedAt: at
+    });
+    state.approvals = state.approvals.slice(0, 40);
+    state.dismissals = state.dismissals.filter((item) => !(item.id === transitionId && item.action === normalizedAction));
+    if (candidate.type === "strategy" && ["retire_candidate", "cooldown_candidate"].includes(normalizedAction)) {
+      state.strategyOverrides[transitionId] = {
+        status: normalizedAction === "retire_candidate" ? "retire" : "cooldown",
+        note: note || candidate.reason || null,
+        approvedAt: at
+      };
+      this.applyOperatorPolicyOverrides(at);
+    }
+    this.recordEvent("operator_policy_transition_approved", {
+      at,
+      id: transitionId,
+      action: normalizedAction,
+      note: note || null
+    });
+    this.refreshGovernanceViews(at);
+    return {
+      approved: true,
+      id: transitionId,
+      action: normalizedAction
+    };
+  }
+
+  async rejectPolicyTransition({ id, action, note = null, at = nowIso() } = {}) {
+    const transitionId = `${id || ""}`.trim();
+    const normalizedAction = normalizePolicyTransitionAction(action);
+    if (!transitionId || normalizedAction === "observe") {
+      throw new Error("Ongeldige policy transition.");
+    }
+    const state = this.ensureOperatorPolicyState();
+    state.dismissals.unshift({
+      id: transitionId,
+      action: normalizedAction,
+      note: note || null,
+      dismissedAt: at
+    });
+    state.dismissals = state.dismissals.slice(0, 40);
+    this.recordEvent("operator_policy_transition_rejected", {
+      at,
+      id: transitionId,
+      action: normalizedAction,
+      note: note || null
+    });
+    this.refreshGovernanceViews(at);
+    return {
+      rejected: true,
+      id: transitionId,
+      action: normalizedAction
+    };
   }
 
   syncOrderLifecycleState(reason = "runtime_sync") {
@@ -5398,6 +5558,12 @@ export class TradingBot {
     };
     const strategyRetirement = this.runtime?.strategyRetirement || {};
     const retirementPolicies = arr(strategyRetirement.policies || []);
+    const operatorPolicyState = this.ensureOperatorPolicyState();
+    const recentDismissals = arr(operatorPolicyState.dismissals || []).filter((item) => {
+      const at = new Date(item.dismissedAt || 0).getTime();
+      return Number.isFinite(at) && (new Date(referenceNow).getTime() - at) <= 24 * 60 * 60 * 1000;
+    });
+    const approvedTransitions = arr(operatorPolicyState.approvals || []).slice(0, 10);
     const scopedTransitionCandidates = [
       ...challengerScorecards
         .filter((item) => item.status === "challenger")
@@ -5424,6 +5590,7 @@ export class TradingBot {
           blocker: null
         }))
     ]
+      .filter((item) => !recentDismissals.some((dismissed) => dismissed.id === item.id && dismissed.action === item.action))
       .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
       .slice(0, 6);
     const operatorGuardrails = {
@@ -5446,7 +5613,10 @@ export class TradingBot {
     const policyTransitions = {
       status: scopedTransitionCandidates.length ? "candidate_actions" : "observe",
       autoApplyEnabled: false,
-      candidates: scopedTransitionCandidates,
+      candidates: scopedTransitionCandidates.map((item) => ({
+        ...item,
+        approved: approvedTransitions.some((approved) => approved.id === item.id && approved.action === item.action)
+      })),
       note: scopedTransitionCandidates[0]
         ? `${titleize(scopedTransitionCandidates[0].id)} is nu de sterkste policy-overgangskandidaat.`
         : "Nog geen policy-promotie of retirement die de huidige guardrails haalt."

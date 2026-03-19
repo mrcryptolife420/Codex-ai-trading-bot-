@@ -7392,6 +7392,98 @@ await runCheck("trading bot paper learning summary exposes operator intelligence
   assert.equal(summary.executionInsights.weakestExecutionStyle.id, "market");
 });
 
+await runCheck("trading bot approves strategy policy transitions and applies operator override", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    paperLearning: {
+      policyTransitions: {
+        candidates: [
+          { id: "ema_trend", type: "strategy", action: "retire_candidate", scope: "ema_trend", reason: "governance retired" }
+        ]
+      }
+    },
+    strategyRetirement: {
+      policies: [{ id: "ema_trend", status: "active", sizeMultiplier: 1, note: "active" }],
+      notes: []
+    }
+  };
+  bot.recordEvent = () => {};
+  bot.refreshGovernanceViews = () => {};
+  await bot.approvePolicyTransition({ id: "ema_trend", action: "retire_candidate", note: "approved by operator", at: "2026-03-12T12:00:00.000Z" });
+  assert.equal(bot.runtime.operatorPolicyState.approvals[0].id, "ema_trend");
+  assert.equal(bot.runtime.strategyRetirement.policies[0].status, "retire");
+  assert.equal(bot.runtime.strategyRetirement.policies[0].note, "approved by operator");
+});
+
+await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "BTCUSDT",
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.78,
+        paperLearning: {
+          noveltyScore: 0.66,
+          activeLearning: { score: 0.74, focusReason: "threshold_near_miss" },
+          scope: { family: "trend_following", regime: "trend", session: "asia" }
+        }
+      }
+    ],
+    counterfactualQueue: [],
+    openPositions: [],
+    operatorPolicyState: {
+      approvals: [],
+      dismissals: [{ id: "safe_lane", action: "promote_candidate", dismissedAt: "2026-03-12T09:30:00.000Z" }],
+      strategyOverrides: {}
+    },
+    offlineTrainer: {
+      blockerScorecards: [{ id: "committee_veto", badVetoRate: 0.5, goodVetoRate: 0.2, governanceScore: 0.4 }]
+    },
+    modelRegistry: {
+      promotionPolicy: { allowPromotion: false, readyLevel: "paper", blockerReasons: ["sample_size_low"] }
+    },
+    strategyRetirement: { policies: [], notes: [] },
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [
+      {
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        entryAt: "2026-03-12T06:00:00.000Z",
+        exitAt: "2026-03-12T07:00:00.000Z",
+        pnlQuote: 12,
+        netPnlPct: 0.011,
+        executionQualityScore: 0.68,
+        captureEfficiency: 0.56,
+        mfePct: 0.015,
+        maePct: -0.004,
+        paperLearningOutcome: { outcome: "good_trade" }
+      }
+    ],
+    counterfactuals: [
+      {
+        symbol: "SOLUSDT",
+        brokerMode: "paper",
+        learningLane: "shadow",
+        outcome: "bad_veto",
+        blockerReasons: ["committee_veto"],
+        branches: [{ id: "base", outcome: "winner", adjustedMovePct: 0.024 }]
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T10:00:00.000Z");
+  assert.ok(!summary.policyTransitions.candidates.some((item) => item.id === "safe_lane" && item.action === "promote_candidate"));
+});
+
 await runCheck("refresh analysis resolves counterfactual queue so shadow cases stay current", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {
