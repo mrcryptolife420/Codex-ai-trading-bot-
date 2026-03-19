@@ -4030,6 +4030,83 @@ export class TradingBot {
     return this.runtime.operatorPolicyState;
   }
 
+  ensureDiagnosticsActionState() {
+    this.runtime.ops = this.runtime.ops || {};
+    this.runtime.ops.diagnosticsActions = this.runtime.ops.diagnosticsActions || {
+      history: []
+    };
+    this.runtime.ops.diagnosticsActions.history = arr(this.runtime.ops.diagnosticsActions.history).slice(0, 80);
+    return this.runtime.ops.diagnosticsActions;
+  }
+
+  recordDiagnosticsAction({
+    action = null,
+    target = null,
+    note = null,
+    status = "completed",
+    detail = null,
+    at = nowIso()
+  } = {}) {
+    const state = this.ensureDiagnosticsActionState();
+    state.history.unshift({
+      at,
+      action,
+      target,
+      note: note || null,
+      status,
+      detail: detail || null
+    });
+    state.history = state.history.slice(0, 80);
+    this.recordEvent("operator_diagnostics_action", {
+      at,
+      action,
+      target,
+      status,
+      note: note || null
+    });
+    return state;
+  }
+
+  resetExternalFeedHealth({ group = null, feed = null, note = null, at = nowIso() } = {}) {
+    const bucket = this.runtime.externalFeedHealth && typeof this.runtime.externalFeedHealth === "object"
+      ? this.runtime.externalFeedHealth
+      : {};
+    const touched = [];
+    for (const [key, state] of Object.entries(bucket)) {
+      if (!state || typeof state !== "object") {
+        continue;
+      }
+      if (group && state.group !== group) {
+        continue;
+      }
+      if (feed && state.feed !== feed) {
+        continue;
+      }
+      state.cooldownUntil = null;
+      state.recentFailures = 0;
+      state.lastError = null;
+      touched.push({
+        key,
+        group: state.group || null,
+        feed: state.feed || null
+      });
+    }
+    this.runtime.sourceReliability = this.buildSourceReliabilitySnapshot();
+    this.recordDiagnosticsAction({
+      action: "reset_external_feeds",
+      target: feed || group || "all",
+      note,
+      detail: touched.length
+        ? `${touched.length} external feed cooldown(s) gewist.`
+        : "Geen matching external feeds gevonden.",
+      at
+    });
+    return {
+      resetCount: touched.length,
+      targets: touched
+    };
+  }
+
   applyOperatorPolicyOverrides(referenceNow = nowIso()) {
     const state = this.ensureOperatorPolicyState();
     const overrides = state.strategyOverrides || {};
@@ -4211,6 +4288,60 @@ export class TradingBot {
       reverted: true,
       id: transitionId
     };
+  }
+
+  async performDiagnosticsAction({ action, target = null, note = null, minutes = null, at = nowIso() } = {}) {
+    const normalizedAction = `${action || ""}`.trim().toLowerCase();
+    if (!normalizedAction) {
+      throw new Error("Ongeldige diagnostics action.");
+    }
+    if (normalizedAction === "ack_alert") {
+      await this.acknowledgeAlert(target, { acknowledged: true, note, at });
+      this.recordDiagnosticsAction({
+        action: normalizedAction,
+        target,
+        note,
+        detail: `Alert ${target || "unknown"} acknowledged.`,
+        at
+      });
+      await this.store.saveRuntime(this.runtime);
+      return this.getDashboardSnapshot();
+    }
+    if (normalizedAction === "force_reconcile") {
+      await this.forceReconcile({ note, at });
+      this.recordDiagnosticsAction({
+        action: normalizedAction,
+        target,
+        note,
+        detail: "Exchange truth op freeze gezet voor reconcile.",
+        at
+      });
+      await this.store.saveRuntime(this.runtime);
+      return this.getDashboardSnapshot();
+    }
+    if (normalizedAction === "enable_probe_only") {
+      const durationMinutes = Math.max(1, Number(minutes ?? 90));
+      await this.setProbeOnly({ enabled: true, minutes: durationMinutes, note, at });
+      this.recordDiagnosticsAction({
+        action: normalizedAction,
+        target,
+        note,
+        detail: `Probe-only actief voor ${durationMinutes} minuten.`,
+        at
+      });
+      await this.store.saveRuntime(this.runtime);
+      return this.getDashboardSnapshot();
+    }
+    if (normalizedAction === "reset_external_feeds") {
+      const result = this.resetExternalFeedHealth({ group: target || null, note, at });
+      this.refreshOperationalViews({ nowIso: at });
+      await this.store.saveRuntime(this.runtime);
+      return {
+        ...(await this.getDashboardSnapshot()),
+        diagnosticsActionResult: result
+      };
+    }
+    throw new Error("Onbekende diagnostics action.");
   }
 
   syncOrderLifecycleState(reason = "runtime_sync") {
@@ -9065,9 +9196,11 @@ export class TradingBot {
     sourceReliability = {},
     qualityQuorum = {},
     safety = {},
-    paperLearning = {}
+    paperLearning = {},
+    diagnosticsActions = {}
   } = {}) {
     const openAlerts = arr(alerts.alerts || []).filter((item) => !item.resolvedAt);
+    const unackedAlerts = openAlerts.filter((item) => !item.acknowledgedAt);
     const blockerCounts = new Map();
     const noteBlocker = (value) => {
       if (!value) {
@@ -9135,6 +9268,72 @@ export class TradingBot {
         : null
     ].filter(Boolean).slice(0, 6);
     const tradeableCount = topDecisions.filter((item) => item.allow).length;
+    const topExternalFeed = arr(sourceReliability.externalFeeds?.providers || []).find((item) => item.coolingDown || item.score < 0.5) || null;
+    const focusSymbol = blockedSetups[0]?.symbol || topDecisions[0]?.symbol || null;
+    const quickActions = [
+      unackedAlerts[0]
+        ? {
+            action: "ack_alert",
+            target: unackedAlerts[0].id || null,
+            label: `Ack ${titleize(unackedAlerts[0].id || "alert")}`,
+            detail: unackedAlerts[0].title || unackedAlerts[0].summary || "Open operator alert bevestigen.",
+            tone: "negative"
+          }
+        : null,
+      safety.orderLifecycle?.pendingActions?.[0]
+        ? {
+            action: "force_reconcile",
+            target: safety.orderLifecycle.pendingActions[0].symbol || null,
+            label: `Force reconcile${safety.orderLifecycle.pendingActions[0].symbol ? ` ${safety.orderLifecycle.pendingActions[0].symbol}` : ""}`,
+            detail: "Zet exchange truth op freeze en dwing handmatige lifecycle-reconcile af.",
+            tone: "negative"
+          }
+        : null,
+      topExternalFeed?.group
+        ? {
+            action: "reset_external_feeds",
+            target: topExternalFeed.group,
+            label: `Reset ${titleize(topExternalFeed.group)} feeds`,
+            detail: `${titleize(topExternalFeed.provider || topExternalFeed.group)} zit op cooldown of degraded.`,
+            tone: "neutral"
+          }
+        : null,
+      focusSymbol
+        ? {
+            action: "research_focus_symbol",
+            target: focusSymbol,
+            label: `Research ${focusSymbol}`,
+            detail: "Draai direct context/research voor het symbool dat nu de meeste aandacht vraagt.",
+            tone: "neutral"
+          }
+        : null,
+      (!tradeableCount || (qualityQuorum.observeOnly || qualityQuorum.status === "observe_only"))
+        ? {
+            action: "enable_probe_only",
+            target: focusSymbol,
+            label: "Enable probe-only",
+            detail: "Open tijdelijk alleen kleine leertrades om gecontroleerd data op te bouwen.",
+            tone: "neutral"
+          }
+        : null,
+      readiness.status && readiness.status !== "ready"
+        ? {
+            action: "refresh_analysis",
+            target: null,
+            label: "Refresh analysis",
+            detail: "Herbouw direct de analyse- en governance-snapshot.",
+            tone: "neutral"
+          }
+        : null
+    ].filter(Boolean).slice(0, 6);
+    const recentActions = arr(diagnosticsActions.history || []).slice(0, 6).map((item) => ({
+      at: item.at || null,
+      action: item.action || null,
+      target: item.target || null,
+      note: item.note || null,
+      status: item.status || null,
+      detail: item.detail || null
+    }));
     return {
       status: readiness.status || "unknown",
       headline: tradeableCount
@@ -9148,7 +9347,9 @@ export class TradingBot {
         alerts: openAlerts.length,
         replays: tradeReplays.length
       },
-      nextOperatorFocus: actionItems[0]?.detail || paperLearning.coaching?.nextReview || "Geen directe operatorfocus."
+      nextOperatorFocus: actionItems[0]?.detail || paperLearning.coaching?.nextReview || "Geen directe operatorfocus.",
+      quickActions,
+      recentActions
     };
   }
 
@@ -9332,7 +9533,8 @@ export class TradingBot {
         orderLifecycle: orderLifecycleSummary,
         exchangeTruth: exchangeTruthSummary
       },
-      paperLearning: paperLearningSummary
+      paperLearning: paperLearningSummary,
+      diagnosticsActions: this.runtime.ops?.diagnosticsActions || {}
     });
     const explainability = {
       decisions: [...dashboardTopDecisions, ...dashboardBlockedSetups]

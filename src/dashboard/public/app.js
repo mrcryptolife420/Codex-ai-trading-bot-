@@ -85,6 +85,17 @@ function makeActionButton({ action, kind = "", id, label, tone = "" }) {
   });
 }
 
+function makeDiagnosticsActionButton({ action, target = "", label, tone = "" }) {
+  return makeNode("button", {
+    className: ["tag", tone].filter(Boolean).join(" "),
+    text: label,
+    attrs: {
+      "data-diagnostics-action": action,
+      "data-diagnostics-target": target || null
+    }
+  });
+}
+
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
   const node = document.createElement(tag);
   if (className) {
@@ -1268,6 +1279,8 @@ function renderDiagnostics(snapshot) {
   const diagnostics = snapshot?.dashboard?.operatorDiagnostics || {};
   const blockers = diagnostics.dominantBlockers || [];
   const actions = diagnostics.actionItems || [];
+  const quickActions = diagnostics.quickActions || [];
+  const recentActions = diagnostics.recentActions || [];
   if (!elements.diagnosticsList) {
     return;
   }
@@ -1304,6 +1317,22 @@ function renderDiagnostics(snapshot) {
   const actionRows = actions.length
     ? actions.map((item) => makeEventRow(item))
     : [makeEmptyState("Nog geen operatoracties voorgesteld.")];
+  const quickActionNodes = quickActions.length
+    ? makeTagList(quickActions.map((item) => makeDiagnosticsActionButton({
+      action: item.action,
+      target: item.target || "",
+      label: item.label || titleize(item.action || "actie"),
+      tone: item.tone || ""
+    })))
+    : makeTagList([makeTag("Geen snelle actie klaar")]);
+  const recentActionRows = recentActions.length
+    ? recentActions.map((item) => makeEventRow({
+      title: titleize(item.action || "actie"),
+      detail: item.detail || item.note || titleize(item.target || "operator update"),
+      meta: [item.target ? `Target ${item.target}` : null, formatDate(item.at)].filter(Boolean).join(" · "),
+      tone: item.status === "completed" ? "neutral" : item.status === "failed" ? "negative" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen diagnostics acties uitgevoerd.")];
   replaceChildren(elements.diagnosticsList, [
     (() => {
       const grid = makeNode("div", { className: "risk-grid" });
@@ -1318,6 +1347,22 @@ function renderDiagnostics(snapshot) {
     (() => {
       const section = makeNode("div", { className: "list-stack" });
       section.append(makeSectionHead("Operatorfocus", "Wat nu als eerste aandacht vraagt"), ...actionRows);
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Snelle acties", "Veilige operatoracties direct vanuit diagnostics"),
+        quickActionNodes
+      );
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Actiehistorie", "Laatste diagnostics acties en resets"),
+        ...recentActionRows
+      );
       return section;
     })()
   ]);
@@ -1558,6 +1603,24 @@ function bindEvents() {
     if (latestSnapshot) {
       renderSignals(latestSnapshot);
     }
+  });
+
+  elements.diagnosticsList?.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-diagnostics-action]");
+    if (!target) {
+      return;
+    }
+    const diagnosticsAction = `${target.getAttribute("data-diagnostics-action") || ""}`.trim();
+    const diagnosticsTarget = `${target.getAttribute("data-diagnostics-target") || ""}`.trim();
+    if (!diagnosticsAction) {
+      return;
+    }
+    const note = window.prompt(`Optionele notitie voor ${diagnosticsAction}${diagnosticsTarget ? ` ${diagnosticsTarget}` : ""}:`, "") || null;
+    await runAction("/api/diagnostics/action", {
+      action: diagnosticsAction,
+      target: diagnosticsTarget || null,
+      note
+    });
   });
 
   elements.learningList?.addEventListener("click", async (event) => {

@@ -174,6 +174,9 @@ async function handleApi(request, response, manager) {
   if (url.pathname === "/api/ops/probe-only") {
     return sendJson(response, 200, await manager.setProbeOnly(body.enabled !== false, body.minutes, body.note || null));
   }
+  if (url.pathname === "/api/diagnostics/action") {
+    return sendJson(response, 200, await manager.runDiagnosticsAction(body.action, body.target || null, body.note || null));
+  }
   if (url.pathname === "/api/policies/approve") {
     return sendJson(response, 200, await manager.approvePolicyTransition(body.id, body.action, body.note || null));
   }

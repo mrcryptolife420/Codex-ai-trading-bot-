@@ -7274,6 +7274,75 @@ await runCheck("trading bot stores resolve notes and operator probe-only state",
   assert.equal(bot.runtime.probeOnly.enabled, true);
 });
 
+await runCheck("trading bot diagnostics actions reset external feeds and keep audit history", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig();
+  bot.runtime = {
+    externalFeedHealth: {
+      "calendar:bls_calendar": {
+        group: "calendar",
+        feed: "bls_calendar",
+        successCount: 1,
+        failureCount: 3,
+        timeoutCount: 2,
+        rateLimitCount: 0,
+        skipCount: 1,
+        recentFailures: 3,
+        score: 0.24,
+        cooldownUntil: "2026-03-19T12:30:00.000Z",
+        lastSuccessAt: "2026-03-19T10:00:00.000Z",
+        lastFailureAt: "2026-03-19T11:30:00.000Z",
+        lastError: "timeout"
+      }
+    },
+    ops: {
+      diagnosticsActions: { history: [] },
+      alertState: { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: {} },
+      alerts: { alerts: [] }
+    },
+    sourceReliability: {
+      providerCount: 0,
+      averageScore: 0.7,
+      degradedCount: 0,
+      coolingDownCount: 0,
+      providers: [],
+      externalFeeds: {
+        providerCount: 1,
+        averageScore: 0.24,
+        degradedCount: 1,
+        coolingDownCount: 1,
+        providers: [{ provider: "bls_calendar", group: "calendar", score: 0.24, coolingDown: true }],
+        notes: []
+      }
+    }
+  };
+  bot.store = { saveRuntime: async () => {} };
+  bot.recordEvent = () => {};
+  bot.refreshOperationalViews = () => {};
+  bot.getDashboardSnapshot = async () => ({ ok: true });
+  bot.buildSourceReliabilitySnapshot = () => ({
+    providerCount: 0,
+    averageScore: 0.7,
+    degradedCount: 0,
+    coolingDownCount: 0,
+    providers: [],
+    externalFeeds: {
+      providerCount: 1,
+      averageScore: 0.71,
+      degradedCount: 0,
+      coolingDownCount: 0,
+      providers: [{ provider: "bls_calendar", group: "calendar", score: 0.71, coolingDown: false }],
+      notes: []
+    }
+  });
+  await bot.performDiagnosticsAction({ action: "reset_external_feeds", target: "calendar", note: "retry feeds", at: "2026-03-19T12:00:00.000Z" });
+  assert.equal(bot.runtime.externalFeedHealth["calendar:bls_calendar"].cooldownUntil, null);
+  assert.equal(bot.runtime.externalFeedHealth["calendar:bls_calendar"].recentFailures, 0);
+  assert.equal(bot.runtime.externalFeedHealth["calendar:bls_calendar"].lastError, null);
+  assert.equal(bot.runtime.ops.diagnosticsActions.history[0].action, "reset_external_feeds");
+  assert.equal(bot.runtime.ops.diagnosticsActions.history[0].target, "calendar");
+});
+
 await runCheck("capital policy engine summarizes budgets and family kill switches", async () => {
   const snapshot = buildCapitalPolicySnapshot({
     journal: {
@@ -7393,6 +7462,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.sourceReliability.externalFeeds.providerCount, 1);
   assert.equal(snapshot.sourceReliability.externalFeeds.providers[0].group, "calendar");
   assert.equal(snapshot.operatorDiagnostics.counts.blocked, 0);
+  assert.ok(Array.isArray(snapshot.operatorDiagnostics.quickActions));
+  assert.ok(snapshot.operatorDiagnostics.quickActions.some((item) => item.action === "force_reconcile"));
   assert.ok(Array.isArray(snapshot.explainability.decisions));
   assert.ok(Array.isArray(snapshot.explainability.replays));
   assert.equal(snapshot.promotionPipeline.allowPromotion, false);

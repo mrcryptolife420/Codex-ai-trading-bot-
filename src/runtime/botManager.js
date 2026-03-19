@@ -397,6 +397,52 @@ export class BotManager {
     });
   }
 
+  async runDiagnosticsAction(action, target = null, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      const normalizedAction = `${action || ""}`.trim().toLowerCase();
+      if (!normalizedAction) {
+        throw new Error("Ongeldige diagnostics action.");
+      }
+      if (normalizedAction === "refresh_analysis") {
+        if (this.runState === "running") {
+          throw new Error("Stop eerst de bot voordat je handmatig analyse ververst.");
+        }
+        await this.bot.refreshAnalysis();
+        this.bot.recordDiagnosticsAction({
+          action: normalizedAction,
+          target,
+          note,
+          detail: "Analyse handmatig ververst via diagnostics."
+        });
+        await this.bot.store.saveRuntime(this.bot.runtime);
+        return this.getSnapshot();
+      }
+      if (normalizedAction === "research_focus_symbol") {
+        const symbol = `${target || ""}`.trim().toUpperCase();
+        if (!symbol) {
+          throw new Error("Symbool ontbreekt voor diagnostics research action.");
+        }
+        if (this.runState === "running") {
+          throw new Error("Stop eerst de bot voordat je research draait.");
+        }
+        await this.bot.runResearch({ symbols: [symbol] });
+        this.bot.recordDiagnosticsAction({
+          action: normalizedAction,
+          target: symbol,
+          note,
+          detail: `Research handmatig gestart voor ${symbol}.`
+        });
+        await this.bot.store.saveRuntime(this.bot.runtime);
+        return this.getSnapshot();
+      }
+      await this.bot.performDiagnosticsAction({ action: normalizedAction, target, note });
+      return this.getSnapshot();
+    });
+  }
+
   async approvePolicyTransition(id, action, note = null) {
     return this.withLock(async () => {
       if (!this.bot) {
