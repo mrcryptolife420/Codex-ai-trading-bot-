@@ -266,6 +266,17 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
         });
         const fee = sizedFill.notional * feeRate;
         const totalCost = sizedFill.notional + fee;
+        const entryExecutionAttribution = execution.buildExecutionAttribution({
+          plan: pendingEntry.plan,
+          marketSnapshot: { market: context.market, book: entryBook },
+          side: "BUY",
+          fillPrice: executionPrice,
+          requestedQuoteAmount: pendingEntry.quoteAmount,
+          executedQuote: sizedFill.notional,
+          executedQuantity: sizedFill.quantity,
+          fillEstimate,
+          brokerMode: "research"
+        });
         if (sizedFill.valid && sizedFill.notional >= config.minTradeUsdt && totalCost <= quoteFree) {
           quoteFree -= totalCost;
           position = {
@@ -276,6 +287,7 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             notional: sizedFill.notional,
             requestedQuoteAmount: pendingEntry.quoteAmount,
             totalCost,
+            entryFee: fee,
             stopLossPrice: executionPrice * (1 - pendingEntry.stopLossPct),
             takeProfitPrice: executionPrice * (1 + pendingEntry.takeProfitPct),
             maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
@@ -290,7 +302,9 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             regimeAtEntry: pendingEntry.regimeAtEntry,
             executionPlan: pendingEntry.plan,
             entryFillEstimate: fillEstimate,
-            probabilityAtEntry: pendingEntry.probabilityAtEntry
+            probabilityAtEntry: pendingEntry.probabilityAtEntry,
+            lastMarkedPrice: context.book.mid,
+            entryExecutionAttribution
           };
         }
         pendingEntry = null;
@@ -331,7 +345,7 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
             latencyMs: config.backtestLatencyMs
           });
-          const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, requestedQuantity, position.quantity));
+          const executedQuantity = Math.max(0, Math.min(Number(fillEstimate.executedQuantity || 0), requestedQuantity, position.quantity));
           if (executedQuantity > 0 && executedQuantity < position.quantity) {
             const grossProceeds = executedQuantity * fillEstimate.fillPrice;
             const fee = grossProceeds * feeRate;
@@ -342,6 +356,7 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             position.quantity -= executedQuantity;
             position.totalCost -= allocatedCost;
             position.notional = position.entryPrice * position.quantity;
+            position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
             position.scaleOutCompletedAt = new Date(context.candle.closeTime).toISOString();
             position.scaleOutCount = (position.scaleOutCount || 0) + 1;
             position.stopLossPrice = Math.max(position.stopLossPrice, position.entryPrice * (1 + (position.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct)));
@@ -389,15 +404,26 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
             latencyMs: config.backtestLatencyMs
           });
-          const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || normalizedSell.quantity, normalizedSell.quantity, position.quantity));
+          const originalQuantity = position.quantity;
+          const executedQuantity = Math.max(0, Math.min(Number(fillEstimate.executedQuantity || 0), normalizedSell.quantity, originalQuantity));
+          if (!executedQuantity) {
+            continue;
+          }
           const grossProceeds = executedQuantity * fillEstimate.fillPrice;
           const fee = grossProceeds * feeRate;
           const proceeds = grossProceeds - fee;
-          const proportion = executedQuantity / Math.max(position.quantity, 1e-9);
+          const proportion = executedQuantity / Math.max(originalQuantity, 1e-9);
           const allocatedCost = position.totalCost * proportion;
           const pnlQuote = proceeds - allocatedCost;
           const netPnlPct = allocatedCost ? pnlQuote / allocatedCost : 0;
           quoteFree += proceeds;
+          if (executedQuantity < originalQuantity) {
+            position.quantity -= executedQuantity;
+            position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+            position.notional = position.entryPrice * position.quantity;
+            position.entryFee = Math.max(0, (position.entryFee || 0) - (position.entryFee || 0) * proportion);
+            continue;
+          }
           const trade = {
             id: `${symbol}-${window.testStart}-${index}`,
             symbol,
@@ -421,14 +447,14 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             strategyAtEntry: position.strategyAtEntry,
             reason: exitDecision.reason,
             brokerMode: "research",
-            entryExecutionAttribution: execution.buildExecutionAttribution({
+            entryExecutionAttribution: position.entryExecutionAttribution || execution.buildExecutionAttribution({
               plan: position.executionPlan,
               marketSnapshot: { market: context.market, book: context.book },
               side: "BUY",
               fillPrice: position.entryPrice,
               requestedQuoteAmount: position.requestedQuoteAmount,
               executedQuote: position.notional,
-              executedQuantity: position.quantity,
+              executedQuantity: originalQuantity,
               fillEstimate: position.entryFillEstimate,
               orderTelemetry: { makerFillRatio: position.entryFillEstimate?.makerFillRatio, takerFillRatio: position.entryFillEstimate?.takerFillRatio },
               brokerMode: "research"
@@ -452,13 +478,7 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             rawFeatures: position.rawFeatures,
             captureEfficiency: position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0
           });
-          if (executedQuantity >= position.quantity) {
-            position = null;
-          } else {
-            position.quantity -= executedQuantity;
-            position.totalCost = Math.max(0, position.totalCost - allocatedCost);
-            position.notional = position.entryPrice * position.quantity;
-          }
+          position = null;
         }
       }
 
@@ -618,3 +638,4 @@ export async function runResearchLab({ config, logger, symbols = [] }) {
     reports
   };
 }
+

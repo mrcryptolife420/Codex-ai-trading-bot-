@@ -6343,6 +6343,167 @@ await runCheck("backtest execution uses next candle open and realistic gap ancho
   assert.equal(exitBook.mid, 97);
 });
 
+await runCheck("research lab ignores zero-fill exits instead of booking fake closed trades", async () => {
+  const candles = Array.from({ length: 420 }, (_, index) => ({
+    openTime: 1772960000000 + index * 900000 - 900000,
+    closeTime: 1772960000000 + index * 900000,
+    open: 100 + index * 0.15,
+    high: 100.4 + index * 0.15,
+    low: 99.8 + index * 0.15,
+    close: 100.2 + index * 0.15,
+    volume: 12 + (index % 10)
+  }));
+  const config = makeConfig({ researchTrainCandles: 180, researchTestCandles: 48, researchStepCandles: 48, researchMaxWindows: 1, modelThreshold: 0.5, minTradeUsdt: 10 });
+  const originalScore = AdaptiveTradingModel.prototype.score;
+  const originalInferRegime = AdaptiveTradingModel.prototype.inferRegime;
+  const originalEvaluateEntry = RiskManager.prototype.evaluateEntry;
+  const originalEvaluateExit = RiskManager.prototype.evaluateExit;
+  const originalSimulatePaperFill = ExecutionEngine.prototype.simulatePaperFill;
+  try {
+    AdaptiveTradingModel.prototype.score = function score() {
+      return { probability: 0.9, shouldAbstain: false };
+    };
+    AdaptiveTradingModel.prototype.inferRegime = function inferRegime() {
+      return { regime: "trend", confidence: 0.8 };
+    };
+    RiskManager.prototype.evaluateEntry = function evaluateEntry() {
+      return {
+        allow: true,
+        quoteAmount: 100,
+        stopLossPct: 0.02,
+        takeProfitPct: 0.03,
+        maxHoldMinutes: 60,
+        scaleOutPlan: null,
+        executionPlan: { entryStyle: "market", fallbackStyle: "none" },
+        regime: "trend"
+      };
+    };
+    RiskManager.prototype.evaluateExit = function evaluateExit() {
+      return {
+        shouldExit: true,
+        shouldScaleOut: false,
+        reason: "time_stop",
+        updatedHigh: 101,
+        updatedLow: 99
+      };
+    };
+    ExecutionEngine.prototype.simulatePaperFill = function simulatePaperFill({ side, requestedQuoteAmount, requestedQuantity }) {
+      if (side === "BUY") {
+        return {
+          fillPrice: 100,
+          executedQuote: requestedQuoteAmount || 100,
+          executedQuantity: 1,
+          completionRatio: 1,
+          makerFillRatio: 0,
+          takerFillRatio: 1,
+          workingTimeMs: 1,
+          notes: []
+        };
+      }
+      return {
+        fillPrice: 101,
+        executedQuote: 0,
+        executedQuantity: 0,
+        completionRatio: 0,
+        makerFillRatio: 0,
+        takerFillRatio: 0,
+        workingTimeMs: 1,
+        notes: ["no_fill"],
+        requestedQuantity
+      };
+    };
+    const report = runWalkForwardExperiment({ candles, config, symbol: "BTCUSDT", rules });
+    assert.equal(report.totalTrades, 0);
+    assert.equal(report.experiments[0].tradeCount, 0);
+  } finally {
+    AdaptiveTradingModel.prototype.score = originalScore;
+    AdaptiveTradingModel.prototype.inferRegime = originalInferRegime;
+    RiskManager.prototype.evaluateEntry = originalEvaluateEntry;
+    RiskManager.prototype.evaluateExit = originalEvaluateExit;
+    ExecutionEngine.prototype.simulatePaperFill = originalSimulatePaperFill;
+  }
+});
+
+await runCheck("research lab keeps partial exit fills open instead of counting them as closed trades", async () => {
+  const candles = Array.from({ length: 420 }, (_, index) => ({
+    openTime: 1772960000000 + index * 900000 - 900000,
+    closeTime: 1772960000000 + index * 900000,
+    open: 100 + index * 0.12,
+    high: 100.3 + index * 0.12,
+    low: 99.7 + index * 0.12,
+    close: 100.1 + index * 0.12,
+    volume: 14 + (index % 8)
+  }));
+  const config = makeConfig({ researchTrainCandles: 180, researchTestCandles: 48, researchStepCandles: 48, researchMaxWindows: 1, modelThreshold: 0.5, minTradeUsdt: 10 });
+  const originalScore = AdaptiveTradingModel.prototype.score;
+  const originalInferRegime = AdaptiveTradingModel.prototype.inferRegime;
+  const originalEvaluateEntry = RiskManager.prototype.evaluateEntry;
+  const originalEvaluateExit = RiskManager.prototype.evaluateExit;
+  const originalSimulatePaperFill = ExecutionEngine.prototype.simulatePaperFill;
+  try {
+    AdaptiveTradingModel.prototype.score = function score() {
+      return { probability: 0.9, shouldAbstain: false };
+    };
+    AdaptiveTradingModel.prototype.inferRegime = function inferRegime() {
+      return { regime: "trend", confidence: 0.8 };
+    };
+    RiskManager.prototype.evaluateEntry = function evaluateEntry() {
+      return {
+        allow: true,
+        quoteAmount: 100,
+        stopLossPct: 0.02,
+        takeProfitPct: 0.03,
+        maxHoldMinutes: 60,
+        scaleOutPlan: null,
+        executionPlan: { entryStyle: "market", fallbackStyle: "none" },
+        regime: "trend"
+      };
+    };
+    RiskManager.prototype.evaluateExit = function evaluateExit() {
+      return {
+        shouldExit: true,
+        shouldScaleOut: false,
+        reason: "time_stop",
+        updatedHigh: 101,
+        updatedLow: 99
+      };
+    };
+    ExecutionEngine.prototype.simulatePaperFill = function simulatePaperFill({ side, requestedQuoteAmount, requestedQuantity }) {
+      if (side === "BUY") {
+        return {
+          fillPrice: 100,
+          executedQuote: requestedQuoteAmount || 100,
+          executedQuantity: 1,
+          completionRatio: 1,
+          makerFillRatio: 0,
+          takerFillRatio: 1,
+          workingTimeMs: 1,
+          notes: []
+        };
+      }
+      return {
+        fillPrice: 101,
+        executedQuote: (requestedQuantity || 0) * 0.45 * 101,
+        executedQuantity: (requestedQuantity || 0) * 0.45,
+        completionRatio: 0.45,
+        makerFillRatio: 0,
+        takerFillRatio: 1,
+        workingTimeMs: 1,
+        notes: ["partial_fill"]
+      };
+    };
+    const report = runWalkForwardExperiment({ candles, config, symbol: "BTCUSDT", rules });
+    assert.equal(report.totalTrades, 0);
+    assert.equal(report.experiments[0].tradeCount, 0);
+    assert.ok(report.realizedPnl >= 0);
+  } finally {
+    AdaptiveTradingModel.prototype.score = originalScore;
+    AdaptiveTradingModel.prototype.inferRegime = originalInferRegime;
+    RiskManager.prototype.evaluateEntry = originalEvaluateEntry;
+    RiskManager.prototype.evaluateExit = originalEvaluateExit;
+    ExecutionEngine.prototype.simulatePaperFill = originalSimulatePaperFill;
+  }
+});
 await runCheck("research labels use next candle open to avoid close-to-close leakage", async () => {
   const candles = Array.from({ length: 420 }, (_, index) => ({
     openTime: 1772960000000 + index * 900000 - 900000,
@@ -10785,6 +10946,4 @@ await runCheck("performance report exposes trade quality review and scorecards",
 });
 
 console.log("All checks passed.");
-
-
 

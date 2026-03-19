@@ -124,6 +124,17 @@ export async function runBacktest({ config, logger, symbol }) {
       });
       const totalCost = sizedFill.notional + sizedFill.notional * feeRate;
       const quantity = sizedFill.quantity;
+      const entryExecutionAttribution = execution.buildExecutionAttribution({
+        plan: pendingEntry.plan,
+        marketSnapshot: { market: context.market, book: entryBook },
+        side: "BUY",
+        fillPrice: executionPrice,
+        requestedQuoteAmount: pendingEntry.quoteAmount,
+        executedQuote: sizedFill.notional,
+        executedQuantity: quantity,
+        fillEstimate,
+        brokerMode: "backtest"
+      });
       if (sizedFill.valid && sizedFill.notional >= config.minTradeUsdt && totalCost <= quoteFree) {
         quoteFree -= totalCost;
         position = {
@@ -151,7 +162,8 @@ export async function runBacktest({ config, logger, symbol }) {
           executionPlan: pendingEntry.plan,
           entryFillEstimate: fillEstimate,
           probabilityAtEntry: pendingEntry.probabilityAtEntry,
-          requestedQuoteAmount: pendingEntry.quoteAmount
+          requestedQuoteAmount: pendingEntry.quoteAmount,
+          entryExecutionAttribution
         };
       }
       pendingEntry = null;
@@ -286,7 +298,7 @@ export async function runBacktest({ config, logger, symbol }) {
           rawFeatures: position.rawFeatures,
           strategyAtEntry: position.strategyAtEntry || null,
           transformerDecision: position.transformerDecision || null,
-          entryExecutionAttribution: execution.buildExecutionAttribution({
+          entryExecutionAttribution: position.entryExecutionAttribution || execution.buildExecutionAttribution({
             plan: position.executionPlan,
             marketSnapshot: { market: context.market, book: context.book },
             side: "BUY",
@@ -391,7 +403,4 @@ export async function runBacktest({ config, logger, symbol }) {
     ...report
   };
 }
-
-
-
 
