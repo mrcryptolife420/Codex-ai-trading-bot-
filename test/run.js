@@ -7378,6 +7378,9 @@ await runCheck("trading bot paper learning summary exposes operator intelligence
   assert.equal(summary.blockerAttribution.strictestBlocker.id, "committee_veto");
   assert.equal(summary.blockerAttribution.nextAction, "relax");
   assert.ok(summary.challengerPolicy.leadingLane);
+  assert.ok(summary.challengerScorecards.length >= 3);
+  assert.equal(summary.challengerScorecards[0].status, "challenger");
+  assert.ok(summary.abExperiments.some((item) => item.type === "policy_lane"));
   assert.equal(summary.promotionRoadmap.readyLevel, "paper");
   assert.equal(summary.promotionRoadmap.promotionHint.symbol, "BTCUSDT");
   assert.ok(summary.executionInsights.averageExecutionScore > 0);

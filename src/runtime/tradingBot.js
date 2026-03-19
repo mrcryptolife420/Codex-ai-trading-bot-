@@ -2045,6 +2045,29 @@ function summarizePaperLearning(summary = {}) {
       recommendation: summary.challengerPolicy.recommendation || "observe",
       note: summary.challengerPolicy.note || null
     } : null,
+    challengerScorecards: arr(summary.challengerScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      sampleCount: item.sampleCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      avgPnlPct: num(item.avgPnlPct || 0, 4),
+      score: num(item.score || 0, 4),
+      edgeVsProbe: num(item.edgeVsProbe || 0, 4),
+      status: item.status || "observe",
+      source: item.source || "observed",
+      scope: item.scope || null
+    })),
+    abExperiments: arr(summary.abExperiments || []).slice(0, 5).map((item) => ({
+      id: item.id || null,
+      type: item.type || null,
+      baseline: item.baseline || null,
+      challenger: item.challenger || null,
+      baselineScore: num(item.baselineScore || 0, 4),
+      challengerScore: num(item.challengerScore || 0, 4),
+      deltaScore: num(item.deltaScore || 0, 4),
+      winner: item.winner || null,
+      recommendation: item.recommendation || "observe",
+      note: item.note || null
+    })),
     promotionRoadmap: summary.promotionRoadmap ? {
       status: summary.promotionRoadmap.status || "blocked",
       allowPromotion: Boolean(summary.promotionRoadmap.allowPromotion),
@@ -5111,6 +5134,116 @@ export class TradingBot {
                 ? "Een eenvoudige threshold-benchmark blijft nu verrassend competitief."
             : "Shadow-skip blijft voorlopig de veiligste benchmark."
     };
+    const challengerScorecards = [
+      {
+        id: "probe_lane",
+        sampleCount: recentProbeTrades.length,
+        winRate: actualProbeWinRate,
+        avgPnlPct: actualProbeAvgPnlPct,
+        score: actualProbeWinRate + Math.max(0, actualProbeAvgPnlPct) * 8,
+        source: "observed",
+        scope: scopeReadiness[0]?.id || null
+      },
+      {
+        id: "safe_lane",
+        sampleCount: safeTrades.length,
+        winRate: safeLaneWinRate,
+        avgPnlPct: average(safeTrades.map((trade) => trade.netPnlPct || 0), 0),
+        score: safeLaneWinRate,
+        source: "observed",
+        scope: null
+      },
+      {
+        id: "shadow_take",
+        sampleCount: counterfactuals.length,
+        winRate: shadowTakeWinRate,
+        avgPnlPct: average(counterfactuals
+          .filter((item) => ["bad_veto", "missed_winner", "right_direction_wrong_timing"].includes(item.outcome))
+          .map((item) => item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0), 0),
+        score: shadowTakeWinRate,
+        source: "counterfactual",
+        scope: focusScopes[0]?.id || null
+      },
+      {
+        id: "always_take",
+        sampleCount: recentPaperTrades.length + counterfactuals.length,
+        winRate: alwaysTakeWinRate,
+        avgPnlPct: average([
+          ...recentPaperTrades.map((trade) => trade.netPnlPct || 0),
+          ...counterfactuals.map((item) => item.realizedMovePct || 0)
+        ], 0),
+        score: alwaysTakeWinRate,
+        source: "synthetic",
+        scope: null
+      },
+      {
+        id: "fixed_threshold",
+        sampleCount: fixedThresholdTrades.length,
+        winRate: fixedThresholdWinRate,
+        avgPnlPct: average(fixedThresholdTrades.map((trade) => trade.netPnlPct || 0), 0),
+        score: fixedThresholdWinRate,
+        source: "synthetic",
+        scope: scopeReadiness[0]?.id || null
+      }
+    ]
+      .filter((item) => item.sampleCount > 0)
+      .map((item) => ({
+        ...item,
+        edgeVsProbe: num(item.score - (actualProbeWinRate + Math.max(0, actualProbeAvgPnlPct) * 8), 4),
+        status: item.id === "probe_lane"
+          ? "baseline"
+          : item.score >= (actualProbeWinRate + Math.max(0, actualProbeAvgPnlPct) * 8) + 0.02
+            ? "challenger"
+            : item.score >= (actualProbeWinRate + Math.max(0, actualProbeAvgPnlPct) * 8) - 0.02
+              ? "close"
+              : "lagging"
+      }))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 6);
+    const buildScopeComparison = (type, left, right) => {
+      if (!left || !right || left.id === right.id) {
+        return null;
+      }
+      return {
+        id: `${type}:${left.id}->${right.id}`,
+        type,
+        baseline: left.id,
+        challenger: right.id,
+        baselineScore: left.readinessScore || left.score || 0,
+        challengerScore: right.readinessScore || right.score || 0,
+        deltaScore: num((right.readinessScore || right.score || 0) - (left.readinessScore || left.score || 0), 4),
+        winner: (right.readinessScore || right.score || 0) > (left.readinessScore || left.score || 0) ? right.id : left.id,
+        recommendation: (right.readinessScore || right.score || 0) > (left.readinessScore || left.score || 0) + 0.03
+          ? "promote_challenger_scope"
+          : "observe",
+        note: `${titleize(right.id)} wordt nu vergeleken met ${titleize(left.id)} binnen ${titleize(type)}.`
+      };
+    };
+    const familyScopes = scopeReadiness.filter((item) => item.type === "strategy_family");
+    const regimeScopes = scopeReadiness.filter((item) => item.type === "regime");
+    const sessionScopes = scopeReadiness.filter((item) => item.type === "session");
+    const abExperiments = [
+      buildScopeComparison("strategy_family", familyScopes[0], familyScopes[1] || focusScopes[0] ? {
+        id: (familyScopes[1] || focusScopes[0])?.id,
+        score: (familyScopes[1] || focusScopes[0])?.readinessScore || (familyScopes[1] || focusScopes[0])?.score || 0
+      } : null),
+      buildScopeComparison("regime", regimeScopes[0], regimeScopes[1]),
+      buildScopeComparison("session", sessionScopes[0], sessionScopes[1]),
+      challengerScorecards[0] && challengerScorecards[1]
+        ? {
+            id: `lane:${challengerScorecards[1].id}->${challengerScorecards[0].id}`,
+            type: "policy_lane",
+            baseline: challengerScorecards[0].id,
+            challenger: challengerScorecards[1].id,
+            baselineScore: challengerScorecards[0].score || 0,
+            challengerScore: challengerScorecards[1].score || 0,
+            deltaScore: num((challengerScorecards[1].score || 0) - (challengerScorecards[0].score || 0), 4),
+            winner: (challengerScorecards[0].score || 0) >= (challengerScorecards[1].score || 0) ? challengerScorecards[0].id : challengerScorecards[1].id,
+            recommendation: Math.abs((challengerScorecards[1].score || 0) - (challengerScorecards[0].score || 0)) >= 0.02 ? "review_policy_gap" : "collect_more_samples",
+            note: `${titleize(challengerScorecards[1].id)} wordt gespiegeld aan ${titleize(challengerScorecards[0].id)} als policy challenger.`
+          }
+        : null
+    ].filter(Boolean).slice(0, 5);
     const modelPromotionPolicy = this.runtime?.modelRegistry?.promotionPolicy || {};
     const promotionHint = this.runtime?.modelRegistry?.promotionHint || this.runtime?.researchRegistry?.governance?.promotionCandidates?.[0] || null;
     const benchmarkLeader = benchmarkLanes.rankedLanes?.[0] || null;
@@ -5404,6 +5537,8 @@ export class TradingBot {
       challengerPolicy,
       promotionRoadmap,
       executionInsights,
+      challengerScorecards,
+      abExperiments,
       reviewQueue,
       counterfactualBranches,
       primaryScope: scopeReadiness[0]

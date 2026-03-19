@@ -977,6 +977,33 @@ function renderLearning(snapshot) {
           <p>${escapeHtml(reviewQueue[0]?.note || "Nog geen duidelijke probe-, shadow- of active-learning case die als eerste review verdient.")}</p>
         </article>
       </section>
+      <section class="learning-list">
+        <article class="learning-list-item">
+          <span class="metric-label">Challenger scorecards</span>
+          <div class="tag-list">
+            ${(paperLearning.challengerScorecards || []).length
+              ? paperLearning.challengerScorecards.slice(0, 4).map((item) => `<span class="tag ${item.status === "challenger" ? "positive" : item.status === "lagging" ? "negative" : ""}">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status)} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")
+              : `<span class="tag">Nog geen challenger scorecards</span>`}
+          </div>
+          <p>${escapeHtml(
+            paperLearning.challengerScorecards?.[0]
+              ? `${titleize(paperLearning.challengerScorecards[0].id)} leidt nu met ${paperLearning.challengerScorecards[0].sampleCount} sample(s) en ${formatPct(paperLearning.challengerScorecards[0].edgeVsProbe || 0, 0)} edge versus probe.`
+              : "Nog geen persistente challenger-scorecards zichtbaar."
+          )}</p>
+        </article>
+        <article class="learning-list-item">
+          <span class="metric-label">Scoped A/B vergelijkingen</span>
+          <div class="tag-list">
+            ${(paperLearning.abExperiments || []).length
+              ? paperLearning.abExperiments.slice(0, 4).map((item) => `<span class="tag">${escapeHtml(`${titleize(item.type)} · ${titleize(item.winner || "observe")} · ${item.deltaScore > 0 ? "+" : ""}${formatPct(item.deltaScore || 0, 0)}`)}</span>`).join("")
+              : `<span class="tag">Nog geen A/B vergelijkingen</span>`}
+          </div>
+          <p>${escapeHtml(
+            paperLearning.abExperiments?.[0]?.note ||
+            "Nog geen duidelijke scope- of lanevergelijking met voldoende signaal."
+          )}</p>
+        </article>
+      </section>
       <section class="learning-review-grid">
         <article class="learning-review-column">
           <div class="learning-section-head">
