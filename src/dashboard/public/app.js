@@ -62,15 +62,6 @@ const panelState = {
   history: true
 };
 
-function escapeHtml(value) {
-  return `${value ?? ""}`
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function makeActionButton({ action, kind = "", id, label, tone = "" }) {
   return makeNode("button", {
     className: ["tag", tone].filter(Boolean).join(" "),
@@ -114,6 +105,74 @@ function makeTagList(items = []) {
   const list = makeNode("div", { className: "tag-list" });
   list.append(...items.filter(Boolean));
   return list;
+}
+
+function makeEmptyState(text, tag = "div") {
+  return makeNode(tag, { className: "empty", text });
+}
+
+function makeMetricStat(label, value, tone = "") {
+  const stat = makeNode("div", { className: "stat" });
+  stat.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("strong", { className: tone, text: value })
+  );
+  return stat;
+}
+
+function makeCardHeader({ eyebrow = "", title = "-", pillText = "", pillClassName = "" } = {}) {
+  const header = makeNode("div", { className: "card-header" });
+  const left = makeNode("div");
+  if (eyebrow) {
+    left.append(makeNode("p", { className: "eyebrow", text: eyebrow }));
+  }
+  left.append(makeNode("h3", { text: title }));
+  header.append(left);
+  if (pillText) {
+    header.append(makeNode("span", { className: pillClassName || "pill", text: pillText }));
+  }
+  return header;
+}
+
+function makeReasonRows(rows = []) {
+  const container = makeNode("div", { className: "decision-reasons" });
+  container.append(...rows.map(([label, text]) => {
+    const row = makeNode("div", { className: "reason-row" });
+    row.append(
+      makeNode("strong", { text: label }),
+      makeNode("span", { className: "reason-copy", text })
+    );
+    return row;
+  }));
+  return container;
+}
+
+function makeSectionHead(label, foot) {
+  const head = makeNode("div", { className: "learning-section-head" });
+  head.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("span", { className: "metric-foot", text: foot })
+  );
+  return head;
+}
+
+function makeKeyValueCard({ className = "risk-card", label, value, foot, valueClassName = "" } = {}) {
+  const card = makeNode("article", { className });
+  card.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("strong", { className: ["metric-value", valueClassName].filter(Boolean).join(" "), text: value }),
+    makeNode("span", { className: "metric-foot", text: foot })
+  );
+  return card;
+}
+
+function makeEventRow({ title, detail, tone = "" } = {}) {
+  const row = makeNode("article", { className: ["event-row", tone].filter(Boolean).join(" ") });
+  row.append(
+    makeNode("strong", { text: title }),
+    makeNode("span", { className: "meta", text: truncate(detail, 120) })
+  );
+  return row;
 }
 
 function readStoredBoolean(key, fallback = false) {
@@ -295,27 +354,6 @@ function signalSupportText(decision) {
     return actionText(decision);
   }
   return decision.autoRecovery || "Wacht op betere marktdata, minder blokkades of een sterkere score.";
-}
-
-function renderMissedTradeAnalysis(decision) {
-  const analysis = decision.missedTradeAnalysis;
-  if (decision.allow || !analysis?.available) {
-    return "";
-  }
-  const metrics = [
-    analysis.badVetoRate != null ? `Te streng ${formatPct(analysis.badVetoRate, 0)}` : null,
-    analysis.goodVetoRate != null ? `Terecht ${formatPct(analysis.goodVetoRate, 0)}` : null,
-    analysis.averageMissedMovePct != null ? `Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}` : null,
-    analysis.recentMatches ? `${analysis.recentMatches} vergelijkbare cases` : null
-  ].filter(Boolean);
-  return `
-    <details class="analysis-box">
-      <summary>Gemiste trade analyse</summary>
-      <p>${escapeHtml(analysis.summary || "Nog geen specifieke analyse beschikbaar.")}</p>
-      ${metrics.length ? `<div class="tag-list">${metrics.map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}</div>` : ""}
-      <p class="analysis-note">${escapeHtml(analysis.recommendation || "Gebruik dit als extra context bij geblokkeerde setups.")}</p>
-    </details>
-  `;
 }
 
 function hypotheticalTradeText(decision) {
@@ -512,24 +550,6 @@ function signalSummary(decision) {
   return decision.operatorAction || decision.blockerReasons?.[0] || decision.summary || "Nog niet tradebaar.";
 }
 
-function makeSignalStat(label, value, tone = "") {
-  const stat = makeNode("div", { className: "stat" });
-  stat.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("strong", { className: tone, text: value })
-  );
-  return stat;
-}
-
-function makeReasonRow(label, text) {
-  const row = makeNode("div", { className: "reason-row" });
-  row.append(
-    makeNode("strong", { text: label }),
-    makeNode("span", { className: "reason-copy", text })
-  );
-  return row;
-}
-
 function makeMissedTradeAnalysisNode(decision) {
   const analysis = decision.missedTradeAnalysis;
   if (decision.allow || !analysis?.available) {
@@ -579,9 +599,9 @@ function buildSignalCard(decision) {
 
   const quickGrid = makeNode("div", { className: "quick-grid" });
   quickGrid.append(
-    makeSignalStat("Kans", formatPct(decision.probability, 0)),
-    makeSignalStat("Confidence", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
-    makeSignalStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))
+    makeMetricStat("Kans", formatPct(decision.probability, 0)),
+    makeMetricStat("Confidence", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
+    makeMetricStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))
   );
 
   const overview = makeNode("div", { className: "signal-overview" });
@@ -593,12 +613,11 @@ function buildSignalCard(decision) {
   ].filter(Boolean);
   overview.append(...tags);
 
-  const reasons = makeNode("div", { className: "decision-reasons" });
-  reasons.append(
-    makeReasonRow("Setup", whyTradeable(decision) || formatDecisionType(decision)),
-    makeReasonRow(decision.allow ? "Waarom nu" : "Waarom niet", signalPrimaryReason(decision)),
-    makeReasonRow("Actie", signalSupportText(decision))
-  );
+  const reasons = makeReasonRows([
+    ["Setup", whyTradeable(decision) || formatDecisionType(decision)],
+    [decision.allow ? "Waarom nu" : "Waarom niet", signalPrimaryReason(decision)],
+    ["Actie", signalSupportText(decision)]
+  ]);
 
   summary.append(
     header,
@@ -624,7 +643,7 @@ function renderSignals(snapshot) {
   elements.decisionShowMoreBtn.textContent = showAllDecisions ? "Toon minder" : "Toon alles";
   elements.decisionShowMoreBtn.hidden = filtered.length <= SIGNAL_LIMIT;
   if (!visible.length) {
-    replaceChildren(elements.decisionsList, [makeNode("div", { className: "empty", text: "Geen signalen passen bij de huidige filter." })]);
+    replaceChildren(elements.decisionsList, [makeEmptyState("Geen signalen passen bij de huidige filter.")]);
     return;
   }
   replaceChildren(elements.decisionsList, visible.map((decision) => buildSignalCard(decision)));
@@ -633,36 +652,25 @@ function renderSignals(snapshot) {
 function renderPositions(snapshot) {
   const positions = (snapshot?.dashboard?.positions || []).slice(0, POSITION_LIMIT);
   if (!positions.length) {
-    replaceChildren(elements.positionsList, [makeNode("div", { className: "empty", text: "Er zijn nu geen open posities." })]);
+    replaceChildren(elements.positionsList, [makeEmptyState("Er zijn nu geen open posities.")]);
     return;
   }
   replaceChildren(elements.positionsList, positions.map((position) => {
     const article = makeNode("article", { className: "position-card" });
     const summary = makeNode("div", { className: "card-summary" });
-    const header = makeNode("div", { className: "card-header" });
-    const left = makeNode("div");
-    left.append(
-      makeNode("p", { className: "eyebrow", text: position.lifecycle?.state || "Positie" }),
-      makeNode("h3", { text: position.symbol || "-" })
-    );
-    header.append(
-      left,
-      makeNode("span", { className: ["pill", toneClass(position.unrealizedPnl)].filter(Boolean).join(" "), text: formatMoney(position.unrealizedPnl) })
-    );
+    const header = makeCardHeader({
+      eyebrow: position.lifecycle?.state || "Positie",
+      title: position.symbol || "-",
+      pillText: formatMoney(position.unrealizedPnl),
+      pillClassName: ["pill", toneClass(position.unrealizedPnl)].filter(Boolean).join(" ")
+    });
     const subgrid = makeNode("div", { className: "subgrid" });
     const stats = [
       ["Entry", number(position.entryPrice, 4), ""],
       ["Nu", number(position.currentPrice, 4), ""],
       ["Rendement", formatSignedPct(position.unrealizedPnlPct), toneClass(position.unrealizedPnlPct)]
     ];
-    subgrid.append(...stats.map(([label, value, tone]) => {
-      const stat = makeNode("div", { className: "stat" });
-      stat.append(
-        makeNode("span", { className: "metric-label", text: label }),
-        makeNode("strong", { className: tone, text: value })
-      );
-      return stat;
-    }));
+    subgrid.append(...stats.map(([label, value, tone]) => makeMetricStat(label, value, tone)));
     const tags = makeNode("div", { className: "tag-list" });
     const tagNodes = [
       position.regimeAtEntry ? makeTag(titleize(position.regimeAtEntry)) : null,
@@ -682,7 +690,7 @@ function renderMissedTrades(snapshot) {
     .filter((item) => item?.missedTradeAnalysis?.available)
     .slice(0, 4);
   if (!blocked.length) {
-    replaceChildren(elements.missedTradesList, [makeNode("div", { className: "empty", text: "Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades." })]);
+    replaceChildren(elements.missedTradesList, [makeEmptyState("Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades.")]);
     return;
   }
   replaceChildren(elements.missedTradesList, blocked.map((decision) => {
@@ -690,30 +698,18 @@ function renderMissedTrades(snapshot) {
     const blockerLabel = analysis.blockerId ? titleize(analysis.blockerId) : "Gemengde blokkade";
     const article = makeNode("article", { className: "signal-card missed-card" });
     const summary = makeNode("div", { className: "card-summary" });
-    const header = makeNode("div", { className: "card-header" });
-    const left = makeNode("div");
-    left.append(
-      makeNode("p", { className: "eyebrow", text: "Gemiste setup" }),
-      makeNode("h3", { text: decision.symbol || "-" })
-    );
-    header.append(
-      left,
-      makeNode("span", { className: "pill negative", text: blockerLabel })
-    );
-    const reasons = makeNode("div", { className: "decision-reasons" });
+    const header = makeCardHeader({
+      eyebrow: "Gemiste setup",
+      title: decision.symbol || "-",
+      pillText: blockerLabel,
+      pillClassName: "pill negative"
+    });
     const rows = [
       ["Setup", formatDecisionType(decision)],
       ["Hoe wel", hypotheticalTradeText(decision)],
       ["Les", analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad."]
     ];
-    reasons.append(...rows.map(([label, text]) => {
-      const row = makeNode("div", { className: "reason-row" });
-      row.append(
-        makeNode("strong", { text: label }),
-        makeNode("span", { className: "reason-copy", text })
-      );
-      return row;
-    }));
+    const reasons = makeReasonRows(rows);
     const tags = makeNode("div", { className: "tag-list" });
     const tagNodes = [
       analysis.badVetoRate != null ? makeTag(`Te streng ${formatPct(analysis.badVetoRate, 0)}`, "tag negative") : null,
@@ -909,15 +905,6 @@ function makeLearningListItem(label, paragraphs = [], tagLists = []) {
   return article;
 }
 
-function makeLearningSectionHead(label, foot) {
-  const head = makeNode("div", { className: "learning-section-head" });
-  head.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("span", { className: "metric-foot", text: foot })
-  );
-  return head;
-}
-
 function renderLearning(snapshot) {
   if (!elements.learningList) {
     return;
@@ -1100,12 +1087,12 @@ function renderLearning(snapshot) {
   const reviewGrid = makeNode("section", { className: "learning-review-grid" });
   const probeColumn = makeNode("article", { className: "learning-review-column" });
   probeColumn.append(
-    makeLearningSectionHead("Probe trades", "Hoe echte paper-probes liepen"),
+    makeSectionHead("Probe trades", "Hoe echte paper-probes liepen"),
     ...renderProbeReviewNodes(paperLearning.recentProbeReviews || [])
   );
   const shadowColumn = makeNode("article", { className: "learning-review-column" });
   shadowColumn.append(
-    makeLearningSectionHead("Shadow cases", "Wat geblokkeerde setups waarschijnlijk deden"),
+    makeSectionHead("Shadow cases", "Wat geblokkeerde setups waarschijnlijk deden"),
     ...renderShadowReviewNodes(paperLearning.recentShadowReviews || [])
   );
   reviewGrid.append(probeColumn, shadowColumn);
@@ -1226,15 +1213,13 @@ function buildOpsEvents(snapshot) {
 
 function renderOps(snapshot) {
   const cards = buildOpsCards(snapshot);
-  replaceChildren(elements.opsSummary, cards.map((item) => {
-    const card = makeNode("article", { className: "risk-card" });
-    card.append(
-      makeNode("span", { className: "metric-label", text: item.label }),
-      makeNode("strong", { className: ["metric-value", item.tone || ""].filter(Boolean).join(" "), text: item.value }),
-      makeNode("span", { className: "metric-foot", text: item.foot })
-    );
-    return card;
-  }));
+  replaceChildren(elements.opsSummary, cards.map((item) => makeKeyValueCard({
+    className: "risk-card",
+    label: item.label,
+    value: item.value,
+    foot: item.foot,
+    valueClassName: item.tone || ""
+  })));
 
   if (elements.opsLearning) {
     replaceChildren(elements.opsLearning, []);
@@ -1242,17 +1227,10 @@ function renderOps(snapshot) {
 
   const events = buildOpsEvents(snapshot);
   if (!events.length) {
-    replaceChildren(elements.opsList, [makeNode("div", { className: "empty", text: "Geen operationele aandachtspunten." })]);
+    replaceChildren(elements.opsList, [makeEmptyState("Geen operationele aandachtspunten.")]);
     return;
   }
-  replaceChildren(elements.opsList, events.map((item) => {
-    const row = makeNode("article", { className: ["event-row", item.tone || ""].filter(Boolean).join(" ") });
-    row.append(
-      makeNode("strong", { text: item.title }),
-      makeNode("span", { className: "meta", text: truncate(item.detail, 120) })
-    );
-    return row;
-  }));
+  replaceChildren(elements.opsList, events.map((item) => makeEventRow(item)));
 }
 
 function renderTrades(snapshot) {
