@@ -7541,6 +7541,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.promotionPipeline.readyLevel, "guarded_live_probation");
   assert.equal(snapshot.promotionPipeline.activePromotions[0].symbol, "BTCUSDT");
   assert.equal(snapshot.promotionPipeline.promotionHistory[0].action, "approve_guarded_live");
+  assert.ok(Array.isArray(snapshot.promotionPipeline.rolloutCandidates));
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
   assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");
@@ -8431,6 +8432,38 @@ await runCheck("trading bot approves and rolls back guarded live promotion candi
   await bot.rollbackPromotionCandidate({ symbol: "BTCUSDT", note: "rollback after review", at: "2026-03-12T13:00:00.000Z" });
   assert.equal(bot.runtime.ops.promotionState.active.length, 0);
   assert.equal(bot.runtime.ops.promotionState.history[0].action, "rollback_guarded_live");
+});
+
+await runCheck("trading bot approves and rolls back guarded scope rollout candidates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    ops: {},
+    paperLearning: {
+      policyTransitions: {
+        candidates: [
+          {
+            id: "safe_lane",
+            type: "policy_lane",
+            action: "promote_candidate",
+            scope: "trend_following · trend · asia",
+            confidence: 0.81,
+            reason: "scope outperforms probe baseline"
+          }
+        ]
+      }
+    }
+  };
+  bot.recordEvent = () => {};
+  bot.refreshOperationalViews = () => {};
+  bot.store = { saveRuntime: async () => {} };
+  bot.getDashboardSnapshot = async () => ({ ok: true });
+  await bot.approvePromotionScope({ scopeId: "trend_following · trend · asia", note: "start scoped probation", at: "2026-03-12T12:00:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active[0].scope, "trend_following · trend · asia");
+  assert.equal(bot.runtime.ops.promotionState.active[0].stage, "guarded_scope_probation");
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "approve_guarded_scope");
+  await bot.rollbackPromotionScope({ scopeId: "trend_following · trend · asia", note: "rollback scoped probation", at: "2026-03-12T13:00:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active.length, 0);
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "rollback_guarded_scope");
 });
 
 await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {

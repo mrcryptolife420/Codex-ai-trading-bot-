@@ -493,6 +493,26 @@ export class BotManager {
     });
   }
 
+  async approvePromotionScope(scopeId, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.approvePromotionScope({ scopeId, note });
+      return this.getSnapshot();
+    });
+  }
+
+  async rollbackPromotionScope(scopeId, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.rollbackPromotionScope({ scopeId, note });
+      return this.getSnapshot();
+    });
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();

@@ -107,6 +107,17 @@ function makePromotionActionButton({ action, symbol = "", label, tone = "" }) {
   });
 }
 
+function makePromotionScopeButton({ action, scope = "", label, tone = "" }) {
+  return makeNode("button", {
+    className: ["tag", tone].filter(Boolean).join(" "),
+    text: label,
+    attrs: {
+      "data-promotion-scope-action": action,
+      "data-promotion-scope": scope || null
+    }
+  });
+}
+
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
   const node = document.createElement(tag);
   if (className) {
@@ -1522,20 +1533,44 @@ function renderPromotion(snapshot) {
         tone: item.status === "promote" ? "positive" : ""
       })))
     : null;
+  const rolloutRows = (pipeline.rolloutCandidates || []).length
+    ? pipeline.rolloutCandidates.map((item) => makeEventRow({
+      title: `${titleize(item.action || "observe")} · ${titleize(item.scope || item.id || "-")}`,
+      detail: item.reason || item.scope || "Scope rollout kandidaat",
+      tone: item.approved ? "positive" : item.blocker ? "negative" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen scope-rollouts klaar.")];
+  const rolloutActions = (pipeline.rolloutCandidates || []).length
+    ? makeTagList((pipeline.rolloutCandidates || []).map((item) => item.approved
+      ? makeTag(`Approved scope · ${titleize(item.scope || item.id || "-")}`, "tag positive")
+      : makePromotionScopeButton({
+        action: "approve",
+        scope: item.scope || item.id || "",
+        label: `Approve ${titleize(item.scope || item.id || "-")}`,
+        tone: item.action === "promote_candidate" ? "positive" : ""
+      })))
+    : null;
   const activePromotionRows = (pipeline.activePromotions || []).length
     ? pipeline.activePromotions.map((item) => makeEventRow({
-      title: `${item.symbol || "-"} · ${titleize(item.stage || "guarded_live_probation")}`,
+      title: `${item.symbol || titleize(item.scope || item.id || "-")} · ${titleize(item.stage || "guarded_live_probation")}`,
       detail: item.note || `Governance ${formatPct(item.governanceScore || 0, 0)} · actief sinds ${formatDate(item.approvedAt)}`,
       tone: "positive"
     }))
     : [makeEmptyState("Nog geen actieve guarded-live probation.")];
   const rollbackActions = (pipeline.activePromotions || []).length
-    ? makeTagList((pipeline.activePromotions || []).map((item) => makePromotionActionButton({
-      action: "rollback",
-      symbol: item.symbol || "",
-      label: `Rollback ${item.symbol || "-"}`,
-      tone: "negative"
-    })))
+    ? makeTagList((pipeline.activePromotions || []).map((item) => item.symbol
+      ? makePromotionActionButton({
+        action: "rollback",
+        symbol: item.symbol || "",
+        label: `Rollback ${item.symbol || "-"}`,
+        tone: "negative"
+      })
+      : makePromotionScopeButton({
+        action: "rollback",
+        scope: item.scope || item.id || "",
+        label: `Rollback ${titleize(item.scope || item.id || "-")}`,
+        tone: "negative"
+      })))
     : null;
   const historyRows = (pipeline.promotionHistory || []).length
     ? pipeline.promotionHistory.map((item) => makeEventRow({
@@ -1566,6 +1601,15 @@ function renderPromotion(snapshot) {
         makeSectionHead("Guarded live", "Kandidaten richting guarded live probation"),
         ...candidateRows,
         candidateActions || makeEmptyState("Geen guarded-live approve actions klaar.")
+      );
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Scope rollouts", "Staged probation per strategy, lane of scope"),
+        ...rolloutRows,
+        rolloutActions || makeEmptyState("Geen scope-rollout actions klaar.")
       );
       return section;
     })(),
@@ -1710,21 +1754,38 @@ function bindEvents() {
 
   elements.promotionList?.addEventListener("click", async (event) => {
     const target = event.target.closest("[data-promotion-action]");
-    if (!target) {
+    if (target) {
+      const promotionAction = `${target.getAttribute("data-promotion-action") || ""}`.trim();
+      const symbol = `${target.getAttribute("data-promotion-symbol") || ""}`.trim();
+      if (!promotionAction || !symbol) {
+        return;
+      }
+      const note = window.prompt(`Optionele notitie voor ${promotionAction} ${symbol}:`, "") || null;
+      if (promotionAction === "approve") {
+        await runAction("/api/promotion/approve", { symbol, note });
+        return;
+      }
+      if (promotionAction === "rollback") {
+        await runAction("/api/promotion/rollback", { symbol, note });
+      }
       return;
     }
-    const promotionAction = `${target.getAttribute("data-promotion-action") || ""}`.trim();
-    const symbol = `${target.getAttribute("data-promotion-symbol") || ""}`.trim();
-    if (!promotionAction || !symbol) {
+    const scopeTarget = event.target.closest("[data-promotion-scope-action]");
+    if (!scopeTarget) {
       return;
     }
-    const note = window.prompt(`Optionele notitie voor ${promotionAction} ${symbol}:`, "") || null;
-    if (promotionAction === "approve") {
-      await runAction("/api/promotion/approve", { symbol, note });
+    const scopeAction = `${scopeTarget.getAttribute("data-promotion-scope-action") || ""}`.trim();
+    const scope = `${scopeTarget.getAttribute("data-promotion-scope") || ""}`.trim();
+    if (!scopeAction || !scope) {
       return;
     }
-    if (promotionAction === "rollback") {
-      await runAction("/api/promotion/rollback", { symbol, note });
+    const note = window.prompt(`Optionele notitie voor ${scopeAction} ${scope}:`, "") || null;
+    if (scopeAction === "approve") {
+      await runAction("/api/promotion/scope/approve", { scope, note });
+      return;
+    }
+    if (scopeAction === "rollback") {
+      await runAction("/api/promotion/scope/rollback", { scope, note });
     }
   });
 

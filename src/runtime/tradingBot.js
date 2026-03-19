@@ -4397,6 +4397,55 @@ export class TradingBot {
     return this.getDashboardSnapshot();
   }
 
+  async approvePromotionScope({ scopeId, note = null, at = nowIso() } = {}) {
+    const normalizedScope = `${scopeId || ""}`.trim();
+    if (!normalizedScope) {
+      throw new Error("Promotion scope ontbreekt.");
+    }
+    const promotionState = this.ensurePromotionState();
+    const candidates = arr(this.runtime.paperLearning?.policyTransitions?.candidates || this.runtime.ops?.paperLearning?.policyTransitions?.candidates || []);
+    const candidate = candidates.find((item) => `${item.scope || item.id || ""}`.trim() === normalizedScope || `${item.id || ""}`.trim() === normalizedScope);
+    if (!candidate) {
+      throw new Error("Promotion scope kandidaat niet gevonden.");
+    }
+    const key = `${candidate.type || "scope"}:${normalizedScope}`;
+    promotionState.active = promotionState.active.filter((item) => item.key !== key);
+    promotionState.active.unshift({
+      key,
+      type: candidate.type || "scope",
+      symbol: null,
+      scope: normalizedScope,
+      id: candidate.id || normalizedScope,
+      stage: "guarded_scope_probation",
+      status: "active",
+      governanceScore: num(candidate.confidence || 0, 4),
+      candidateStatus: candidate.action || "observe",
+      approvedAt: at,
+      note: note || null
+    });
+    promotionState.active = promotionState.active.slice(0, 12);
+    promotionState.history.unshift({
+      at,
+      action: "approve_guarded_scope",
+      symbol: null,
+      scope: normalizedScope,
+      stage: "guarded_scope_probation",
+      status: "approved",
+      governanceScore: num(candidate.confidence || 0, 4),
+      note: note || null
+    });
+    promotionState.history = promotionState.history.slice(0, 80);
+    this.recordEvent("operator_promotion_scope_approved", {
+      at,
+      scope: normalizedScope,
+      id: candidate.id || null,
+      note: note || null
+    });
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
   async rollbackPromotionCandidate({ symbol, note = null, at = nowIso() } = {}) {
     const candidateSymbol = `${symbol || ""}`.trim().toUpperCase();
     if (!candidateSymbol) {
@@ -4421,6 +4470,38 @@ export class TradingBot {
     this.recordEvent("operator_promotion_candidate_rolled_back", {
       at,
       symbol: candidateSymbol,
+      note: note || null
+    });
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
+  async rollbackPromotionScope({ scopeId, note = null, at = nowIso() } = {}) {
+    const normalizedScope = `${scopeId || ""}`.trim();
+    if (!normalizedScope) {
+      throw new Error("Promotion scope ontbreekt.");
+    }
+    const promotionState = this.ensurePromotionState();
+    const active = promotionState.active.find((item) => item.scope === normalizedScope);
+    if (!active) {
+      throw new Error("Geen actieve scope probation gevonden.");
+    }
+    promotionState.active = promotionState.active.filter((item) => item.scope !== normalizedScope);
+    promotionState.history.unshift({
+      at,
+      action: "rollback_guarded_scope",
+      symbol: null,
+      scope: normalizedScope,
+      stage: active.stage || "guarded_scope_probation",
+      status: "rolled_back",
+      governanceScore: num(active.governanceScore || 0, 4),
+      note: note || null
+    });
+    promotionState.history = promotionState.history.slice(0, 80);
+    this.recordEvent("operator_promotion_scope_rolled_back", {
+      at,
+      scope: normalizedScope,
       note: note || null
     });
     this.refreshOperationalViews({ nowIso: at });
@@ -9561,7 +9642,11 @@ export class TradingBot {
     const activeOverrides = arr(paperLearning.operatorActions?.activeOverrides || []).slice(0, 4);
     const researchCandidates = arr(researchRegistry.governance?.promotionCandidates || []).slice(0, 4);
     const activePromotions = arr(promotionState.active || []).slice(0, 4).map((item) => ({
+      key: item.key || null,
+      type: item.type || (item.symbol ? "symbol" : "scope"),
       symbol: item.symbol || null,
+      scope: item.scope || null,
+      id: item.id || null,
       stage: item.stage || "guarded_live_probation",
       status: item.status || "active",
       governanceScore: num(item.governanceScore || 0, 4),
@@ -9599,6 +9684,19 @@ export class TradingBot {
         status: item.status || "observe",
         approved: activePromotions.some((promotion) => promotion.symbol === item.symbol)
       })),
+      rolloutCandidates: transitions
+        .filter((item) => item.scope || item.id)
+        .map((item) => ({
+          id: item.id || null,
+          scope: item.scope || item.id || null,
+          type: item.type || "scope",
+          action: item.action || "observe",
+          confidence: num(item.confidence || 0, 4),
+          reason: item.reason || null,
+          blocker: item.blocker || null,
+          approved: activePromotions.some((promotion) => promotion.scope === (item.scope || item.id))
+        }))
+        .slice(0, 6),
       activePromotions,
       promotionHistory,
       activeOverrides,

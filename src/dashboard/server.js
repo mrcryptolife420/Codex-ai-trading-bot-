@@ -192,6 +192,12 @@ async function handleApi(request, response, manager) {
   if (url.pathname === "/api/promotion/rollback") {
     return sendJson(response, 200, await manager.rollbackPromotionCandidate(body.symbol, body.note || null));
   }
+  if (url.pathname === "/api/promotion/scope/approve") {
+    return sendJson(response, 200, await manager.approvePromotionScope(body.scope, body.note || null));
+  }
+  if (url.pathname === "/api/promotion/scope/rollback") {
+    return sendJson(response, 200, await manager.rollbackPromotionScope(body.scope, body.note || null));
+  }
 
   return sendJson(response, 404, { error: "Unknown API route" });
 }
