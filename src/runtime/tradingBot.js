@@ -4606,6 +4606,71 @@ export class TradingBot {
     return this.getDashboardSnapshot();
   }
 
+  async decidePromotionProbation({ key = null, decision, note = null, at = nowIso() } = {}) {
+    const probationKey = `${key || ""}`.trim();
+    const normalizedDecision = `${decision || ""}`.trim().toLowerCase();
+    if (!probationKey || !["promote", "hold", "close"].includes(normalizedDecision)) {
+      throw new Error("Ongeldige probation beslissing.");
+    }
+    const promotionState = this.ensurePromotionState();
+    const active = promotionState.active.find((item) => (item.key || item.symbol || item.scope || item.id) === probationKey);
+    if (!active) {
+      throw new Error("Actieve probation niet gevonden.");
+    }
+    if (normalizedDecision === "promote") {
+      promotionState.active = promotionState.active.filter((item) => (item.key || item.symbol || item.scope || item.id) !== probationKey);
+      promotionState.history.unshift({
+        at,
+        action: "promote_probation",
+        symbol: active.symbol || null,
+        scope: active.scope || null,
+        stage: active.stage || null,
+        status: "promoted",
+        verdict: active.verdict || null,
+        governanceScore: num(active.governanceScore || 0, 4),
+        note: note || "Operator promoveerde deze probation na review."
+      });
+    } else if (normalizedDecision === "hold") {
+      active.expiresAt = new Date(new Date(at).getTime() + 48 * 60 * 60 * 1000).toISOString();
+      active.status = "active";
+      active.note = note || active.note || "Operator houdt probation open voor extra samples.";
+      promotionState.history.unshift({
+        at,
+        action: "hold_probation",
+        symbol: active.symbol || null,
+        scope: active.scope || null,
+        stage: active.stage || null,
+        status: "held",
+        verdict: active.verdict || null,
+        governanceScore: num(active.governanceScore || 0, 4),
+        note: note || "Operator houdt probation open."
+      });
+    } else if (normalizedDecision === "close") {
+      promotionState.active = promotionState.active.filter((item) => (item.key || item.symbol || item.scope || item.id) !== probationKey);
+      promotionState.history.unshift({
+        at,
+        action: "close_probation",
+        symbol: active.symbol || null,
+        scope: active.scope || null,
+        stage: active.stage || null,
+        status: "closed",
+        verdict: active.verdict || null,
+        governanceScore: num(active.governanceScore || 0, 4),
+        note: note || "Operator sloot probation zonder promotie."
+      });
+    }
+    promotionState.history = promotionState.history.slice(0, 80);
+    this.recordEvent("operator_probation_decision", {
+      at,
+      key: probationKey,
+      decision: normalizedDecision,
+      note: note || null
+    });
+    this.refreshOperationalViews({ nowIso: at });
+    await this.store.saveRuntime(this.runtime);
+    return this.getDashboardSnapshot();
+  }
+
   syncOrderLifecycleState(reason = "runtime_sync") {
     const lifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
     const previousPositions = lifecycle.positions && typeof lifecycle.positions === "object" ? lifecycle.positions : {};

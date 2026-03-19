@@ -8534,6 +8534,60 @@ await runCheck("promotion probations build go verdict when samples and quality s
   assert.equal(state.history[0].verdict, "go");
 });
 
+await runCheck("operator can promote hold and close active probations", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.recordEvent = () => {};
+  bot.refreshOperationalViews = () => {};
+  bot.store = { saveRuntime: async () => {} };
+  bot.getDashboardSnapshot = async () => ({ ok: true });
+
+  bot.runtime = {
+    ops: {
+      promotionState: {
+        active: [
+          {
+            key: "BTCUSDT",
+            symbol: "BTCUSDT",
+            stage: "guarded_live_probation",
+            approvedAt: "2026-03-12T10:00:00.000Z",
+            expiresAt: "2026-03-15T10:00:00.000Z",
+            targetSampleCount: 3,
+            weakLossLimit: 2,
+            governanceScore: 0.74,
+            verdict: "go"
+          }
+        ],
+        history: []
+      }
+    }
+  };
+  await bot.decidePromotionProbation({ key: "BTCUSDT", decision: "promote", note: "go live probation passed", at: "2026-03-12T14:00:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active.length, 0);
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "promote_probation");
+
+  bot.runtime.ops.promotionState.active = [
+    {
+      key: "scope:trend_following",
+      scope: "trend_following · trend · asia",
+      id: "safe_lane",
+      stage: "guarded_scope_probation",
+      approvedAt: "2026-03-12T10:00:00.000Z",
+      expiresAt: "2026-03-15T10:00:00.000Z",
+      targetSampleCount: 3,
+      weakLossLimit: 2,
+      governanceScore: 0.78,
+      verdict: "hold"
+    }
+  ];
+  await bot.decidePromotionProbation({ key: "scope:trend_following", decision: "hold", note: "need more samples", at: "2026-03-12T14:30:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active[0].status, "active");
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "hold_probation");
+
+  await bot.decidePromotionProbation({ key: "scope:trend_following", decision: "close", note: "close without promote", at: "2026-03-12T15:00:00.000Z" });
+  assert.equal(bot.runtime.ops.promotionState.active.length, 0);
+  assert.equal(bot.runtime.ops.promotionState.history[0].action, "close_probation");
+});
+
 await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper" });

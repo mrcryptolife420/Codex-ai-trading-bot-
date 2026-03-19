@@ -118,6 +118,17 @@ function makePromotionScopeButton({ action, scope = "", label, tone = "" }) {
   });
 }
 
+function makeProbationDecisionButton({ action, key = "", label, tone = "" }) {
+  return makeNode("button", {
+    className: ["tag", tone].filter(Boolean).join(" "),
+    text: label,
+    attrs: {
+      "data-probation-decision": action,
+      "data-probation-key": key || null
+    }
+  });
+}
+
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
   const node = document.createElement(tag);
   if (className) {
@@ -1593,6 +1604,27 @@ function renderPromotion(snapshot) {
       tone: item.verdict === "go" ? "positive" : item.verdict === "rollback" ? "negative" : "neutral"
     }))
     : [makeEmptyState("Nog geen readiness scorecards beschikbaar.")];
+  const probationDecisionActions = (pipeline.readinessScorecards || []).length
+    ? makeTagList((pipeline.readinessScorecards || []).flatMap((item) => [
+      makeProbationDecisionButton({
+        action: "promote",
+        key: item.key || "",
+        label: `Promote ${titleize(item.label || "-")}`,
+        tone: item.verdict === "go" ? "positive" : ""
+      }),
+      makeProbationDecisionButton({
+        action: "hold",
+        key: item.key || "",
+        label: `Hold ${titleize(item.label || "-")}`
+      }),
+      makeProbationDecisionButton({
+        action: "close",
+        key: item.key || "",
+        label: `Close ${titleize(item.label || "-")}`,
+        tone: "negative"
+      })
+    ]))
+    : null;
   const guardrailTags = [
     ...(pipeline.guardrails || []).map((item) => makeTag(titleize(item), "tag negative")),
     ...((pipeline.activeOverrides || []).map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive")))
@@ -1648,7 +1680,8 @@ function renderPromotion(snapshot) {
       const section = makeNode("div", { className: "list-stack" });
       section.append(
         makeSectionHead("Readiness scorecards", "Go, hold of rollback per actieve probation"),
-        ...scorecardRows
+        ...scorecardRows,
+        probationDecisionActions || makeEmptyState("Geen probation decisions beschikbaar.")
       );
       return section;
     })(),
@@ -1817,6 +1850,20 @@ function bindEvents() {
     if (scopeAction === "rollback") {
       await runAction("/api/promotion/scope/rollback", { scope, note });
     }
+  });
+
+  elements.promotionList?.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-probation-decision]");
+    if (!target) {
+      return;
+    }
+    const decision = `${target.getAttribute("data-probation-decision") || ""}`.trim();
+    const key = `${target.getAttribute("data-probation-key") || ""}`.trim();
+    if (!decision || !key) {
+      return;
+    }
+    const note = window.prompt(`Optionele notitie voor ${decision} ${key}:`, "") || null;
+    await runAction("/api/promotion/probation/decide", { key, decision, note });
   });
 
   elements.learningList?.addEventListener("click", async (event) => {

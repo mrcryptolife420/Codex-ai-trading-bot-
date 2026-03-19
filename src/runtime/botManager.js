@@ -513,6 +513,16 @@ export class BotManager {
     });
   }
 
+  async decidePromotionProbation(key, decision, note = null) {
+    return this.withLock(async () => {
+      if (!this.bot) {
+        await this.reinitializeBot();
+      }
+      await this.bot.decidePromotionProbation({ key, decision, note });
+      return this.getSnapshot();
+    });
+  }
+
   async getSnapshot() {
     if (!this.bot) {
       await this.reinitializeBot();
