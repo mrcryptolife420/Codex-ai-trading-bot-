@@ -7716,6 +7716,33 @@ await runCheck("trading bot paper learning summary counts shadow outcomes in rec
   assert.ok(summary.recentOutcomes.some((item) => item.id === "shadow_watch" && item.count === 1));
 });
 
+await runCheck("trading bot paper learning summary ignores non-shadow counterfactual outcomes in shadow outcome rollup", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    counterfactualQueue: [],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        id: "non-shadow-counterfactual",
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        resolvedAt: "2026-03-12T06:45:00.000Z",
+        outcome: "bad_veto",
+        learningLane: "observe"
+      }
+    ]
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-12T08:00:00.000Z");
+  assert.equal(summary.recentOutcomes.some((item) => item.id === "bad_veto"), false);
+});
+
 await runCheck("trading bot paper learning summary exposes operator intelligence for blockers challengers promotion and execution", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper" });

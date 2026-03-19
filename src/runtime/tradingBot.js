@@ -5105,7 +5105,7 @@ export class TradingBot {
         }))
     ];
     const shadowOutcomeCounts = {};
-    for (const item of counterfactuals) {
+    for (const item of counterfactuals.filter((entry) => isShadowReviewCase(entry))) {
       if (!item?.outcome) {
         continue;
       }
