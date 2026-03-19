@@ -743,14 +743,16 @@ function renderLearning(snapshot) {
   const learningScore = formatPct(paperLearning.readinessScore || 0, 0);
   const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
   const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
-  const topOutcomeText = titleize(topOutcome?.id || "nog geen duidelijke outcome");
-  const focusScopes = (paperLearning.activeLearning?.focusScopes || []).slice(0, 2);
-  const benchmarkTags = (paperLearning.benchmarkLanes?.rankedLanes || []).slice(0, 3);
-  const experimentScopes = (paperLearning.experimentScopes || []).slice(0, 3);
   const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
-  const reviewText = paperLearning.reviewPacks?.topMissedSetup
-    ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
-    : "Nog geen automatische review-pack beschikbaar.";
+  const benchmarkLead = paperLearning.challengerScorecards?.[0] || paperLearning.challengerPolicy || null;
+  const policyCandidates = (paperLearning.policyTransitions?.candidates || []).slice(0, 2);
+  const activeOverrides = (paperLearning.operatorActions?.activeOverrides || []).slice(0, 3);
+  const operatorHistory = (paperLearning.operatorActions?.history || []).slice(0, 3);
+  const operatorGuardrails = (paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 3);
+  const reviewText = reviewQueue[0]?.note ||
+    (paperLearning.reviewPacks?.topMissedSetup
+      ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
+      : "Nog geen automatische review-pack beschikbaar.");
   const blockerMeaning = topBlocker?.id
     ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
     : "Er is nog geen dominante rem in de huidige learning-data.";
@@ -768,6 +770,24 @@ function renderLearning(snapshot) {
   const focusText = learningFocusText(snapshot);
   const probeReviewMarkup = renderProbeReviews(paperLearning.recentProbeReviews || []);
   const shadowReviewMarkup = renderShadowReviews(paperLearning.recentShadowReviews || []);
+  const compactReviewTags = reviewQueue.length
+    ? reviewQueue.map((item) => `<span class="tag ${item.priority === "high" ? "negative" : ""}">${escapeHtml(`${titleize(item.type)} · ${item.id}`)}</span>`).join("")
+    : `<span class="tag">Geen review queue</span>`;
+  const compactPolicyTags = policyCandidates.length
+    ? policyCandidates.map((item) => `<span class="tag ${item.action.includes("retire") ? "negative" : item.action.includes("promote") ? "positive" : ""}">${escapeHtml(`${titleize(item.action)} · ${titleize(item.id)}`)}</span>`).join("")
+    : `<span class="tag">Geen policy-wijziging klaar</span>`;
+  const compactOverrideTags = activeOverrides.length
+    ? activeOverrides.map((item) => `<span class="tag positive">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status || "override")}`)}</span>`).join("")
+    : `<span class="tag">Geen actieve override</span>`;
+  const operatorActionButtons = policyCandidates.length
+    ? policyCandidates.map((item) => item.approved
+      ? `<span class="tag positive">${escapeHtml(`Approved · ${titleize(item.id)}`)}</span>`
+      : `<button class="tag" data-policy-action="approve" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Approve ${escapeHtml(titleize(item.id))}</button><button class="tag negative" data-policy-action="reject" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Reject</button>`
+    ).join("")
+    : "";
+  const revertButtons = activeOverrides.length
+    ? activeOverrides.map((item) => `<button class="tag negative" data-policy-action="revert" data-transition-id="${escapeHtml(item.id)}">Revert ${escapeHtml(titleize(item.id))}</button>`).join("")
+    : "";
 
   elements.learningList.innerHTML = `
     <article class="learning-board">
@@ -784,10 +804,10 @@ function renderLearning(snapshot) {
           <span class="tag">${escapeHtml(laneText)}</span>
           <span class="tag">${escapeHtml(`Snapshot: ${formatDate(paperLearning.generatedAt)}`)}</span>
           <span class="tag">${escapeHtml(`Top blocker: ${topBlockerText}`)}</span>
-          <span class="tag">${escapeHtml(`Top outcome: ${topOutcomeText}`)}</span>
+          <span class="tag">${escapeHtml(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)}</span>
         </div>
       </section>
-      <section class="learning-grid">
+      <section class="learning-summary-grid">
         <article class="learning-detail">
           <span class="metric-label">Leert nu</span>
           <strong>${escapeHtml(topScope?.id ? titleize(topScope.id) : "Warmup dataset")}</strong>
@@ -801,7 +821,7 @@ function renderLearning(snapshot) {
           <p class="learning-note">${escapeHtml(latestTrade.lesson)}</p>
         </article>
         <article class="learning-detail">
-          <span class="metric-label">Grootste les</span>
+          <span class="metric-label">Belangrijkste rem</span>
           <strong>${escapeHtml(titleize(topOutcome?.id || topBlocker?.id || "nog geen duidelijke les"))}</strong>
           <span class="metric-foot">${escapeHtml(
             topOutcome?.count
@@ -818,253 +838,50 @@ function renderLearning(snapshot) {
           <span class="metric-foot">${escapeHtml(nextStep)}</span>
           <p class="learning-note">${escapeHtml(reviewText)}</p>
         </article>
-        <article class="learning-detail">
-          <span class="metric-label">Scope coaching</span>
-          <strong>${escapeHtml(
-            paperLearning.scopeCoaching?.strongest?.id
-              ? titleize(paperLearning.scopeCoaching.strongest.id)
-              : "Nog geen sterke scope"
-          )}</strong>
-          <span class="metric-foot">${escapeHtml(
-            paperLearning.scopeCoaching?.strongest
-              ? `${titleize(paperLearning.scopeCoaching.strongest.action)} · ${formatPct(paperLearning.scopeCoaching.strongest.score || 0, 0)}`
-              : "Nog geen scope klaar voor sandbox of probation."
-          )}</span>
-          <p class="learning-note">${escapeHtml(paperLearning.scopeCoaching?.note || "De bot bouwt nog paper-scope coaching op.")}</p>
-        </article>
       </section>
-      <section class="learning-grid learning-grid-secondary">
-        <article class="learning-detail">
-          <span class="metric-label">Active learning focus</span>
-          <strong>${escapeHtml(titleize(paperLearning.activeLearning?.focusReason || "nog geen focus"))}</strong>
-          <span class="metric-foot">${escapeHtml(
-            focusScopes[0]
-              ? `${focusScopes[0].id} · ${formatPct(focusScopes[0].score || 0, 0)}`
-              : "Nog geen duidelijke focus-scope zichtbaar."
-          )}</span>
-          <p class="learning-note">${escapeHtml(
-            paperLearning.activeLearning?.topCandidates?.[0]?.scopeLabel
-              ? `Top candidate zit in ${paperLearning.activeLearning.topCandidates[0].scopeLabel}.`
-              : "De bot zoekt nog naar de meest informatieve scope voor extra paper-feedback."
-          )}</p>
-          <div class="tag-list">
-            ${focusScopes.map((item) => `<span class="tag">${escapeHtml(`${item.id} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")}
-          </div>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Benchmark lanes</span>
-          <strong>${escapeHtml(titleize(paperLearning.benchmarkLanes?.bestLane || "nog geen benchmark"))}</strong>
-          <span class="metric-foot">${escapeHtml(paperLearning.benchmarkLanes?.note || "Nog geen duidelijke benchmarkvergelijking zichtbaar.")}</span>
-          <p class="learning-note">${escapeHtml(
-            paperLearning.benchmarkLanes?.bestLane === "always_take"
-              ? "Dit wijst erop dat paper op dit moment mogelijk te streng blijft voor leertrades."
-              : paperLearning.benchmarkLanes?.bestLane === "fixed_threshold"
-                ? "Een eenvoudige thresholdregel houdt verrassend goed stand tegen de slimme paper-lanes."
-                : "De benchmarkvergelijking laat zien welke lane nu de meeste leer- en resultaatwaarde geeft."
-          )}</p>
-          <div class="tag-list">
-            ${benchmarkTags.map((item) => `<span class="tag">${escapeHtml(`${titleize(item.id)} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")}
-          </div>
-        </article>
-      </section>
-      <section class="learning-grid learning-grid-secondary">
-        <article class="learning-detail">
-          <span class="metric-label">Blocker attribution</span>
-          <strong>${escapeHtml(titleize(paperLearning.blockerAttribution?.strictestBlocker?.id || paperLearning.blockerAttribution?.dominantBlocker || "nog geen blocker-focus"))}</strong>
-          <span class="metric-foot">${escapeHtml(
-            paperLearning.blockerAttribution?.strictestBlocker
-              ? `${formatPct(paperLearning.blockerAttribution.strictestBlocker.badVetoRate || 0, 0)} bad veto · ${titleize(paperLearning.blockerAttribution.nextAction || "observe")}`
-              : "Nog geen sterke blocker-attribution beschikbaar."
-          )}</span>
-          <p class="learning-note">${escapeHtml(paperLearning.blockerAttribution?.note || "De bot heeft nog onvoldoende veto-review data voor een duidelijke blockeranalyse.")}</p>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Challenger policy</span>
-          <strong>${escapeHtml(titleize(paperLearning.challengerPolicy?.leadingLane || "nog geen challenger"))}</strong>
-          <span class="metric-foot">${escapeHtml(
-            paperLearning.challengerPolicy?.leadingLane
-              ? `${titleize(paperLearning.challengerPolicy.recommendation || "observe")} · edge ${formatPct(paperLearning.challengerPolicy.challengerEdge || 0, 0)}`
-              : "Nog geen duidelijke benchmarkuitdager."
-          )}</span>
-          <p class="learning-note">${escapeHtml(paperLearning.challengerPolicy?.note || "De bot bouwt nog challenger-vergelijkingen op tussen lanes en policies.")}</p>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Promotion roadmap</span>
-          <strong>${escapeHtml(titleize(paperLearning.promotionRoadmap?.readyLevel || paperLearning.promotionRoadmap?.status || "blocked"))}</strong>
-          <span class="metric-foot">${escapeHtml(
-            paperLearning.promotionRoadmap?.nextGate
-              ? `${titleize(paperLearning.promotionRoadmap.nextGate)} · ${paperLearning.promotionRoadmap.allowPromotion ? "groen" : "nog geblokkeerd"}`
-              : "Nog geen duidelijke promotion gate."
-          )}</span>
-          <p class="learning-note">${escapeHtml(
-            paperLearning.promotionRoadmap?.promotionHint?.symbol
-              ? `${paperLearning.promotionRoadmap.promotionHint.symbol} is nu de sterkste promotiekandidaat. ${paperLearning.promotionRoadmap.note || ""}`.trim()
-              : paperLearning.promotionRoadmap?.note || "De bot heeft nog geen heldere promotion-roadmap opgebouwd."
-          )}</p>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Execution insights</span>
-          <strong>${escapeHtml(titleize(paperLearning.executionInsights?.status || "watch"))}</strong>
-          <span class="metric-foot">${escapeHtml(
-            paperLearning.executionInsights
-              ? `${formatPct(paperLearning.executionInsights.averageExecutionScore || 0, 0)} exec · ${number(paperLearning.executionInsights.averageSlippageDeltaBps || 0, 1)}bps slip`
-              : "Nog geen execution-attributie beschikbaar."
-          )}</span>
-          <p class="learning-note">${escapeHtml(paperLearning.executionInsights?.note || "Execution-attributie verschijnt zodra er genoeg recente trades zijn.")}</p>
-          <div class="tag-list">
-            ${paperLearning.executionInsights?.bestExecutionStyle?.id ? `<span class="tag">${escapeHtml(`Best: ${titleize(paperLearning.executionInsights.bestExecutionStyle.id)}`)}</span>` : ""}
-            ${paperLearning.executionInsights?.weakestExecutionStyle?.id ? `<span class="tag negative">${escapeHtml(`Zwak: ${titleize(paperLearning.executionInsights.weakestExecutionStyle.id)}`)}</span>` : ""}
-          </div>
-        </article>
-      </section>
-      <section class="learning-list">
+      <section class="learning-callouts">
         <article class="learning-list-item">
-          <span class="metric-label">Wat de bot nu precies doet</span>
+          <span class="metric-label">Wat gebeurt er nu</span>
           <p>${escapeHtml(
             paperLearning.probation?.note ||
             (paperLearning.thresholdSandbox?.status
               ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
-              : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds, veto's en replay-focus te verbeteren.")
+              : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds en filters te verbeteren.")
           )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Waarom dit belangrijk is</span>
           <p>${escapeHtml(
-            paperLearning.counterfactualTuning?.blocker
-              ? `Counterfactuals tonen waar ${titleize(paperLearning.counterfactualTuning.blocker)} mogelijk te streng of net terecht was.`
-              : "Deze leerlus helpt de bot beter te begrijpen welke setups later meer of minder ruimte moeten krijgen."
-          )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Paper coaching</span>
-          <p>${escapeHtml(paperLearning.coaching?.whatWorked || "Nog geen duidelijke paper coaching beschikbaar.")}</p>
-          <p>${escapeHtml(paperLearning.coaching?.tooStrict || "Nog geen duidelijke te-strenge rem zichtbaar.")}</p>
-          <p>${escapeHtml(paperLearning.coaching?.tooLoose || "Nog geen duidelijke te-losse zone zichtbaar.")}</p>
-          <p>${escapeHtml(paperLearning.coaching?.nextReview || "Nog geen volgende reviewfocus zichtbaar.")}</p>
-        </article>
-      </section>
-      <section class="learning-list">
-        <article class="learning-list-item">
-          <span class="metric-label">Experiment scopes</span>
-          <div class="tag-list">
-            ${experimentScopes.length
-              ? experimentScopes.map((item) => `<span class="tag">${escapeHtml(`${item.id} · ${titleize(item.action)} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")
-              : `<span class="tag">Nog geen scope</span>`}
-          </div>
-          <p>${escapeHtml(
-            experimentScopes[0]?.reason ||
-            "Nog geen duidelijke family/regime/session-scope die extra sandbox of probation verdient."
-          )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Benchmark delta</span>
-          <div class="tag-list">
-            ${benchmarkTags.map((item) => `<span class="tag">${escapeHtml(`${titleize(item.id)} · ${item.deltaVsProbe > 0 ? "+" : ""}${formatPct(item.deltaVsProbe || 0, 0)} vs probe`)}</span>`).join("")}
-          </div>
-          <p>${escapeHtml(
-            paperLearning.benchmarkLanes?.bestLane
-              ? `${titleize(paperLearning.benchmarkLanes.bestLane)} staat nu het sterkst tegenover de echte probe-lane.`
-              : "Nog geen duidelijke benchmarkvergelijking beschikbaar."
+            benchmarkLead?.id
+              ? `${titleize(benchmarkLead.id)} presteert nu het sterkst als challenger of benchmark.`
+              : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar."
           )}</p>
         </article>
         <article class="learning-list-item">
           <span class="metric-label">Review queue</span>
-          <div class="tag-list">
-            ${reviewQueue.length
-              ? reviewQueue.map((item) => `<span class="tag ${item.priority === "high" ? "negative" : ""}">${escapeHtml(`${titleize(item.type)} · ${item.id}`)}</span>`).join("")
-              : `<span class="tag">Nog geen review</span>`}
-          </div>
-          <p>${escapeHtml(reviewQueue[0]?.note || "Nog geen duidelijke probe-, shadow- of active-learning case die als eerste review verdient.")}</p>
-        </article>
-      </section>
-      <section class="learning-list">
-        <article class="learning-list-item">
-          <span class="metric-label">Challenger scorecards</span>
-          <div class="tag-list">
-            ${(paperLearning.challengerScorecards || []).length
-              ? paperLearning.challengerScorecards.slice(0, 4).map((item) => `<span class="tag ${item.status === "challenger" ? "positive" : item.status === "lagging" ? "negative" : ""}">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status)} · ${formatPct(item.score || 0, 0)}`)}</span>`).join("")
-              : `<span class="tag">Nog geen challenger scorecards</span>`}
-          </div>
-          <p>${escapeHtml(
-            paperLearning.challengerScorecards?.[0]
-              ? `${titleize(paperLearning.challengerScorecards[0].id)} leidt nu met ${paperLearning.challengerScorecards[0].sampleCount} sample(s) en ${formatPct(paperLearning.challengerScorecards[0].edgeVsProbe || 0, 0)} edge versus probe.`
-              : "Nog geen persistente challenger-scorecards zichtbaar."
-          )}</p>
+          <div class="tag-list">${compactReviewTags}</div>
+          <p>${escapeHtml(reviewText)}</p>
         </article>
         <article class="learning-list-item">
-          <span class="metric-label">Scoped A/B vergelijkingen</span>
-          <div class="tag-list">
-            ${(paperLearning.abExperiments || []).length
-              ? paperLearning.abExperiments.slice(0, 4).map((item) => `<span class="tag">${escapeHtml(`${titleize(item.type)} · ${titleize(item.winner || "observe")} · ${item.deltaScore > 0 ? "+" : ""}${formatPct(item.deltaScore || 0, 0)}`)}</span>`).join("")
-              : `<span class="tag">Nog geen A/B vergelijkingen</span>`}
-          </div>
-          <p>${escapeHtml(
-            paperLearning.abExperiments?.[0]?.note ||
-            "Nog geen duidelijke scope- of lanevergelijking met voldoende signaal."
-          )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Policy transitions</span>
-          <div class="tag-list">
-            ${(paperLearning.policyTransitions?.candidates || []).length
-              ? paperLearning.policyTransitions.candidates.slice(0, 4).map((item) => `<span class="tag ${item.action.includes("retire") ? "negative" : item.action.includes("promote") ? "positive" : ""}">${escapeHtml(`${titleize(item.action)} · ${titleize(item.id)} · ${formatPct(item.confidence || 0, 0)}`)}</span>`).join("")
-              : `<span class="tag">Nog geen policy-shifts</span>`}
-          </div>
-          ${(paperLearning.policyTransitions?.candidates || []).length
-            ? `
-            <div class="tag-list">
-              ${paperLearning.policyTransitions.candidates.slice(0, 3).map((item) => item.approved
-                ? `<span class="tag positive">${escapeHtml(`Approved · ${titleize(item.id)}`)}</span>`
-                : `<button class="tag" data-policy-action="approve" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Approve ${escapeHtml(titleize(item.id))}</button><button class="tag negative" data-policy-action="reject" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Reject</button>`
-              ).join("")}
-            </div>
-          `
-            : ""}
+          <span class="metric-label">Policy en operatoracties</span>
+          <div class="tag-list">${compactPolicyTags}</div>
+          <div class="tag-list">${compactOverrideTags}</div>
           <p>${escapeHtml(
             paperLearning.policyTransitions?.note ||
-            "Nog geen policy-promotie of retirement die sterk genoeg is voor operator-review."
-          )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Operator guardrails</span>
-          <div class="tag-list">
-            ${(paperLearning.operatorGuardrails?.blockedBy || []).length
-              ? paperLearning.operatorGuardrails.blockedBy.map((item) => `<span class="tag negative">${escapeHtml(titleize(item))}</span>`).join("")
-              : `<span class="tag">Geen extra blokkades</span>`}
-          </div>
-          <p>${escapeHtml(
-            paperLearning.operatorGuardrails?.note ||
-            "Guardrails verschijnen zodra de bot overgangskandidaten ziet tussen policies of scopes."
-          )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Operator overrides</span>
-          <div class="tag-list">
-            ${(paperLearning.operatorActions?.activeOverrides || []).length
-              ? paperLearning.operatorActions.activeOverrides.map((item) => `<span class="tag positive">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status || "override")}`)}</span>`).join("")
-              : `<span class="tag">Geen actieve overrides</span>`}
-          </div>
-          ${(paperLearning.operatorActions?.activeOverrides || []).length
-            ? `
-            <div class="tag-list">
-              ${paperLearning.operatorActions.activeOverrides.map((item) => `<button class="tag negative" data-policy-action="revert" data-transition-id="${escapeHtml(item.id)}">Revert ${escapeHtml(titleize(item.id))}</button>`).join("")}
-            </div>
-          `
-            : ""}
-          <p>${escapeHtml(
             paperLearning.operatorActions?.note ||
-            "Nog geen operator overrides actief."
+            "Nog geen policy-wijziging of override die operator-ingreep vraagt."
           )}</p>
+          ${operatorGuardrails.length ? `<div class="tag-list">${operatorGuardrails.map((item) => `<span class="tag negative">${escapeHtml(titleize(item))}</span>`).join("")}</div>` : ""}
+          ${operatorActionButtons ? `<div class="tag-list">${operatorActionButtons}</div>` : ""}
+          ${revertButtons ? `<div class="tag-list">${revertButtons}</div>` : ""}
         </article>
         <article class="learning-list-item">
-          <span class="metric-label">Operator history</span>
+          <span class="metric-label">Laatste operatorlog</span>
           <div class="tag-list">
-            ${(paperLearning.operatorActions?.history || []).length
-              ? paperLearning.operatorActions.history.slice(0, 4).map((item) => `<span class="tag">${escapeHtml(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`)}</span>`).join("")
-              : `<span class="tag">Nog geen history</span>`}
+            ${operatorHistory.length
+              ? operatorHistory.map((item) => `<span class="tag">${escapeHtml(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`)}</span>`).join("")
+              : `<span class="tag">Nog geen operator history</span>`}
           </div>
           <p>${escapeHtml(
-            paperLearning.operatorActions?.history?.[0]?.note ||
+            operatorHistory[0]?.note ||
+            paperLearning.coaching?.nextReview ||
             "Goedgekeurde, afgewezen en teruggedraaide policy-acties verschijnen hier."
           )}</p>
         </article>
@@ -1184,10 +1001,6 @@ function buildOpsEvents(snapshot) {
 
 function renderOps(snapshot) {
   const cards = buildOpsCards(snapshot);
-  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
-  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
-  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
-  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
   elements.opsSummary.innerHTML = cards.map((item) => `
     <article class="risk-card">
       <span class="metric-label">${escapeHtml(item.label)}</span>
@@ -1197,28 +1010,7 @@ function renderOps(snapshot) {
   `).join("");
 
   if (elements.opsLearning) {
-    elements.opsLearning.innerHTML = paperLearning.readinessStatus || paperLearning.probation
-      ? `
-      <article class="ops-learning-bridge">
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">Paper learning</p>
-            <h3>${escapeHtml(titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"))}</h3>
-          </div>
-          <span class="pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}">${escapeHtml(titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"))}</span>
-        </div>
-        <p class="learning-bridge-copy">${escapeHtml(
-          `Learning-details staan in het blok "Wat leert de bot nu". Hier zie je alleen de risico- en herstelkant.`
-        )}</p>
-        <div class="tag-list">
-          <span class="tag">${escapeHtml(`Readiness ${formatPct(paperLearning.readinessScore || 0, 0)}`)}</span>
-          <span class="tag">${escapeHtml(`Probation ${titleize(paperLearning.probation?.status || "warmup")}`)}</span>
-          <span class="tag">${escapeHtml(`Retrain ${titleize(retrainPlan.batchType || "observe")}`)}</span>
-          <span class="tag">${escapeHtml(`Replay ${titleize(replayPlan.nextPackType || "geen focus")}`)}</span>
-        </div>
-      </article>
-    `
-      : "";
+    elements.opsLearning.innerHTML = "";
   }
 
   const events = buildOpsEvents(snapshot);
