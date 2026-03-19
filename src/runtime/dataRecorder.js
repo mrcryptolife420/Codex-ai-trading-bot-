@@ -1360,6 +1360,7 @@ export class DataRecorder {
         })),
       sourceCoverage: summarizeSourceCoverage(this.state.sourceCoverage || {}, 6),
       contextCoverage: summarizeContextCoverage(this.state.contextCoverage || {}, 4),
+      datasetCuration: this.state.datasetCuration || null,
       rootDir: this.rootDir
     };
   }

@@ -7432,6 +7432,31 @@ await runCheck("trading bot getReport keeps full report metrics instead of dashb
   assert.equal(report.modes.paper.realizedPnl, 19);
 });
 
+await runCheck("research view falls back to persisted journal runs after restart", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = { researchLab: { lastRunAt: null, latestSummary: null } };
+  bot.journal = {
+    researchRuns: [
+      {
+        generatedAt: "2026-03-19T12:00:00.000Z",
+        symbolCount: 2,
+        bestSymbol: "BTCUSDT",
+        totalTrades: 14,
+        realizedPnl: 182,
+        averageSharpe: 0.78,
+        averageWinRate: 0.63,
+        topFamilies: [{ id: "trend_following", tradeCount: 8, realizedPnl: 120, winRate: 0.62 }],
+        topRegimes: [{ id: "trend", tradeCount: 9, realizedPnl: 140, winRate: 0.67 }],
+        strategyScorecards: [{ id: "ema_trend", tradeCount: 8, governanceScore: 0.71 }],
+        reports: []
+      }
+    ]
+  };
+  const view = TradingBot.prototype.buildResearchView.call(bot);
+  assert.equal(view.bestSymbol, "BTCUSDT");
+  assert.equal(view.realizedPnl, 182);
+});
+
 await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local-book universe", async () => {
   const bot = Object.create(TradingBot.prototype);
   let localBookCalls = 0;

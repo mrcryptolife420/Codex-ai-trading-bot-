@@ -10063,7 +10063,7 @@ export class TradingBot {
     };
   }
 
-  buildResearchView(summary = this.runtime.researchLab?.latestSummary || null) {
+  buildResearchView(summary = this.runtime.researchLab?.latestSummary || this.journal?.researchRuns?.at(-1) || null) {
     if (!summary) {
       return null;
     }
