@@ -133,7 +133,23 @@ function flattenReplaceResponse(response) {
   if (!response) {
     return [];
   }
-  return [response.cancelResponse, response.newOrderResponse, response.amendedOrder, response].filter(Boolean);
+  return [
+    response.cancelResponse,
+    response.cancelResult,
+    response.newOrderResponse,
+    response.newOrderResult,
+    response.amendedOrder,
+    response
+  ].filter(Boolean);
+}
+
+function resolveReplacementOrderId(response, fallbackOrderId = null) {
+  return response?.newOrderResponse?.orderId
+    || response?.newOrderResult?.orderId
+    || response?.amendedOrder?.orderId
+    || response?.orderId
+    || fallbackOrderId
+    || null;
 }
 
 function mergeExecutions(existing = [], incoming = []) {
@@ -529,7 +545,7 @@ export class LiveBroker {
             cancelReplaceCount += 1;
             amendmentCount += 1;
             orderResponses.push(...flattenReplaceResponse(replace));
-            workingOrderId = replace.newOrderResponse?.orderId || replace.orderId || workingOrderId;
+            workingOrderId = resolveReplacementOrderId(replace, workingOrderId);
             await sleep(Math.max(800, (plan?.makerPatienceMs || 3500) - halfPatience));
             settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
             executions = mergeExecutions(executions, settled.executions || []);

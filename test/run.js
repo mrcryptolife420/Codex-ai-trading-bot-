@@ -1932,6 +1932,60 @@ await runCheck("live broker aggregates fills across limit-maker cancel-replace r
   assert.ok(result.executions.some((item) => item.order.orderId === 2));
   assert.ok(Math.abs(result.remainingQuote - 8.8) < 1e-9);
 });
+
+await runCheck("live broker handles cancel-replace wrappers that use newOrderResult fields", async () => {
+  const orderState = new Map([
+    [10, { orderId: 10, status: "PARTIALLY_FILLED", origQty: "0.01000000", executedQty: "0.00400000", cummulativeQuoteQty: "280.00", price: "70000" }],
+    [11, { orderId: 11, status: "FILLED", origQty: "0.00600000", executedQty: "0.00600000", cummulativeQuoteQty: "421.20", price: "70200" }]
+  ]);
+  const broker = new LiveBroker({
+    client: {
+      async placeOrder() {
+        return { orderId: 10, status: "NEW", origQty: "0.01000000", executedQty: "0.00000000", cummulativeQuoteQty: "0.00", price: "70000" };
+      },
+      async getOrder(_symbol, { orderId }) {
+        return orderState.get(orderId);
+      },
+      async getMyTrades(_symbol, { orderId }) {
+        if (orderId === 10) {
+          return [{ orderId: 10, price: "70000", qty: "0.004", commission: "0.28", commissionAsset: "USDT" }];
+        }
+        if (orderId === 11) {
+          return [{ orderId: 11, price: "70200", qty: "0.006", commission: "0.42", commissionAsset: "USDT" }];
+        }
+        return [];
+      },
+      async getBookTicker() {
+        return { bidPrice: "70200" };
+      },
+      async cancelReplaceOrder() {
+        return {
+          cancelResult: { orderId: 10, status: "CANCELED", origQty: "0.01000000", executedQty: "0.00400000", cummulativeQuoteQty: "280.00", price: "70000" },
+          newOrderResult: { orderId: 11, status: "NEW", origQty: "0.00600000", executedQty: "0.00000000", cummulativeQuoteQty: "0.00", price: "70200" }
+        };
+      },
+      async cancelOrder() {
+        throw new Error("should not cancel filled refreshed order");
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const result = await broker.placeLimitMakerBuy({
+    symbol: "BTCUSDT",
+    quoteAmount: 710,
+    rules,
+    marketSnapshot: { book: { bid: 70000, ask: 70010, mid: 70005, spreadBps: 2 } },
+    plan: { makerPatienceMs: 2000 }
+  });
+
+  assert.equal(result.executions.length, 2);
+  assert.ok(result.executions.some((item) => item.order.orderId === 10));
+  assert.ok(result.executions.some((item) => item.order.orderId === 11));
+  assert.ok(Math.abs(result.remainingQuote - 8.8) < 1e-9);
+});
 await runCheck("openBestCandidate skips symbols with unmatched exchange orders and opens the next safe candidate", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "live" });
