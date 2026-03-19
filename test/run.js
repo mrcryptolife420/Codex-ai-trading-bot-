@@ -1932,6 +1932,70 @@ await runCheck("live broker aggregates fills across limit-maker cancel-replace r
   assert.ok(result.executions.some((item) => item.order.orderId === 2));
   assert.ok(Math.abs(result.remainingQuote - 8.8) < 1e-9);
 });
+await runCheck("openBestCandidate skips symbols with unmatched exchange orders and opens the next safe candidate", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "live" });
+  bot.runtime = {
+    exchangeTruth: {
+      freezeEntries: false,
+      unmatchedOrderSymbols: ["BTCUSDT"],
+      orphanedSymbols: []
+    }
+  };
+  bot.health = { canEnterNewPositions: () => true };
+  bot.buildEntryRationale = () => ({ summary: "test" });
+  bot.symbolRules = {
+    BTCUSDT: { symbol: "BTCUSDT" },
+    ETHUSDT: { symbol: "ETHUSDT" }
+  };
+  bot.logger = { warn() {} };
+  bot.recordEvent = () => {};
+  bot.markReportDirty = () => {};
+  const attempted = [];
+  bot.broker = {
+    enterPosition: async ({ symbol }) => {
+      attempted.push(symbol);
+      return { symbol, id: `${symbol}-position` };
+    }
+  };
+  const candidates = [
+    { symbol: "BTCUSDT", decision: { allow: true, quoteAmount: 100, executionPlan: {} }, marketSnapshot: {}, score: {}, rawFeatures: {}, strategySummary: {}, newsSummary: {}, regimeSummary: {}, metaSummary: {} },
+    { symbol: "ETHUSDT", decision: { allow: true, quoteAmount: 100, executionPlan: {} }, marketSnapshot: {}, score: {}, rawFeatures: {}, strategySummary: {}, newsSummary: {}, regimeSummary: {}, metaSummary: {} }
+  ];
+
+  const attempt = await bot.openBestCandidate(candidates);
+
+  assert.equal(attempt.status, "opened");
+  assert.equal(attempt.openedPosition?.symbol, "ETHUSDT");
+  assert.deepEqual(attempted, ["ETHUSDT"]);
+  assert.deepEqual(attempt.symbolBlockers, [{ symbol: "BTCUSDT", reason: "unmatched_open_orders" }]);
+});
+
+await runCheck("syncOrderLifecycleState surfaces unmatched orders and orphaned balances as reconcile actions", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "live" });
+  bot.runtime = {
+    openPositions: [],
+    exchangeTruth: {
+      unmatchedOrderSymbols: ["BTCUSDT"],
+      orphanedSymbols: ["ETHUSDT"]
+    },
+    orderLifecycle: {
+      lastUpdatedAt: null,
+      positions: {},
+      recentTransitions: [],
+      pendingActions: [],
+      activeActions: {},
+      actionJournal: []
+    }
+  };
+  bot.journal = { trades: [] };
+
+  const lifecycle = bot.syncOrderLifecycleState("exchange_truth_test");
+
+  assert.ok(lifecycle.pendingActions.some((item) => item.action === "resolve_unmatched_orders" && item.state === "reconcile_required"));
+  assert.ok(lifecycle.pendingActions.some((item) => item.action === "resolve_orphaned_balance" && item.state === "reconcile_required"));
+});
 await runCheck("live broker auto-flattens filled entries when protection setup fails", async () => {
   const placedSides = [];
   const client = {

@@ -4964,6 +4964,29 @@ export class TradingBot {
         severity: ["manual_review", "reconcile_required"].includes(item.state) ? "negative" : "neutral",
         recoveryAction: item.recoveryAction || resolveLifecycleRecoveryAction(item.state, item)
       }));
+    const exchangeTruthActions = [];
+    if (arr(this.runtime.exchangeTruth?.unmatchedOrderSymbols || []).length) {
+      exchangeTruthActions.push({
+        id: "exchange-truth-unmatched-orders",
+        symbol: arr(this.runtime.exchangeTruth.unmatchedOrderSymbols).join(", "),
+        state: "reconcile_required",
+        action: "resolve_unmatched_orders",
+        reason: "unmatched_open_orders",
+        severity: "negative",
+        recoveryAction: "Controleer open exchange-orders zonder runtime-positie en cancel of reconcile ze voordat nieuwe entries terugkomen."
+      });
+    }
+    if (arr(this.runtime.exchangeTruth?.orphanedSymbols || []).length) {
+      exchangeTruthActions.push({
+        id: "exchange-truth-orphaned-balance",
+        symbol: arr(this.runtime.exchangeTruth.orphanedSymbols).join(", "),
+        state: "reconcile_required",
+        action: "resolve_orphaned_balance",
+        reason: "orphaned_exchange_balance",
+        severity: "negative",
+        recoveryAction: "Bevestig unmanaged exchange-balances, herstel runtime-state of flatten handmatig voordat automation nieuwe exposure opent."
+      });
+    }
     const activeLifecycleActions = Object.values(activeActions).map((item) => ({
       id: item.id || null,
       symbol: item.symbol || null,
@@ -4973,7 +4996,7 @@ export class TradingBot {
       severity: item.severity || "neutral",
       recoveryAction: item.recoveryAction || resolveLifecycleRecoveryAction(item.stage || "pending", item, item)
     }));
-    lifecycle.pendingActions = [...activeLifecycleActions, ...stateActions].slice(0, 12);
+    lifecycle.pendingActions = [...activeLifecycleActions, ...stateActions, ...exchangeTruthActions].slice(0, 12);
     lifecycle.activeActionsPrevious = Object.fromEntries(Object.entries(activeActions).map(([id, item]) => [id, { ...item }]));
     this.runtime.orderLifecycle = lifecycle;
     return lifecycle;
@@ -5307,6 +5330,12 @@ export class TradingBot {
     }
     if (arr(this.runtime.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
       reasons.push("lifecycle_attention_required");
+    }
+    if ((this.runtime.exchangeTruth?.unmatchedOrderSymbols || []).length) {
+      reasons.push("exchange_truth_unmatched_orders");
+    }
+    if ((this.runtime.exchangeTruth?.orphanedSymbols || []).length) {
+      reasons.push("exchange_truth_orphaned_balance");
     }
     if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
       reasons.push("capital_ladder_shadow_only");
@@ -8624,13 +8653,25 @@ export class TradingBot {
 
   async openBestCandidate(candidates, { executionBlockers = [] } = {}) {
     const botMode = this.config?.botMode || this.runtime?.mode || "paper";
+    const symbolExchangeConflicts = new Map();
+    for (const symbol of arr(this.runtime.exchangeTruth?.unmatchedOrderSymbols || [])) {
+      if (symbol) {
+        symbolExchangeConflicts.set(symbol, "unmatched_open_orders");
+      }
+    }
+    for (const symbol of arr(this.runtime.exchangeTruth?.orphanedSymbols || [])) {
+      if (symbol && !symbolExchangeConflicts.has(symbol)) {
+        symbolExchangeConflicts.set(symbol, "orphaned_exchange_balance");
+      }
+    }
     const attempt = {
       status: "idle",
       selectedSymbol: null,
       openedPosition: null,
       attemptedSymbols: [],
       blockedReasons: [...(executionBlockers || [])],
-      entryErrors: []
+      entryErrors: [],
+      symbolBlockers: []
     };
     if (!this.health.canEnterNewPositions(this.runtime)) {
       attempt.status = "health_blocked";
@@ -8654,6 +8695,11 @@ export class TradingBot {
 
     for (const candidate of allowedCandidates) {
       attempt.selectedSymbol = attempt.selectedSymbol || candidate.symbol;
+      const symbolConflict = botMode === "live" ? symbolExchangeConflicts.get(candidate.symbol) : null;
+      if (symbolConflict) {
+        attempt.symbolBlockers.push({ symbol: candidate.symbol, reason: symbolConflict });
+        continue;
+      }
       attempt.attemptedSymbols.push(candidate.symbol);
       const entryRationale = this.buildEntryRationale(candidate);
       try {
@@ -8717,6 +8763,11 @@ export class TradingBot {
       attempt.blockedReasons = [...new Set(attempt.blockedReasons.filter(Boolean))];
       return attempt;
     }
+    if (!attempt.attemptedSymbols.length && attempt.symbolBlockers.length) {
+      attempt.status = "runtime_blocked";
+      attempt.blockedReasons = [...new Set(attempt.symbolBlockers.map((item) => item.reason).filter(Boolean))];
+      return attempt;
+    }
     attempt.status = attempt.entryErrors.length ? "entry_failed" : "no_allowed_candidates";
     return attempt;
   }
@@ -8725,6 +8776,7 @@ export class TradingBot {
     const openedSymbol = entryAttempt.openedPosition?.symbol || null;
     const attemptedSymbols = new Set(arr(entryAttempt.attemptedSymbols));
     const errorMap = new Map(arr(entryAttempt.entryErrors).map((item) => [item.symbol, item.error]));
+    const symbolBlockerMap = new Map(arr(entryAttempt.symbolBlockers).map((item) => [item.symbol, item.reason]));
     const primaryBlockedReasons = arr(entryAttempt.blockedReasons);
     const firstAllowedSymbol = arr(this.runtime.latestDecisions).find((decision) => decision.allow)?.symbol || null;
 
@@ -8739,6 +8791,9 @@ export class TradingBot {
       } else if (openedSymbol && decision.symbol === openedSymbol) {
         entryStatus = "opened";
         executionBlockers = [];
+      } else if (symbolBlockerMap.has(decision.symbol)) {
+        entryStatus = "runtime_blocked";
+        executionBlockers = [symbolBlockerMap.get(decision.symbol)];
       } else if (errorMap.has(decision.symbol)) {
         entryStatus = "entry_failed";
         executionBlockers = [errorMap.get(decision.symbol)];
@@ -8764,6 +8819,7 @@ export class TradingBot {
       openedSymbol,
       attemptedSymbols: [...attemptedSymbols],
       blockedReasons: [...primaryBlockedReasons],
+      symbolBlockers: arr(entryAttempt.symbolBlockers),
       entryErrors: arr(entryAttempt.entryErrors),
       at: nowIso()
     };
