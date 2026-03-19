@@ -14,7 +14,7 @@ import { NewsService } from "../src/news/newsService.js";
 import { parseProviderItems } from "../src/news/rssFeed.js";
 import { BinanceAnnouncementService, normalizeCmsArticles } from "../src/events/binanceAnnouncementService.js";
 import { summarizeMarketStructure } from "../src/market/marketStructureService.js";
-import { summarizeMarketSentiment } from "../src/market/marketSentimentService.js";
+import { MarketSentimentService, summarizeMarketSentiment } from "../src/market/marketSentimentService.js";
 import { ReferenceVenueService } from "../src/market/referenceVenueService.js";
 import { summarizeVolatilityContext } from "../src/market/volatilityService.js";
 import { LocalOrderBookEngine } from "../src/market/localOrderBook.js";
@@ -881,6 +881,31 @@ await runCheck("market sentiment summary captures fear greed and dominance", asy
   assert.ok(summary.contrarianScore > 0);
   assert.ok(summary.riskScore > 0);
   assert.ok(summary.reasons.includes("extreme_fear"));
+});
+
+await runCheck("market sentiment service records external feed failures in shared registry", async () => {
+  let calls = 0;
+  const runtime = {};
+  const service = new MarketSentimentService({
+    config: makeConfig(),
+    runtime,
+    logger: { warn() {} },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("timeout");
+      }
+      return {
+        ok: true,
+        async json() {
+          return { data: {} };
+        }
+      };
+    }
+  });
+  const summary = await service.getSummary();
+  assert.ok(summary);
+  assert.ok(Object.keys(runtime.externalFeedHealth || {}).some((key) => key.includes("market_sentiment")));
 });
 
 await runCheck("volatility context summarizes deribit option and historical vol", async () => {
@@ -9165,6 +9190,32 @@ await runCheck("on-chain lite summary captures stablecoin liquidity context", as
   assert.ok(summary.liquidityScore > 0.4);
   assert.ok(summary.stablecoinDominancePct > 0);
 });
+
+await runCheck("on-chain lite service records shared feed health on partial provider failures", async () => {
+  const runtime = {};
+  let calls = 0;
+  const service = new OnChainLiteService({
+    config: makeConfig(),
+    runtime,
+    logger: { warn() {} },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 2) {
+        throw new Error("timeout");
+      }
+      return {
+        ok: true,
+        async json() {
+          return [];
+        }
+      };
+    }
+  });
+  const summary = await service.getSummary({ totalMarketCapUsd: 2_500_000_000_000 });
+  assert.ok(summary);
+  assert.ok(Object.keys(runtime.externalFeedHealth || {}).some((key) => key.includes("onchain")));
+});
+
 await runCheck("strategy optimizer exposes bayesian scorecards", async () => {
   const optimizer = new StrategyOptimizer(makeConfig());
   const snapshot = optimizer.buildSnapshot({

@@ -1,5 +1,7 @@
 ﻿import { clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
+import { RequestBudget } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 export const EMPTY_MARKET_SENTIMENT = {
   coverage: 0,
@@ -123,6 +125,14 @@ export class MarketSentimentService {
     this.runtime = runtime;
     this.logger = logger;
     this.fetchImpl = fetchImpl || fetch;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: Math.max(1, Number(config?.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+      maxCooldownMs: Math.max(1, Number(config?.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+      registry: new ExternalFeedRegistry(config || {}),
+      runtime,
+      group: "market_sentiment"
+    });
   }
 
   isFresh(cacheEntry) {
@@ -133,13 +143,15 @@ export class MarketSentimentService {
     return ageMs <= (this.config.marketSentimentCacheMinutes || 15) * 60 * 1000;
   }
 
-  async requestJson(url) {
-    const response = await this.fetchImpl(url, {
+  async requestJson(url, key) {
+    const response = await this.requestBudget.fetchJson(url, {
+      key,
+      runtime: this.runtime,
+      fetchImpl: this.fetchImpl,
       headers: {
         "User-Agent": "Mozilla/5.0 trading-bot",
         Accept: "application/json"
-      },
-      signal: AbortSignal.timeout(8_000)
+      }
     });
     if (!response.ok) {
       throw new Error(`Market sentiment request failed: ${response.status}`);
@@ -157,9 +169,19 @@ export class MarketSentimentService {
       const alternativeBaseUrl = `${this.config.alternativeApiBaseUrl || "https://api.alternative.me"}`.replace(/\/$/, "");
       const coinGeckoBaseUrl = `${this.config.coinGeckoApiBaseUrl || "https://api.coingecko.com/api/v3"}`.replace(/\/$/, "");
       const [fearGreed, global] = await Promise.allSettled([
-        this.requestJson(`${alternativeBaseUrl}/fng/?limit=2&format=json`),
-        this.requestJson(`${coinGeckoBaseUrl}/global`)
+        this.requestJson(`${alternativeBaseUrl}/fng/?limit=2&format=json`, "market_sentiment:fear_greed"),
+        this.requestJson(`${coinGeckoBaseUrl}/global`, "market_sentiment:global")
       ]);
+      if (fearGreed.status === "fulfilled") {
+        this.requestBudget.noteSuccess("market_sentiment:fear_greed", this.runtime);
+      } else {
+        this.requestBudget.noteFailure("market_sentiment:fear_greed", Date.now(), this.runtime, fearGreed.reason?.message || String(fearGreed.reason));
+      }
+      if (global.status === "fulfilled") {
+        this.requestBudget.noteSuccess("market_sentiment:global", this.runtime);
+      } else {
+        this.requestBudget.noteFailure("market_sentiment:global", Date.now(), this.runtime, global.reason?.message || String(global.reason));
+      }
       const payload = {
         fearGreedPayload: fearGreed.status === "fulfilled" ? fearGreed.value : {},
         globalPayload: global.status === "fulfilled" ? global.value : {}

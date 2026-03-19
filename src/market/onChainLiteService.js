@@ -1,5 +1,7 @@
 import { clamp } from "../utils/math.js";
 import { nowIso } from "../utils/time.js";
+import { RequestBudget } from "../utils/requestBudget.js";
+import { ExternalFeedRegistry } from "../runtime/externalFeedRegistry.js";
 
 const STABLECOIN_IDS = ["tether", "usd-coin", "dai", "first-digital-usd", "ethena-usde"];
 const MAJOR_IDS = ["bitcoin", "ethereum", "binancecoin", "solana", "ripple", "dogecoin"];
@@ -54,6 +56,14 @@ export class OnChainLiteService {
     this.runtime = runtime;
     this.logger = logger;
     this.fetchImpl = fetchImpl || fetch;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: Math.max(1, Number(config?.sourceReliabilityFailureCooldownMinutes || 8)) * 60_000,
+      maxCooldownMs: Math.max(1, Number(config?.sourceReliabilityRateLimitCooldownMinutes || 30)) * 60_000,
+      registry: new ExternalFeedRegistry(config || {}),
+      runtime,
+      group: "onchain"
+    });
   }
 
   isFresh(cacheEntry) {
@@ -64,13 +74,15 @@ export class OnChainLiteService {
     return ageMs <= (this.config.onChainLiteCacheMinutes || 30) * 60 * 1000;
   }
 
-  async requestJson(url) {
-    const response = await this.fetchImpl(url, {
+  async requestJson(url, key) {
+    const response = await this.requestBudget.fetchJson(url, {
+      key,
+      runtime: this.runtime,
+      fetchImpl: this.fetchImpl,
       headers: {
         Accept: "application/json",
         "User-Agent": "Mozilla/5.0 trading-bot"
-      },
-      signal: AbortSignal.timeout(8_000)
+      }
     });
     if (!response.ok) {
       throw new Error(`On-chain lite request failed: ${response.status}`);
@@ -177,17 +189,32 @@ export class OnChainLiteService {
       const baseUrl = `${this.config.coinGeckoApiBaseUrl || "https://api.coingecko.com/api/v3"}`.replace(/\/$/, "");
       const stablecoinIds = encodeURIComponent((this.config.onChainLiteStablecoinIds || STABLECOIN_IDS).join(","));
       const majorIds = encodeURIComponent((this.config.onChainLiteMajorIds || MAJOR_IDS).join(","));
-      const [stablecoins, majors, trendingPayload] = await Promise.all([
-        this.requestJson(`${baseUrl}/coins/markets?vs_currency=usd&ids=${stablecoinIds}&order=market_cap_desc&per_page=20&page=1&sparkline=false&price_change_percentage=24h`),
-        this.requestJson(`${baseUrl}/coins/markets?vs_currency=usd&ids=${majorIds}&order=market_cap_desc&per_page=20&page=1&sparkline=false&price_change_percentage=24h`),
-        this.requestJson(`${baseUrl}/search/trending`)
+      const [stablecoins, majors, trendingPayload] = await Promise.allSettled([
+        this.requestJson(`${baseUrl}/coins/markets?vs_currency=usd&ids=${stablecoinIds}&order=market_cap_desc&per_page=20&page=1&sparkline=false&price_change_percentage=24h`, "onchain:stablecoins"),
+        this.requestJson(`${baseUrl}/coins/markets?vs_currency=usd&ids=${majorIds}&order=market_cap_desc&per_page=20&page=1&sparkline=false&price_change_percentage=24h`, "onchain:majors"),
+        this.requestJson(`${baseUrl}/search/trending`, "onchain:trending")
       ]);
+      const outcomeMap = [
+        ["onchain:stablecoins", stablecoins],
+        ["onchain:majors", majors],
+        ["onchain:trending", trendingPayload]
+      ];
+      for (const [key, result] of outcomeMap) {
+        if (result.status === "fulfilled") {
+          this.requestBudget.noteSuccess(key, this.runtime);
+        } else {
+          this.requestBudget.noteFailure(key, Date.now(), this.runtime, result.reason?.message || String(result.reason));
+        }
+      }
+      if (outcomeMap.every(([, result]) => result.status !== "fulfilled")) {
+        throw new Error("All on-chain lite providers failed");
+      }
       this.runtime.onChainLiteCache = {
         fetchedAt: nowIso(),
         payload: {
-          stablecoins: Array.isArray(stablecoins) ? stablecoins : [],
-          majors: Array.isArray(majors) ? majors : [],
-          trending: Array.isArray(trendingPayload?.coins) ? trendingPayload.coins : []
+          stablecoins: stablecoins.status === "fulfilled" && Array.isArray(stablecoins.value) ? stablecoins.value : [],
+          majors: majors.status === "fulfilled" && Array.isArray(majors.value) ? majors.value : [],
+          trending: trendingPayload.status === "fulfilled" && Array.isArray(trendingPayload.value?.coins) ? trendingPayload.value.coins : []
         }
       };
       return this.summarize(this.runtime.onChainLiteCache.payload, marketSentiment);

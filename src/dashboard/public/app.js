@@ -103,6 +103,10 @@ function replaceChildren(element, children = []) {
   element.replaceChildren(...children.filter(Boolean));
 }
 
+function makeTag(text, className = "tag") {
+  return makeNode("span", { className, text });
+}
+
 function readStoredBoolean(key, fallback = false) {
   try {
     const raw = window.localStorage.getItem(key);
@@ -431,14 +435,14 @@ function renderBadges(snapshot) {
 function renderHero(snapshot) {
   const summary = buildHeroSummary(snapshot);
   elements.controlHint.textContent = summary.subline;
-  elements.operatorSummary.innerHTML = summary.pills
-    .map((item) => `
-      <span class="hero-pill ${item.tone}">
-        <strong>${escapeHtml(item.label)}</strong>
-        <span>${escapeHtml(truncate(item.value, 72))}</span>
-      </span>
-    `)
-    .join("");
+  replaceChildren(elements.operatorSummary, summary.pills.map((item) => {
+    const pill = makeNode("span", { className: ["hero-pill", item.tone].filter(Boolean).join(" ") });
+    pill.append(
+      makeNode("strong", { text: item.label }),
+      makeNode("span", { text: truncate(item.value, 72) })
+    );
+    return pill;
+  }));
 }
 
 function filterDecisions(snapshot) {
@@ -532,41 +536,49 @@ function renderSignals(snapshot) {
 
 function renderPositions(snapshot) {
   const positions = (snapshot?.dashboard?.positions || []).slice(0, POSITION_LIMIT);
-  elements.positionsList.innerHTML = positions.length
-    ? positions.map((position) => `
-        <article class="position-card">
-          <div class="card-summary">
-            <div class="card-header">
-              <div>
-                <p class="eyebrow">${escapeHtml(position.lifecycle?.state || "Positie")}</p>
-                <h3>${escapeHtml(position.symbol || "-")}</h3>
-              </div>
-              <span class="pill ${toneClass(position.unrealizedPnl)}">${escapeHtml(formatMoney(position.unrealizedPnl))}</span>
-            </div>
-            <div class="subgrid">
-              <div class="stat">
-                <span class="metric-label">Entry</span>
-                <strong>${escapeHtml(number(position.entryPrice, 4))}</strong>
-              </div>
-              <div class="stat">
-                <span class="metric-label">Nu</span>
-                <strong>${escapeHtml(number(position.currentPrice, 4))}</strong>
-              </div>
-              <div class="stat">
-                <span class="metric-label">Rendement</span>
-                <strong class="${toneClass(position.unrealizedPnlPct)}">${escapeHtml(formatSignedPct(position.unrealizedPnlPct))}</strong>
-              </div>
-            </div>
-            <div class="tag-list">
-              ${(position.regimeAtEntry ? `<span class="tag">${escapeHtml(titleize(position.regimeAtEntry))}</span>` : "")}
-              ${(position.strategyAtEntry ? `<span class="tag">${escapeHtml(position.strategyAtEntry)}</span>` : "")}
-              ${position.lifecycle?.manualReviewRequired ? `<span class="tag negative">Manual review</span>` : ""}
-              ${position.lifecycle?.reconcileRequired ? `<span class="tag negative">Reconcile</span>` : ""}
-            </div>
-          </div>
-        </article>
-      `).join("")
-    : `<div class="empty">Er zijn nu geen open posities.</div>`;
+  if (!positions.length) {
+    replaceChildren(elements.positionsList, [makeNode("div", { className: "empty", text: "Er zijn nu geen open posities." })]);
+    return;
+  }
+  replaceChildren(elements.positionsList, positions.map((position) => {
+    const article = makeNode("article", { className: "position-card" });
+    const summary = makeNode("div", { className: "card-summary" });
+    const header = makeNode("div", { className: "card-header" });
+    const left = makeNode("div");
+    left.append(
+      makeNode("p", { className: "eyebrow", text: position.lifecycle?.state || "Positie" }),
+      makeNode("h3", { text: position.symbol || "-" })
+    );
+    header.append(
+      left,
+      makeNode("span", { className: ["pill", toneClass(position.unrealizedPnl)].filter(Boolean).join(" "), text: formatMoney(position.unrealizedPnl) })
+    );
+    const subgrid = makeNode("div", { className: "subgrid" });
+    const stats = [
+      ["Entry", number(position.entryPrice, 4), ""],
+      ["Nu", number(position.currentPrice, 4), ""],
+      ["Rendement", formatSignedPct(position.unrealizedPnlPct), toneClass(position.unrealizedPnlPct)]
+    ];
+    subgrid.append(...stats.map(([label, value, tone]) => {
+      const stat = makeNode("div", { className: "stat" });
+      stat.append(
+        makeNode("span", { className: "metric-label", text: label }),
+        makeNode("strong", { className: tone, text: value })
+      );
+      return stat;
+    }));
+    const tags = makeNode("div", { className: "tag-list" });
+    const tagNodes = [
+      position.regimeAtEntry ? makeTag(titleize(position.regimeAtEntry)) : null,
+      position.strategyAtEntry ? makeTag(position.strategyAtEntry) : null,
+      position.lifecycle?.manualReviewRequired ? makeTag("Manual review", "tag negative") : null,
+      position.lifecycle?.reconcileRequired ? makeTag("Reconcile", "tag negative") : null
+    ].filter(Boolean);
+    tags.append(...tagNodes);
+    summary.append(header, subgrid, tags);
+    article.append(summary);
+    return article;
+  }));
 }
 
 function renderMissedTrades(snapshot) {
