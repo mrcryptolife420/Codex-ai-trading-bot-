@@ -138,9 +138,19 @@ function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
     node.textContent = text;
   }
   for (const [name, value] of Object.entries(attrs)) {
-    if (value != null && value !== "") {
-      node.setAttribute(name, `${value}`);
+    if (value == null || value === "") {
+      continue;
     }
+    const attrName = `${name}`.trim();
+    const lowerName = attrName.toLowerCase();
+    const attrValue = `${value}`;
+    if (!attrName || lowerName.startsWith("on") || ["innerhtml", "outerhtml", "srcdoc"].includes(lowerName)) {
+      continue;
+    }
+    if ((lowerName === "href" || lowerName === "src") && /^\s*javascript:/i.test(attrValue)) {
+      continue;
+    }
+    node.setAttribute(attrName, attrValue);
   }
   return node;
 }
@@ -548,7 +558,7 @@ function buildHeroSummary(snapshot) {
 function renderBadges(snapshot) {
   const mode = snapshot?.manager?.currentMode || snapshot?.dashboard?.overview?.mode || "paper";
   const runState = snapshot?.manager?.runState || "stopped";
-  const readiness = snapshot?.dashboard?.ops?.readiness?.status || "unknown";
+  const readiness = snapshot?.manager?.readiness?.status || snapshot?.dashboard?.ops?.readiness?.status || "unknown";
 
   elements.modeBadge.className = `status-chip ${statusTone(mode)}`;
   elements.runStateBadge.className = `status-chip ${statusTone(runState)}`;
@@ -557,7 +567,7 @@ function renderBadges(snapshot) {
   elements.modeBadge.textContent = titleize(mode);
   elements.runStateBadge.textContent = titleize(runState);
   elements.healthBadge.textContent = titleize(readiness);
-  const updatedAt = snapshot?.dashboard?.ops?.lastUpdatedAt || snapshot?.dashboard?.overview?.lastCycleAt || snapshot?.manager?.lastCycleAt || null;
+  const updatedAt = snapshot?.dashboard?.ops?.lastUpdatedAt || snapshot?.dashboard?.overview?.lastCycleAt || snapshot?.manager?.lastStartAt || null;
   const receivedLabel = lastSnapshotReceivedAt ? `Refresh ${formatDate(lastSnapshotReceivedAt)}` : "Refresh -";
   const dataLabel = updatedAt ? `data ${formatDate(updatedAt)}` : "data -";
   const pingLabel = `${receivedLabel} · ${dataLabel}`;

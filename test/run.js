@@ -4975,6 +4975,26 @@ await runCheck("bot manager does not require ack in paper for governance-only al
   assert.equal(readiness.reasons.includes("operator_ack_required"), false);
 });
 
+await runCheck("bot manager preserves dashboard readiness reasons in snapshot readiness", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  const readiness = manager.buildOperationalReadiness({
+    manager: { runState: "running", currentMode: "live" },
+    dashboard: {
+      overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+      ops: {
+        readiness: {
+          status: "degraded",
+          reasons: ["capital_ladder_shadow_only"]
+        },
+        alerts: { alerts: [] }
+      },
+      safety: { orderLifecycle: { pendingActions: [] } }
+    }
+  });
+  assert.equal(readiness.status, "degraded");
+  assert.ok(readiness.reasons.includes("capital_ladder_shadow_only"));
+});
+
 await runCheck("env file updater rejects newline injection and invalid keys", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-env-"));
   try {
@@ -7200,6 +7220,7 @@ await runCheck("doctor preview scan uses explicit read-only candidate scan mode"
   const bot = Object.create(TradingBot.prototype);
   let called = 0;
   bot.config = makeConfig();
+  bot.observabilityCache = { reportVersion: 0, reportBuiltVersion: -1, report: null };
   bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
   bot.runtime = {
     mode: "paper",
@@ -7231,6 +7252,14 @@ await runCheck("doctor preview scan uses explicit read-only candidate scan mode"
   bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
   bot.dataRecorder = { getSummary: () => ({ filesWritten: 0 }) };
   bot.buildResearchView = () => null;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.markReportDirty = TradingBot.prototype.markReportDirty;
+  bot.buildOperationalReadiness = () => ({ status: "ready", reasons: [] });
+  bot.buildDoctorChecks = TradingBot.prototype.buildDoctorChecks;
+  bot.buildTradeView = (trade) => trade;
+  bot.buildScaleOutView = (item) => item;
+  bot.buildSourceReliabilitySnapshot = () => ({});
   bot.maybeRunExchangeTruthLoop = async () => null;
   bot.scanCandidatesReadOnly = async () => {
     called += 1;
@@ -7239,6 +7268,127 @@ await runCheck("doctor preview scan uses explicit read-only candidate scan mode"
   const report = await bot.runDoctor();
   assert.equal(called, 1);
   assert.equal(report.mode, "paper");
+  assert.ok(Array.isArray(report.checks.checks));
+});
+
+await runCheck("doctor recomputes report after reconciliation changes runtime state", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig();
+  bot.observabilityCache = { reportVersion: 0, reportBuiltVersion: -1, report: null };
+  bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
+  bot.runtime = {
+    mode: "paper",
+    openPositions: [],
+    drift: {},
+    selfHeal: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    offlineTrainer: {},
+    sourceReliability: {},
+    exchangeCapabilities: bot.config.exchangeCapabilities,
+    session: {},
+    marketSentiment: {},
+    onChainLite: {},
+    volatilityContext: {},
+    dataRecorder: {},
+    ops: { alerts: { alerts: [] } }
+  };
+  bot.broker = {
+    getBalance: async () => ({ quoteFree: 1000 }),
+    doctor: async () => ({ ok: true })
+  };
+  bot.health = { getStatus: () => ({ ok: true }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = { getCalibrationSummary: () => ({}), getDeploymentSummary: () => ({}) };
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({ filesWritten: 0 }) };
+  bot.buildResearchView = () => null;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.markReportDirty = TradingBot.prototype.markReportDirty;
+  bot.buildOperationalReadiness = () => ({ status: "ready", reasons: [] });
+  bot.buildDoctorChecks = TradingBot.prototype.buildDoctorChecks;
+  bot.buildTradeView = (trade) => trade;
+  bot.buildScaleOutView = (item) => item;
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.maybeRunExchangeTruthLoop = async () => {
+    bot.journal.trades.push({
+      id: "reconciled-1",
+      brokerMode: "paper",
+      entryAt: "2026-03-19T09:00:00.000Z",
+      exitAt: "2026-03-19T10:00:00.000Z",
+      pnlQuote: 12,
+      netPnlPct: 0.01
+    });
+    bot.markReportDirty();
+  };
+  bot.scanCandidatesReadOnly = async () => [];
+  const doctor = await bot.runDoctor();
+  assert.equal(doctor.report.tradeCount, 1);
+  assert.equal(doctor.report.realizedPnl, 12);
+});
+
+await runCheck("trading bot caches performance report until report state changes", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ reportLookbackTrades: 50 });
+  bot.observabilityCache = { reportVersion: 0, reportBuiltVersion: -1, report: null };
+  bot.journal = {
+    trades: [{ id: "t1", pnlQuote: 5, netPnlPct: 0.01 }],
+    scaleOuts: [],
+    blockedSetups: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: []
+  };
+  bot.runtime = { openPositions: [] };
+  const first = bot.getPerformanceReport();
+  const second = bot.getPerformanceReport();
+  assert.equal(first, second);
+  bot.recordEvent = TradingBot.prototype.recordEvent;
+  bot.markReportDirty = TradingBot.prototype.markReportDirty;
+  bot.recordEvent("test_event", { ok: true });
+  const third = bot.getPerformanceReport();
+  assert.notEqual(third, second);
+});
+
+await runCheck("trading bot getReport keeps full report metrics instead of dashboard subset", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ reportLookbackTrades: 50 });
+  bot.observabilityCache = { reportVersion: 0, reportBuiltVersion: -1, report: null };
+  bot.journal = {
+    trades: [
+      {
+        id: "trade-1",
+        brokerMode: "paper",
+        entryAt: "2026-03-19T09:00:00.000Z",
+        exitAt: "2026-03-19T10:00:00.000Z",
+        pnlQuote: 15,
+        netPnlPct: 0.012
+      }
+    ],
+    scaleOuts: [
+      { positionId: "trade-1", brokerMode: "paper", at: "2026-03-19T09:30:00.000Z", realizedPnl: 4, fraction: 0.3 }
+    ],
+    blockedSetups: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: []
+  };
+  bot.runtime = { openPositions: [], lastKnownBalance: 1000, lastKnownEquity: 1000 };
+  bot.buildTradeView = (trade) => trade;
+  bot.buildScaleOutView = (item) => item;
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getReport = TradingBot.prototype.getReport;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  const report = await bot.getReport();
+  assert.equal(report.realizedPnl, 19);
+  assert.equal(report.scaleOutSummary.count, 1);
+  assert.equal(report.modes.paper.realizedPnl, 19);
 });
 
 await runCheck("scanCandidatesReadOnly does not mutate runtime journals or local-book universe", async () => {

@@ -3116,6 +3116,130 @@ export class TradingBot {
     this.symbolRules = {};
     this.marketCache = {};
     this.persistPromise = null;
+    this.observabilityCache = {
+      reportVersion: 0,
+      reportBuiltVersion: -1,
+      report: null
+    };
+  }
+
+  markReportDirty() {
+    this.observabilityCache = this.observabilityCache || {
+      reportVersion: 0,
+      reportBuiltVersion: -1,
+      report: null
+    };
+    this.observabilityCache.reportVersion = (this.observabilityCache.reportVersion || 0) + 1;
+  }
+
+  getPerformanceReport() {
+    this.observabilityCache = this.observabilityCache || {
+      reportVersion: 0,
+      reportBuiltVersion: -1,
+      report: null
+    };
+    if (this.observabilityCache.report && this.observabilityCache.reportBuiltVersion === this.observabilityCache.reportVersion) {
+      return this.observabilityCache.report;
+    }
+    const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    this.observabilityCache.report = report;
+    this.observabilityCache.reportBuiltVersion = this.observabilityCache.reportVersion;
+    return report;
+  }
+
+  buildPublicReportView(report = this.getPerformanceReport()) {
+    return {
+      generatedAt: nowIso(),
+      tradeCount: report.tradeCount || 0,
+      realizedPnl: num(report.realizedPnl || 0, 2),
+      winRate: num(report.winRate || 0, 4),
+      averagePnlPct: num(report.averagePnlPct || 0, 4),
+      profitFactor: Number.isFinite(report.profitFactor) ? num(report.profitFactor, 3) : null,
+      maxDrawdownPct: num(report.maxDrawdownPct || 0, 4),
+      openExposure: num(report.openExposure || 0, 2),
+      openPositions: report.openPositions || 0,
+      scaleOutSummary: {
+        count: report.scaleOutSummary?.count || 0,
+        realizedPnl: num(report.scaleOutSummary?.realizedPnl || 0, 2),
+        averageFraction: num(report.scaleOutSummary?.averageFraction || 0, 4)
+      },
+      executionSummary: report.executionSummary || {},
+      executionCostSummary: report.executionCostSummary || {},
+      pnlDecomposition: report.pnlDecomposition || {},
+      tradeQualityReview: report.tradeQualityReview || null,
+      attribution: report.attribution || {},
+      windows: report.windows || {},
+      modes: report.modes || {},
+      recentTrades: report.recentTrades.map((trade) => this.buildTradeView(trade)),
+      recentScaleOuts: report.recentScaleOuts.map((event) => this.buildScaleOutView(event)),
+      recentEvents: report.recentEvents || [],
+      recentBlockedSetups: report.recentBlockedSetups || [],
+      recentResearchRuns: report.recentResearchRuns || [],
+      recentReviews: report.recentReviews || []
+    };
+  }
+
+  buildDoctorChecks({ report, balance, previewCandidates = [], now = new Date() }) {
+    const thresholdMs = Math.max(60_000, (this.config.tradingIntervalSeconds || 60) * 3 * 1000);
+    const analysisAgeMs = this.runtime.lastAnalysisAt ? now.getTime() - new Date(this.runtime.lastAnalysisAt).getTime() : Number.POSITIVE_INFINITY;
+    const portfolioAgeMs = this.runtime.lastPortfolioUpdateAt ? now.getTime() - new Date(this.runtime.lastPortfolioUpdateAt).getTime() : Number.POSITIVE_INFINITY;
+    const balanceDelta = Math.abs((balance?.quoteFree || 0) - (this.runtime.lastKnownBalance || 0));
+    const ackAlerts = arr(this.runtime.ops?.alerts?.alerts || []).filter((item) => requiresOperatorAck(item, this.config.botMode));
+    const checks = [
+      {
+        id: "analysis_fresh",
+        passed: Number.isFinite(analysisAgeMs) && analysisAgeMs <= thresholdMs,
+        severity: "high",
+        detail: this.runtime.lastAnalysisAt
+          ? `Laatste analyse ${Math.round(analysisAgeMs / 1000)}s geleden.`
+          : "Nog geen analyse beschikbaar."
+      },
+      {
+        id: "portfolio_snapshot_fresh",
+        passed: Number.isFinite(portfolioAgeMs) && portfolioAgeMs <= thresholdMs,
+        severity: "high",
+        detail: this.runtime.lastPortfolioUpdateAt
+          ? `Portfolio snapshot ${Math.round(portfolioAgeMs / 1000)}s geleden.`
+          : "Nog geen portfolio snapshot beschikbaar."
+      },
+      {
+        id: "balance_snapshot_synced",
+        passed: balanceDelta <= 0.01,
+        severity: "medium",
+        detail: `Broker balance delta ${num(balanceDelta, 2)} USD.`
+      },
+      {
+        id: "operator_alerts_acknowledged",
+        passed: ackAlerts.length === 0,
+        severity: "medium",
+        detail: ackAlerts.length
+          ? `${ackAlerts.length} alert(s) vereisen operator-ack.`
+          : "Geen open alerts met operator-ack vereist."
+      },
+      {
+        id: "report_exposure_finite",
+        passed: Number.isFinite(report.openExposure || 0),
+        severity: "high",
+        detail: `Open exposure ${num(report.openExposure || 0, 2)} USD.`
+      },
+      {
+        id: "preview_candidates_available",
+        passed: Array.isArray(previewCandidates),
+        severity: "low",
+        detail: `${previewCandidates.length || 0} read-only preview candidates berekend.`
+      }
+    ];
+    const blockingFailures = checks.filter((item) => !item.passed && item.severity === "high");
+    const warningFailures = checks.filter((item) => !item.passed && item.severity !== "high");
+    return {
+      status: blockingFailures.length
+        ? "blocked"
+        : warningFailures.length
+          ? "degraded"
+          : "ready",
+      checkedAt: now.toISOString(),
+      checks
+    };
   }
 
   applyHistoricalBootstrap(bootstrap = null) {
@@ -3456,7 +3580,7 @@ export class TradingBot {
     });
     await this.applyReconciliation(reconciliation);
     this.syncOrderLifecycleState("init_reconciliation");
-    this.refreshOperationalViews({ report: buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config }), nowIso: nowIso() });
+    this.refreshOperationalViews({ report: this.getPerformanceReport(), nowIso: nowIso() });
     await this.persist();
   }
 
@@ -3748,6 +3872,7 @@ export class TradingBot {
 
   recordEvent(type, payload) {
     this.journal.events.push({ at: nowIso(), type, ...payload });
+    this.markReportDirty();
   }
 
   resetExecutionPolicy(reason = "self_heal") {
@@ -6549,7 +6674,7 @@ export class TradingBot {
   }
 
   refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
-    const evaluation = report || buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
+    const evaluation = report || this.getPerformanceReport();
     const existingOps = this.runtime.ops || {};
     this.runtime.capitalPolicy = buildCapitalPolicySnapshot({
       journal: this.journal,
@@ -6906,6 +7031,7 @@ export class TradingBot {
     }
     for (const trade of reconciliation.closedTrades || []) {
       this.journal.trades.push(trade);
+      this.markReportDirty();
       await this.learnFromTrade(trade, "Reconciled closed position");
     }
     if (reconciliation.exchangeTruth) {
@@ -8025,6 +8151,7 @@ export class TradingBot {
           });
           scaleOut.exitIntelligenceSummary = exitIntelligenceSummary;
           this.journal.scaleOuts.push(scaleOut);
+          this.markReportDirty();
           this.recordEvent("position_scaled_out", {
             symbol: position.symbol,
             reason: scaleOut.reason,
@@ -8052,6 +8179,7 @@ export class TradingBot {
         trade.exitIntelligenceSummary = exitIntelligenceSummary;
         trade.replayCheckpoints = arr(position.replayCheckpoints || []);
         this.journal.trades.push(trade);
+        this.markReportDirty();
         await this.learnFromTrade(trade, "Closed position");
       } catch (error) {
         const safeguardedStateChange = Boolean(error.positionSafeguarded);
@@ -8411,6 +8539,9 @@ export class TradingBot {
       }));
       this.runtime.latestBlockedSetups = blockedCandidates;
       this.journal.blockedSetups.push(...blockedCandidates.slice(0, 4));
+      if (blockedCandidates.length) {
+        this.markReportDirty();
+      }
       this.runtime.marketSentiment = candidates[0]
         ? summarizeMarketSentiment(candidates[0].marketSentimentSummary)
         : this.runtime.marketSentiment || summarizeMarketSentiment(EMPTY_MARKET_SENTIMENT);
@@ -8507,6 +8638,7 @@ export class TradingBot {
         this.recordEvent("position_open_failed", { symbol: candidate.symbol, error: error.message });
         if (error.recoveredTrade) {
           this.journal.trades.push(error.recoveredTrade);
+          this.markReportDirty();
           this.recordEvent("entry_recovered_flat", {
             symbol: error.recoveredTrade.symbol,
             pnlQuote: error.recoveredTrade.pnlQuote,
@@ -8585,14 +8717,18 @@ export class TradingBot {
   }
 
   trimJournal() {
+    let trimmed = false;
     if (this.journal.trades.length > 2000) {
       this.journal.trades = this.journal.trades.slice(-2000);
+      trimmed = true;
     }
     if (this.journal.scaleOuts.length > 2000) {
       this.journal.scaleOuts = this.journal.scaleOuts.slice(-2000);
+      trimmed = true;
     }
     if (this.journal.blockedSetups.length > 2000) {
       this.journal.blockedSetups = this.journal.blockedSetups.slice(-2000);
+      trimmed = true;
     }
     if (this.journal.counterfactuals.length > 2000) {
       this.journal.counterfactuals = this.journal.counterfactuals.slice(-2000);
@@ -8602,15 +8738,22 @@ export class TradingBot {
     }
     if (this.journal.researchRuns.length > 120) {
       this.journal.researchRuns = this.journal.researchRuns.slice(-120);
+      trimmed = true;
     }
     if (this.journal.equitySnapshots.length > 5000) {
       this.journal.equitySnapshots = this.journal.equitySnapshots.slice(-5000);
+      trimmed = true;
     }
     if (this.journal.cycles.length > 2000) {
       this.journal.cycles = this.journal.cycles.slice(-2000);
+      trimmed = true;
     }
     if (this.journal.events.length > 2000) {
       this.journal.events = this.journal.events.slice(-2000);
+      trimmed = true;
+    }
+    if (trimmed) {
+      this.markReportDirty();
     }
   }
 
@@ -8620,6 +8763,7 @@ export class TradingBot {
     this.runtime.lastKnownBalance = balance.quoteFree;
     this.runtime.lastKnownEquity = equity;
     this.runtime.lastPortfolioUpdateAt = nowIso();
+    this.markReportDirty();
     return { balance, equity };
   }
 
@@ -8695,6 +8839,7 @@ export class TradingBot {
       });
     }
     this.journal.researchRuns.push(result);
+    this.markReportDirty();
     await this.dataRecorder.recordResearch(result);
     this.refreshGovernanceViews(nowIso());
     this.recordEvent("research_run_completed", {
@@ -8743,6 +8888,7 @@ export class TradingBot {
       quoteFree: portfolio.balance.quoteFree,
       openPositions: this.runtime.openPositions.length
     });
+    this.markReportDirty();
     this.journal.cycles.push({
       at: cycleAt,
       equity: portfolio.equity,
@@ -8758,6 +8904,7 @@ export class TradingBot {
       selectedSymbol: entryAttempt.selectedSymbol || null,
       openedSymbol: entryAttempt.openedPosition?.symbol || null
     });
+    this.markReportDirty();
     const safety = this.updateSafetyState({ now: new Date(cycleAt), candidateSummaries: arr(this.runtime.latestDecisions) });
     this.runtime.lastCycleAt = cycleAt;
     this.runtime.lastAnalysisAt = cycleAt;
@@ -9981,10 +10128,11 @@ export class TradingBot {
   }
 
   async runDoctor() {
-    const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     const balance = await this.broker.getBalance(this.runtime);
     await this.maybeRunExchangeTruthLoop();
+    const report = this.getPerformanceReport();
     const previewCandidates = await this.scanCandidatesReadOnly(balance);
+    const checks = this.buildDoctorChecks({ report, balance, previewCandidates, now: new Date() });
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -10009,11 +10157,9 @@ export class TradingBot {
       volatility: summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT),
       stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
       dataRecorder: summarizeDataRecorder(this.runtime.dataRecorder || this.dataRecorder.getSummary()),
-      report: {
-        ...report,
-        recentTrades: report.recentTrades.map((trade) => this.buildTradeView(trade)),
-        recentScaleOuts: report.recentScaleOuts.map((event) => this.buildScaleOutView(event))
-      },
+      readiness: this.buildOperationalReadiness(),
+      checks,
+      report: this.buildPublicReportView(report),
       research: this.buildResearchView(),
       universe: summarizeUniverseSelection(this.runtime.universe || {}),
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
@@ -10261,8 +10407,11 @@ export class TradingBot {
     return {
       mode: dashboard.overview.mode,
       lastCycleAt: dashboard.overview.lastCycleAt,
+      lastAnalysisAt: dashboard.overview.lastAnalysisAt,
       quoteFree: dashboard.overview.quoteFree,
       equity: dashboard.overview.equity,
+      readiness: dashboard.ops?.readiness || null,
+      overview: dashboard.overview,
       openPositions: dashboard.positions,
       topDecisions: dashboard.topDecisions,
       health: dashboard.health,
@@ -10281,5 +10430,13 @@ export class TradingBot {
       report: dashboard.report,
       modelWeights: dashboard.modelWeights
     };
+  }
+
+  async getReport() {
+    await this.maybeRunExchangeTruthLoop();
+    if (!Number.isFinite(this.runtime.lastKnownBalance) || !Number.isFinite(this.runtime.lastKnownEquity)) {
+      await this.updatePortfolioSnapshot();
+    }
+    return this.buildPublicReportView(this.getPerformanceReport());
   }
 }

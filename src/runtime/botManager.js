@@ -11,6 +11,16 @@ function summarizeError(error) {
   };
 }
 
+function publicError(error) {
+  if (!error?.message) {
+    return null;
+  }
+  return {
+    at: error.at || nowIso(),
+    message: `${error.message}`.slice(0, 400)
+  };
+}
+
 function requiresOperatorAck(alert = {}, mode = "paper") {
   if (alert.resolvedAt || alert.acknowledgedAt) {
     return false;
@@ -280,55 +290,48 @@ export class BotManager {
   }
 
   buildOperationalReadiness(snapshot) {
+    const snapshotReadiness = snapshot?.dashboard?.ops?.readiness || {};
+    const reasons = [...new Set(Array.isArray(snapshotReadiness.reasons) ? snapshotReadiness.reasons : [])];
     const readiness = {
-      ok: true,
-      status: "ready",
-      reasons: [],
+      ok: (snapshotReadiness.status || "ready") === "ready",
+      status: snapshotReadiness.status || "ready",
+      reasons,
       checkedAt: nowIso(),
       lastAnalysisAt: snapshot?.dashboard?.overview?.lastAnalysisAt || null,
       runState: snapshot?.manager?.runState || this.runState,
       mode: snapshot?.manager?.currentMode || this.config?.botMode || "paper"
     };
-    if (!snapshot?.dashboard?.overview?.lastAnalysisAt) {
+    const addReason = (reason, status = "degraded") => {
+      if (!readiness.reasons.includes(reason)) {
+        readiness.reasons.push(reason);
+      }
       readiness.ok = false;
-      readiness.status = readiness.status === "blocked" ? "blocked" : "warming";
-      readiness.reasons.push("analysis_not_ready");
+      readiness.status = readiness.status === "blocked" || status === "blocked" ? "blocked" : status;
+    };
+    if (!snapshot?.dashboard?.overview?.lastAnalysisAt) {
+      addReason("analysis_not_ready", "warming");
     }
     if (snapshot?.manager?.lastError?.message || this.lastError?.message) {
-      readiness.ok = false;
-      readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
-      readiness.reasons.push("manager_error");
+      addReason("manager_error", "degraded");
     }
     if (snapshot?.dashboard?.health?.circuitOpen) {
-      readiness.ok = false;
-      readiness.status = "blocked";
-      readiness.reasons.push("health_circuit_open");
+      addReason("health_circuit_open", "blocked");
     }
     if (snapshot?.dashboard?.safety?.exchangeTruth?.freezeEntries) {
-      readiness.ok = false;
-      readiness.status = "blocked";
-      readiness.reasons.push("exchange_truth_freeze");
+      addReason("exchange_truth_freeze", "blocked");
     }
     if ((snapshot?.dashboard?.safety?.exchangeSafety?.status || "") === "blocked") {
-      readiness.ok = false;
-      readiness.status = "blocked";
-      readiness.reasons.push("exchange_safety_blocked");
+      addReason("exchange_safety_blocked", "blocked");
     }
     if ((snapshot?.dashboard?.ops?.capitalGovernor?.status || "") === "blocked") {
-      readiness.ok = false;
-      readiness.status = "blocked";
-      readiness.reasons.push("capital_governor_blocked");
+      addReason("capital_governor_blocked", "blocked");
     }
     const mode = snapshot?.manager?.currentMode || this.config?.botMode || "paper";
     if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, mode))) {
-      readiness.ok = false;
-      readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
-      readiness.reasons.push("operator_ack_required");
+      addReason("operator_ack_required", "degraded");
     }
     if ((snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
-      readiness.ok = false;
-      readiness.status = readiness.status === "blocked" ? "blocked" : "degraded";
-      readiness.reasons.push("lifecycle_attention_required");
+      addReason("lifecycle_attention_required", "degraded");
     }
     return readiness;
   }
@@ -528,7 +531,7 @@ export class BotManager {
       await this.reinitializeBot();
     }
     const dashboard = await this.bot.getDashboardSnapshot();
-    return {
+    const snapshot = {
       manager: {
         runState: this.runState,
         currentMode: this.config.botMode,
@@ -536,11 +539,13 @@ export class BotManager {
         lastStopAt: this.lastStopAt,
         lastModeSwitchAt: this.lastModeSwitchAt,
         stopReason: this.stopReason || null,
-        lastError: this.lastError,
+        lastError: publicError(this.lastError),
         dashboardPort: this.config.dashboardPort
       },
       dashboard
     };
+    snapshot.manager.readiness = this.buildOperationalReadiness(snapshot);
+    return snapshot;
   }
 }
 

@@ -76,8 +76,8 @@ export default async function runCli({ command, args, config, logger }) {
     }
 
     if (command === "report") {
-      const status = await bot.getStatus();
-      console.log(JSON.stringify(status.report, null, 2));
+      const report = await bot.getReport();
+      console.log(JSON.stringify(report, null, 2));
       return;
     }
 
