@@ -7193,7 +7193,22 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
     marketSentiment: {},
     onChainLite: {},
     volatilityContext: {},
-    sourceReliability: {},
+    sourceReliability: {
+      providerCount: 1,
+      averageScore: 0.82,
+      degradedCount: 0,
+      coolingDownCount: 0,
+      providers: [{ provider: "coindesk", group: "news", score: 0.82, coolingDown: false, recentFailures: 0, lastError: null }],
+      externalFeeds: {
+        providerCount: 1,
+        averageScore: 0.18,
+        degradedCount: 1,
+        coolingDownCount: 1,
+        providers: [{ provider: "bls_calendar", group: "calendar", score: 0.18, coolingDown: true, recentFailures: 2, lastError: "timeout" }],
+        notes: ["calendar feed staat tijdelijk op cooldown."]
+      },
+      notes: []
+    },
     session: {},
     pairHealth: {},
     qualityQuorum: {},
@@ -7211,6 +7226,8 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
   assert.equal(snapshot.ops.paperLearning.status, "active");
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
+  assert.equal(snapshot.sourceReliability.externalFeeds.providerCount, 1);
+  assert.equal(snapshot.sourceReliability.externalFeeds.providers[0].group, "calendar");
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
   assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");

@@ -185,6 +185,37 @@ function statusTone(value) {
   return "neutral";
 }
 
+function externalFeedHeadline(snapshot) {
+  const external = snapshot?.dashboard?.sourceReliability?.externalFeeds || {};
+  if ((external.providerCount || 0) === 0) {
+    return {
+      value: "Geen",
+      foot: "Geen externe feed issues",
+      tone: "neutral"
+    };
+  }
+  const lead = (external.providers || [])[0] || null;
+  if ((external.coolingDownCount || 0) > 0) {
+    return {
+      value: `${external.coolingDownCount} cooldown`,
+      foot: lead ? `${titleize(lead.group)} · ${titleize(lead.provider)}` : "Feed cooldown actief",
+      tone: "negative"
+    };
+  }
+  if ((external.degradedCount || 0) > 0) {
+    return {
+      value: `${external.degradedCount} degraded`,
+      foot: lead ? `${titleize(lead.group)} · ${titleize(lead.provider)}` : "Feed quality verlaagd",
+      tone: "neutral"
+    };
+  }
+  return {
+    value: titleize("healthy"),
+    foot: `Avg ${formatPct(external.averageScore || 0, 0)}`,
+    tone: "positive"
+  };
+}
+
 function titleize(value) {
   return `${value || "-"}`
     .replaceAll("_", " ")
@@ -958,6 +989,7 @@ function buildOpsCards(snapshot) {
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const externalFeeds = externalFeedHeadline(snapshot);
   return [
     {
       label: "Readiness",
@@ -984,6 +1016,12 @@ function buildOpsCards(snapshot) {
       tone: exchangeTruth.freezeEntries || capitalPolicy.status === "blocked" ? "negative" : "neutral"
     },
     {
+      label: "External feeds",
+      value: externalFeeds.value,
+      foot: externalFeeds.foot,
+      tone: externalFeeds.tone
+    },
+    {
       label: "Paper learning",
       value: titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"),
       foot: paperLearning.probation?.status ? titleize(paperLearning.probation.status) : "Nog geen probation",
@@ -998,6 +1036,7 @@ function buildOpsEvents(snapshot) {
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
+  const externalFeeds = snapshot?.dashboard?.sourceReliability?.externalFeeds || {};
   const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
     title: titleize(item.type || item.severity || "alert"),
     detail: item.note || item.message || item.reason || "Alert vereist aandacht.",
@@ -1035,6 +1074,15 @@ function buildOpsEvents(snapshot) {
           title: "Replay prioriteit",
           detail: replayPlan.operatorGoal,
           tone: replayPlan.status === "priority" ? "negative" : "neutral"
+        }
+      : null,
+    (externalFeeds.coolingDownCount || externalFeeds.degradedCount)
+      ? {
+          title: "External feeds",
+          detail: externalFeeds.providers?.[0]
+            ? `${titleize(externalFeeds.providers[0].group)} · ${titleize(externalFeeds.providers[0].provider)} ${externalFeeds.providers[0].coolingDown ? "cooldown" : "degraded"}`
+            : `${externalFeeds.coolingDownCount || 0} cooldown · ${externalFeeds.degradedCount || 0} degraded`,
+          tone: externalFeeds.coolingDownCount ? "negative" : "neutral"
         }
       : null,
     ...lifecycle,
