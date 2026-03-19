@@ -886,6 +886,38 @@ function renderShadowReviewNodes(reviews = []) {
   });
 }
 
+function makeLearningDetailCard(label, title, foot, note) {
+  const article = makeNode("article", { className: "learning-detail" });
+  article.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("strong", { text: title }),
+    makeNode("span", { className: "metric-foot", text: foot }),
+    makeNode("p", { className: "learning-note", text: note })
+  );
+  return article;
+}
+
+function makeLearningListItem(label, paragraphs = [], tagLists = []) {
+  const article = makeNode("article", { className: "learning-list-item" });
+  article.append(makeNode("span", { className: "metric-label", text: label }));
+  for (const list of tagLists.filter(Boolean)) {
+    article.append(list);
+  }
+  for (const paragraph of paragraphs.filter(Boolean)) {
+    article.append(makeNode("p", { text: paragraph }));
+  }
+  return article;
+}
+
+function makeLearningSectionHead(label, foot) {
+  const head = makeNode("div", { className: "learning-section-head" });
+  head.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("span", { className: "metric-foot", text: foot })
+  );
+  return head;
+}
+
 function renderLearning(snapshot) {
   if (!elements.learningList) {
     return;
@@ -945,153 +977,141 @@ function renderLearning(snapshot) {
     paperLearning.notes?.[0] ||
     "Nog geen directe leeractie nodig.";
   const focusText = learningFocusText(snapshot);
-  const compactReviewTags = reviewQueue.length
-    ? reviewQueue.map((item) => `<span class="tag ${item.priority === "high" ? "negative" : ""}">${escapeHtml(`${titleize(item.type)} · ${item.id}`)}</span>`).join("")
-    : `<span class="tag">Geen review queue</span>`;
-  const compactPolicyTags = policyCandidates.length
-    ? policyCandidates.map((item) => `<span class="tag ${item.action.includes("retire") ? "negative" : item.action.includes("promote") ? "positive" : ""}">${escapeHtml(`${titleize(item.action)} · ${titleize(item.id)}`)}</span>`).join("")
-    : `<span class="tag">Geen policy-wijziging klaar</span>`;
-  const compactOverrideTags = activeOverrides.length
-    ? activeOverrides.map((item) => `<span class="tag positive">${escapeHtml(`${titleize(item.id)} · ${titleize(item.status || "override")}`)}</span>`).join("")
-    : `<span class="tag">Geen actieve override</span>`;
+  const learningBoard = makeNode("article", { className: "learning-board" });
+  const hero = makeNode("section", { className: "learning-hero" });
+  const heroTitle = makeNode("div", { className: "learning-title" });
+  const heroLeft = makeNode("div");
+  heroLeft.append(
+    makeNode("p", { className: "eyebrow", text: "Live learning" }),
+    makeNode("h3", { text: `${learningStatus} · ${learningScore}` })
+  );
+  heroTitle.append(
+    heroLeft,
+    makeNode("span", {
+      className: `pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}`,
+      text: learningStatus
+    })
+  );
+  hero.append(
+    heroTitle,
+    makeNode("p", { className: "learning-copy", text: focusText }),
+    makeTagList([
+      makeTag(laneText),
+      makeTag(`Snapshot: ${formatDate(paperLearning.generatedAt)}`),
+      makeTag(`Top blocker: ${topBlockerText}`),
+      makeTag(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)
+    ].map((node) => {
+      node.classList.add("tag");
+      return node;
+    }))
+  );
+  hero.lastChild.className = "learning-strip-grid";
 
-  elements.learningList.innerHTML = `
-    <article class="learning-board">
-      <section class="learning-hero">
-        <div class="learning-title">
-          <div>
-            <p class="eyebrow">Live learning</p>
-            <h3>${escapeHtml(learningStatus)} · ${escapeHtml(learningScore)}</h3>
-          </div>
-          <span class="pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}">${escapeHtml(learningStatus)}</span>
-        </div>
-        <p class="learning-copy">${escapeHtml(focusText)}</p>
-        <div class="learning-strip-grid">
-          <span class="tag">${escapeHtml(laneText)}</span>
-          <span class="tag">${escapeHtml(`Snapshot: ${formatDate(paperLearning.generatedAt)}`)}</span>
-          <span class="tag">${escapeHtml(`Top blocker: ${topBlockerText}`)}</span>
-          <span class="tag">${escapeHtml(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)}</span>
-        </div>
-      </section>
-      <section class="learning-summary-grid">
-        <article class="learning-detail">
-          <span class="metric-label">Leert nu</span>
-          <strong>${escapeHtml(topScope?.id ? titleize(topScope.id) : "Warmup dataset")}</strong>
-          <span class="metric-foot">${escapeHtml(topScope?.status ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 0)} · ${titleize(topScope.source || "probe_trades")}` : "Nog geen sterke scope zichtbaar.")}</span>
-          <p class="learning-note">${escapeHtml(scopeMeaning)}</p>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Laatste trade</span>
-          <strong>${escapeHtml(latestTrade.title)}</strong>
-          <span class="metric-foot">${escapeHtml(latestTrade.detail)}</span>
-          <p class="learning-note">${escapeHtml(latestTrade.lesson)}</p>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Belangrijkste rem</span>
-          <strong>${escapeHtml(titleize(topOutcome?.id || topBlocker?.id || "nog geen duidelijke les"))}</strong>
-          <span class="metric-foot">${escapeHtml(
-            topOutcome?.count
-              ? `${topOutcome.count} recente cases van dit type.`
-              : topBlocker?.count
-                ? `${topBlocker.count} blokkades sturen nu de leerlus.`
-                : "Er is nog te weinig consistente paperdata om 1 duidelijke les te trekken."
-          )}</span>
-          <p class="learning-note">${escapeHtml(blockerMeaning)}</p>
-        </article>
-        <article class="learning-detail">
-          <span class="metric-label">Volgende stap</span>
-          <strong>${escapeHtml(titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"))}</strong>
-          <span class="metric-foot">${escapeHtml(nextStep)}</span>
-          <p class="learning-note">${escapeHtml(reviewText)}</p>
-        </article>
-      </section>
-      <section class="learning-callouts">
-        <article class="learning-list-item">
-          <span class="metric-label">Wat gebeurt er nu</span>
-          <p>${escapeHtml(
-            paperLearning.probation?.note ||
-            (paperLearning.thresholdSandbox?.status
-              ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
-              : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds en filters te verbeteren.")
-          )}</p>
-          <p>${escapeHtml(
-            benchmarkLead?.id
-              ? `${titleize(benchmarkLead.id)} presteert nu het sterkst als challenger of benchmark.`
-              : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar."
-          )}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Review queue</span>
-          <div class="tag-list">${compactReviewTags}</div>
-          <p>${escapeHtml(reviewText)}</p>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Policy en operatoracties</span>
-          <div class="tag-list">${compactPolicyTags}</div>
-          <div class="tag-list">${compactOverrideTags}</div>
-          <p>${escapeHtml(
-            paperLearning.policyTransitions?.note ||
-            paperLearning.operatorActions?.note ||
-            "Nog geen policy-wijziging of override die operator-ingreep vraagt."
-          )}</p>
-          <div class="tag-list" data-learning-guardrails></div>
-          <div class="tag-list" data-learning-actions></div>
-          <div class="tag-list" data-learning-reverts></div>
-        </article>
-        <article class="learning-list-item">
-          <span class="metric-label">Laatste operatorlog</span>
-          <div class="tag-list" data-learning-history></div>
-          <p>${escapeHtml(
-            operatorHistory[0]?.note ||
-            paperLearning.coaching?.nextReview ||
-            "Goedgekeurde, afgewezen en teruggedraaide policy-acties verschijnen hier."
-          )}</p>
-        </article>
-      </section>
-      <section class="learning-review-grid">
-        <article class="learning-review-column">
-          <div class="learning-section-head">
-            <span class="metric-label">Probe trades</span>
-            <span class="metric-foot">Hoe echte paper-probes liepen</span>
-          </div>
-          <div data-learning-probes></div>
-        </article>
-        <article class="learning-review-column">
-          <div class="learning-section-head">
-            <span class="metric-label">Shadow cases</span>
-            <span class="metric-foot">Wat geblokkeerde setups waarschijnlijk deden</span>
-          </div>
-          <div data-learning-shadow></div>
-        </article>
-      </section>
-    </article>
-  `;
-  const probesContainer = elements.learningList.querySelector("[data-learning-probes]");
-  const shadowContainer = elements.learningList.querySelector("[data-learning-shadow]");
-  const guardrailsContainer = elements.learningList.querySelector("[data-learning-guardrails]");
-  const actionsContainer = elements.learningList.querySelector("[data-learning-actions]");
-  const revertsContainer = elements.learningList.querySelector("[data-learning-reverts]");
-  const historyContainer = elements.learningList.querySelector("[data-learning-history]");
-  replaceChildren(probesContainer, renderProbeReviewNodes(paperLearning.recentProbeReviews || []));
-  replaceChildren(shadowContainer, renderShadowReviewNodes(paperLearning.recentShadowReviews || []));
-  replaceChildren(guardrailsContainer, operatorGuardrails.length ? operatorGuardrails.map((item) => makeTag(titleize(item), "tag negative")) : []);
-  replaceChildren(actionsContainer, policyCandidates.length
-    ? policyCandidates.map((item) => item.approved
-      ? makeTag(`Approved · ${titleize(item.id)}`, "tag positive")
-      : [
-          makeActionButton({ action: "approve", kind: item.action, id: item.id, label: `Approve ${titleize(item.id)}` }),
-          makeActionButton({ action: "reject", kind: item.action, id: item.id, label: "Reject", tone: "negative" })
-        ]).flat()
-    : []);
-  replaceChildren(revertsContainer, activeOverrides.map((item) => makeActionButton({
-    action: "revert",
-    id: item.id,
-    label: `Revert ${titleize(item.id)}`,
-    tone: "negative"
-  })));
-  replaceChildren(historyContainer, operatorHistory.length
-    ? operatorHistory.map((item) => makeTag(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`))
-    : [makeTag("Nog geen operator history")]);
+  const summaryGrid = makeNode("section", { className: "learning-summary-grid" });
+  summaryGrid.append(
+    makeLearningDetailCard(
+      "Leert nu",
+      topScope?.id ? titleize(topScope.id) : "Warmup dataset",
+      topScope?.status
+        ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 0)} · ${titleize(topScope.source || "probe_trades")}`
+        : "Nog geen sterke scope zichtbaar.",
+      scopeMeaning
+    ),
+    makeLearningDetailCard("Laatste trade", latestTrade.title, latestTrade.detail, latestTrade.lesson),
+    makeLearningDetailCard(
+      "Belangrijkste rem",
+      titleize(topOutcome?.id || topBlocker?.id || "nog geen duidelijke les"),
+      topOutcome?.count
+        ? `${topOutcome.count} recente cases van dit type.`
+        : topBlocker?.count
+          ? `${topBlocker.count} blokkades sturen nu de leerlus.`
+          : "Er is nog te weinig consistente paperdata om 1 duidelijke les te trekken.",
+      blockerMeaning
+    ),
+    makeLearningDetailCard(
+      "Volgende stap",
+      titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"),
+      nextStep,
+      reviewText
+    )
+  );
+
+  const callouts = makeNode("section", { className: "learning-callouts" });
+  const reviewTags = reviewQueue.length
+    ? reviewQueue.map((item) => makeTag(`${titleize(item.type)} · ${item.id}`, item.priority === "high" ? "tag negative" : "tag"))
+    : [makeTag("Geen review queue")];
+  const policyTags = policyCandidates.length
+    ? policyCandidates.map((item) => makeTag(
+      `${titleize(item.action)} · ${titleize(item.id)}`,
+      item.action.includes("retire") ? "tag negative" : item.action.includes("promote") ? "tag positive" : "tag"
+    ))
+    : [makeTag("Geen policy-wijziging klaar")];
+  const overrideTags = activeOverrides.length
+    ? activeOverrides.map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive"))
+    : [makeTag("Geen actieve override")];
+
+  callouts.append(
+    makeLearningListItem("Wat gebeurt er nu", [
+      paperLearning.probation?.note ||
+        (paperLearning.thresholdSandbox?.status
+          ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
+          : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds en filters te verbeteren."),
+      benchmarkLead?.id
+        ? `${titleize(benchmarkLead.id)} presteert nu het sterkst als challenger of benchmark.`
+        : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar."
+    ]),
+    makeLearningListItem("Review queue", [reviewText], [makeTagList(reviewTags)]),
+    makeLearningListItem(
+      "Policy en operatoracties",
+      [paperLearning.policyTransitions?.note || paperLearning.operatorActions?.note || "Nog geen policy-wijziging of override die operator-ingreep vraagt."],
+      [
+        makeTagList(policyTags),
+        makeTagList(overrideTags),
+        operatorGuardrails.length ? makeTagList(operatorGuardrails.map((item) => makeTag(titleize(item), "tag negative"))) : null,
+        policyCandidates.length
+          ? makeTagList(policyCandidates.map((item) => item.approved
+            ? makeTag(`Approved · ${titleize(item.id)}`, "tag positive")
+            : [
+                makeActionButton({ action: "approve", kind: item.action, id: item.id, label: `Approve ${titleize(item.id)}` }),
+                makeActionButton({ action: "reject", kind: item.action, id: item.id, label: "Reject", tone: "negative" })
+              ]).flat())
+          : null,
+        activeOverrides.length
+          ? makeTagList(activeOverrides.map((item) => makeActionButton({
+            action: "revert",
+            id: item.id,
+            label: `Revert ${titleize(item.id)}`,
+            tone: "negative"
+          })))
+          : null
+      ]
+    ),
+    makeLearningListItem(
+      "Laatste operatorlog",
+      [operatorHistory[0]?.note || paperLearning.coaching?.nextReview || "Goedgekeurde, afgewezen en teruggedraaide policy-acties verschijnen hier."],
+      [
+        makeTagList(operatorHistory.length
+          ? operatorHistory.map((item) => makeTag(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`))
+          : [makeTag("Nog geen operator history")])
+      ]
+    )
+  );
+
+  const reviewGrid = makeNode("section", { className: "learning-review-grid" });
+  const probeColumn = makeNode("article", { className: "learning-review-column" });
+  probeColumn.append(
+    makeLearningSectionHead("Probe trades", "Hoe echte paper-probes liepen"),
+    ...renderProbeReviewNodes(paperLearning.recentProbeReviews || [])
+  );
+  const shadowColumn = makeNode("article", { className: "learning-review-column" });
+  shadowColumn.append(
+    makeLearningSectionHead("Shadow cases", "Wat geblokkeerde setups waarschijnlijk deden"),
+    ...renderShadowReviewNodes(paperLearning.recentShadowReviews || [])
+  );
+  reviewGrid.append(probeColumn, shadowColumn);
+
+  learningBoard.append(hero, summaryGrid, callouts, reviewGrid);
+  replaceChildren(elements.learningList, [learningBoard]);
 }
 
 function buildOpsCards(snapshot) {
