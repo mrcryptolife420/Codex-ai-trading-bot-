@@ -53,6 +53,7 @@ import {
   buildSyntheticBook as buildBacktestSyntheticBook,
   buildSimulationEntryDecision,
   buildSimulationExitDecision,
+  resolveSimulationBuyFill,
   resolveCandleIntervalMinutes,
   resolveEntryExecution,
   resolveExitAnchorPrice
@@ -6094,6 +6095,27 @@ await runCheck("simulation exit decision reuses risk manager scale-out logic", a
     nowIso: "2026-03-08T10:00:00.000Z"
   });
   assert.equal(decision.shouldScaleOut, true);
+});
+
+await runCheck("simulation buy sizing respects exchange minimums like paper broker", async () => {
+  const rules = {
+    minQty: 0.001,
+    maxQty: 1000,
+    stepSize: 0.001,
+    marketMinQty: 0.001,
+    marketMaxQty: 1000,
+    marketStepSize: 0.001,
+    minNotional: 10
+  };
+  const sized = resolveSimulationBuyFill({
+    quoteAmount: 12.34,
+    executionPrice: 10000,
+    fillEstimate: { executedQuote: 12.34, executedQuantity: 0.001234, completionRatio: 1 },
+    rules
+  });
+  assert.equal(sized.valid, true);
+  assert.equal(sized.quantity, 0.001);
+  assert.equal(sized.notional, 10);
 });
 
 await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {

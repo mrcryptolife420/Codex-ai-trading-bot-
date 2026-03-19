@@ -1,5 +1,6 @@
 import { AdaptiveTradingModel } from "../ai/adaptiveModel.js";
 import { BinanceClient, normalizeKlines } from "../binance/client.js";
+import { buildSymbolRules } from "../binance/symbolFilters.js";
 import { ExecutionEngine } from "../execution/executionEngine.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
@@ -8,7 +9,7 @@ import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
-import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision, buildSimulationExitDecision } from "./backtestExecution.js";
+import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision, buildSimulationExitDecision, resolveSimulationBuyFill } from "./backtestExecution.js";
 
 function num(value, decimals = 4, fallback = 0) {
   return Number.isFinite(value) ? Number(value.toFixed(decimals)) : fallback;
@@ -211,7 +212,7 @@ export function buildWalkForwardWindows(totalCandles, config) {
   return windows;
 }
 
-export function runWalkForwardExperiment({ candles, config, symbol }) {
+export function runWalkForwardExperiment({ candles, config, symbol, rules = null }) {
   const windows = buildWalkForwardWindows(candles.length, config);
   const horizon = 3;
   const feeRate = config.paperFeeBps / 10_000;
@@ -256,27 +257,34 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
           plan: pendingEntry.plan,
           latencyMs: config.backtestLatencyMs
         });
-        const fee = fillEstimate.executedQuote * feeRate;
-        const totalCost = fillEstimate.executedQuote + fee;
-        if (fillEstimate.executedQuote >= config.minTradeUsdt && totalCost <= quoteFree) {
+        const executionPrice = fillEstimate.fillPrice || entryBook.ask || entryBook.mid;
+        const sizedFill = resolveSimulationBuyFill({
+          quoteAmount: pendingEntry.quoteAmount,
+          executionPrice,
+          fillEstimate,
+          rules
+        });
+        const fee = sizedFill.notional * feeRate;
+        const totalCost = sizedFill.notional + fee;
+        if (sizedFill.valid && sizedFill.notional >= config.minTradeUsdt && totalCost <= quoteFree) {
           quoteFree -= totalCost;
           position = {
             entryIndex: index,
             entryTime: pendingEntry.entryTimeMs || context.candle.openTime || context.candle.closeTime,
-            entryPrice: fillEstimate.fillPrice,
-            quantity: fillEstimate.executedQuantity,
-            notional: fillEstimate.executedQuote,
+            entryPrice: executionPrice,
+            quantity: sizedFill.quantity,
+            notional: sizedFill.notional,
             requestedQuoteAmount: pendingEntry.quoteAmount,
             totalCost,
-            stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
-            takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
+            stopLossPrice: executionPrice * (1 - pendingEntry.stopLossPct),
+            takeProfitPrice: executionPrice * (1 + pendingEntry.takeProfitPct),
             maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
-            scaleOutTriggerPrice: fillEstimate.fillPrice * (1 + (pendingEntry.scaleOutTriggerPct || config.scaleOutTriggerPct)),
+            scaleOutTriggerPrice: executionPrice * (1 + (pendingEntry.scaleOutTriggerPct || config.scaleOutTriggerPct)),
             scaleOutFraction: pendingEntry.scaleOutFraction || config.scaleOutFraction,
             scaleOutTrailOffsetPct: pendingEntry.scaleOutTrailOffsetPct || config.scaleOutTrailOffsetPct,
             scaleOutCompletedAt: null,
-            highestPrice: fillEstimate.fillPrice,
-            lowestPrice: fillEstimate.fillPrice,
+            highestPrice: executionPrice,
+            lowestPrice: executionPrice,
             rawFeatures: pendingEntry.rawFeatures,
             strategyAtEntry: pendingEntry.strategyAtEntry,
             regimeAtEntry: pendingEntry.regimeAtEntry,
@@ -544,12 +552,14 @@ export async function runResearchLab({ config, logger, symbols = [] }) {
     logger
   });
   const selectedSymbols = (symbols.length ? symbols : config.watchlist).slice(0, config.researchMaxSymbols);
+  const exchangeInfo = await client.getExchangeInfo();
+  const symbolRules = buildSymbolRules(exchangeInfo, config.baseQuoteAsset || null);
   const reports = [];
 
   for (const symbol of selectedSymbols) {
     const rawKlines = await client.getKlines(symbol, config.klineInterval, config.researchCandleLimit);
     const candles = normalizeKlines(rawKlines);
-    reports.push(runWalkForwardExperiment({ candles, config, symbol }));
+    reports.push(runWalkForwardExperiment({ candles, config, symbol, rules: symbolRules[symbol] || null }));
   }
 
   const bestSymbol = [...reports].sort((left, right) => (right.realizedPnl || 0) - (left.realizedPnl || 0))[0] || null;

@@ -1,5 +1,6 @@
 import { AdaptiveTradingModel } from "../ai/adaptiveModel.js";
 import { BinanceClient, normalizeKlines } from "../binance/client.js";
+import { buildSymbolRules } from "../binance/symbolFilters.js";
 import { ExecutionEngine } from "../execution/executionEngine.js";
 import { buildPerformanceReport } from "./reportBuilder.js";
 import { buildFeatureVector } from "../strategy/features.js";
@@ -13,7 +14,8 @@ import {
   resolveCandleIntervalMinutes,
   resolveEntryExecution,
   buildSimulationEntryDecision,
-  buildSimulationExitDecision
+  buildSimulationExitDecision,
+  resolveSimulationBuyFill
 } from "./backtestExecution.js";
 
 function buildNewsSummary() {
@@ -80,7 +82,9 @@ export async function runBacktest({ config, logger, symbol }) {
     logger
   });
   const rawKlines = await client.getKlines(symbol, config.klineInterval, 500);
+  const exchangeInfo = await client.getExchangeInfo();
   const candles = normalizeKlines(rawKlines);
+  const symbolRules = buildSymbolRules(exchangeInfo, config.baseQuoteAsset || null)[symbol] || null;
   const model = new AdaptiveTradingModel({ version: 2 }, config);
   const execution = new ExecutionEngine(config);
 
@@ -110,19 +114,26 @@ export async function runBacktest({ config, logger, symbol }) {
       });
       const grossCost = fillEstimate.executedQuote;
       const fee = grossCost * feeRate;
-      const totalCost = grossCost + fee;
-      const quantity = fillEstimate.executedQuantity;
-      if (grossCost >= config.minTradeUsdt && totalCost <= quoteFree) {
+      const executionPrice = fillEstimate.fillPrice || entryBook.ask || entryBook.mid;
+      const sizedFill = resolveSimulationBuyFill({
+        quoteAmount: pendingEntry.quoteAmount,
+        executionPrice,
+        fillEstimate,
+        rules: symbolRules
+      });
+      const totalCost = sizedFill.notional + sizedFill.notional * feeRate;
+      const quantity = sizedFill.quantity;
+      if (sizedFill.valid && sizedFill.notional >= config.minTradeUsdt && totalCost <= quoteFree) {
         quoteFree -= totalCost;
         position = {
           entryTime: pendingEntry.entryTimeMs || candle.openTime || candle.closeTime,
           entryIndex: index,
-          entryPrice: fillEstimate.fillPrice,
+          entryPrice: executionPrice,
           quantity,
-          notional: grossCost,
+          notional: sizedFill.notional,
           totalCost,
-          stopLossPrice: fillEstimate.fillPrice * (1 - pendingEntry.stopLossPct),
-          takeProfitPrice: fillEstimate.fillPrice * (1 + pendingEntry.takeProfitPct),
+          stopLossPrice: executionPrice * (1 - pendingEntry.stopLossPct),
+          takeProfitPrice: executionPrice * (1 + pendingEntry.takeProfitPct),
           maxHoldMinutes: pendingEntry.maxHoldMinutes || config.maxHoldMinutes,
           scaleOutTriggerPrice: fillEstimate.fillPrice * (1 + (pendingEntry.scaleOutTriggerPct || config.scaleOutTriggerPct)),
           scaleOutFraction: pendingEntry.scaleOutFraction || config.scaleOutFraction,

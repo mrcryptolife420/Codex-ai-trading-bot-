@@ -1,5 +1,6 @@
 import { RiskManager } from "../risk/riskManager.js";
 import { buildSessionSummary } from "./sessionManager.js";
+import { normalizeQuantity, resolveMarketBuyQuantity } from "../binance/symbolFilters.js";
 
 function safePrice(value, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -243,4 +244,71 @@ export function buildSimulationExitDecision({
     parameterGovernorSummary: overrides.parameterGovernorSummary || {},
     nowIso
   });
+}
+
+export function resolveSimulationBuyFill({ quoteAmount = 0, executionPrice = 0, fillEstimate = {}, rules = null } = {}) {
+  if (!rules) {
+    const executedQuote = Number.isFinite(fillEstimate?.executedQuote) ? fillEstimate.executedQuote : quoteAmount;
+    const executedQuantity = Number.isFinite(fillEstimate?.executedQuantity)
+      ? fillEstimate.executedQuantity
+      : executionPrice > 0
+        ? executedQuote / executionPrice
+        : 0;
+    return {
+      quantity: executedQuantity,
+      notional: executedQuantity * executionPrice,
+      valid: executedQuantity > 0 && executionPrice > 0
+    };
+  }
+
+  const requestedSize = resolveMarketBuyQuantity(quoteAmount, executionPrice, rules);
+  if (!requestedSize.valid) {
+    return {
+      quantity: 0,
+      notional: 0,
+      valid: false,
+      reason: requestedSize.reason || "quantity_below_minimum"
+    };
+  }
+
+  const rawExecutedQuantity = Number.isFinite(fillEstimate?.executedQuantity)
+    ? fillEstimate.executedQuantity
+    : executionPrice > 0
+      ? (fillEstimate?.executedQuote || 0) / executionPrice
+      : 0;
+  let quantity = normalizeQuantity(rawExecutedQuantity, rules, "floor", true);
+  if (!quantity && rawExecutedQuantity > 0) {
+    quantity = Math.min(
+      requestedSize.quantity,
+      normalizeQuantity(rawExecutedQuantity, rules, "ceil", true)
+    );
+  }
+  if (!quantity && (fillEstimate?.completionRatio || 0) > 0) {
+    quantity = Math.min(
+      requestedSize.quantity,
+      normalizeQuantity(rules.marketMinQty || rules.minQty || requestedSize.quantity, rules, "ceil", true)
+    );
+  }
+  if (!quantity) {
+    return {
+      quantity: 0,
+      notional: 0,
+      valid: false,
+      reason: "quantity_below_minimum"
+    };
+  }
+  const notional = quantity * executionPrice;
+  if (notional < (rules.minNotional || 0)) {
+    return {
+      quantity: 0,
+      notional,
+      valid: false,
+      reason: "notional_below_minimum"
+    };
+  }
+  return {
+    quantity,
+    notional,
+    valid: true
+  };
 }
