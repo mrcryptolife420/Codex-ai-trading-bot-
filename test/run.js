@@ -7543,6 +7543,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.promotionPipeline.promotionHistory[0].action, "approve_guarded_live");
   assert.ok(Array.isArray(snapshot.promotionPipeline.rolloutCandidates));
   assert.ok(Array.isArray(snapshot.promotionPipeline.probationGuardrails));
+  assert.ok(Array.isArray(snapshot.promotionPipeline.readinessScorecards));
   assert.equal(snapshot.dataRecorder.retention.coldRetentionDays, 90);
   assert.equal(snapshot.dataRecorder.latestRecordQuality.kind, "learning");
   assert.equal(snapshot.dataRecorder.qualityByKind[0].kind, "learning");
@@ -8497,6 +8498,40 @@ await runCheck("promotion probations track sample targets expiry and rollback gu
   assert.equal(state.active.length, 0);
   assert.equal(state.history[0].action, "guardrail_live_rollback_recommended");
   assert.equal(state.history[0].status, "rollback_recommended");
+  assert.equal(state.history[0].verdict, "rollback");
+});
+
+await runCheck("promotion probations build go verdict when samples and quality stay healthy", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    ops: {
+      promotionState: {
+        active: [
+          {
+            symbol: "ETHUSDT",
+            stage: "guarded_live_probation",
+            approvedAt: "2026-03-12T10:00:00.000Z",
+            expiresAt: "2026-03-15T10:00:00.000Z",
+            targetSampleCount: 3,
+            weakLossLimit: 2,
+            governanceScore: 0.78
+          }
+        ],
+        history: []
+      }
+    }
+  };
+  bot.journal = {
+    trades: [
+      { symbol: "ETHUSDT", exitAt: "2026-03-12T11:00:00.000Z", netPnlPct: 0.01, executionQualityScore: 0.63, paperLearningOutcome: { outcome: "good_trade" } },
+      { symbol: "ETHUSDT", exitAt: "2026-03-12T12:00:00.000Z", netPnlPct: 0.006, executionQualityScore: 0.58, paperLearningOutcome: { outcome: "acceptable_trade" } },
+      { symbol: "ETHUSDT", exitAt: "2026-03-12T13:00:00.000Z", netPnlPct: 0.004, executionQualityScore: 0.61, paperLearningOutcome: { outcome: "good_trade" } }
+    ]
+  };
+  const state = bot.evaluatePromotionProbations("2026-03-12T14:00:00.000Z");
+  assert.equal(state.active.length, 0);
+  assert.equal(state.history[0].action, "guardrail_probation_ready");
+  assert.equal(state.history[0].verdict, "go");
 });
 
 await runCheck("trading bot hides rejected policy transitions during cooldown window", async () => {

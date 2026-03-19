@@ -1575,7 +1575,7 @@ function renderPromotion(snapshot) {
   const historyRows = (pipeline.promotionHistory || []).length
     ? pipeline.promotionHistory.map((item) => makeEventRow({
       title: `${titleize(item.action || "actie")} · ${item.symbol || "-"}`,
-      detail: item.note || `${titleize(item.stage || "stage")} · ${titleize(item.status || "done")}`,
+      detail: item.note || `${titleize(item.stage || "stage")} · ${titleize(item.status || "done")}${item.verdict ? ` · ${titleize(item.verdict)}` : ""}`,
       tone: item.status === "rolled_back" ? "negative" : item.status === "approved" ? "positive" : "neutral"
     }))
     : [makeEmptyState("Nog geen promotion history.")];
@@ -1586,6 +1586,13 @@ function renderPromotion(snapshot) {
       tone: item.status === "rollback_recommended" || item.status === "expired" ? "negative" : item.status === "ready_for_review" ? "positive" : "neutral"
     }))
     : [makeEmptyState("Nog geen probation guardrails actief.")];
+  const scorecardRows = (pipeline.readinessScorecards || []).length
+    ? pipeline.readinessScorecards.map((item) => makeEventRow({
+      title: `${titleize(item.label || "-")} · ${titleize(item.verdict || "hold")}`,
+      detail: `${item.completedTrades || 0}/${item.targetSampleCount || 0} trades · good ${item.goodTrades || 0} · weak ${item.weakTrades || 0} · exec ${formatPct(item.avgExecutionQuality || 0, 0)} · pnl ${formatSignedPct(item.avgNetPnlPct || 0)}`,
+      tone: item.verdict === "go" ? "positive" : item.verdict === "rollback" ? "negative" : "neutral"
+    }))
+    : [makeEmptyState("Nog geen readiness scorecards beschikbaar.")];
   const guardrailTags = [
     ...(pipeline.guardrails || []).map((item) => makeTag(titleize(item), "tag negative")),
     ...((pipeline.activeOverrides || []).map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive")))
@@ -1634,6 +1641,14 @@ function renderPromotion(snapshot) {
       section.append(
         makeSectionHead("Probation guardrails", "Sample targets, expiry en rollback-triggers"),
         ...probationRows
+      );
+      return section;
+    })(),
+    (() => {
+      const section = makeNode("div", { className: "list-stack" });
+      section.append(
+        makeSectionHead("Readiness scorecards", "Go, hold of rollback per actieve probation"),
+        ...scorecardRows
       );
       return section;
     })(),

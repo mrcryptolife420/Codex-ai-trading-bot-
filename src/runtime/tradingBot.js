@@ -4076,21 +4076,33 @@ export class TradingBot {
       const completedTrades = sinceApproved.filter((trade) => Boolean(trade.exitAt));
       const weakTrades = completedTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade)));
       const goodTrades = completedTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade)));
+      const avgExecutionQuality = average(completedTrades.map((trade) => trade.executionQualityScore || 0), 0);
+      const avgNetPnlPct = average(completedTrades.map((trade) => trade.netPnlPct || 0), 0);
       const targetSampleCount = Math.max(2, Number(item.targetSampleCount || 3));
       const weakLossLimit = Math.max(1, Number(item.weakLossLimit || 2));
       const expiresAtMs = new Date(item.expiresAt || 0).getTime();
       const expired = Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs;
       const rollbackRecommended = weakTrades.length >= weakLossLimit;
       const complete = completedTrades.length >= targetSampleCount && !rollbackRecommended;
+      const verdict = rollbackRecommended
+        ? "rollback"
+        : complete && goodTrades.length >= Math.ceil(targetSampleCount * 0.6) && avgExecutionQuality >= 0.55 && avgNetPnlPct >= -0.002
+          ? "go"
+          : complete || expired
+            ? "hold"
+            : "hold";
       const next = {
         ...item,
         completedTrades: completedTrades.length,
         goodTrades: goodTrades.length,
         weakTrades: weakTrades.length,
+        avgExecutionQuality: num(avgExecutionQuality, 4),
+        avgNetPnlPct: num(avgNetPnlPct, 4),
         rollbackRecommended,
         expired,
         targetSampleCount,
         weakLossLimit,
+        verdict,
         status: rollbackRecommended
           ? "rollback_recommended"
           : expired
@@ -4113,6 +4125,7 @@ export class TradingBot {
           stage: item.stage || null,
           status: next.status,
           governanceScore: num(item.governanceScore || 0, 4),
+          verdict,
           note: rollbackRecommended
             ? "Rollback guardrail geraakt door zwakke probation-uitkomsten."
             : expired
@@ -9746,6 +9759,9 @@ export class TradingBot {
       completedTrades: item.completedTrades || 0,
       goodTrades: item.goodTrades || 0,
       weakTrades: item.weakTrades || 0,
+      avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+      avgNetPnlPct: num(item.avgNetPnlPct || 0, 4),
+      verdict: item.verdict || "hold",
       rollbackRecommended: Boolean(item.rollbackRecommended),
       expired: Boolean(item.expired),
       note: item.note || null
@@ -9756,6 +9772,7 @@ export class TradingBot {
       symbol: item.symbol || null,
       stage: item.stage || null,
       status: item.status || null,
+      verdict: item.verdict || null,
       governanceScore: num(item.governanceScore || 0, 4),
       note: item.note || null
     }));
@@ -9795,6 +9812,22 @@ export class TradingBot {
         }))
         .slice(0, 6),
       activePromotions,
+      readinessScorecards: activePromotions.map((item) => ({
+        key: item.key || item.symbol || item.scope || item.id,
+        label: item.symbol || item.scope || item.id || null,
+        verdict: item.verdict || "hold",
+        completedTrades: item.completedTrades || 0,
+        targetSampleCount: item.targetSampleCount || 0,
+        goodTrades: item.goodTrades || 0,
+        weakTrades: item.weakTrades || 0,
+        avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+        avgNetPnlPct: num(item.avgNetPnlPct || 0, 4),
+        note: item.verdict === "go"
+          ? "Probation haalde de sample-doelen en blijft kwalitatief stabiel."
+          : item.verdict === "rollback"
+            ? "Probation raakte de rollback-grens door zwakke uitkomsten."
+            : "Probation heeft nog operator-review of extra samples nodig."
+      })),
       promotionHistory,
       activeOverrides,
       probationGuardrails: activePromotions.map((item) => ({
