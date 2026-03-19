@@ -153,7 +153,8 @@ function buildLabelTrade({ symbol, rawFeatures, regimeSummary, strategySummary, 
     pnlQuote: entryPrice ? (exitPrice - entryPrice) / entryPrice * 100 : 0,
     mfePct: entryPrice ? Math.max(0, (futureHigh - entryPrice) / entryPrice) : 0,
     maePct: entryPrice ? Math.min(0, (futureLow - entryPrice) / entryPrice) : 0,
-    executionQualityScore: 0.7,
+    // Research labels do not observe real execution, so keep this neutral.
+    executionQualityScore: 0.5,
     regimeAtEntry: regimeSummary.regime,
     strategyAtEntry: strategySummary.activeStrategy || null,
     exitAt: new Date(exitCandle?.closeTime || candle.closeTime).toISOString()
@@ -386,6 +387,11 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
             netPnlPct,
             mfePct: position.entryPrice ? Math.max(0, (position.highestPrice - position.entryPrice) / position.entryPrice) : 0,
             maePct: position.entryPrice ? Math.min(0, (position.lowestPrice - position.entryPrice) / position.entryPrice) : 0,
+            executionQualityScore: execution.buildExecutionQuality({
+              marketSnapshot: { book: exitBook },
+              fillPrice: fillEstimate.fillPrice,
+              side: "SELL"
+            }),
             regimeAtEntry: position.regimeAtEntry,
             strategyAtEntry: position.strategyAtEntry,
             reason: exitDecision.reason,
@@ -419,7 +425,6 @@ export function runWalkForwardExperiment({ candles, config, symbol }) {
           model.updateFromTrade({
             ...trade,
             rawFeatures: position.rawFeatures,
-            executionQualityScore: 0.72,
             captureEfficiency: position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0
           });
           position = null;
