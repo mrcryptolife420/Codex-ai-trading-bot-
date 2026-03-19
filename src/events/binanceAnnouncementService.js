@@ -225,8 +225,10 @@ export class BinanceAnnouncementService {
     try {
       const responses = await Promise.allSettled(CMS_CATALOGS.map((catalog) => fetchCatalogArticles(catalog, this.config.newsHeadlineLimit)));
       const items = [];
+      let fulfilledCatalogs = 0;
       for (const response of responses) {
         if (response.status === "fulfilled") {
+          fulfilledCatalogs += 1;
           items.push(...response.value);
           continue;
         }
@@ -234,6 +236,20 @@ export class BinanceAnnouncementService {
           symbol,
           error: response.reason?.message || String(response.reason)
         });
+      }
+      if (fulfilledCatalogs === 0) {
+        if (cached?.summary) {
+          await this.maybeRecordHistory({
+            symbol,
+            aliases,
+            summary: cached.summary,
+            items: cached.items || [],
+            cacheState: "fallback",
+            cacheEntry: cached
+          });
+          return cached.summary;
+        }
+        return EMPTY_SUMMARY;
       }
       const filtered = items
         .filter((item) => matchesSymbol(item, aliases))

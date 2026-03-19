@@ -5075,6 +5075,66 @@ await runCheck("announcement service records a cached context use once per cache
   assert.equal(calls[0].kind, "announcements");
 });
 
+await runCheck("news service keeps cached summary when all providers fail", async () => {
+  const runtime = {
+    newsCache: {
+      BTCUSDT: {
+        fetchedAt: "2026-03-10T08:00:00.000Z",
+        summary: { coverage: 2, confidence: 0.61, reliabilityScore: 0.72, freshnessScore: 0.8 },
+        items: [{ title: "Cached headline", provider: "coindesk" }]
+      }
+    },
+    sourceReliability: {}
+  };
+  const calls = [];
+  const service = new NewsService({
+    config: makeConfig({ newsCacheMinutes: 1 }),
+    runtime,
+    logger: { info() {}, warn() {} },
+    recordHistory: async (payload) => { calls.push(payload); }
+  });
+  for (const provider of service.providers) {
+    provider.client.fetchNews = async () => {
+      throw new Error(`down:${provider.id}`);
+    };
+  }
+  const summary = await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+  assert.equal(summary.coverage, 2);
+  assert.equal(runtime.newsCache.BTCUSDT.summary.coverage, 2);
+  assert.equal(calls.at(-1)?.cacheState, "fallback");
+});
+
+await runCheck("announcement service keeps cached summary when all feeds fail", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("cms down");
+  };
+  const runtime = {
+    exchangeNoticeCache: {
+      "notice:BTCUSDT": {
+        fetchedAt: "2026-03-10T08:00:00.000Z",
+        summary: { coverage: 1, confidence: 0.74, riskScore: 0.2 },
+        items: [{ title: "Maintenance", type: "maintenance" }]
+      }
+    }
+  };
+  const calls = [];
+  try {
+    const service = new BinanceAnnouncementService({
+      config: makeConfig({ announcementCacheMinutes: 1 }),
+      runtime,
+      logger: { info() {}, warn() {} },
+      recordHistory: async (payload) => { calls.push(payload); }
+    });
+    const summary = await service.getSymbolSummary("BTCUSDT", ["BTC"]);
+    assert.equal(summary.coverage, 1);
+    assert.equal(runtime.exchangeNoticeCache["notice:BTCUSDT"].summary.coverage, 1);
+    assert.equal(calls.at(-1)?.cacheState, "fallback");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 await runCheck("calendar service records a cached context use once per cache snapshot", async () => {
   const runtime = {
     calendarCache: {

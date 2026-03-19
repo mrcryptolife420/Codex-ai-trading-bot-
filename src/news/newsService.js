@@ -118,6 +118,7 @@ export class NewsService {
     try {
       const items = [];
       const usedProviders = [];
+      let successfulProviders = 0;
       const providerResults = await mapWithConcurrency(this.providers, 3, async (provider) => {
         const gate = this.reliability.shouldUseProvider(this.runtime, provider.id, now);
         if (!gate.allow) {
@@ -138,6 +139,7 @@ export class NewsService {
             limit: this.config.newsHeadlineLimit
           });
           this.reliability.noteSuccess(this.runtime, provider.id, nowIso());
+          successfulProviders += 1;
           return {
             providerId: provider.id,
             items: Array.isArray(result) ? result : [],
@@ -168,6 +170,22 @@ export class NewsService {
         }
         items.push(...(result.items || []));
         usedProviders.push(result.providerId);
+      }
+      if (successfulProviders === 0) {
+        if (cached?.summary) {
+          await this.maybeRecordHistory({
+            symbol,
+            aliases,
+            summary: cached.summary,
+            items: cached.items || [],
+            cacheState: "fallback",
+            cacheEntry: cached
+          });
+          this.runtime.sourceReliability = this.reliability.buildSummary(this.runtime);
+          return cached.summary;
+        }
+        this.runtime.sourceReliability = this.reliability.buildSummary(this.runtime);
+        return EMPTY_SUMMARY;
       }
       const summary = summarizeNews(items, this.config.newsLookbackHours, nowIso(), {
         minSourceQuality: this.config.newsMinSourceQuality,
