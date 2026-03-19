@@ -1,3 +1,5 @@
+import { maskUrl, redactSensitiveText } from "../utils/requestBudget.js";
+
 function arr(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -46,6 +48,26 @@ function buildEndpoints(config = {}) {
   return [...webhooks, ...discord, ...telegram];
 }
 
+function buildRedactionSecrets(config = {}) {
+  return [
+    ...arr(config.operatorAlertWebhookUrls || []),
+    ...arr(config.operatorAlertDiscordWebhookUrls || []),
+    config.operatorAlertTelegramBotToken || "",
+    config.operatorAlertTelegramChatId || ""
+  ].filter(Boolean);
+}
+
+function maskIdentifier(value) {
+  const text = `${value || ""}`;
+  if (!text) {
+    return null;
+  }
+  if (text.length <= 4) {
+    return "***";
+  }
+  return `${"*".repeat(Math.max(3, text.length - 4))}${text.slice(-4)}`;
+}
+
 export function buildOperatorAlertDispatchPlan({
   alerts = {},
   config = {},
@@ -85,9 +107,9 @@ export function buildOperatorAlertDispatchPlan({
     })),
     endpoints: endpoints.map((endpoint) => ({
       id: endpoint.id,
-      url: endpoint.url,
+      url: maskUrl(endpoint.url),
       kind: endpoint.kind,
-      chatId: endpoint.chatId || null
+      chatId: maskIdentifier(endpoint.chatId)
     }))
   };
 }
@@ -130,6 +152,7 @@ export async function dispatchOperatorAlerts({
   let deliveredEndpointCount = 0;
   let failedEndpointCount = 0;
   let lastError = null;
+  const redactionSecrets = buildRedactionSecrets(config);
 
   const payload = {
     generatedAt: nowIso,
@@ -137,8 +160,9 @@ export async function dispatchOperatorAlerts({
     criticalCount: alerts.criticalCount || 0,
     alerts: plan.alerts
   };
+  const requestEndpoints = buildEndpoints(config);
 
-  for (const endpoint of plan.endpoints) {
+  for (const endpoint of requestEndpoints) {
     try {
       const body = endpoint.kind === "telegram"
         ? JSON.stringify({
@@ -163,7 +187,7 @@ export async function dispatchOperatorAlerts({
       deliveredEndpointCount += 1;
     } catch (error) {
       failedEndpointCount += 1;
-      lastError = error.message;
+      lastError = redactSensitiveText(error.message, redactionSecrets);
     }
   }
 

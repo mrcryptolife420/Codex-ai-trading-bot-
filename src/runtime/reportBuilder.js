@@ -6,34 +6,42 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function sortByPnlDesc(trades) {
-  return [...trades].sort((left, right) => (right.pnlQuote || 0) - (left.pnlQuote || 0));
-}
-
-function sortByPnlAsc(trades) {
-  return [...trades].sort((left, right) => (left.pnlQuote || 0) - (right.pnlQuote || 0));
-}
-
 function buildTradeStats(trades) {
-  const wins = trades.filter((trade) => trade.netPnlPct > 0);
-  const losses = trades.filter((trade) => trade.netPnlPct <= 0);
-  const realizedPnl = trades.reduce((total, trade) => total + (trade.pnlQuote || 0), 0);
-  const grossProfit = wins.reduce((total, trade) => total + (trade.pnlQuote || 0), 0);
-  const grossLossAbs = Math.abs(
-    losses.reduce((total, trade) => total + Math.min(trade.pnlQuote || 0, 0), 0)
-  );
+  let winCount = 0;
+  let realizedPnl = 0;
+  let grossProfit = 0;
+  let grossLossAbs = 0;
+  let totalPnlPct = 0;
+  let bestTrade = null;
+  let worstTrade = null;
+
+  for (const trade of trades) {
+    const pnlQuote = trade.pnlQuote || 0;
+    const netPnlPct = trade.netPnlPct || 0;
+    realizedPnl += pnlQuote;
+    totalPnlPct += netPnlPct;
+    if (netPnlPct > 0) {
+      winCount += 1;
+      grossProfit += pnlQuote;
+    } else {
+      grossLossAbs += Math.abs(Math.min(pnlQuote, 0));
+    }
+    if (!bestTrade || pnlQuote > (bestTrade.pnlQuote || 0)) {
+      bestTrade = trade;
+    }
+    if (!worstTrade || pnlQuote < (worstTrade.pnlQuote || 0)) {
+      worstTrade = trade;
+    }
+  }
 
   return {
     tradeCount: trades.length,
     realizedPnl,
-    winRate: safeDivide(wins.length, trades.length),
-    averagePnlPct: safeDivide(
-      trades.reduce((total, trade) => total + (trade.netPnlPct || 0), 0),
-      trades.length
-    ),
+    winRate: safeDivide(winCount, trades.length),
+    averagePnlPct: safeDivide(totalPnlPct, trades.length),
     profitFactor: grossLossAbs ? grossProfit / grossLossAbs : grossProfit > 0 ? Infinity : 0,
-    bestTrade: sortByPnlDesc(trades)[0] || null,
-    worstTrade: sortByPnlAsc(trades)[0] || null
+    bestTrade,
+    worstTrade
   };
 }
 
@@ -41,9 +49,52 @@ function startOfLocalDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-function buildWindowStats(trades, startMs) {
-  return buildTradeStats(
-    trades.filter((trade) => new Date(trade.exitAt || trade.entryAt || 0).getTime() >= startMs)
+function buildWindowSummaries(trades, thresholds = {}) {
+  const buckets = Object.fromEntries(
+    Object.entries(thresholds).map(([name]) => [name, {
+      tradeCount: 0,
+      realizedPnl: 0,
+      totalPnlPct: 0,
+      winCount: 0,
+      grossProfit: 0,
+      grossLossAbs: 0
+    }])
+  );
+
+  for (const trade of trades) {
+    const tradeMs = new Date(trade.exitAt || trade.entryAt || 0).getTime();
+    if (!Number.isFinite(tradeMs)) {
+      continue;
+    }
+    const pnlQuote = trade.pnlQuote || 0;
+    const netPnlPct = trade.netPnlPct || 0;
+    for (const [name, startMs] of Object.entries(thresholds)) {
+      if (tradeMs < startMs) {
+        continue;
+      }
+      const bucket = buckets[name];
+      bucket.tradeCount += 1;
+      bucket.realizedPnl += pnlQuote;
+      bucket.totalPnlPct += netPnlPct;
+      if (netPnlPct > 0) {
+        bucket.winCount += 1;
+        bucket.grossProfit += pnlQuote;
+      } else {
+        bucket.grossLossAbs += Math.abs(Math.min(pnlQuote, 0));
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(buckets).map(([name, bucket]) => [name, {
+      tradeCount: bucket.tradeCount,
+      realizedPnl: bucket.realizedPnl,
+      winRate: safeDivide(bucket.winCount, bucket.tradeCount),
+      averagePnlPct: safeDivide(bucket.totalPnlPct, bucket.tradeCount),
+      profitFactor: bucket.grossLossAbs ? bucket.grossProfit / bucket.grossLossAbs : bucket.grossProfit > 0 ? Infinity : 0,
+      bestTrade: null,
+      worstTrade: null
+    }])
   );
 }
 
@@ -629,6 +680,12 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
   const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config);
   const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
+  const windowSummaries = buildWindowSummaries(trades, {
+    today: localDayStartMs,
+    days7: nowMs - 7 * 86_400_000,
+    days15: nowMs - 15 * 86_400_000,
+    days30: nowMs - 30 * 86_400_000
+  });
 
   return {
     ...buildTradeStats(lookbackTrades),
@@ -651,10 +708,10 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     })),
     scaleOutSummary: buildScaleOutSummary(scaleOuts),
     windows: {
-      today: buildWindowStats(trades, localDayStartMs),
-      days7: buildWindowStats(trades, nowMs - 7 * 86_400_000),
-      days15: buildWindowStats(trades, nowMs - 15 * 86_400_000),
-      days30: buildWindowStats(trades, nowMs - 30 * 86_400_000),
+      today: windowSummaries.today,
+      days7: windowSummaries.days7,
+      days15: windowSummaries.days15,
+      days30: windowSummaries.days30,
       allTime: buildTradeStats(trades)
     },
     modes: {

@@ -1,5 +1,27 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
+
+function normalizeEnvKey(key) {
+  const normalized = `${key || ""}`.trim();
+  if (!/^[A-Z][A-Z0-9_]*$/.test(normalized)) {
+    throw new Error(`Invalid env key: ${key}`);
+  }
+  return normalized;
+}
+
+function normalizeEnvValue(value) {
+  const normalized = `${value ?? ""}`;
+  if (/[\r\n\0]/.test(normalized)) {
+    throw new Error("Env values may not contain newlines or null bytes.");
+  }
+  return normalized;
+}
+
+function normalizeEnvUpdates(updates = {}) {
+  return Object.fromEntries(
+    Object.entries(updates).map(([key, value]) => [normalizeEnvKey(key), normalizeEnvValue(value)])
+  );
+}
 
 export async function ensureEnvFile(projectRoot) {
   const envPath = path.join(projectRoot, ".env");
@@ -26,9 +48,10 @@ export async function readEnvFile(envPath) {
 }
 
 export async function updateEnvFile(envPath, updates) {
+  const normalizedUpdates = normalizeEnvUpdates(updates);
   const content = await readEnvFile(envPath);
   const lines = content ? content.split(/\r?\n/) : [];
-  const remaining = new Map(Object.entries(updates));
+  const remaining = new Map(Object.entries(normalizedUpdates));
   const nextLines = lines.map((line) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {

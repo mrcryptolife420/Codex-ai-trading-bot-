@@ -71,6 +71,15 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/[\r\n]/g, " ");
+}
+
+function renderActionTag({ action, kind = "", id, label, tone = "" }) {
+  const classes = ["tag", tone].filter(Boolean).join(" ");
+  return `<button class="${classes}" data-policy-action="${escapeAttr(action)}" data-transition-id="${escapeAttr(id)}"${kind ? ` data-transition-kind="${escapeAttr(kind)}"` : ""}>${escapeHtml(label)}</button>`;
+}
+
 function readStoredBoolean(key, fallback = false) {
   try {
     const raw = window.localStorage.getItem(key);
@@ -783,11 +792,11 @@ function renderLearning(snapshot) {
   const operatorActionButtons = policyCandidates.length
     ? policyCandidates.map((item) => item.approved
       ? `<span class="tag positive">${escapeHtml(`Approved · ${titleize(item.id)}`)}</span>`
-      : `<button class="tag" data-policy-action="approve" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Approve ${escapeHtml(titleize(item.id))}</button><button class="tag negative" data-policy-action="reject" data-transition-id="${escapeHtml(item.id)}" data-transition-kind="${escapeHtml(item.action)}">Reject</button>`
+      : `${renderActionTag({ action: "approve", kind: item.action, id: item.id, label: `Approve ${titleize(item.id)}` })}${renderActionTag({ action: "reject", kind: item.action, id: item.id, label: "Reject", tone: "negative" })}`
     ).join("")
     : "";
   const revertButtons = activeOverrides.length
-    ? activeOverrides.map((item) => `<button class="tag negative" data-policy-action="revert" data-transition-id="${escapeHtml(item.id)}">Revert ${escapeHtml(titleize(item.id))}</button>`).join("")
+    ? activeOverrides.map((item) => renderActionTag({ action: "revert", id: item.id, label: `Revert ${titleize(item.id)}`, tone: "negative" })).join("")
     : "";
 
   elements.learningList.innerHTML = `

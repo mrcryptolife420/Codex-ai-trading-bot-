@@ -23,6 +23,7 @@ import { normalizeStrategyDsl } from "../src/research/strategyDsl.js";
 import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
 import { loadConfig } from "../src/config/index.js";
+import { updateEnvFile } from "../src/config/envFile.js";
 import { validateConfig } from "../src/config/validate.js";
 import { resolveExchangeCapabilities } from "../src/config/exchangeCapabilities.js";
 import { HealthMonitor } from "../src/runtime/healthMonitor.js";
@@ -557,6 +558,43 @@ await runCheck("strategy DSL blocks unsafe imports and keeps safe research candi
   assert.ok(summary.candidates[0].score.robustnessScore >= 0);
   assert.ok(summary.candidates[0].score.uniquenessScore >= 0);
   assert.ok(summary.candidates[0].promotionStage);
+});
+
+await runCheck("strategy research miner cools down failing feed endpoints", async () => {
+  const miner = new StrategyResearchMiner(makeConfig({
+    strategyResearchFetchEnabled: true,
+    strategyResearchFeedUrls: ["https://feed.example/a", "https://feed.example/b"]
+  }), { warn() {} });
+  let calls = 0;
+  miner.requestBudget.fetchJson = async (url) => {
+    calls += 1;
+    if (url.endsWith("/a")) {
+      throw new Error("timeout");
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          strategies: [{
+            id: "feed_ok",
+            label: "Feed ok",
+            family: "trend_following",
+            indicators: ["ema_gap"],
+            entryRules: [],
+            exitRules: [],
+            riskProfile: {},
+            executionHints: {}
+          }]
+        };
+      }
+    };
+  };
+  miner.requestBudget.noteFailure = () => ({ cooldownUntil: "2026-03-19T10:00:00.000Z" });
+  miner.requestBudget.noteSuccess = () => {};
+
+  const candidates = await miner.fetchWhitelistedCandidates();
+  assert.equal(calls, 2);
+  assert.ok(candidates.some((item) => item.id === "feed_ok"));
 });
 
 await runCheck("symbol filters enforce minimum notional", async () => {
@@ -2501,6 +2539,31 @@ await runCheck("reference venue service blocks large cross-venue divergence", as
   assert.ok(summary.blockerReasons.includes("reference_venue_divergence"));
   const runtime = service.summarizeRuntime([{ venueConfirmationSummary: summary }], "2026-03-11T10:00:00.000Z");
   assert.equal(runtime.blockedCount, 1);
+});
+
+await runCheck("reference venue service applies timeout budget cooldown after failures", async () => {
+  const service = new ReferenceVenueService(makeConfig({
+    referenceVenueFetchEnabled: true,
+    referenceVenueQuoteUrls: ["https://quotes.example/{symbol}"]
+  }), { warn() {} });
+  let calls = 0;
+  service.requestBudget.fetchJson = async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("fetch failed");
+    }
+    const error = new Error("cooldown");
+    error.code = "REQUEST_BUDGET_COOLDOWN";
+    error.cooldownUntil = "2026-03-19T10:00:00.000Z";
+    throw error;
+  };
+  service.requestBudget.noteFailure = () => ({ cooldownUntil: "2026-03-19T10:00:00.000Z" });
+
+  const first = await service.fetchReferenceQuotes("BTCUSDT");
+  const second = await service.fetchReferenceQuotes("BTCUSDT");
+  assert.deepEqual(first, []);
+  assert.deepEqual(second, []);
+  assert.equal(calls, 2);
 });
 
 await runCheck("parameter governor builds scoped adjustments from closed trades", async () => {
@@ -4714,6 +4777,20 @@ await runCheck("bot manager does not require ack in paper for governance-only al
   assert.equal(readiness.reasons.includes("operator_ack_required"), false);
 });
 
+await runCheck("env file updater rejects newline injection and invalid keys", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-env-"));
+  try {
+    const envPath = path.join(tempDir, ".env");
+    await fs.writeFile(envPath, "BOT_MODE=paper\n");
+    await assert.rejects(() => updateEnvFile(envPath, { BOT_MODE: "live\nINJECTED=1" }), /newlines/i);
+    await assert.rejects(() => updateEnvFile(envPath, { "BAD-KEY": "live" }), /Invalid env key/);
+    const content = await fs.readFile(envPath, "utf8");
+    assert.equal(content, "BOT_MODE=paper\n");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 await runCheck("config validation blocks inverted drift thresholds", async () => {
   const result = validateConfig(makeConfig({
     driftFeatureScoreAlert: 2,
@@ -6335,6 +6412,48 @@ await runCheck("operator alert dispatcher reports delivery counts per alert and 
   assert.equal(summary.failedCount, 1);
   assert.equal(summary.status, "partial");
   assert.match(summary.notes[1], /endpoint/i);
+});
+
+await runCheck("operator alert dispatcher redacts webhook secrets from plans and errors", async () => {
+  const config = makeConfig({
+    operatorAlertWebhookUrls: ["https://hooks.example/internal/alpha?token=secret-token"],
+    operatorAlertTelegramBotToken: "telegram-secret",
+    operatorAlertTelegramChatId: "12345"
+  });
+  const alerts = buildOperatorAlerts({
+    runtime: {
+      health: { circuitOpen: true },
+      ops: {
+        alertState: {
+          acknowledgedAtById: {},
+          silencedUntilById: {},
+          resolvedAtById: {},
+          delivery: { lastDeliveredAtById: {} }
+        }
+      }
+    },
+    config,
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  const plan = buildOperatorAlertDispatchPlan({
+    alerts,
+    config,
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.ok(plan.endpoints[0].url.includes("?..."));
+  assert.ok(!plan.endpoints[0].url.includes("secret-token"));
+
+  const summary = await dispatchOperatorAlerts({
+    alerts,
+    runtime: { ops: { alertState: { delivery: { lastDeliveredAtById: {} } } } },
+    config,
+    nowIso: "2026-03-09T10:00:00.000Z",
+    fetchImpl: async () => {
+      throw new Error("request failed for https://hooks.example/internal/alpha?token=secret-token and bot telegram-secret");
+    }
+  });
+  assert.ok(!summary.lastError.includes("secret-token"));
+  assert.ok(!summary.lastError.includes("telegram-secret"));
 });
 
 await runCheck("reference venue service produces route advice and venue health", async () => {

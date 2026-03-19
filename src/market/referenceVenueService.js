@@ -1,3 +1,5 @@
+import { RequestBudget, maskUrl } from "../utils/requestBudget.js";
+
 function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
@@ -31,6 +33,11 @@ export class ReferenceVenueService {
   constructor(config, logger = console) {
     this.config = config;
     this.logger = logger;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: 30_000,
+      maxCooldownMs: 5 * 60_000
+    });
   }
 
   async fetchReferenceQuotes(symbol) {
@@ -40,15 +47,29 @@ export class ReferenceVenueService {
     const responses = await Promise.all((this.config.referenceVenueQuoteUrls || []).map(async (template) => {
       const url = `${template}`.replaceAll("{symbol}", encodeURIComponent(symbol));
       try {
-        const response = await fetch(url);
+        const response = await this.requestBudget.fetchJson(url, {
+          key: `reference:${template}`,
+          headers: {
+            "User-Agent": "Mozilla/5.0 trading-bot"
+          }
+        });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const payload = await response.json();
+        this.requestBudget.noteSuccess(`reference:${template}`);
         const items = Array.isArray(payload) ? payload : Array.isArray(payload?.quotes) ? payload.quotes : [payload];
         return items.map(normalizeQuote);
       } catch (error) {
-        this.logger.warn?.("Reference venue fetch failed", { symbol, url, error: error.message });
+        const failure = error.code === "REQUEST_BUDGET_COOLDOWN"
+          ? { cooldownUntil: error.cooldownUntil }
+          : this.requestBudget.noteFailure(`reference:${template}`);
+        this.logger.warn?.("Reference venue fetch failed", {
+          symbol,
+          url: maskUrl(url),
+          error: error.message,
+          cooldownUntil: failure.cooldownUntil || null
+        });
         return [];
       }
     }));

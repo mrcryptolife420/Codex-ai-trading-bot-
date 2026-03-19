@@ -1,6 +1,7 @@
 import { normalizeStrategyDsl, summarizeStrategyDsl } from "../research/strategyDsl.js";
 import { evaluateStrategyStress } from "./stressLab.js";
 import { buildStrategyGenome } from "./strategyGenome.js";
+import { RequestBudget, maskUrl } from "../utils/requestBudget.js";
 
 function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -126,6 +127,11 @@ export class StrategyResearchMiner {
   constructor(config, logger = console) {
     this.config = config;
     this.logger = logger;
+    this.requestBudget = new RequestBudget({
+      timeoutMs: 8_000,
+      baseCooldownMs: 30_000,
+      maxCooldownMs: 5 * 60_000
+    });
   }
 
   async fetchWhitelistedCandidates() {
@@ -135,15 +141,29 @@ export class StrategyResearchMiner {
     const candidates = [];
     for (const url of this.config.strategyResearchFeedUrls || []) {
       try {
-        const response = await fetch(url);
+        const response = await this.requestBudget.fetchJson(url, {
+          key: `strategy_research:${url}`,
+          headers: {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "Mozilla/5.0 trading-bot"
+          }
+        });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const payload = await response.json();
+        this.requestBudget.noteSuccess(`strategy_research:${url}`);
         const items = Array.isArray(payload) ? payload : Array.isArray(payload?.strategies) ? payload.strategies : [];
         candidates.push(...items.map((item) => normalizeStrategyDsl({ ...item, source: url, sourceType: "whitelisted_feed" })));
       } catch (error) {
-        this.logger.warn?.("Strategy research feed failed", { url, error: error.message });
+        const failure = error.code === "REQUEST_BUDGET_COOLDOWN"
+          ? { cooldownUntil: error.cooldownUntil }
+          : this.requestBudget.noteFailure(`strategy_research:${url}`);
+        this.logger.warn?.("Strategy research feed failed", {
+          url: maskUrl(url),
+          error: error.message,
+          cooldownUntil: failure.cooldownUntil || null
+        });
       }
     }
     return candidates;
