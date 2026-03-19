@@ -2735,7 +2735,7 @@ function summarizeAlertDelivery(summary = {}) {
   };
 }
 
-function buildCandidateQualityQuorum({
+export function buildCandidateQualityQuorum({
   symbol,
   marketSnapshot,
   newsSummary,
@@ -2831,7 +2831,13 @@ function buildCandidateQualityQuorum({
   const cautionReasons = checks.filter((check) => !check.passed && !check.critical).map((check) => check.id);
   const passedCount = checks.filter((check) => check.passed).length;
   const quorumScore = checks.length ? passedCount / checks.length : 1;
-  const observeOnly = failedCritical.length >= 2 || (!checks.find((check) => check.id === "local_book")?.passed && !checks.find((check) => check.id === "provider_ops")?.passed);
+  const softPaperCriticalFailures = new Set(["local_book", "provider_ops", "pair_health"]);
+  const paperSoftInfraOnly = (config?.botMode || "paper") === "paper" &&
+    failedCritical.length > 0 &&
+    failedCritical.every((check) => softPaperCriticalFailures.has(check.id)) &&
+    (divergenceSummary?.leadBlocker?.status || "") !== "blocked";
+  const observeOnly = !paperSoftInfraOnly &&
+    (failedCritical.length >= 2 || (!checks.find((check) => check.id === "local_book")?.passed && !checks.find((check) => check.id === "provider_ops")?.passed));
   const status = observeOnly
     ? "observe_only"
     : failedCritical.length || cautionReasons.length >= 2

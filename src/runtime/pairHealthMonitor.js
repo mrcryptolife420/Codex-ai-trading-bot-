@@ -142,8 +142,11 @@ export class PairHealthMonitor {
         1
       );
       const issueCount = (bucket.timeoutCount || 0) + (bucket.entryFailureCount || 0) + (bucket.candidateFailureCount || 0);
+      const hasHardInfraIssue = issueCount > 0;
       const quarantineMinutes = Math.max(30, Number(this.config.pairHealthQuarantineMinutes || 180));
-      const quarantinedUntil = bucket.lastIssueAt && (score < this.config.pairHealthMinScore || issueCount >= this.config.pairHealthMaxInfraIssues)
+      const quarantineTriggered = issueCount >= this.config.pairHealthMaxInfraIssues ||
+        (score < this.config.pairHealthMinScore && hasHardInfraIssue);
+      const quarantinedUntil = bucket.lastIssueAt && quarantineTriggered
         ? new Date(parseEventTime(bucket.lastIssueAt) + quarantineMinutes * 60_000).toISOString()
         : null;
       const quarantined = Boolean(quarantinedUntil && parseEventTime(quarantinedUntil) > nowMs);

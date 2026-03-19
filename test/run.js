@@ -65,7 +65,7 @@ import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetireme
 import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
 import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
 import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.js";
-import { TradingBot } from "../src/runtime/tradingBot.js";
+import { TradingBot, buildCandidateQualityQuorum } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
 
@@ -2875,6 +2875,32 @@ await runCheck("risk manager blocks entries when the data quorum falls to observ
   });
   assert.equal(decision.allow, false);
   assert.ok(decision.reasons.includes("quality_quorum_observe_only"));
+});
+
+await runCheck("candidate quality quorum downgrades soft infra-only paper failures to degraded", async () => {
+  const summary = buildCandidateQualityQuorum({
+    symbol: "BTCUSDT",
+    marketSnapshot: {
+      book: {
+        localBookSynced: false,
+        depthConfidence: 0.18
+      }
+    },
+    newsSummary: { coverage: 0, reliabilityScore: 0 },
+    exchangeSummary: { riskScore: 0.12, highPriorityCount: 0 },
+    calendarSummary: { riskScore: 0.18, proximityHours: 48 },
+    pairHealthSummary: { quarantined: false, health: "watch", score: 0.34 },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.61 },
+    sourceReliabilitySummary: { providerCount: 5, averageScore: 0.18, degradedCount: 3, coolingDownCount: 3 },
+    divergenceSummary: { leadBlocker: { status: "watch" }, averageScore: 0.18 },
+    venueConfirmationSummary: { status: "ready", venueCount: 0, divergenceBps: 0 },
+    config: makeConfig({ botMode: "paper", enableLocalOrderBook: true, newsMinReliabilityScore: 0.64, sourceReliabilityMinOperationalScore: 0.22 }),
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(summary.observeOnly, false);
+  assert.equal(summary.status, "degraded");
+  assert.ok(summary.blockerReasons.includes("local_book"));
+  assert.ok(summary.blockerReasons.includes("provider_ops"));
 });
 
 await runCheck("risk manager blocks retired strategies and hot execution cost scopes", async () => {
@@ -7588,6 +7614,27 @@ await runCheck("pair health monitor quarantines noisy symbols", async () => {
   });
   const btc = snapshot.bySymbol.BTCUSDT;
   assert.equal(btc.quarantined, true);
+  assert.ok(btc.score < 0.45);
+});
+
+await runCheck("pair health monitor keeps soft provider degradation out of quarantine", async () => {
+  const monitor = new PairHealthMonitor(makeConfig({ pairHealthMinScore: 0.45, pairHealthMaxInfraIssues: 2, pairHealthQuarantineMinutes: 180 }));
+  const snapshot = monitor.buildSnapshot({
+    journal: {
+      trades: [],
+      events: [
+        { type: "market_snapshot_cache_fallback", symbol: "BTCUSDT", at: "2026-03-10T10:00:00.000Z", error: "fetch failed" },
+        { type: "market_snapshot_cache_fallback", symbol: "BTCUSDT", at: "2026-03-10T10:30:00.000Z", error: "fetch failed" },
+        { type: "source_provider_cooldown", symbol: "BTCUSDT", at: "2026-03-10T11:00:00.000Z", reason: "provider_operational_score_too_low" },
+        { type: "source_provider_cooldown", symbol: "BTCUSDT", at: "2026-03-10T11:15:00.000Z", reason: "provider_operational_score_too_low" }
+      ]
+    },
+    runtime: {},
+    watchlist: ["BTCUSDT"],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  const btc = snapshot.bySymbol.BTCUSDT;
+  assert.equal(btc.quarantined, false);
   assert.ok(btc.score < 0.45);
 });
 
