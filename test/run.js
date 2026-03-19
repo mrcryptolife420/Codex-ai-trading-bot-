@@ -6297,6 +6297,46 @@ await runCheck("operator alert dispatcher supports discord and telegram channels
   assert.ok(plan.endpoints.some((item) => item.kind === "telegram"));
 });
 
+await runCheck("operator alert dispatcher reports delivery counts per alert and endpoint failures separately", async () => {
+  const alerts = buildOperatorAlerts({
+    runtime: {
+      health: { circuitOpen: true },
+      ops: {
+        alertState: {
+          acknowledgedAtById: {},
+          silencedUntilById: {},
+          resolvedAtById: {},
+          delivery: { lastDeliveredAtById: {} }
+        }
+      }
+    },
+    config: makeConfig({
+      operatorAlertWebhookUrls: ["https://one.example/hook", "https://two.example/hook"]
+    }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  let calls = 0;
+  const summary = await dispatchOperatorAlerts({
+    alerts,
+    runtime: { ops: { alertState: { delivery: { lastDeliveredAtById: {} } } } },
+    config: makeConfig({
+      operatorAlertWebhookUrls: ["https://one.example/hook", "https://two.example/hook"]
+    }),
+    nowIso: "2026-03-09T10:00:00.000Z",
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 2) {
+        return { ok: false, status: 500 };
+      }
+      return { ok: true, status: 200 };
+    }
+  });
+  assert.equal(summary.deliveredCount, 1);
+  assert.equal(summary.failedCount, 1);
+  assert.equal(summary.status, "partial");
+  assert.match(summary.notes[1], /endpoint/i);
+});
+
 await runCheck("reference venue service produces route advice and venue health", async () => {
   const service = new ReferenceVenueService(makeConfig({ referenceVenueMinQuotes: 2, referenceVenueMaxDivergenceBps: 18 }));
   const summary = await service.getSymbolSummary("BTCUSDT", {

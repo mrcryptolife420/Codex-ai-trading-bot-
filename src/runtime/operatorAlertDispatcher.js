@@ -127,6 +127,8 @@ export async function dispatchOperatorAlerts({
 
   let deliveredCount = 0;
   let failedCount = 0;
+  let deliveredEndpointCount = 0;
+  let failedEndpointCount = 0;
   let lastError = null;
 
   const payload = {
@@ -158,12 +160,15 @@ export async function dispatchOperatorAlerts({
       if (!response?.ok) {
         throw new Error(`HTTP ${response?.status || "unknown"}`);
       }
-      deliveredCount += plan.alerts.length;
+      deliveredEndpointCount += 1;
     } catch (error) {
-      failedCount += plan.alerts.length || 1;
+      failedEndpointCount += 1;
       lastError = error.message;
     }
   }
+
+  deliveredCount = deliveredEndpointCount ? plan.alerts.length : 0;
+  failedCount = failedEndpointCount;
 
   if (deliveredCount) {
     for (const item of plan.alerts) {
@@ -191,8 +196,8 @@ export async function dispatchOperatorAlerts({
       deliveredCount
         ? `${plan.alerts.length} operator alert(s) zijn verzonden.`
         : "Geen operator alerts verzonden.",
-      failedCount
-        ? `Alert delivery had ${failedCount} mislukte afleveringen.`
+      failedEndpointCount
+        ? `Alert delivery had ${failedEndpointCount} mislukte endpoint afleveringen.`
         : "Geen alert-delivery fouten gemeld."
     ]
   };
