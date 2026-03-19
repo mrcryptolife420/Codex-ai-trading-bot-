@@ -54,6 +54,7 @@ import {
   buildSimulationEntryDecision,
   buildSimulationExitDecision,
   resolveSimulationBuyFill,
+  resolveSimulationSellQuantity,
   resolveCandleIntervalMinutes,
   resolveEntryExecution,
   resolveExitAnchorPrice
@@ -6116,6 +6117,26 @@ await runCheck("simulation buy sizing respects exchange minimums like paper brok
   assert.equal(sized.valid, true);
   assert.equal(sized.quantity, 0.001);
   assert.equal(sized.notional, 10);
+});
+
+await runCheck("simulation sell sizing respects exchange lot rules", async () => {
+  const rules = {
+    minQty: 0.001,
+    maxQty: 1000,
+    stepSize: 0.001,
+    marketMinQty: 0.001,
+    marketMaxQty: 1000,
+    marketStepSize: 0.001,
+    minNotional: 10
+  };
+  const sized = resolveSimulationSellQuantity({
+    requestedQuantity: 0.001234,
+    availableQuantity: 0.001234,
+    rules,
+    allowFullClose: true
+  });
+  assert.equal(sized.valid, true);
+  assert.equal(sized.quantity, 0.001);
 });
 
 await runCheck("dynamic watchlist excludes stablecoin lookalikes like USD1", async () => {

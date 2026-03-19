@@ -9,7 +9,7 @@ import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
 import { nowIso } from "../utils/time.js";
-import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision, buildSimulationExitDecision, resolveSimulationBuyFill } from "./backtestExecution.js";
+import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision, buildSimulationExitDecision, resolveSimulationBuyFill, resolveSimulationSellQuantity } from "./backtestExecution.js";
 
 function num(value, decimals = 4, fallback = 0) {
   return Number.isFinite(value) ? Number(value.toFixed(decimals)) : fallback;
@@ -318,7 +318,12 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
 
         if (exitDecision.shouldScaleOut) {
           const exitBook = buildSyntheticBook(context.candle, context.market, config, { anchorPrice: context.candle.close, latencyBps: 0.4 });
-          const requestedQuantity = position.quantity * exitDecision.scaleOutFraction;
+          const normalizedSell = resolveSimulationSellQuantity({
+            requestedQuantity: position.quantity * exitDecision.scaleOutFraction,
+            availableQuantity: position.quantity,
+            rules
+          });
+          const requestedQuantity = normalizedSell.quantity;
           const fillEstimate = execution.simulatePaperFill({
             marketSnapshot: { market: context.market, book: exitBook },
             side: "SELL",
@@ -326,7 +331,7 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
             latencyMs: config.backtestLatencyMs
           });
-          const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, position.quantity));
+          const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, requestedQuantity, position.quantity));
           if (executedQuantity > 0 && executedQuantity < position.quantity) {
             const grossProceeds = executedQuantity * fillEstimate.fillPrice;
             const fee = grossProceeds * feeRate;
@@ -368,18 +373,30 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             trailingStopPrice,
             options: { latencyBps: 0.4 }
           });
+          const normalizedSell = resolveSimulationSellQuantity({
+            requestedQuantity: position.quantity,
+            availableQuantity: position.quantity,
+            rules,
+            allowFullClose: true
+          });
+          if (!normalizedSell.valid) {
+            continue;
+          }
           const fillEstimate = execution.simulatePaperFill({
             marketSnapshot: { market: context.market, book: exitBook },
             side: "SELL",
-            requestedQuantity: position.quantity,
+            requestedQuantity: normalizedSell.quantity,
             plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
             latencyMs: config.backtestLatencyMs
           });
-          const grossProceeds = fillEstimate.executedQuantity * fillEstimate.fillPrice;
+          const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || normalizedSell.quantity, normalizedSell.quantity, position.quantity));
+          const grossProceeds = executedQuantity * fillEstimate.fillPrice;
           const fee = grossProceeds * feeRate;
           const proceeds = grossProceeds - fee;
-          const pnlQuote = proceeds - position.totalCost;
-          const netPnlPct = position.totalCost ? pnlQuote / position.totalCost : 0;
+          const proportion = executedQuantity / Math.max(position.quantity, 1e-9);
+          const allocatedCost = position.totalCost * proportion;
+          const pnlQuote = proceeds - allocatedCost;
+          const netPnlPct = allocatedCost ? pnlQuote / allocatedCost : 0;
           quoteFree += proceeds;
           const trade = {
             id: `${symbol}-${window.testStart}-${index}`,
@@ -388,8 +405,8 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             exitAt: new Date(context.candle.closeTime).toISOString(),
             entryPrice: position.entryPrice,
             exitPrice: fillEstimate.fillPrice,
-            quantity: fillEstimate.executedQuantity,
-            totalCost: position.totalCost,
+            quantity: executedQuantity,
+            totalCost: allocatedCost,
             proceeds,
             pnlQuote,
             netPnlPct,
@@ -421,9 +438,9 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
               marketSnapshot: { market: context.market, book: exitBook },
               side: "SELL",
               fillPrice: fillEstimate.fillPrice,
-              requestedQuoteAmount: position.totalCost,
+              requestedQuoteAmount: allocatedCost,
               executedQuote: grossProceeds,
-              executedQuantity: fillEstimate.executedQuantity,
+              executedQuantity,
               fillEstimate,
               orderTelemetry: { makerFillRatio: fillEstimate.makerFillRatio, takerFillRatio: fillEstimate.takerFillRatio, workingTimeMs: fillEstimate.workingTimeMs, notes: fillEstimate.notes },
               brokerMode: "research"
@@ -435,7 +452,13 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
             rawFeatures: position.rawFeatures,
             captureEfficiency: position.probabilityAtEntry ? netPnlPct / Math.max(position.probabilityAtEntry, 0.05) : 0
           });
-          position = null;
+          if (executedQuantity >= position.quantity) {
+            position = null;
+          } else {
+            position.quantity -= executedQuantity;
+            position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+            position.notional = position.entryPrice * position.quantity;
+          }
         }
       }
 

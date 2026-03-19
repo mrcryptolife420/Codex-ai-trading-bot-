@@ -15,7 +15,8 @@ import {
   resolveEntryExecution,
   buildSimulationEntryDecision,
   buildSimulationExitDecision,
-  resolveSimulationBuyFill
+  resolveSimulationBuyFill,
+  resolveSimulationSellQuantity
 } from "./backtestExecution.js";
 
 function buildNewsSummary() {
@@ -169,7 +170,12 @@ export async function runBacktest({ config, logger, symbol }) {
 
       if (exitDecision.shouldScaleOut) {
         const exitBook = buildSyntheticBook(candle, context.market, config, { anchorPrice: candle.close });
-        const requestedQuantity = position.quantity * exitDecision.scaleOutFraction;
+        const normalizedSell = resolveSimulationSellQuantity({
+          requestedQuantity: position.quantity * exitDecision.scaleOutFraction,
+          availableQuantity: position.quantity,
+          rules: symbolRules
+        });
+        const requestedQuantity = normalizedSell.quantity;
         const fillEstimate = execution.simulatePaperFill({
           marketSnapshot: { market: context.market, book: exitBook },
           side: "SELL",
@@ -177,7 +183,7 @@ export async function runBacktest({ config, logger, symbol }) {
           plan: { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false },
           latencyMs: config.backtestLatencyMs
         });
-        const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, position.quantity));
+        const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || requestedQuantity, requestedQuantity, position.quantity));
         if (executedQuantity > 0 && executedQuantity < position.quantity) {
           const grossProceeds = executedQuantity * fillEstimate.fillPrice;
           const fee = grossProceeds * feeRate;
@@ -219,18 +225,30 @@ export async function runBacktest({ config, logger, symbol }) {
           trailingStopPrice
         });
         const exitPlan = { ...(position.executionPlan || {}), entryStyle: "market", fallbackStyle: "none", preferMaker: false };
+        const normalizedSell = resolveSimulationSellQuantity({
+          requestedQuantity: position.quantity,
+          availableQuantity: position.quantity,
+          rules: symbolRules,
+          allowFullClose: true
+        });
+        if (!normalizedSell.valid) {
+          continue;
+        }
         const fillEstimate = execution.simulatePaperFill({
           marketSnapshot: { market: context.market, book: exitBook },
           side: "SELL",
-          requestedQuantity: position.quantity,
+          requestedQuantity: normalizedSell.quantity,
           plan: exitPlan,
           latencyMs: config.backtestLatencyMs
         });
-        const grossProceeds = fillEstimate.executedQuantity * fillEstimate.fillPrice;
+        const executedQuantity = Math.max(0, Math.min(fillEstimate.executedQuantity || normalizedSell.quantity, normalizedSell.quantity, position.quantity));
+        const grossProceeds = executedQuantity * fillEstimate.fillPrice;
         const fee = grossProceeds * feeRate;
         const proceeds = grossProceeds - fee;
-        const pnlQuote = proceeds - position.totalCost;
-        const netPnlPct = position.totalCost ? pnlQuote / position.totalCost : 0;
+        const proportion = executedQuantity / Math.max(position.quantity, 1e-9);
+        const allocatedCost = position.totalCost * proportion;
+        const pnlQuote = proceeds - allocatedCost;
+        const netPnlPct = allocatedCost ? pnlQuote / allocatedCost : 0;
         quoteFree += proceeds;
         const trade = {
           symbol,
@@ -238,8 +256,8 @@ export async function runBacktest({ config, logger, symbol }) {
           exitAt: new Date(candle.closeTime).toISOString(),
           entryPrice: position.entryPrice,
           exitPrice: fillEstimate.fillPrice,
-          quantity: fillEstimate.executedQuantity,
-          totalCost: position.totalCost,
+          quantity: executedQuantity,
+          totalCost: allocatedCost,
           proceeds,
           pnlQuote,
           netPnlPct,
@@ -270,9 +288,9 @@ export async function runBacktest({ config, logger, symbol }) {
             marketSnapshot: { market: context.market, book: exitBook },
             side: "SELL",
             fillPrice: fillEstimate.fillPrice,
-            requestedQuoteAmount: position.totalCost,
+            requestedQuoteAmount: allocatedCost,
             executedQuote: grossProceeds,
-            executedQuantity: fillEstimate.executedQuantity,
+            executedQuantity,
             fillEstimate,
             orderTelemetry: { makerFillRatio: fillEstimate.makerFillRatio, takerFillRatio: fillEstimate.takerFillRatio, workingTimeMs: fillEstimate.workingTimeMs, notes: fillEstimate.notes },
             brokerMode: "backtest"
@@ -280,7 +298,14 @@ export async function runBacktest({ config, logger, symbol }) {
         };
         trades.push(trade);
         model.updateFromTrade(trade);
-        position = null;
+        if (executedQuantity >= position.quantity) {
+          position = null;
+        } else {
+          position.quantity -= executedQuantity;
+          position.totalCost = Math.max(0, position.totalCost - allocatedCost);
+          position.notional = position.entryPrice * position.quantity;
+          position.lastMarkedPrice = context.book.mid;
+        }
       }
     }
 

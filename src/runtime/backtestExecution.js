@@ -312,3 +312,27 @@ export function resolveSimulationBuyFill({ quoteAmount = 0, executionPrice = 0, 
     valid: true
   };
 }
+
+export function resolveSimulationSellQuantity({ requestedQuantity = 0, availableQuantity = 0, rules = null, allowFullClose = false } = {}) {
+  const cappedRequested = Math.max(0, Math.min(requestedQuantity, availableQuantity));
+  if (!rules) {
+    return {
+      quantity: cappedRequested,
+      valid: cappedRequested > 0
+    };
+  }
+  let quantity = normalizeQuantity(cappedRequested, rules, "floor", true);
+  if (!quantity && allowFullClose) {
+    quantity = normalizeQuantity(availableQuantity, rules, "floor", true);
+  }
+  if (!quantity || quantity <= 0) {
+    return {
+      quantity: 0,
+      valid: false
+    };
+  }
+  return {
+    quantity: Math.min(quantity, availableQuantity),
+    valid: true
+  };
+}
