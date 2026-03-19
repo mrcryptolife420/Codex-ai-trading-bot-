@@ -70,10 +70,62 @@ function buildRecoveredRationale(symbol) {
   };
 }
 
+function tradeKey(trade = {}, index = 0) {
+  const stableParts = [
+    trade.time ?? trade.transactTime ?? "",
+    trade.price ?? "",
+    trade.qty ?? trade.executedQty ?? "",
+    trade.quoteQty ?? trade.cummulativeQuoteQty ?? "",
+    trade.commission ?? "",
+    trade.commissionAsset ?? ""
+  ];
+  const explicitId = trade.id ?? trade.tradeId ?? trade.orderId ?? null;
+  if (explicitId != null) {
+    return [explicitId, ...stableParts].join(":");
+  }
+  if (stableParts.some((part) => `${part}` !== "")) {
+    return stableParts.join(":");
+  }
+  return `trade-${index}`;
+}
+
+function mergeTrades(existing = [], incoming = []) {
+  const map = new Map();
+  [...existing, ...incoming].forEach((trade, index) => {
+    if (!trade || typeof trade !== "object") {
+      return;
+    }
+    map.set(tradeKey(trade, index), trade);
+  });
+  return [...map.values()];
+}
+
+function sumTradeExecutedQuantity(trades = []) {
+  return trades.reduce((total, trade) => total + Number(trade.qty || trade.executedQty || 0), 0);
+}
+
+function sumTradeQuoteQuantity(trades = []) {
+  return trades.reduce((total, trade) => {
+    const quoteQty = Number(trade.quoteQty || trade.cummulativeQuoteQty || 0);
+    if (quoteQty > 0) {
+      return total + quoteQty;
+    }
+    return total + (Number(trade.qty || trade.executedQty || 0) * Number(trade.price || 0));
+  }, 0);
+}
+
 function normalizeExecution(execution) {
+  const order = execution.order || {};
+  const trades = mergeTrades(execution.trades || [], order.fills || []);
+  const tradeExecutedQty = sumTradeExecutedQuantity(trades);
+  const tradeQuoteQty = sumTradeQuoteQuantity(trades);
   return {
-    order: execution.order,
-    trades: execution.trades || execution.order.fills || []
+    order: {
+      ...order,
+      executedQty: Math.max(Number(order.executedQty || 0), tradeExecutedQty),
+      cummulativeQuoteQty: Math.max(Number(order.cummulativeQuoteQty || 0), tradeQuoteQty)
+    },
+    trades
   };
 }
 
@@ -342,11 +394,13 @@ export class LiveBroker {
   async settleMakerOrder({ symbol, orderId, quoteAmount, rules }) {
     const order = await this.client.getOrder(symbol, { orderId });
     const trades = await this.client.getMyTrades(symbol, { orderId, limit: 50 }).catch(() => []);
-    const executedQuote = Number(order.cummulativeQuoteQty || 0);
+    const normalized = normalizeExecution({ order, trades });
+    const executedQuote = Number(normalized.order.cummulativeQuoteQty || 0);
+    const executedQty = Number(normalized.order.executedQty || 0);
     return {
-      executions: executedQuote > 0 ? [normalizeExecution({ order, trades })] : [],
+      executions: executedQuote > 0 || executedQty > 0 ? [normalized] : [],
       remainingQuote: Math.max(0, quoteAmount - executedQuote),
-      order
+      order: normalized.order
     };
   }
 
@@ -575,15 +629,17 @@ export class LiveBroker {
       }
     }
 
-    let trades = Array.isArray(defaultTrades) ? defaultTrades : [];
+    let trades = Array.isArray(defaultTrades) ? [...defaultTrades] : [];
     if (this.client.getMyTrades && latestOrder?.orderId) {
       try {
-        trades = await this.client.getMyTrades(symbol, { orderId: latestOrder.orderId, limit: 50 });
+        const fetchedTrades = await this.client.getMyTrades(symbol, { orderId: latestOrder.orderId, limit: 50 });
+        trades = mergeTrades(trades, fetchedTrades);
       } catch (error) {
         this.logger?.warn?.("Terminal order trade fetch failed", { symbol, orderId: latestOrder.orderId, error: error.message });
       }
     }
-    return { order: latestOrder, trades };
+    const normalized = normalizeExecution({ order: latestOrder, trades });
+    return { order: normalized.order, trades: normalized.trades };
   }
 
   isDustRemainder({ quantity, notional, rules }) {

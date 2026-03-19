@@ -1996,6 +1996,93 @@ await runCheck("syncOrderLifecycleState surfaces unmatched orders and orphaned b
   assert.ok(lifecycle.pendingActions.some((item) => item.action === "resolve_unmatched_orders" && item.state === "reconcile_required"));
   assert.ok(lifecycle.pendingActions.some((item) => item.action === "resolve_orphaned_balance" && item.state === "reconcile_required"));
 });
+await runCheck("live broker settleMakerOrder keeps fills when quote totals lag the order snapshot", async () => {
+  const broker = new LiveBroker({
+    client: {
+      async getOrder() {
+        return {
+          orderId: 44,
+          status: "PARTIALLY_FILLED",
+          executedQty: "0.00000000",
+          cummulativeQuoteQty: "0.00",
+          price: "70000"
+        };
+      },
+      async getMyTrades() {
+        return [{ orderId: 44, price: "70000", qty: "0.002", quoteQty: "140", commission: "0.14", commissionAsset: "USDT" }];
+      }
+    },
+    config: makeConfig({ botMode: "live" }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const settled = await broker.settleMakerOrder({
+    symbol: "BTCUSDT",
+    orderId: 44,
+    quoteAmount: 200,
+    rules
+  });
+
+  assert.equal(settled.executions.length, 1);
+  assert.equal(Number(settled.order.executedQty), 0.002);
+  assert.equal(Number(settled.order.cummulativeQuoteQty), 140);
+  assert.equal(settled.remainingQuote, 60);
+});
+
+await runCheck("live broker emergency flatten keeps default fills when trade history lags", async () => {
+  const broker = new LiveBroker({
+    client: {
+      async placeOrder() {
+        return {
+          orderId: 77,
+          status: "FILLED",
+          executedQty: "1.00000000",
+          cummulativeQuoteQty: "100.00",
+          fills: [{ price: "100", qty: "1", quoteQty: "100", commission: "1", commissionAsset: "USDT" }]
+        };
+      },
+      async getOrder() {
+        return {
+          orderId: 77,
+          status: "FILLED",
+          executedQty: "1.00000000",
+          cummulativeQuoteQty: "100.00"
+        };
+      },
+      async getMyTrades() {
+        return [];
+      }
+    },
+    config: makeConfig({ botMode: "live" }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  broker.collectOrderTelemetry = async () => ({});
+
+  const trade = await broker.emergencyFlattenPosition({
+    position: {
+      id: "pos-1",
+      symbol: "BTCUSDT",
+      quantity: 1,
+      entryPrice: 90,
+      totalCost: 90,
+      notional: 90,
+      latestSpreadBps: 1,
+      highestPrice: 95,
+      lowestPrice: 88,
+      entryAt: "2026-03-19T10:00:00.000Z"
+    },
+    rules,
+    marketSnapshot: { book: { mid: 100 } },
+    plan: {}
+  });
+
+  assert.equal(trade.proceeds, 99);
+  assert.equal(trade.pnlQuote, 9);
+  assert.equal(trade.recoveredEntry, true);
+});
+
 await runCheck("live broker auto-flattens filled entries when protection setup fails", async () => {
   const placedSides = [];
   const client = {
