@@ -1932,7 +1932,6 @@ await runCheck("live broker aggregates fills across limit-maker cancel-replace r
   assert.ok(result.executions.some((item) => item.order.orderId === 2));
   assert.ok(Math.abs(result.remainingQuote - 8.8) < 1e-9);
 });
-
 await runCheck("live broker handles cancel-replace wrappers that use newOrderResult fields", async () => {
   const orderState = new Map([
     [10, { orderId: 10, status: "PARTIALLY_FILLED", origQty: "0.01000000", executedQty: "0.00400000", cummulativeQuoteQty: "280.00", price: "70000" }],
