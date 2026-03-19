@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { AdaptiveTradingModel } from "../src/ai/adaptiveModel.js";
 import { ParameterGovernor } from "../src/ai/parameterGovernor.js";
 import { StrategyMetaSelector } from "../src/ai/strategyMetaSelector.js";
@@ -68,6 +69,7 @@ import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.j
 import { TradingBot, buildCandidateQualityQuorum } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
+import { readRequestBody } from "../src/dashboard/server.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -7839,6 +7841,127 @@ await runCheck("stream coordinator status does not expose the raw listen key", a
   const status = coordinator.getStatus();
   assert.equal(Object.prototype.hasOwnProperty.call(status, "listenKey"), false);
   assert.equal(status.userStreamSessionActive, true);
+});
+
+await runCheck("stream coordinator restarts the public stream when the watchlist changes", async () => {
+  const openedUrls = [];
+  const sockets = [];
+  const originalWebSocket = globalThis.WebSocket;
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+      this.closed = false;
+      openedUrls.push(url);
+      sockets.push(this);
+    }
+
+    addEventListener(type, handler) {
+      const bucket = this.listeners.get(type) || [];
+      bucket.push(handler);
+      this.listeners.set(type, bucket);
+    }
+
+    emit(type, payload = {}) {
+      for (const handler of this.listeners.get(type) || []) {
+        handler(payload);
+      }
+    }
+
+    close() {
+      this.closed = true;
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const coordinator = new StreamCoordinator({
+      client: {
+        getStreamBaseUrl() {
+          return "wss://stream.binance.com:9443";
+        },
+        getFuturesStreamBaseUrl() {
+          return "wss://fstream.binance.com";
+        }
+      },
+      config: makeConfig({ watchlist: ["BTCUSDT", "ETHUSDT"] }),
+      logger: { warn() {}, info() {} }
+    });
+    coordinator.state.enabled = true;
+    await coordinator.startPublicStream();
+    assert.equal(openedUrls.length, 1);
+    assert.match(openedUrls[0], /btcusdt@bookTicker/);
+    coordinator.setWatchlist(["SOLUSDT"]);
+    await coordinator.publicRestartPromise;
+    assert.equal(openedUrls.length, 2);
+    assert.match(openedUrls[1], /solusdt@bookTicker/);
+    assert.equal(sockets[0].closed, true);
+    assert.equal(coordinator.publicSocket, sockets[1]);
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+await runCheck("stream coordinator primes newly added local-book symbols", async () => {
+  const coordinator = new StreamCoordinator({
+    client: {
+      getStreamBaseUrl() {
+        return "wss://stream.binance.com:9443";
+      },
+      getFuturesStreamBaseUrl() {
+        return "wss://fstream.binance.com";
+      }
+    },
+    config: makeConfig({ watchlist: ["BTCUSDT"], enableLocalOrderBook: true }),
+    logger: { warn() {}, info() {} }
+  });
+  coordinator.state.enabled = true;
+  const primed = [];
+  coordinator.primeLocalBooks = async (symbols) => {
+    primed.push(...symbols);
+    return [];
+  };
+  coordinator.setLocalBookUniverse(["BTCUSDT", "ETHUSDT"]);
+  await Promise.resolve();
+  assert.deepEqual(primed, ["ETHUSDT"]);
+});
+
+await runCheck("stream coordinator close clears live connection flags immediately", async () => {
+  const coordinator = new StreamCoordinator({
+    client: {
+      async closeUserDataListenKey() {
+        return true;
+      },
+      getStreamBaseUrl() {
+        return "wss://stream.binance.com:9443";
+      },
+      getFuturesStreamBaseUrl() {
+        return "wss://fstream.binance.com";
+      }
+    },
+    config: makeConfig({ watchlist: ["BTCUSDT"] }),
+    logger: { warn() {}, info() {} }
+  });
+  coordinator.publicSocket = { close() {} };
+  coordinator.futuresSocket = { close() {} };
+  coordinator.userSocket = { close() {} };
+  coordinator.state.publicStreamConnected = true;
+  coordinator.state.futuresStreamConnected = true;
+  coordinator.state.userStreamConnected = true;
+  coordinator.state.listenKey = "test-listen-key";
+  await coordinator.close();
+  const status = coordinator.getStatus();
+  assert.equal(status.publicStreamConnected, false);
+  assert.equal(status.futuresStreamConnected, false);
+  assert.equal(status.userStreamConnected, false);
+  assert.equal(status.userStreamSessionActive, false);
+});
+
+await runCheck("dashboard server rejects oversized JSON bodies", async () => {
+  const request = Readable.from([Buffer.from(`{"payload":"${"x".repeat(1_000_100)}"}`)]);
+  await assert.rejects(
+    () => readRequestBody(request),
+    (error) => error?.statusCode === 413
+  );
 });
 
 await runCheck("trading bot blocks further entries after recovering a failed live exposure", async () => {

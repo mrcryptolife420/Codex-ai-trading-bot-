@@ -153,6 +153,7 @@ export class StreamCoordinator {
     this.futuresSocket = null;
     this.userSocket = null;
     this.keepAliveTimer = null;
+    this.publicRestartPromise = Promise.resolve();
     this.setWatchlist(config.watchlist);
     this.setLocalBookUniverse(config.watchlist.slice(0, config.localBookMaxSymbols || config.universeMaxSymbols || config.watchlist.length));
   }
@@ -201,14 +202,31 @@ export class StreamCoordinator {
 
   setWatchlist(symbols = []) {
     const normalized = unique(symbols.map((symbol) => `${symbol}`.trim().toUpperCase()));
-    this.config.watchlist = normalized;
     const previous = this.state.symbols || {};
+    const previousSymbols = Object.keys(previous);
+    const changed = normalized.length !== previousSymbols.length || normalized.some((symbol, index) => symbol !== previousSymbols[index]);
+    this.config.watchlist = normalized;
     this.state.symbols = Object.fromEntries(normalized.map((symbol) => [symbol, previous[symbol] || this.createSymbolState()]));
+    if (changed && this.publicSocket && this.state.enabled) {
+      void this.restartPublicStream("watchlist_update").catch((error) => {
+        this.state.lastError = error.message;
+        this.logger?.warn?.("Public market stream restart failed", { error: error.message });
+      });
+    }
   }
 
   setLocalBookUniverse(symbols = []) {
+    const previousSymbols = this.orderBook.activeSymbols ? [...this.orderBook.activeSymbols] : [];
     this.orderBook.setActiveSymbols(symbols);
     this.state.localBook = this.orderBook.getSummary();
+    const nextSymbols = this.orderBook.activeSymbols ? [...this.orderBook.activeSymbols] : [];
+    const addedSymbols = nextSymbols.filter((symbol) => !previousSymbols.includes(symbol));
+    if (addedSymbols.length && this.state.enabled && this.config.enableLocalOrderBook) {
+      void this.primeLocalBooks(addedSymbols).catch((error) => {
+        this.state.lastError = error.message;
+        this.logger?.warn?.("Local order book reprime failed", { error: error.message, symbols: addedSymbols });
+      });
+    }
   }
 
   async primeLocalBooks(symbols = []) {
@@ -425,11 +443,18 @@ export class StreamCoordinator {
       return base;
     });
     const socket = new WebSocket(`${this.client.getStreamBaseUrl()}/${toCombinedStreamPath(streams)}`);
+    this.publicSocket = socket;
     socket.addEventListener("open", () => {
+      if (this.publicSocket !== socket) {
+        return;
+      }
       this.state.publicStreamConnected = true;
       this.logger?.info?.("Public market stream connected", { streams: streams.length });
     });
     socket.addEventListener("message", (event) => {
+      if (this.publicSocket !== socket) {
+        return;
+      }
       try {
         this.handlePublicMessage(JSON.parse(event.data));
       } catch (error) {
@@ -437,23 +462,38 @@ export class StreamCoordinator {
       }
     });
     socket.addEventListener("close", () => {
+      if (this.publicSocket !== socket) {
+        return;
+      }
       this.state.publicStreamConnected = false;
       this.clearPublicBookTickers();
+      this.publicSocket = null;
     });
     socket.addEventListener("error", (error) => {
+      if (this.publicSocket !== socket) {
+        return;
+      }
       this.state.lastError = error.message || "public_stream_error";
+      this.state.publicStreamConnected = false;
       this.clearPublicBookTickers();
+      this.publicSocket = null;
     });
-    this.publicSocket = socket;
   }
 
   async startFuturesStream() {
     const socket = new WebSocket(`${this.client.getFuturesStreamBaseUrl()}/stream?streams=!forceOrder@arr`);
+    this.futuresSocket = socket;
     socket.addEventListener("open", () => {
+      if (this.futuresSocket !== socket) {
+        return;
+      }
       this.state.futuresStreamConnected = true;
       this.logger?.info?.("Futures liquidation stream connected");
     });
     socket.addEventListener("message", (event) => {
+      if (this.futuresSocket !== socket) {
+        return;
+      }
       try {
         this.handleFuturesMessage(JSON.parse(event.data));
       } catch (error) {
@@ -461,23 +501,38 @@ export class StreamCoordinator {
       }
     });
     socket.addEventListener("close", () => {
+      if (this.futuresSocket !== socket) {
+        return;
+      }
       this.state.futuresStreamConnected = false;
+      this.futuresSocket = null;
     });
     socket.addEventListener("error", (error) => {
+      if (this.futuresSocket !== socket) {
+        return;
+      }
       this.state.lastError = error.message || "futures_stream_error";
+      this.state.futuresStreamConnected = false;
+      this.futuresSocket = null;
     });
-    this.futuresSocket = socket;
   }
 
   async startUserStream() {
     const listenKey = await this.client.createUserDataListenKey();
     this.state.listenKey = listenKey;
     const socket = new WebSocket(`${this.client.getStreamBaseUrl()}/ws/${listenKey}`);
+    this.userSocket = socket;
     socket.addEventListener("open", () => {
+      if (this.userSocket !== socket) {
+        return;
+      }
       this.state.userStreamConnected = true;
       this.logger?.info?.("User data stream connected");
     });
     socket.addEventListener("message", (event) => {
+      if (this.userSocket !== socket) {
+        return;
+      }
       try {
         this.handleUserMessage(JSON.parse(event.data));
       } catch (error) {
@@ -485,17 +540,50 @@ export class StreamCoordinator {
       }
     });
     socket.addEventListener("close", () => {
+      if (this.userSocket !== socket) {
+        return;
+      }
       this.state.userStreamConnected = false;
+      this.userSocket = null;
     });
     socket.addEventListener("error", (error) => {
+      if (this.userSocket !== socket) {
+        return;
+      }
       this.state.lastError = error.message || "user_stream_error";
+      this.state.userStreamConnected = false;
+      this.userSocket = null;
     });
     this.keepAliveTimer = setInterval(() => {
       this.client.keepAliveUserDataListenKey(listenKey).catch((error) => {
         this.state.lastError = error.message;
       });
     }, 30 * 60 * 1000);
-    this.userSocket = socket;
+  }
+
+  async stopPublicStream() {
+    const socket = this.publicSocket;
+    this.publicSocket = null;
+    this.state.publicStreamConnected = false;
+    this.clearPublicBookTickers();
+    if (socket) {
+      socket.close();
+    }
+  }
+
+  async restartPublicStream(reason = "watchlist_update") {
+    this.publicRestartPromise = this.publicRestartPromise.catch(() => {}).then(async () => {
+      await this.stopPublicStream();
+      if (!this.state.enabled || typeof WebSocket === "undefined" || !this.config.watchlist.length) {
+        return;
+      }
+      await this.startPublicStream();
+      this.logger?.info?.("Public market stream restarted", {
+        reason,
+        symbols: this.config.watchlist.length
+      });
+    });
+    return this.publicRestartPromise;
   }
 
   async close() {
@@ -515,6 +603,10 @@ export class StreamCoordinator {
       this.userSocket.close();
       this.userSocket = null;
     }
+    this.state.publicStreamConnected = false;
+    this.state.futuresStreamConnected = false;
+    this.state.userStreamConnected = false;
+    this.clearPublicBookTickers();
     if (this.state.listenKey) {
       try {
         await this.client.closeUserDataListenKey(this.state.listenKey);

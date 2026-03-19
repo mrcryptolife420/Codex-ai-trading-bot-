@@ -3600,12 +3600,18 @@ export class TradingBot {
       modelState: this.model.getState(),
       modelBackups: this.modelBackups,
       modelRegistry: this.runtime.modelRegistry
-    }, { reason: "shutdown", force: true, nowIso: nowIso() }).catch(() => {});
+    }, { reason: "shutdown", force: true, nowIso: nowIso() }).catch((error) => {
+      this.logger?.warn?.("Shutdown backup failed", { error: error.message });
+    });
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.syncOrderLifecycleState("shutdown");
     this.refreshOperationalViews({ nowIso: nowIso() });
-    await this.persist().catch(() => {});
-    await this.stream.close().catch(() => {});
+    await this.persist().catch((error) => {
+      this.logger?.warn?.("Shutdown persist failed", { error: error.message });
+    });
+    await this.stream.close().catch((error) => {
+      this.logger?.warn?.("Stream shutdown failed", { error: error.message });
+    });
   }
 
   async persist() {

@@ -10,6 +10,7 @@ const CONTENT_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml"
 };
+const MAX_REQUEST_BODY_BYTES = 1_000_000;
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -19,9 +20,17 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
-async function readRequestBody(request) {
+export async function readRequestBody(request) {
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
+    totalBytes += chunk.length;
+    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+      const error = new Error("Request body too large");
+      error.statusCode = 413;
+      error.publicMessage = "Request body too large";
+      throw error;
+    }
     chunks.push(chunk);
   }
   if (!chunks.length) {
