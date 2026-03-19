@@ -52,6 +52,7 @@ let searchQuery = "";
 let allowedOnly = false;
 let showAllDecisions = readStoredBoolean(STORAGE_KEYS.showAllDecisions, false);
 let lastSnapshotReceivedAt = null;
+let latestAppliedEpoch = 0;
 const panelState = {
   signals: true,
   positions: true,
@@ -1070,9 +1071,10 @@ async function refreshSnapshot() {
   const epoch = ++requestEpoch;
   try {
     const payload = await api("/api/snapshot");
-    if (epoch !== requestEpoch) {
+    if (epoch < requestEpoch || epoch < latestAppliedEpoch) {
       return;
     }
+    latestAppliedEpoch = epoch;
     render(pickSnapshot(payload));
   } catch (error) {
     elements.controlHint.textContent = error.message;
@@ -1086,10 +1088,15 @@ async function refreshSnapshot() {
 }
 
 async function runAction(path, body = {}) {
+  const epoch = ++requestEpoch;
   busy = true;
   syncControls(latestSnapshot || {});
   try {
     const payload = await api(path, { method: "POST", body });
+    if (epoch < requestEpoch || epoch < latestAppliedEpoch) {
+      return;
+    }
+    latestAppliedEpoch = epoch;
     render(pickSnapshot(payload));
   } catch (error) {
     elements.controlHint.textContent = error.message;

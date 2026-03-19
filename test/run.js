@@ -69,7 +69,7 @@ import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.j
 import { TradingBot, buildCandidateQualityQuorum } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
-import { readRequestBody } from "../src/dashboard/server.js";
+import { normalizeSymbolList, readRequestBody } from "../src/dashboard/server.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -8462,6 +8462,12 @@ await runCheck("dashboard server rejects oversized JSON bodies", async () => {
     () => readRequestBody(request),
     (error) => error?.statusCode === 413
   );
+});
+
+await runCheck("dashboard server normalizes research symbols from scalar or array bodies", async () => {
+  assert.deepEqual(normalizeSymbolList([" BTCUSDT ", "ETHUSDT", "", null]), ["BTCUSDT", "ETHUSDT"]);
+  assert.deepEqual(normalizeSymbolList(" solusdt "), ["solusdt"]);
+  assert.deepEqual(normalizeSymbolList(undefined), []);
 });
 
 await runCheck("trading bot blocks further entries after recovering a failed live exposure", async () => {

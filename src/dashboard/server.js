@@ -20,6 +20,17 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+export function normalizeSymbolList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item != null)
+      .map((item) => `${item}`.trim())
+      .filter(Boolean);
+  }
+  const single = `${value || ""}`.trim();
+  return single ? [single] : [];
+}
+
 export async function readRequestBody(request) {
   const chunks = [];
   let totalBytes = 0;
@@ -140,7 +151,7 @@ async function handleApi(request, response, manager) {
     return sendJson(response, 200, await manager.runCycleOnce());
   }
   if (url.pathname === "/api/research") {
-    return sendJson(response, 200, await manager.runResearch(body.symbols || []));
+    return sendJson(response, 200, await manager.runResearch(normalizeSymbolList(body.symbols)));
   }
   if (url.pathname === "/api/mode") {
     return sendJson(response, 200, await manager.setMode(body.mode));
