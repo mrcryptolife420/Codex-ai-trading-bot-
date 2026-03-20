@@ -11127,8 +11127,9 @@ await runCheck("stream coordinator restarts the user stream after an unexpected 
     close() {}
   }
   globalThis.WebSocket = FakeWebSocket;
+  let coordinator = null;
   try {
-    const coordinator = new StreamCoordinator({
+    coordinator = new StreamCoordinator({
       client: {
         async createUserDataListenKey() {
           listenKeyIndex += 1;
@@ -11158,6 +11159,9 @@ await runCheck("stream coordinator restarts the user stream after an unexpected 
     assert.notEqual(coordinator.userSocket, firstSocket);
     assert.equal(coordinator.state.listenKey, "listen-2");
   } finally {
+    if (coordinator) {
+      await coordinator.close();
+    }
     globalThis.WebSocket = originalWebSocket;
   }
 });
@@ -11187,8 +11191,9 @@ await runCheck("stream coordinator restarts the futures stream after an unexpect
     close() {}
   }
   globalThis.WebSocket = FakeWebSocket;
+  let coordinator = null;
   try {
-    const coordinator = new StreamCoordinator({
+    coordinator = new StreamCoordinator({
       client: {
         getStreamBaseUrl() {
           return "wss://stream.binance.com:9443";
@@ -11209,6 +11214,9 @@ await runCheck("stream coordinator restarts the futures stream after an unexpect
     assert.equal(openedUrls.length, 2);
     assert.notEqual(coordinator.futuresSocket, firstSocket);
   } finally {
+    if (coordinator) {
+      await coordinator.close();
+    }
     globalThis.WebSocket = originalWebSocket;
   }
 });
