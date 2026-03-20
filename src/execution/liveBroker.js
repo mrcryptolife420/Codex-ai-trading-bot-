@@ -14,6 +14,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isActiveExchangeOrderStatus(status) {
+  return ["NEW", "PARTIALLY_FILLED", "PENDING_NEW"].includes(`${status || ""}`.toUpperCase());
+}
+
 function sumTradeCommissionsToQuote(trades, baseAsset, quoteAsset) {
   return (trades || []).reduce((total, trade) => {
     const commission = Number(trade.commission || 0);
@@ -586,14 +590,23 @@ export class LiveBroker {
       }
 
       try {
-        if (settled.order?.status === "NEW" || settled.order?.status === "PARTIALLY_FILLED") {
+        if (isActiveExchangeOrderStatus(settled.order?.status)) {
           const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
           orderResponses.push(cancel);
           settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
           executions = mergeExecutions(executions, settled.executions || []);
         }
       } catch (error) {
-        this.logger?.warn?.("Pegged maker cancel failed", { symbol, error: error.message });
+        settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules }).catch(() => settled);
+        executions = mergeExecutions(executions, settled.executions || []);
+        if (isActiveExchangeOrderStatus(settled.order?.status)) {
+          const ambiguityError = new Error(`Pegged maker order for ${symbol} remained active after cancel failure: ${error.message}`);
+          ambiguityError.pendingOrderId = workingOrderId;
+          ambiguityError.orderResponses = [...orderResponses];
+          ambiguityError.ambiguousExchangeState = true;
+          throw ambiguityError;
+        }
+        this.logger?.warn?.("Pegged maker cancel failed after the order had already settled", { symbol, error: error.message });
       }
 
       return {
@@ -703,7 +716,11 @@ export class LiveBroker {
               };
               executions = mergeExecutions(executions, settled.executions || []);
             } else {
-              this.logger?.warn?.("Limit maker refresh failed", { symbol, error: error.message });
+              const ambiguityError = new Error(`Limit maker refresh for ${symbol} could not confirm the replacement order after submit failure: ${error.message}`);
+              ambiguityError.pendingOrderId = workingOrderId;
+              ambiguityError.orderResponses = [...orderResponses];
+              ambiguityError.ambiguousExchangeState = true;
+              throw ambiguityError;
             }
           }
         } else if (firstOrder.status === "PARTIALLY_FILLED" && plan?.allowKeepPriority) {
@@ -726,14 +743,23 @@ export class LiveBroker {
       }
 
       try {
-        if (settled.order?.status === "NEW" || settled.order?.status === "PARTIALLY_FILLED") {
+        if (isActiveExchangeOrderStatus(settled.order?.status)) {
           const cancel = await this.client.cancelOrder(symbol, { orderId: workingOrderId });
           orderResponses.push(cancel);
           settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules });
           executions = mergeExecutions(executions, settled.executions || []);
         }
       } catch (error) {
-        this.logger?.warn?.("Limit maker cancel failed", { symbol, error: error.message });
+        settled = await this.settleMakerOrder({ symbol, orderId: workingOrderId, quoteAmount, rules }).catch(() => settled);
+        executions = mergeExecutions(executions, settled.executions || []);
+        if (isActiveExchangeOrderStatus(settled.order?.status)) {
+          const ambiguityError = new Error(`Limit maker order for ${symbol} remained active after cancel failure: ${error.message}`);
+          ambiguityError.pendingOrderId = workingOrderId;
+          ambiguityError.orderResponses = [...orderResponses];
+          ambiguityError.ambiguousExchangeState = true;
+          throw ambiguityError;
+        }
+        this.logger?.warn?.("Limit maker cancel failed after the order had already settled", { symbol, error: error.message });
       }
 
       return {
@@ -1094,10 +1120,20 @@ export class LiveBroker {
           positionId: position.id,
           detail: recoveredTrade.reason
         });
-        const exposureError = new Error(`Live entry for ${symbol} opened exchange exposure but was auto-flattened after failure: ${error.message}`);
+        const ambiguousExchangeState = Boolean(error.ambiguousExchangeState);
+        const exposureError = new Error(
+          ambiguousExchangeState
+            ? `Live entry for ${symbol} auto-flattened known exposure after failure, but exchange state remains ambiguous: ${error.message}`
+            : `Live entry for ${symbol} opened exchange exposure but was auto-flattened after failure: ${error.message}`
+        );
         exposureError.preventFurtherEntries = true;
-        exposureError.blockedReason = "entry_recovered_after_partial_fill";
+        exposureError.blockedReason = ambiguousExchangeState
+          ? "entry_requires_runtime_recovery"
+          : "entry_recovered_after_partial_fill";
         exposureError.recoveredTrade = recoveredTrade;
+        if (ambiguousExchangeState) {
+          exposureError.activeOrderId = error.pendingOrderId || null;
+        }
         throw exposureError;
       } catch (flattenError) {
         if (flattenError?.preventFurtherEntries) {

@@ -2782,6 +2782,191 @@ await runCheck("live broker auto-flattens filled entries when protection setup f
   assert.ok(runtime.orderLifecycle.actionJournal.some((item) => item.type === "entry_open" && item.status === "recovered"));
 });
 
+await runCheck("live broker blocks entry completion when a partial maker order stays active after cancel failure", async () => {
+  const placedSides = [];
+  const broker = new LiveBroker({
+    client: {
+      async placeOrder(params) {
+        placedSides.push(params.side);
+        if (params.side === "BUY") {
+          return {
+            orderId: 31,
+            status: "NEW",
+            origQty: "0.01000000",
+            executedQty: "0.00000000",
+            cummulativeQuoteQty: "0.00",
+            price: "70000",
+            type: "LIMIT_MAKER"
+          };
+        }
+        return {
+          orderId: 32,
+          status: "FILLED",
+          executedQty: params.quantity,
+          cummulativeQuoteQty: "279.00",
+          fills: [{ orderId: 32, price: "69750", qty: params.quantity, quoteQty: "279.00", commission: "0.28", commissionAsset: "USDT" }]
+        };
+      },
+      async getOrder(_symbol, params) {
+        if (params.orderId === 31) {
+          return {
+            orderId: 31,
+            status: "PARTIALLY_FILLED",
+            origQty: "0.01000000",
+            executedQty: "0.00400000",
+            cummulativeQuoteQty: "280.00",
+            price: "70000",
+            type: "LIMIT_MAKER"
+          };
+        }
+        return {
+          orderId: 32,
+          status: "FILLED",
+          executedQty: "0.00400000",
+          cummulativeQuoteQty: "279.00",
+          type: "MARKET"
+        };
+      },
+      async getMyTrades(_symbol, params) {
+        if (params.orderId === 31) {
+          return [{ orderId: 31, price: "70000", qty: "0.004", quoteQty: "280.00", commission: "0.28", commissionAsset: "USDT" }];
+        }
+        return [{ orderId: 32, price: "69750", qty: "0.004", quoteQty: "279.00", commission: "0.28", commissionAsset: "USDT" }];
+      },
+      async getBookTicker() {
+        return { bidPrice: "70000" };
+      },
+      async cancelOrder() {
+        throw new Error("cancel timeout");
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false, enableSmartExecution: true }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const runtime = { openPositions: [] };
+
+  await assert.rejects(
+    broker.enterPosition({
+      symbol: "BTCUSDT",
+      rules,
+      quoteAmount: 700,
+      marketSnapshot: { book: { bid: 70000, ask: 70010, mid: 70005, spreadBps: 2 } },
+      decision: { stopLossPct: 0.02, takeProfitPct: 0.03, executionPlan: { entryStyle: "limit_maker", fallbackStyle: "market" }, regime: "trend" },
+      score: { probability: 0.7, regime: "trend" },
+      rawFeatures: { momentum_5: 1 },
+      newsSummary: { sentimentScore: 0.1 },
+      entryRationale: { strategy: { name: "test" } },
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.preventFurtherEntries, true);
+      assert.equal(error.blockedReason, "entry_requires_runtime_recovery");
+      assert.equal(error.recoveredTrade?.reason, "entry_recovery_flatten");
+      assert.equal(error.activeOrderId, 31);
+      return true;
+    }
+  );
+
+  assert.deepEqual(placedSides, ["BUY", "SELL"]);
+  assert.equal(runtime.openPositions.length, 0);
+});
+
+await runCheck("live broker blocks entry completion when cancel-replace recovery stays ambiguous", async () => {
+  const placedSides = [];
+  const broker = new LiveBroker({
+    client: {
+      async placeOrder(params) {
+        placedSides.push(params.side);
+        if (params.side === "BUY") {
+          return {
+            orderId: 41,
+            status: "NEW",
+            origQty: "0.01000000",
+            executedQty: "0.00000000",
+            cummulativeQuoteQty: "0.00",
+            price: "70000",
+            type: "LIMIT_MAKER"
+          };
+        }
+        return {
+          orderId: 42,
+          status: "FILLED",
+          executedQty: params.quantity,
+          cummulativeQuoteQty: "279.00",
+          fills: [{ orderId: 42, price: "69750", qty: params.quantity, quoteQty: "279.00", commission: "0.28", commissionAsset: "USDT" }]
+        };
+      },
+      async getOrder(_symbol, params) {
+        if (params.origClientOrderId) {
+          return {};
+        }
+        if (params.orderId === 41) {
+          return {
+            orderId: 41,
+            status: "PARTIALLY_FILLED",
+            origQty: "0.01000000",
+            executedQty: "0.00400000",
+            cummulativeQuoteQty: "280.00",
+            price: "70000",
+            type: "LIMIT_MAKER"
+          };
+        }
+        return {
+          orderId: 42,
+          status: "FILLED",
+          executedQty: "0.00400000",
+          cummulativeQuoteQty: "279.00",
+          type: "MARKET"
+        };
+      },
+      async getMyTrades(_symbol, params) {
+        if (params.orderId === 41) {
+          return [{ orderId: 41, price: "70000", qty: "0.004", quoteQty: "280.00", commission: "0.28", commissionAsset: "USDT" }];
+        }
+        return [{ orderId: 42, price: "69750", qty: "0.004", quoteQty: "279.00", commission: "0.28", commissionAsset: "USDT" }];
+      },
+      async getBookTicker() {
+        return { bidPrice: "70200" };
+      },
+      async cancelReplaceOrder() {
+        const error = new Error("submit timeout");
+        error.code = "ETIMEDOUT";
+        throw error;
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false, enableSmartExecution: true }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const runtime = { openPositions: [] };
+
+  await assert.rejects(
+    broker.enterPosition({
+      symbol: "BTCUSDT",
+      rules,
+      quoteAmount: 700,
+      marketSnapshot: { book: { bid: 70000, ask: 70010, mid: 70005, spreadBps: 2 } },
+      decision: { stopLossPct: 0.02, takeProfitPct: 0.03, executionPlan: { entryStyle: "limit_maker", fallbackStyle: "market" }, regime: "trend" },
+      score: { probability: 0.7, regime: "trend" },
+      rawFeatures: { momentum_5: 1 },
+      newsSummary: { sentimentScore: 0.1 },
+      entryRationale: { strategy: { name: "test" } },
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.preventFurtherEntries, true);
+      assert.equal(error.blockedReason, "entry_requires_runtime_recovery");
+      assert.equal(error.recoveredTrade?.reason, "entry_recovery_flatten");
+      assert.equal(error.activeOrderId, 41);
+      return true;
+    }
+  );
+
+  assert.deepEqual(placedSides, ["BUY", "SELL"]);
+  assert.equal(runtime.openPositions.length, 0);
+});
+
 await runCheck("live broker keeps the remainder managed after a partial exit fill", async () => {
   let rebuiltProtection = 0;
   const client = {
