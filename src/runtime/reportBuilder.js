@@ -746,6 +746,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
   const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config);
   const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
+  const openExposureReview = buildOpenExposureReview(runtime.openPositions || []);
   const windowSummaries = buildWindowSummaries(trades, {
     today: localDayStartMs,
     days7: nowMs - 7 * 86_400_000,
@@ -760,6 +761,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     maxDrawdownPct: buildDrawdown(equitySnapshots),
     openExposure,
     openPositions: (runtime.openPositions || []).length,
+    openExposureReview,
     recentTrades: lookbackTrades.slice(-25).reverse(),
     executionSummary: buildExecutionSummary(lookbackTrades),
     executionCostSummary,
@@ -793,4 +795,59 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     recentBlockedSetups: blockedSetups.slice(-20).reverse(),
     recentResearchRuns: researchRuns.slice(-8).reverse()
   };
+}
+
+function buildOpenExposureReview(openPositions = []) {
+  const summary = {
+    manualReviewCount: 0,
+    reconcileRequiredCount: 0,
+    protectionPendingCount: 0,
+    unreconciledCount: 0,
+    manualReviewExposure: 0,
+    reconcileRequiredExposure: 0,
+    protectionPendingExposure: 0,
+    unreconciledExposure: 0,
+    notes: []
+  };
+  for (const position of openPositions || []) {
+    const quantity = safeNumber(position?.quantity, 0);
+    const entryPrice = safeNumber(position?.entryPrice, 0);
+    const notional = safeNumber(position?.notional, quantity * entryPrice);
+    const exposure = Number.isFinite(notional) ? notional : 0;
+    const manualReview = Boolean(position?.manualReviewRequired);
+    const reconcileRequired = Boolean(position?.reconcileRequired);
+    const protectionPending = `${position?.lifecycleState || ""}` === "protection_pending";
+    if (manualReview) {
+      summary.manualReviewCount += 1;
+      summary.manualReviewExposure += exposure;
+    }
+    if (reconcileRequired) {
+      summary.reconcileRequiredCount += 1;
+      summary.reconcileRequiredExposure += exposure;
+    }
+    if (protectionPending) {
+      summary.protectionPendingCount += 1;
+      summary.protectionPendingExposure += exposure;
+    }
+    if (manualReview || reconcileRequired || protectionPending) {
+      summary.unreconciledCount += 1;
+      summary.unreconciledExposure += exposure;
+    }
+  }
+  summary.manualReviewExposure = Number(summary.manualReviewExposure.toFixed(2));
+  summary.reconcileRequiredExposure = Number(summary.reconcileRequiredExposure.toFixed(2));
+  summary.protectionPendingExposure = Number(summary.protectionPendingExposure.toFixed(2));
+  summary.unreconciledExposure = Number(summary.unreconciledExposure.toFixed(2));
+  summary.notes = [
+    summary.unreconciledCount
+      ? `${summary.unreconciledCount} open posities vragen reconcile, manual review of protection-herstel.`
+      : "Alle open exposure staat momenteel zonder reconcile-signalen.",
+    summary.manualReviewCount
+      ? `${summary.manualReviewCount} positie(s) wachten op operator review.`
+      : "Geen open posities in manual review.",
+    summary.protectionPendingCount
+      ? `${summary.protectionPendingCount} positie(s) wachten nog op protection rebuild.`
+      : "Geen protection-pending posities actief."
+  ];
+  return summary;
 }

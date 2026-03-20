@@ -1214,6 +1214,46 @@ export class LiveBroker {
           }
         }
       }
+      if (responseStatus === "ALL_DONE" && !protectiveOrders.length) {
+        const streamFill = this.getProtectiveFillFromStream(position);
+        if (streamFill?.orderId) {
+          const outcome = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType);
+          if (outcome?.closedTrade) {
+            finishLifecycleAction(runtime, actionId, {
+              status: "completed",
+              stage: "closed_via_protective_fill",
+              severity: "neutral",
+              detail: outcome.closedTrade.reason || "exchange_protective_order"
+            });
+            return { response, closedTrade: outcome.closedTrade };
+          }
+          if (outcome?.partialFill) {
+            finishLifecycleAction(runtime, actionId, {
+              status: "warning",
+              stage: "reconcile_required",
+              severity: "negative",
+              detail: "protective_partial_fill"
+            });
+            return { response, positionChanged: true, partialFill: outcome.partialFill };
+          }
+        }
+        position.reconcileRequired = true;
+        position.lifecycleState = "reconcile_required";
+        position.lastManagementError = `Protective cancel state for ${position.symbol} was ambiguous; reconcile required.`;
+        const ambiguousError = new Error(`Protective cancel state for ${position.symbol} is ambiguous.`);
+        ambiguousError.ambiguousExchangeState = true;
+        ambiguousError.blockedReason = "protective_cancel_state_ambiguous";
+        finishLifecycleAction(runtime, actionId, {
+          status: strict ? "failed" : "warning",
+          stage: "reconcile_required",
+          severity: "negative",
+          error: ambiguousError.message
+        });
+        if (strict) {
+          throw ambiguousError;
+        }
+        return { response, closedTrade: null, positionChanged: true, ambiguous: true };
+      }
       this.clearProtectiveOrderState(position, "CANCELED");
       finishLifecycleAction(runtime, actionId, {
         status: "completed",

@@ -2248,6 +2248,52 @@ await runCheck("live broker rebuilds stale protection after an unfilled ALL_DONE
   assert.equal(runtime.openPositions[0].protectiveOrderStatus, "NEW");
 });
 
+await runCheck("live broker blocks exit when protective cancel returns ambiguous state", async () => {
+  let marketSellSubmitted = false;
+  const broker = new LiveBroker({
+    client: {
+      cancelOrderList: async () => ({ listStatusType: "ALL_DONE", orders: [] }),
+      placeOrder: async () => {
+        marketSellSubmitted = true;
+        return { orderId: 99 };
+      }
+    },
+    config: makeConfig({ botMode: "live", enableExchangeProtection: true }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules },
+    stream: { getRecentExecutionReports: () => [] }
+  });
+  const runtime = { openPositions: [], orderLifecycle: { pendingActions: [], activeActions: {}, positions: {}, recentTransitions: [], actionJournal: [] } };
+  const position = {
+    id: "pos-1",
+    symbol: "BTCUSDT",
+    quantity: 0.01,
+    entryPrice: 70000,
+    totalCost: 700,
+    notional: 700,
+    stopLossPrice: 68000,
+    takeProfitPrice: 72000,
+    protectiveOrderListId: 42,
+    protectiveOrders: []
+  };
+  await assert.rejects(
+    broker.exitPosition({
+      position,
+      rules,
+      marketSnapshot: { book: { mid: 70100, bid: 70090, ask: 70110 } },
+      reason: "risk_exit",
+      runtime
+    }),
+    (error) => {
+      assert.equal(error.ambiguousExchangeState, true);
+      assert.equal(error.blockedReason, "protective_cancel_state_ambiguous");
+      return true;
+    }
+  );
+  assert.equal(marketSellSubmitted, false);
+  assert.equal(position.reconcileRequired, true);
+  assert.equal(position.lifecycleState, "reconcile_required");
+});
 await runCheck("live broker flags unexpected open orders on managed positions as manual interference", async () => {
   const runtime = {
     openPositions: [
@@ -9146,6 +9192,40 @@ await runCheck("doctor surfaces stale service heartbeat checks", async () => {
   assert.equal(checks.checks.find((item) => item.id === "service_heartbeat_fresh")?.passed, false);
 });
 
+await runCheck("doctor and readiness surface bootstrap init warnings", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ tradingIntervalSeconds: 60 });
+  bot.runtime = {
+    mode: "paper",
+    lastAnalysisAt: "2026-03-19T09:59:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:59:00.000Z",
+    lastKnownBalance: 1000,
+    health: { circuitOpen: false },
+    exchangeTruth: { orphanedSymbols: [], manualInterferenceSymbols: [], unmatchedOrderSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [] },
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:30.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0,
+      initWarnings: [{ type: "data_recorder_init_failed", error: "disk busy", at: "2026-03-19T09:58:00.000Z" }]
+    },
+    ops: { alerts: { alerts: [] } }
+  };
+  bot.journal = { trades: [] };
+  bot.dataRecorder = { getSummary: () => ({ lastRecordAt: "2026-03-19T09:59:00.000Z" }) };
+  const readiness = bot.buildOperationalReadiness("2026-03-19T10:00:00.000Z");
+  const checks = bot.buildDoctorChecks({
+    report: { openExposure: 0, recentTrades: [] },
+    balance: { quoteFree: 1000 },
+    previewCandidates: [],
+    now: new Date("2026-03-19T10:00:00.000Z")
+  });
+  assert.ok(readiness.reasons.includes("service_bootstrap_degraded"));
+  assert.equal(checks.checks.find((item) => item.id === "bootstrap_components_ready")?.passed, false);
+});
 await runCheck("trading bot caches performance report until report state changes", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ reportLookbackTrades: 50 });
@@ -9232,6 +9312,118 @@ await runCheck("trading bot getReport keeps full report metrics instead of dashb
   assert.equal(report.modes.paper.realizedPnl, 19);
 });
 
+await runCheck("performance report tracks unreconciled open exposure", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [],
+      scaleOuts: [],
+      blockedSetups: [],
+      researchRuns: [],
+      equitySnapshots: [],
+      cycles: [],
+      events: []
+    },
+    runtime: {
+      openPositions: [
+        { symbol: "BTCUSDT", notional: 520, manualReviewRequired: true, reconcileRequired: true, lifecycleState: "manual_review" },
+        { symbol: "ETHUSDT", quantity: 0.2, entryPrice: 2000, reconcileRequired: true, lifecycleState: "reconcile_required" },
+        { symbol: "SOLUSDT", notional: 180, lifecycleState: "protection_pending" }
+      ]
+    },
+    config: makeConfig()
+  });
+  assert.equal(report.openExposureReview.manualReviewCount, 1);
+  assert.equal(report.openExposureReview.reconcileRequiredCount, 2);
+  assert.equal(report.openExposureReview.protectionPendingCount, 1);
+  assert.equal(report.openExposureReview.unreconciledCount, 3);
+  assert.equal(report.openExposureReview.unreconciledExposure, 1100);
+});
+
+await runCheck("trading bot report and dashboard preserve unreconciled exposure review", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ reportLookbackTrades: 50 });
+  bot.observabilityCache = { reportVersion: 0, reportBuiltVersion: -1, report: null };
+  bot.journal = {
+    trades: [],
+    scaleOuts: [],
+    blockedSetups: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: []
+  };
+  bot.runtime = {
+    openPositions: [
+      { id: "p1", symbol: "BTCUSDT", notional: 400, manualReviewRequired: true, lifecycleState: "manual_review", entryPrice: 40000, quantity: 0.01 }
+    ],
+    latestDecisions: [],
+    latestBlockedSetups: [],
+    lastKnownBalance: 1000,
+    lastKnownEquity: 1100,
+    lastCycleAt: null,
+    lastAnalysisAt: null,
+    lastPortfolioUpdateAt: null,
+    ops: { readiness: { status: "degraded", reasons: ["exchange_truth_manual_interference"] }, alerts: { alerts: [] } },
+    qualityQuorum: {},
+    exchangeTruth: {},
+    paperLearning: {},
+    sourceReliability: {},
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    pairHealth: {},
+    divergence: {},
+    offlineTrainer: {},
+    session: {},
+    drift: {},
+    selfHeal: {},
+    venueConfirmation: {},
+    exchangeSafety: {},
+    orderLifecycle: {},
+    stateBackups: {},
+    recovery: {},
+    capitalLadder: {},
+    capitalGovernor: {},
+    watchlistSummary: null,
+    service: { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, initWarnings: [] },
+    strategyResearch: {},
+    researchRegistry: {},
+    modelRegistry: {},
+    executionCalibration: {},
+    thresholdTuning: {},
+    aiTelemetry: {},
+    exchangeCapabilities: bot?.config?.exchangeCapabilities || {}
+  };
+  bot.health = { getStatus: () => ({ status: "ok" }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = { getCalibrationSummary: () => ({}), getDeploymentSummary: () => ({}), getTransformerSummary: () => ({}) };
+  bot.rlPolicy = { getSummary: () => ({}) };
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.buildPortfolioView = () => ({});
+  bot.buildPositionView = (position) => ({ ...position, unrealizedPnl: 0 });
+  bot.buildDashboardPositionView = (position) => position;
+  bot.buildDashboardDecisionView = (decision) => decision;
+  bot.buildTradeReplayView = (trade) => trade;
+  bot.buildOperatorDiagnosticsSnapshot = () => ({});
+  bot.buildDecisionExplanationView = (decision) => decision;
+  bot.buildTradeReplayDigest = (trade) => trade;
+  bot.buildPromotionPipelineSnapshot = () => ({});
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.buildResearchView = () => null;
+  bot.buildModelWeightsView = () => ({});
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getDashboardSnapshot = TradingBot.prototype.getDashboardSnapshot;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  const report = bot.buildPublicReportView(bot.getPerformanceReport());
+  const snapshot = await bot.getDashboardSnapshot();
+  assert.equal(report.openExposureReview.unreconciledCount, 1);
+  assert.equal(snapshot.report.openExposureReview.unreconciledCount, 1);
+  assert.equal(snapshot.report.openExposureReview.unreconciledExposure, 400);
+});
 await runCheck("trading bot status preserves research recorder and explainability snapshot fields", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.getDashboardSnapshot = async () => ({

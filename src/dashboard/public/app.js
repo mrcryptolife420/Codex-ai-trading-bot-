@@ -1171,6 +1171,7 @@ function buildOpsCards(snapshot) {
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
   const externalFeeds = externalFeedHeadline(snapshot);
   return [
     {
@@ -1190,6 +1191,14 @@ function buildOpsCards(snapshot) {
       value: `${lifecycle.length}`,
       foot: lifecycle[0]?.state ? titleize(lifecycle[0].state) : "Geen pending actions",
       tone: lifecycle.some((item) => ["manual_review", "reconcile_required"].includes(item.state)) ? "negative" : "neutral"
+    },
+    {
+      label: "Exposure",
+      value: `${openExposureReview.unreconciledCount || 0}`,
+      foot: (openExposureReview.unreconciledExposure || 0) > 0
+        ? `${formatNumber(openExposureReview.unreconciledExposure || 0, 2)} USD wacht op reconcile`
+        : "Open exposure in sync",
+      tone: (openExposureReview.unreconciledCount || 0) > 0 ? "negative" : "neutral"
     },
     {
       label: "Capital",

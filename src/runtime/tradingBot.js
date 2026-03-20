@@ -2221,6 +2221,11 @@ function summarizeServiceState(summary = {}, config = {}, referenceNow = nowIso(
   const heartbeatStale = heartbeatAgeMs == null
     ? ["running", "degraded"].includes(watchdogStatus)
     : heartbeatAgeMs > thresholdMs;
+  const initWarnings = arr(summary.initWarnings || []).slice(-6).map((item) => ({
+    type: item?.type || "bootstrap_warning",
+    error: item?.error || null,
+    at: item?.at || null
+  }));
   return {
     lastHeartbeatAt: summary.lastHeartbeatAt || null,
     watchdogStatus,
@@ -2230,7 +2235,10 @@ function summarizeServiceState(summary = {}, config = {}, referenceNow = nowIso(
     heartbeatAgeSeconds: heartbeatAgeMs == null ? null : num(heartbeatAgeMs / 1000, 1),
     heartbeatStale,
     heartbeatThresholdSeconds: num(thresholdMs / 1000, 1),
-    recoveryActive: Boolean((summary.restartBackoffSeconds || 0) > 0 || watchdogStatus === "degraded")
+    recoveryActive: Boolean((summary.restartBackoffSeconds || 0) > 0 || watchdogStatus === "degraded"),
+    initWarnings,
+    bootstrapWarningCount: initWarnings.length,
+    bootstrapDegraded: initWarnings.length > 0
   };
 }
 
@@ -3176,6 +3184,17 @@ export class TradingBot {
       maxDrawdownPct: num(report.maxDrawdownPct || 0, 4),
       openExposure: num(report.openExposure || 0, 2),
       openPositions: report.openPositions || 0,
+      openExposureReview: {
+        manualReviewCount: report.openExposureReview?.manualReviewCount || 0,
+        reconcileRequiredCount: report.openExposureReview?.reconcileRequiredCount || 0,
+        protectionPendingCount: report.openExposureReview?.protectionPendingCount || 0,
+        unreconciledCount: report.openExposureReview?.unreconciledCount || 0,
+        manualReviewExposure: num(report.openExposureReview?.manualReviewExposure || 0, 2),
+        reconcileRequiredExposure: num(report.openExposureReview?.reconcileRequiredExposure || 0, 2),
+        protectionPendingExposure: num(report.openExposureReview?.protectionPendingExposure || 0, 2),
+        unreconciledExposure: num(report.openExposureReview?.unreconciledExposure || 0, 2),
+        notes: arr(report.openExposureReview?.notes || [])
+      },
       scaleOutSummary: {
         count: report.scaleOutSummary?.count || 0,
         realizedPnl: num(report.scaleOutSummary?.realizedPnl || 0, 2),
@@ -3248,6 +3267,14 @@ export class TradingBot {
           : "Service heartbeat nog niet beschikbaar."
       },
       {
+        id: "bootstrap_components_ready",
+        passed: !serviceState.bootstrapDegraded,
+        severity: "high",
+        detail: serviceState.bootstrapWarningCount
+          ? `${serviceState.bootstrapWarningCount} bootstrap warning(s): ${serviceState.initWarnings.map((item) => item.type).join(", ")}.`
+          : "Geen bootstrap warnings gedetecteerd."
+      },
+      {
         id: "operator_alerts_acknowledged",
         passed: ackAlerts.length === 0,
         severity: "medium",
@@ -3295,6 +3322,18 @@ export class TradingBot {
       checkedAt: now.toISOString(),
       checks
     };
+  }
+
+  noteBootstrapWarning(type, error, at = nowIso()) {
+    this.runtime.service = this.runtime.service || {};
+    const warnings = arr(this.runtime.service.initWarnings || []);
+    const nextWarning = {
+      type: type || "bootstrap_warning",
+      error: error?.message || error || null,
+      at
+    };
+    const deduped = warnings.filter((item) => item?.type !== nextWarning.type);
+    this.runtime.service.initWarnings = [...deduped, nextWarning].slice(-6);
   }
 
   applyHistoricalBootstrap(bootstrap = null) {
@@ -3449,7 +3488,12 @@ export class TradingBot {
     }
 
     await this.store.init();
-    await this.backupManager.init(null);
+    try {
+      await this.backupManager.init(null);
+    } catch (error) {
+      this.logger.warn("State backup initialization failed", { error: error.message });
+      this.noteBootstrapWarning("state_backup_init_failed", error);
+    }
     const persistedState = await this.loadPersistedStateWithBackupFallback();
     this.runtime = persistedState.runtime;
     this.runtime.openPositions = arr(this.runtime.openPositions);
@@ -3503,7 +3547,8 @@ export class TradingBot {
     this.runtime.ops.alertState.resolvedAtById = this.runtime.ops.alertState.resolvedAtById || {};
     this.runtime.ops.alertState.delivery = this.runtime.ops.alertState.delivery || { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} };
     this.runtime.ops.alertDelivery = this.runtime.ops.alertDelivery || summarizeAlertDelivery({});
-    this.runtime.service = this.runtime.service || { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, lastExitCode: null, statusFile: null };
+    this.runtime.service = this.runtime.service || { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, lastExitCode: null, statusFile: null, initWarnings: [] };
+    this.runtime.service.initWarnings = arr(this.runtime.service.initWarnings || []);
     this.runtime.counterfactualQueue = arr(this.runtime.counterfactualQueue);
     this.runtime.session = this.runtime.session || {};
     this.runtime.drift = this.runtime.drift || {};
@@ -3535,11 +3580,22 @@ export class TradingBot {
       this.syncOrderLifecycleState("restart_recovery");
     }
 
-    await this.dataRecorder.init(this.runtime.dataRecorder || null);
-    const historicalBootstrap = await this.dataRecorder.loadHistoricalBootstrap();
-    await this.backupManager.init(this.runtime.stateBackups || null);
-    if (persistedState.restoredFromBackupAt) {
-      await this.backupManager.noteRestore(persistedState.restoredFromBackupAt);
+    let historicalBootstrap = null;
+    try {
+      await this.dataRecorder.init(this.runtime.dataRecorder || null);
+      historicalBootstrap = await this.dataRecorder.loadHistoricalBootstrap();
+    } catch (error) {
+      this.logger.warn("Data recorder initialization failed", { error: error.message });
+      this.noteBootstrapWarning("data_recorder_init_failed", error);
+    }
+    try {
+      await this.backupManager.init(this.runtime.stateBackups || null);
+      if (persistedState.restoredFromBackupAt) {
+        await this.backupManager.noteRestore(persistedState.restoredFromBackupAt);
+      }
+    } catch (error) {
+      this.logger.warn("State backup restore initialization failed", { error: error.message });
+      this.noteBootstrapWarning("state_backup_restore_init_failed", error);
     }
     this.applyHistoricalBootstrap(historicalBootstrap);
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
@@ -3656,6 +3712,7 @@ export class TradingBot {
       await this.stream.init();
     } catch (error) {
       this.logger.warn("Stream initialization failed", { error: error.message });
+      this.noteBootstrapWarning("stream_init_failed", error);
       this.recordEvent("stream_init_failed", { error: error.message });
     }
     this.runtime.stream = this.stream.getStatus();
@@ -5436,6 +5493,9 @@ export class TradingBot {
     }
     if (serviceState.recoveryActive) {
       reasons.push("service_restart_backoff_active");
+    }
+    if (serviceState.bootstrapDegraded) {
+      reasons.push("service_bootstrap_degraded");
     }
     if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
       reasons.push("capital_ladder_shadow_only");
@@ -10567,6 +10627,17 @@ export class TradingBot {
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
       dataRecorder: summarizeDataRecorder(this.dataRecorder.getSummary()),
       report: {
+        openExposureReview: report.openExposureReview || {
+          manualReviewCount: 0,
+          reconcileRequiredCount: 0,
+          protectionPendingCount: 0,
+          unreconciledCount: 0,
+          manualReviewExposure: 0,
+          reconcileRequiredExposure: 0,
+          protectionPendingExposure: 0,
+          unreconciledExposure: 0,
+          notes: []
+        },
         tradeQualityReview: report.tradeQualityReview || null,
         recentReviews: arr(report.recentReviews || []).slice(0, 12),
         equitySeries: arr(report.equitySeries || []).slice(-(this.config.dashboardEquityPointLimit || 1440)).map((item) => ({

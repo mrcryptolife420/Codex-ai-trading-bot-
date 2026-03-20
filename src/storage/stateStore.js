@@ -127,7 +127,8 @@ const DEFAULT_RUNTIME = {
     watchdogStatus: "idle",
     restartBackoffSeconds: null,
     lastExitCode: null,
-    statusFile: null
+    statusFile: null,
+    initWarnings: []
   },
   qualityQuorum: {},
   stateBackups: {},
