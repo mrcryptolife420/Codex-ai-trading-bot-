@@ -2246,6 +2246,64 @@ await runCheck("live broker rebuilds stale protection after an unfilled ALL_DONE
   assert.equal(runtime.openPositions[0].protectiveOrderStatus, "NEW");
 });
 
+await runCheck("live broker flags unexpected open orders on managed positions as manual interference", async () => {
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-managed-order-conflict",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        protectiveOrderListId: 777,
+        protectiveOrders: [{ orderId: 11 }, { orderId: 12 }],
+        protectiveOrderStatus: "NEW",
+        brokerMode: "live",
+        operatorMode: "normal",
+        manualReviewRequired: false,
+        reconcileRequired: false
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client: {
+      async getAccountInfo() {
+        return { balances: [{ asset: "BTC", free: "0.01", locked: "0.000" }], canTrade: true, accountType: "SPOT", permissions: [] };
+      },
+      async getOpenOrders() {
+        return [
+          { symbol: "BTCUSDT", orderId: 11, side: "SELL", status: "NEW" },
+          { symbol: "BTCUSDT", orderId: 99, side: "BUY", status: "NEW" }
+        ];
+      },
+      async getOpenOrderLists() {
+        return [{ symbol: "BTCUSDT", orderListId: 777, listStatusType: "EXEC_STARTED", orders: [{ orderId: 11 }, { orderId: 12 }] }];
+      },
+      async getOrderList() {
+        return { orderListId: 777, listStatusType: "EXEC_STARTED", orders: [{ orderId: 11 }, { orderId: 12 }] };
+      }
+    },
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+
+  assert.equal(runtime.openPositions[0].manualReviewRequired, true);
+  assert.equal(runtime.openPositions[0].lifecycleState, "manual_review");
+  assert.ok(reconciliation.warnings.some((item) => item.issue === "unexpected_open_order_for_managed_position"));
+  assert.ok(reconciliation.exchangeTruth.manualInterferenceSymbols.includes("BTCUSDT"));
+});
+
 await runCheck("live broker does not auto-recover unmanaged balance when an open sell order exists", async () => {
   const client = {
     async getAccountInfo() {

@@ -1492,6 +1492,31 @@ export class LiveBroker {
       }
       const rules = this.symbolRules[position.symbol];
       const exchangeProtectiveLists = this.getOpenProtectiveOrderListsForSymbol(openOrderLists, position.symbol);
+      const symbolOpenOrders = trackedOpenOrders.filter((order) => order?.symbol === position.symbol);
+      const expectedProtectiveOrderIds = new Set((position.protectiveOrders || []).map((item) => Number(item?.orderId || 0)).filter(Boolean));
+      const unexpectedManagedOrders = symbolOpenOrders.filter((order) => {
+        const orderId = Number(order?.orderId || 0);
+        const orderListId = Number(order?.orderListId || 0) || null;
+        if (expectedProtectiveOrderIds.has(orderId)) {
+          return false;
+        }
+        if (position.protectiveOrderListId && orderListId && orderListId === position.protectiveOrderListId) {
+          return false;
+        }
+        return isActiveExchangeOrderStatus(order?.status);
+      });
+      if (unexpectedManagedOrders.length) {
+        position.manualReviewRequired = true;
+        position.reconcileRequired = true;
+        position.lifecycleState = "manual_review";
+        warnings.push({
+          symbol: position.symbol,
+          issue: "unexpected_open_order_for_managed_position",
+          orderCount: unexpectedManagedOrders.length,
+          orderIds: unexpectedManagedOrders.map((item) => item.orderId).filter(Boolean).slice(0, 4),
+          sides: [...new Set(unexpectedManagedOrders.map((item) => String(item?.side || "").toUpperCase()).filter(Boolean))]
+        });
+      }
       const balance = assetMap[rules.baseAsset]?.total || 0;
       const runtimeQuantity = Number(position.quantity || 0);
       const exchangeQuantity = normalizeQuantity(balance, rules, "floor", false) || 0;
@@ -1664,7 +1689,7 @@ export class LiveBroker {
         .filter(Boolean);
       const orphanedSymbols = exchangeSymbols.filter((symbol) => !runtimeSymbols.has(symbol));
       const manualInterferenceSymbols = warnings
-        .filter((warning) => warning.issue === "orphaned_exit_order_with_balance")
+        .filter((warning) => ["orphaned_exit_order_with_balance", "unexpected_open_order_for_managed_position"].includes(warning.issue))
         .map((warning) => warning.symbol)
         .filter(Boolean);
       const missingRuntimeSymbols = warnings
@@ -1709,6 +1734,7 @@ export class LiveBroker {
             "stale_untracked_exit_order_cancel_failed",
             "multiple_protective_order_lists_detected",
             "orphaned_exit_order_with_balance",
+            "unexpected_open_order_for_managed_position",
           ].includes(warning.issue))
           .map((warning) => warning.symbol)
           .filter(Boolean)
@@ -1740,7 +1766,7 @@ export class LiveBroker {
             ? `Onbeheerde exchange-symbolen: ${orphanedSymbols.join(", ")}.`
             : "Geen onbeheerde exchange-balansen gedetecteerd.",
           manualInterferenceSymbols.length
-            ? `Open SELL-orders met unmanaged balance: ${manualInterferenceSymbols.join(", ")}.`
+            ? `Handmatige of onverwachte exchange-orders vragen review voor: ${manualInterferenceSymbols.join(", ")}.`
             : "Geen unmanaged exit-orders gedetecteerd.",
           missingRuntimeSymbols.length
             ? `Runtime-posities missen op de exchange: ${missingRuntimeSymbols.join(", ")}.`
