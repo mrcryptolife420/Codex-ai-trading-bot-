@@ -2112,6 +2112,43 @@ await runCheck("live broker rebuilds stale protection after an unfilled ALL_DONE
   assert.equal(runtime.openPositions[0].protectiveOrderStatus, "NEW");
 });
 
+await runCheck("live broker does not auto-recover unmanaged balance when an open sell order exists", async () => {
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0.01000000", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOpenOrders() {
+      return [{ symbol: "BTCUSDT", orderId: 777, side: "SELL", status: "NEW" }];
+    },
+    async getOpenOrderLists() {
+      return [];
+    }
+  };
+  const runtime = {
+    openPositions: [],
+    recovery: { uncleanShutdownDetected: false, restoredFromBackupAt: null }
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: true, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.equal(runtime.openPositions.length, 0);
+  assert.ok(reconciliation.warnings.some((item) => item.issue === "orphaned_exit_order_with_balance"));
+  assert.deepEqual(reconciliation.exchangeTruth.manualInterferenceSymbols, ["BTCUSDT"]);
+});
+
 await runCheck("live broker adopts matching exchange protection when runtime state is missing", async () => {
   let rebuiltProtection = 0;
   const client = {
@@ -2560,6 +2597,20 @@ await runCheck("openBestCandidate skips symbols with unmatched exchange orders a
   assert.equal(attempt.openedPosition?.symbol, "ETHUSDT");
   assert.deepEqual(attempted, ["ETHUSDT"]);
   assert.deepEqual(attempt.symbolBlockers, [{ symbol: "BTCUSDT", reason: "unmatched_open_orders" }]);
+});
+
+await runCheck("syncOrderLifecycleState surfaces manual exchange interference as manual review", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    orderLifecycle: { positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    exchangeTruth: {
+      unmatchedOrderSymbols: [],
+      orphanedSymbols: [],
+      manualInterferenceSymbols: ["BTCUSDT"]
+    }
+  };
+  const lifecycle = TradingBot.prototype.syncOrderLifecycleState.call(bot, "unit_test");
+  assert.ok(lifecycle.pendingActions.some((item) => item.action === "resolve_manual_exchange_interference" && item.state === "manual_review"));
 });
 
 await runCheck("syncOrderLifecycleState surfaces unmatched orders and orphaned balances as reconcile actions", async () => {

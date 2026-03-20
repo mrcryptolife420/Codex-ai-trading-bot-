@@ -1451,7 +1451,18 @@ export class LiveBroker {
         continue;
       }
       const assetBalance = assetMap[rules.baseAsset]?.total || 0;
+      const symbolOpenOrders = trackedOpenOrders.filter((order) => order?.symbol === symbol);
+      const openSellOrders = symbolOpenOrders.filter((order) => `${order?.side || ""}`.toUpperCase() === "SELL");
       if (assetBalance < Math.max(rules.minQty || 0, 0)) {
+        continue;
+      }
+      if (openSellOrders.length) {
+        warnings.push({
+          symbol,
+          issue: "orphaned_exit_order_with_balance",
+          orderCount: openSellOrders.length,
+          quantity: assetBalance
+        });
         continue;
       }
       if (!this.config.allowRecoverUnsyncedPositions) {
@@ -1545,6 +1556,10 @@ export class LiveBroker {
         .map((warning) => warning.symbol)
         .filter(Boolean);
       const orphanedSymbols = exchangeSymbols.filter((symbol) => !runtimeSymbols.has(symbol));
+      const manualInterferenceSymbols = warnings
+        .filter((warning) => warning.issue === "orphaned_exit_order_with_balance")
+        .map((warning) => warning.symbol)
+        .filter(Boolean);
       const missingRuntimeSymbols = warnings
         .filter((warning) => warning.issue === "runtime_position_missing_on_exchange")
         .map((warning) => warning.symbol)
@@ -1586,6 +1601,7 @@ export class LiveBroker {
             "stale_untracked_entry_order_cancel_failed",
             "stale_untracked_exit_order_cancel_failed",
             "multiple_protective_order_lists_detected",
+            "orphaned_exit_order_with_balance",
           ].includes(warning.issue))
           .map((warning) => warning.symbol)
           .filter(Boolean)
@@ -1603,6 +1619,7 @@ export class LiveBroker {
         lastReconciledAt: truthAt,
         lastHealthyAt: mismatchCount === 0 ? truthAt : runtime.exchangeTruth?.lastHealthyAt || null,
         orphanedSymbols,
+        manualInterferenceSymbols,
         missingRuntimeSymbols,
         unmatchedOrderSymbols,
         staleProtectiveSymbols,
@@ -1615,6 +1632,9 @@ export class LiveBroker {
           orphanedSymbols.length
             ? `Onbeheerde exchange-symbolen: ${orphanedSymbols.join(", ")}.`
             : "Geen onbeheerde exchange-balansen gedetecteerd.",
+          manualInterferenceSymbols.length
+            ? `Open SELL-orders met unmanaged balance: ${manualInterferenceSymbols.join(", ")}.`
+            : "Geen unmanaged exit-orders gedetecteerd.",
           missingRuntimeSymbols.length
             ? `Runtime-posities missen op de exchange: ${missingRuntimeSymbols.join(", ")}.`
             : "Geen runtime-posities missen op de exchange.",

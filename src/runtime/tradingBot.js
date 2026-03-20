@@ -4848,7 +4848,7 @@ export class TradingBot {
     const previousActiveActions = lifecycle.activeActionsPrevious && typeof lifecycle.activeActionsPrevious === "object"
       ? lifecycle.activeActionsPrevious
       : {};
-    const tradeIndex = new Map(arr(this.journal.trades).slice(-120).map((trade) => [trade.id, trade]));
+    const tradeIndex = new Map(arr(this.journal?.trades).slice(-120).map((trade) => [trade.id, trade]));
     const transitionAt = nowIso();
 
     const pushTransition = ({ symbol, id, state, previousState = null, detail = null, severity = "neutral" } = {}) => {
@@ -4985,6 +4985,17 @@ export class TradingBot {
         reason: "orphaned_exchange_balance",
         severity: "negative",
         recoveryAction: "Bevestig unmanaged exchange-balances, herstel runtime-state of flatten handmatig voordat automation nieuwe exposure opent."
+      });
+    }
+    if (arr(this.runtime.exchangeTruth?.manualInterferenceSymbols || []).length) {
+      exchangeTruthActions.push({
+        id: "exchange-truth-manual-interference",
+        symbol: arr(this.runtime.exchangeTruth.manualInterferenceSymbols).join(", "),
+        state: "manual_review",
+        action: "resolve_manual_exchange_interference",
+        reason: "manual_exchange_exit_order",
+        severity: "negative",
+        recoveryAction: "Controleer handmatige SELL-orders met unmanaged balance, cancel of rond ze handmatig af voordat runtime-state wordt hersteld."
       });
     }
     const activeLifecycleActions = Object.values(activeActions).map((item) => ({
@@ -5336,6 +5347,9 @@ export class TradingBot {
     }
     if ((this.runtime.exchangeTruth?.orphanedSymbols || []).length) {
       reasons.push("exchange_truth_orphaned_balance");
+    if ((this.runtime.exchangeTruth?.manualInterferenceSymbols || []).length) {
+      reasons.push("exchange_truth_manual_interference");
+    }
     }
     if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
       reasons.push("capital_ladder_shadow_only");
