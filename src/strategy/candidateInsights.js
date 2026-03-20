@@ -159,10 +159,20 @@ export function buildSignalQualitySummary({
     0,
     1
   );
+  const replenishmentQuality = clamp(
+    average([
+      Number.isFinite(bookFeatures.replenishmentScore) ? (bookFeatures.replenishmentScore + 1) / 2 : null,
+      Number.isFinite(bookFeatures.queueRefreshScore) ? (bookFeatures.queueRefreshScore + 1) / 2 : null,
+      Number.isFinite(bookFeatures.resilienceScore) ? (bookFeatures.resilienceScore + 1) / 2 : null
+    ].filter((value) => Number.isFinite(value)), 0.5),
+    0,
+    1
+  );
   const executionViability = clamp(
     average([
       1 - Math.min(1, safeValue(bookFeatures.spreadBps) / 25),
       safeValue(bookFeatures.depthConfidence, 0.4),
+      replenishmentQuality,
       venueConfirmationSummary.confirmed ? 0.92 : (venueConfirmationSummary.status || "") === "blocked" ? 0.18 : 0.55
     ], 0.45),
     0,

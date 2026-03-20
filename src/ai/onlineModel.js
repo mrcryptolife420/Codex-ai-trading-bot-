@@ -1,6 +1,54 @@
 import { clamp, sigmoid } from "../utils/math.js";
 
 const PRIOR_BIAS = -0.12;
+const FEATURE_GROUP_DAMPING = [
+  {
+    composite: "trend_quality_composite",
+    strength: 0.34,
+    members: [
+      "momentum_20",
+      "ema_gap",
+      "ema_trend_score",
+      "ema_trend_slope",
+      "trend_strength",
+      "trend_quality",
+      "trend_persistence",
+      "adx_strength",
+      "dmi_spread",
+      "supertrend_bias"
+    ]
+  },
+  {
+    composite: "breakout_quality_composite",
+    strength: 0.3,
+    members: [
+      "breakout_pct",
+      "donchian_breakout",
+      "donchian_position",
+      "structure_break",
+      "breakout_follow_through",
+      "squeeze_release",
+      "keltner_squeeze",
+      "bollinger_squeeze",
+      "volume_z"
+    ]
+  },
+  {
+    composite: "execution_quality_composite",
+    strength: 0.26,
+    members: [
+      "book_pressure",
+      "orderbook_signal",
+      "weighted_depth_imbalance",
+      "microprice_edge",
+      "queue_imbalance",
+      "queue_refresh",
+      "replenishment_quality",
+      "book_resilience",
+      "depth_confidence"
+    ]
+  }
+];
 const PRIOR_WEIGHTS = {
   momentum_5: 0.38,
   momentum_20: 0.32,
@@ -11,6 +59,7 @@ const PRIOR_WEIGHTS = {
   adx_strength: 0.15,
   dmi_spread: 0.12,
   trend_quality: 0.14,
+  trend_quality_composite: 0.22,
   supertrend_bias: 0.13,
   supertrend_flip: 0.05,
   stoch_rsi: 0.05,
@@ -21,8 +70,10 @@ const PRIOR_WEIGHTS = {
   atr_pct: -0.18,
   atr_expansion: 0.08,
   realized_vol: -0.22,
+  downside_vol_dominance: -0.16,
   volume_z: 0.12,
   breakout_pct: 0.18,
+  breakout_quality_composite: 0.2,
   donchian_breakout: 0.16,
   donchian_position: 0.1,
   donchian_width: -0.06,
@@ -55,8 +106,10 @@ const PRIOR_WEIGHTS = {
   orderbook_signal: 0.16,
   queue_imbalance: 0.12,
   queue_refresh: 0.1,
+  replenishment_quality: 0.09,
   book_resilience: 0.08,
   depth_confidence: 0.06,
+  execution_quality_composite: 0.18,
   bid_concentration_delta: 0.08,
   news_sentiment: 0.3,
   news_confidence: 0.08,
@@ -73,6 +126,13 @@ const PRIOR_WEIGHTS = {
   official_notice_severity: -0.18,
   symbol_edge: 0.16,
   symbol_win_rate: 0.1,
+  relative_strength_composite: 0.18,
+  acceptance_quality: 0.16,
+  anchored_vwap_acceptance: 0.1,
+  anchored_vwap_rejection: -0.12,
+  close_location_quality: 0.1,
+  volume_acceptance: 0.1,
+  trend_failure: -0.14,
   event_bullish: 0.18,
   event_bearish: -0.24,
   event_risk: -0.28,
@@ -171,6 +231,24 @@ function copyState(state) {
   };
 }
 
+function prepareFeatureSet(rawFeatures = {}) {
+  const prepared = { ...(rawFeatures || {}) };
+  for (const group of FEATURE_GROUP_DAMPING) {
+    const compositeValue = Number.isFinite(prepared[group.composite]) ? prepared[group.composite] : 0;
+    if (!compositeValue) {
+      continue;
+    }
+    const damping = clamp((Math.abs(compositeValue) / 3) * group.strength, 0, group.strength);
+    for (const member of group.members) {
+      if (!Number.isFinite(prepared[member])) {
+        continue;
+      }
+      prepared[member] *= (1 - damping);
+    }
+  }
+  return prepared;
+}
+
 export class OnlineTradingModel {
   constructor(state, config) {
     this.state = copyState(state);
@@ -229,11 +307,12 @@ export class OnlineTradingModel {
   }
 
   assessFeatureDrift(rawFeatures, minCount = this.config.driftMinFeatureStatCount || 20) {
+    const effectiveFeatures = prepareFeatureSet(rawFeatures);
     const driftedFeatures = [];
     let totalAbsZ = 0;
     let comparableFeatures = 0;
 
-    for (const [name, rawValue] of Object.entries(rawFeatures || {})) {
+    for (const [name, rawValue] of Object.entries(effectiveFeatures || {})) {
       const stat = this.state.featureStats[name];
       if (!stat || stat.count < minCount) {
         continue;
@@ -272,10 +351,11 @@ export class OnlineTradingModel {
   }
 
   score(rawFeatures) {
+    const effectiveFeatures = prepareFeatureSet(rawFeatures);
     const preparedFeatures = {};
     const contributions = [];
     let linear = this.state.bias || 0;
-    for (const [name, rawValue] of Object.entries(rawFeatures)) {
+    for (const [name, rawValue] of Object.entries(effectiveFeatures)) {
       const normalized = this.normalizeFeature(name, rawValue);
       const weight = this.state.weights[name] || 0;
       const contribution = weight * normalized;
@@ -291,6 +371,7 @@ export class OnlineTradingModel {
       confidence,
       preparedFeatures,
       rawFeatures: { ...rawFeatures },
+      effectiveRawFeatures: effectiveFeatures,
       contributions
     };
   }
@@ -309,7 +390,7 @@ export class OnlineTradingModel {
 
     this.state.bias += learningRate * error;
 
-    for (const [name, rawValue] of Object.entries(rawFeatures)) {
+    for (const [name, rawValue] of Object.entries(prediction.effectiveRawFeatures || {})) {
       const normalized = prediction.preparedFeatures[name];
       const previousWeight = this.state.weights[name] || 0;
       this.state.weights[name] = previousWeight * (1 - learningRate * l2) + learningRate * error * normalized;

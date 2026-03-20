@@ -81,6 +81,39 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function buildRelativeStrengthComposite(market = {}) {
+  return average([
+    market.relativeStrengthVsBtc,
+    market.relativeStrengthVsEth,
+    market.clusterRelativeStrength,
+    market.sectorRelativeStrength
+  ].filter((value) => Number.isFinite(value)), 0);
+}
+
+function buildDownsideVolDominance(market = {}) {
+  const upside = safeValue(market.upsideRealizedVolPct);
+  const downside = safeValue(market.downsideRealizedVolPct);
+  return (downside - upside) / Math.max(upside + downside, 1e-9);
+}
+
+function buildAcceptanceQuality(market = {}) {
+  return clamp(average([
+    market.closeLocationQuality,
+    market.volumeAcceptanceScore,
+    market.anchoredVwapAcceptanceScore,
+    Number.isFinite(market.anchoredVwapRejectionScore) ? 1 - market.anchoredVwapRejectionScore : null,
+    market.breakoutFollowThroughScore
+  ].filter((value) => Number.isFinite(value)), 0.5), 0, 1);
+}
+
+function buildReplenishmentQuality(book = {}) {
+  return clamp(average([
+    Number.isFinite(book.replenishmentScore) ? (book.replenishmentScore + 1) / 2 : null,
+    Number.isFinite(book.queueRefreshScore) ? (book.queueRefreshScore + 1) / 2 : null,
+    Number.isFinite(book.resilienceScore) ? (book.resilienceScore + 1) / 2 : null
+  ].filter((value) => Number.isFinite(value)), 0.5), 0, 1);
+}
+
 function matchesBrokerMode(item, botMode = "paper") {
   return (item?.brokerMode || "paper") === botMode;
 }
@@ -959,6 +992,19 @@ export class RiskManager {
       trendStateSummary
     });
     const trendStateTuning = resolveTrendStateTuning({ marketSnapshot, strategySummary, regimeSummary, trendStateSummary });
+    const relativeStrengthComposite = buildRelativeStrengthComposite(marketSnapshot.market || {});
+    const downsideVolDominance = buildDownsideVolDominance(marketSnapshot.market || {});
+    const acceptanceQuality = buildAcceptanceQuality(marketSnapshot.market || {});
+    const replenishmentQuality = buildReplenishmentQuality(marketSnapshot.book || {});
+    const strongTrendGuardOverride =
+      ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
+      relativeStrengthComposite > 0.004 &&
+      acceptanceQuality >= 0.62 &&
+      replenishmentQuality >= 0.54 &&
+      (timeframeSummary.alignmentScore || 0) >= 0.58 &&
+      (signalQualitySummary.overallScore || 0) >= 0.58 &&
+      (preliminaryConfidenceBreakdown.executionConfidence || 0) >= 0.5 &&
+      score.probability >= threshold + 0.03;
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -1186,9 +1232,39 @@ export class RiskManager {
       (
         executionCostBudget.blocked ||
         (marketSnapshot.book.spreadBps || 0) > Math.max(this.config.maxSpreadBps * 0.7, 8)
-      )
+      ) &&
+      !strongTrendGuardOverride
     ) {
       reasons.push("range_breakout_follow_through_weak");
+    }
+    if (
+      ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
+      relativeStrengthComposite < -0.0045 &&
+      score.probability < threshold + 0.04 &&
+      !strongTrendGuardOverride
+    ) {
+      reasons.push("relative_weakness_vs_market");
+    }
+    if (
+      ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
+      (
+        ((marketSnapshot.market.anchoredVwapRejectionScore || 0) > 0.68 && acceptanceQuality < 0.44 && replenishmentQuality < 0.54) ||
+        ((marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.3 && acceptanceQuality < 0.44 && relativeStrengthComposite < 0.002)
+      ) &&
+      score.probability < threshold + 0.045 &&
+      !strongTrendGuardOverride
+    ) {
+      reasons.push("trend_acceptance_failed");
+    }
+    if (
+      downsideVolDominance > 0.24 &&
+      acceptanceQuality < 0.44 &&
+      replenishmentQuality < 0.46 &&
+      relativeStrengthComposite < 0.002 &&
+      score.probability < threshold + 0.04 &&
+      !strongTrendGuardOverride
+    ) {
+      reasons.push("downside_vol_dominance");
     }
     if (
       ((trendStateSummary.direction || "") === "uptrend" || (trendStateSummary.uptrendScore || 0) >= 0.58) &&
@@ -1272,6 +1348,10 @@ export class RiskManager {
     const macroFactor = clamp(1 + (marketSentimentSummary.contrarianScore || 0) * 0.08 - (marketSentimentSummary.riskScore || 0) * 0.12, 0.74, 1.08);
     const volatilityFactor = clamp(1 - (volatilitySummary.riskScore || 0) * 0.16 - Math.max(0, volatilitySummary.ivPremium || 0) * 0.005, 0.68, 1.04);
     const orderbookFactor = clamp(1 + (marketSnapshot.book.bookPressure || 0) * 0.14 + (marketSnapshot.book.microPriceEdgeBps || 0) / 250, 0.72, 1.12);
+    const replenishmentFactor = clamp(0.78 + replenishmentQuality * 0.32, 0.62, 1.08);
+    const relativeStrengthFactor = clamp(0.88 + relativeStrengthComposite * 8, 0.72, 1.12);
+    const acceptanceFactor = clamp(0.78 + acceptanceQuality * 0.34, 0.62, 1.12);
+    const downsideVolFactor = clamp(1 - Math.max(0, downsideVolDominance) * 0.26, 0.68, 1.04);
     const patternFactor = clamp(1 + (marketSnapshot.market.bullishPatternScore || 0) * 0.08 - (marketSnapshot.market.bearishPatternScore || 0) * 0.12, 0.72, 1.08);
     const committeeFactor = clamp(0.8 + (committeeSummary.sizeMultiplier || 1) * 0.24 + (committeeSummary.netScore || 0) * 0.12 + (committeeSummary.agreement || 0) * 0.08, 0.62, 1.16);
     const strategyFactor = clamp(0.76 + (strategySummary.fitScore || 0) * 0.28 + (strategySummary.agreementGap || 0) * 0.12 + (strategySummary.optimizerBoost || 0) * 0.5 - (strategySummary.blockers || []).length * 0.06, 0.56, 1.16);
@@ -1310,6 +1390,10 @@ export class RiskManager {
       macroFactor *
       volatilityFactor *
       orderbookFactor *
+      replenishmentFactor *
+      relativeStrengthFactor *
+      acceptanceFactor *
+      downsideVolFactor *
       patternFactor *
       committeeFactor *
       strategyFactor *

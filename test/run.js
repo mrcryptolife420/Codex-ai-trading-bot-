@@ -4666,8 +4666,221 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
   assert.ok(rawFeatures.data_confidence > 0);
   assert.ok(rawFeatures.feature_completeness > 0);
   assert.ok(rawFeatures.relative_strength_btc > 0);
+  assert.ok(rawFeatures.relative_strength_composite > 0);
+  assert.ok(rawFeatures.downside_vol_dominance < 0);
   assert.ok(rawFeatures.breakout_follow_through > 0);
+  assert.ok(rawFeatures.acceptance_quality > 0);
+  assert.ok(rawFeatures.trend_quality_composite > 0);
+  assert.ok(rawFeatures.breakout_quality_composite > 0);
+  assert.ok(rawFeatures.execution_quality_composite > 0);
   assert.ok(rawFeatures.replenishment_quality > 0);
+});
+
+await runCheck("strategy router rewards relative strength and acceptance quality for trend setups", async () => {
+  const summary = evaluateStrategySet({
+    symbol: "SOLUSDT",
+    marketSnapshot: {
+      market: {
+        momentum20: 0.016,
+        momentum5: 0.006,
+        emaGap: 0.008,
+        emaTrendScore: 0.011,
+        emaTrendSlopePct: 0.0024,
+        trendStrength: 0.013,
+        trendPersistence: 0.82,
+        swingStructureScore: 0.66,
+        trendMaturityScore: 0.58,
+        trendExhaustionScore: 0.18,
+        trendQualityScore: 0.48,
+        adx14: 31,
+        dmiSpread: 0.24,
+        obvSlope: 0.18,
+        vwapGapPct: 0.009,
+        vwapSlopePct: 0.0017,
+        cmf20: 0.14,
+        closeLocation: 0.86,
+        closeLocationQuality: 0.88,
+        volumeAcceptanceScore: 0.78,
+        anchoredVwapAcceptanceScore: 0.74,
+        anchoredVwapRejectionScore: 0.14,
+        breakoutFollowThroughScore: 0.68,
+        supertrendDirection: 1,
+        supertrendDistancePct: 0.012,
+        bullishPatternScore: 0.18,
+        bearishPatternScore: 0.03,
+        volumeZ: 1.4,
+        upsideRealizedVolPct: 0.012,
+        downsideRealizedVolPct: 0.007,
+        relativeStrengthVsBtc: 0.010,
+        relativeStrengthVsEth: 0.008,
+        clusterRelativeStrength: 0.007,
+        sectorRelativeStrength: 0.006
+      },
+      book: {
+        spreadBps: 4,
+        bookPressure: 0.24,
+        weightedDepthImbalance: 0.18,
+        queueRefreshScore: 0.22,
+        resilienceScore: 0.18
+      }
+    },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.05, socialSentiment: 0.02 },
+    announcementSummary: { riskScore: 0.02 },
+    calendarSummary: { riskScore: 0.02 },
+    marketStructureSummary: { crowdingBias: 0.08, fundingRate: 0.00002, signalScore: 0.14, openInterestChangePct: 0.02 },
+    regimeSummary: { regime: "trend" },
+    streamFeatures: { tradeFlowImbalance: 0.16 },
+    optimizerSummary: {}
+  });
+
+  assert.equal(summary.activeStrategy, "trend_following");
+  assert.ok(summary.fitScore > 0.65);
+  assert.ok(summary.reasons.some((reason) => reason.includes("rel ")));
+});
+
+await runCheck("risk manager blocks fragile trend entries when relative strength and acceptance fail", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ADAUSDT",
+    score: {
+      probability: 0.64,
+      calibrationConfidence: 0.42,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.63, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 5,
+        bookPressure: 0.08,
+        microPriceEdgeBps: 0.5,
+        depthConfidence: 0.54,
+        queueRefreshScore: -0.18,
+        resilienceScore: -0.12
+      },
+      market: {
+        realizedVolPct: 0.024,
+        atrPct: 0.011,
+        bullishPatternScore: 0.06,
+        bearishPatternScore: 0.09,
+        momentum20: 0.009,
+        emaGap: 0.004,
+        dmiSpread: 0.15,
+        swingStructureScore: 0.38,
+        trendMaturityScore: 0.49,
+        trendExhaustionScore: 0.22,
+        upsideAccelerationScore: 0.12,
+        downsideAccelerationScore: 0.18,
+        supertrendDirection: 1,
+        trendQualityScore: 0.31,
+        trendPersistence: 0.64,
+        vwapGapPct: 0.003,
+        bollingerPosition: 0.68,
+        relativeStrengthVsBtc: -0.009,
+        relativeStrengthVsEth: -0.008,
+        clusterRelativeStrength: -0.007,
+        sectorRelativeStrength: -0.006,
+        upsideRealizedVolPct: 0.009,
+        downsideRealizedVolPct: 0.017,
+        anchoredVwapAcceptanceScore: 0.24,
+        anchoredVwapRejectionScore: 0.72,
+        closeLocationQuality: 0.34,
+        volumeAcceptanceScore: 0.28,
+        breakoutFollowThroughScore: 0.22
+      }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.02, confidence: 0.4 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0, freshnessScore: 0.4 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.04, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.03, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.58, probability: 0.64, netScore: 0.08, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.66, confidence: 0.48, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    regimeSummary: { regime: "trend" },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("relative_weakness_vs_market"));
+  assert.ok(decision.reasons.includes("trend_acceptance_failed"));
+  assert.ok(decision.reasons.includes("downside_vol_dominance"));
+});
+
+await runCheck("risk manager keeps strong continuation setups despite mild relative-strength wobble", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "LINKUSDT",
+    score: {
+      probability: 0.71,
+      calibrationConfidence: 0.5,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.7, confidence: 0.2 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 4,
+        bookPressure: 0.24,
+        microPriceEdgeBps: 0.9,
+        depthConfidence: 0.72,
+        queueRefreshScore: 0.24,
+        resilienceScore: 0.18
+      },
+      market: {
+        realizedVolPct: 0.02,
+        atrPct: 0.01,
+        bullishPatternScore: 0.14,
+        bearishPatternScore: 0.03,
+        momentum20: 0.015,
+        emaGap: 0.007,
+        dmiSpread: 0.2,
+        swingStructureScore: 0.55,
+        trendMaturityScore: 0.6,
+        trendExhaustionScore: 0.2,
+        upsideAccelerationScore: 0.24,
+        downsideAccelerationScore: 0.08,
+        supertrendDirection: 1,
+        trendQualityScore: 0.44,
+        trendPersistence: 0.76,
+        vwapGapPct: 0.007,
+        bollingerPosition: 0.74,
+        relativeStrengthVsBtc: -0.0032,
+        relativeStrengthVsEth: 0.004,
+        clusterRelativeStrength: 0.005,
+        sectorRelativeStrength: 0.004,
+        upsideRealizedVolPct: 0.011,
+        downsideRealizedVolPct: 0.013,
+        anchoredVwapAcceptanceScore: 0.72,
+        anchoredVwapRejectionScore: 0.2,
+        closeLocationQuality: 0.82,
+        volumeAcceptanceScore: 0.76,
+        breakoutFollowThroughScore: 0.62
+      }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.03, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0, freshnessScore: 0.4 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.06, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.66, probability: 0.7, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.72, confidence: 0.54, blockers: [], agreementGap: 0.07 },
+    timeframeSummary: { alignmentScore: 0.72, blockerReasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    regimeSummary: { regime: "trend" },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.equal(decision.allow, true);
+  assert.ok(!decision.reasons.includes("relative_weakness_vs_market"));
+  assert.ok(!decision.reasons.includes("trend_acceptance_failed"));
+  assert.ok(!decision.reasons.includes("downside_vol_dominance"));
 });
 
 await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
@@ -13008,6 +13221,4 @@ await runCheck("performance report exposes trade quality review and scorecards",
 });
 
 console.log("All checks passed.");
-
-
 

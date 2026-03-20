@@ -38,3 +38,39 @@ test("online model updates weights after a losing and winning trade", () => {
   assert.equal(stats.wins, 1);
   assert.equal(stats.losses, 1);
 });
+
+test("online model uses composites to damp redundant trend proxies", () => {
+  const model = new OnlineTradingModel(
+    {
+      bias: 0,
+      weights: {},
+      featureStats: {},
+      symbolStats: {}
+    },
+    {
+      modelLearningRate: 0.1,
+      modelL2: 0.001
+    }
+  );
+
+  const withoutComposite = model.score({
+    momentum_20: 2,
+    ema_gap: 2,
+    ema_trend_score: 2,
+    trend_quality: 2
+  });
+  const withComposite = model.score({
+    momentum_20: 2,
+    ema_gap: 2,
+    ema_trend_score: 2,
+    trend_quality: 2,
+    trend_quality_composite: 2
+  });
+
+  const withoutMomentum = withoutComposite.contributions.find((item) => item.name === "momentum_20");
+  const withMomentum = withComposite.contributions.find((item) => item.name === "momentum_20");
+  const compositeContribution = withComposite.contributions.find((item) => item.name === "trend_quality_composite");
+
+  assert.ok(Math.abs(withMomentum.contribution) < Math.abs(withoutMomentum.contribution));
+  assert.ok(compositeContribution.contribution > 0);
+});

@@ -1,4 +1,4 @@
-import { clamp } from "../utils/math.js";
+import { average, clamp } from "../utils/math.js";
 
 function regimeFlags(regime) {
   return {
@@ -63,6 +63,61 @@ export function buildFeatureVector({
 }) {
   const hour = now.getUTCHours() + now.getUTCMinutes() / 60;
   const cycle = (hour / 24) * Math.PI * 2;
+  const relativeStrengthComposite = average(
+    [
+      marketFeatures.relativeStrengthVsBtc,
+      marketFeatures.relativeStrengthVsEth,
+      marketFeatures.clusterRelativeStrength,
+      marketFeatures.sectorRelativeStrength
+    ].filter((value) => Number.isFinite(value)),
+    0
+  );
+  const upsideRealizedVolPct = Number.isFinite(marketFeatures.upsideRealizedVolPct) ? marketFeatures.upsideRealizedVolPct : 0;
+  const downsideRealizedVolPct = Number.isFinite(marketFeatures.downsideRealizedVolPct) ? marketFeatures.downsideRealizedVolPct : 0;
+  const downsideVolDominance = (downsideRealizedVolPct - upsideRealizedVolPct) / Math.max(upsideRealizedVolPct + downsideRealizedVolPct, 1e-9);
+  const acceptanceQuality = average(
+    [
+      marketFeatures.closeLocationQuality,
+      marketFeatures.volumeAcceptanceScore,
+      marketFeatures.anchoredVwapAcceptanceScore,
+      Number.isFinite(marketFeatures.anchoredVwapRejectionScore) ? 1 - marketFeatures.anchoredVwapRejectionScore : null,
+      marketFeatures.breakoutFollowThroughScore
+    ].filter((value) => Number.isFinite(value)),
+    0.5
+  );
+  const trendQualityComposite = average(
+    [
+      Math.max(0, marketFeatures.trendQualityScore || 0),
+      marketFeatures.trendPersistence,
+      marketFeatures.trendMaturityScore,
+      marketFeatures.closeLocationQuality,
+      marketFeatures.anchoredVwapAcceptanceScore,
+      Math.max(0, Math.min(1, relativeStrengthComposite * 40 + 0.5))
+    ].filter((value) => Number.isFinite(value)),
+    0.5
+  );
+  const breakoutQualityComposite = average(
+    [
+      marketFeatures.breakoutFollowThroughScore,
+      marketFeatures.volumeAcceptanceScore,
+      Math.max(0, marketFeatures.structureBreakScore || 0),
+      marketFeatures.closeLocationQuality,
+      marketFeatures.keltnerSqueezeScore,
+      Math.max(0, Math.min(1, relativeStrengthComposite * 40 + 0.5))
+    ].filter((value) => Number.isFinite(value)),
+    0.5
+  );
+  const executionQualityComposite = average(
+    [
+      bookFeatures.depthConfidence,
+      Number.isFinite(bookFeatures.replenishmentScore) ? (bookFeatures.replenishmentScore + 1) / 2 : null,
+      Number.isFinite(bookFeatures.queueRefreshScore) ? (bookFeatures.queueRefreshScore + 1) / 2 : null,
+      Number.isFinite(bookFeatures.resilienceScore) ? (bookFeatures.resilienceScore + 1) / 2 : null,
+      Math.max(0, Math.min(1, 1 - (bookFeatures.spreadBps || 0) / 25)),
+      venueConfirmationSummary.averageHealthScore
+    ].filter((value) => Number.isFinite(value)),
+    0.5
+  );
   return {
     momentum_5: clamp(marketFeatures.momentum5 * 25, -3, 3),
     momentum_20: clamp(marketFeatures.momentum20 * 15, -3, 3),
@@ -73,6 +128,7 @@ export function buildFeatureVector({
     adx_strength: clamp(((marketFeatures.adx14 || 18) - 18) / 7, 0, 4),
     dmi_spread: clamp((marketFeatures.dmiSpread || 0) * 7, -4, 4),
     trend_quality: clamp((marketFeatures.trendQualityScore || 0) * 3.5, -4, 4),
+    trend_quality_composite: clamp(trendQualityComposite * 3, 0, 3),
     supertrend_bias: clamp(((marketFeatures.supertrendDistancePct || 0) * 130) + ((marketFeatures.supertrendDirection || 0) * 0.9), -4, 4),
     supertrend_flip: clamp((marketFeatures.supertrendFlipScore || 0) * 2.5, -3, 3),
     stoch_rsi: clamp((((marketFeatures.stochRsiK || 50) - 50) / 16), -3, 3),
@@ -85,6 +141,7 @@ export function buildFeatureVector({
     realized_vol: clamp(marketFeatures.realizedVolPct * 50, 0, 4),
     upside_realized_vol: clamp((marketFeatures.upsideRealizedVolPct || 0) * 55, 0, 4),
     downside_realized_vol: clamp((marketFeatures.downsideRealizedVolPct || 0) * 55, 0, 4),
+    downside_vol_dominance: clamp(downsideVolDominance * 4, -4, 4),
     volume_z: clamp(marketFeatures.volumeZ, -4, 4),
     breakout_pct: clamp(marketFeatures.breakoutPct * 40, -3, 3),
     donchian_breakout: clamp((marketFeatures.donchianBreakoutPct || 0) * 55, -3, 3),
@@ -114,6 +171,7 @@ export function buildFeatureVector({
     relative_strength_eth: clamp((marketFeatures.relativeStrengthVsEth || 0) * 90, -4, 4),
     relative_strength_cluster: clamp((marketFeatures.clusterRelativeStrength || 0) * 90, -4, 4),
     relative_strength_sector: clamp((marketFeatures.sectorRelativeStrength || 0) * 90, -4, 4),
+    relative_strength_composite: clamp(relativeStrengthComposite * 90, -4, 4),
     anchored_vwap_gap: clamp((marketFeatures.anchoredVwapGapPct || 0) * 55, -3, 3),
     anchored_vwap_slope: clamp((marketFeatures.anchoredVwapSlopePct || 0) * 220, -3, 3),
     anchored_vwap_acceptance: clamp((marketFeatures.anchoredVwapAcceptanceScore || 0) * 3, 0, 3),
@@ -121,6 +179,8 @@ export function buildFeatureVector({
     close_location_quality: clamp((marketFeatures.closeLocationQuality || 0) * 3, 0, 3),
     breakout_follow_through: clamp((marketFeatures.breakoutFollowThroughScore || 0) * 3, 0, 3),
     volume_acceptance: clamp((marketFeatures.volumeAcceptanceScore || 0) * 3, 0, 3),
+    acceptance_quality: clamp(acceptanceQuality * 3, 0, 3),
+    breakout_quality_composite: clamp(breakoutQualityComposite * 3, 0, 3),
     trend_failure: clamp((marketFeatures.trendFailureScore || 0) * 3, 0, 3),
     liquidity_sweep: clamp((marketFeatures.liquiditySweepScore || 0) * 3, -3, 3),
     structure_break: clamp((marketFeatures.structureBreakScore || 0) * 3, -3, 3),
@@ -136,9 +196,10 @@ export function buildFeatureVector({
     orderbook_signal: clamp((bookFeatures.orderbookImbalanceSignal || 0) * 4, -4, 4),
     queue_imbalance: clamp((bookFeatures.queueImbalance || 0) * 4, -4, 4),
     queue_refresh: clamp((bookFeatures.queueRefreshScore || 0) * 4, -4, 4),
-    replenishment_quality: clamp((bookFeatures.replenishmentScore || 0) * 4, -4, 4),
+    replenishment_quality: clamp((bookFeatures.replenishmentScore ?? bookFeatures.queueRefreshScore ?? 0) * 4, -4, 4),
     book_resilience: clamp((bookFeatures.resilienceScore || 0) * 4, -4, 4),
     depth_confidence: clamp((bookFeatures.depthConfidence || 0) * 4, 0, 4),
+    execution_quality_composite: clamp(executionQualityComposite * 3, 0, 3),
     venue_confirmation: venueConfirmationSummary.confirmed ? 1 : (venueConfirmationSummary.status || "") === "blocked" ? -1 : 0,
     venue_divergence: clamp((venueConfirmationSummary.divergenceBps || 0) / 6, 0, 4),
     venue_health: clamp(((venueConfirmationSummary.averageHealthScore || 0.5) - 0.5) * 6, -3, 3),
