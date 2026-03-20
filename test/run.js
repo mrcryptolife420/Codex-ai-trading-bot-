@@ -1891,6 +1891,144 @@ await runCheck("live broker rebuilds stale protection after an unfilled ALL_DONE
   assert.equal(runtime.openPositions[0].protectiveOrderStatus, "NEW");
 });
 
+await runCheck("live broker adopts matching exchange protection when runtime state is missing", async () => {
+  let rebuiltProtection = 0;
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0.01000000", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOpenOrderLists() {
+      return [{
+        symbol: "BTCUSDT",
+        orderListId: 777,
+        listClientOrderId: "exchange-protect",
+        listStatusType: "EXEC_STARTED",
+        orders: [{ orderId: 71 }, { orderId: 72 }]
+      }];
+    },
+    async placeOrderListOco() {
+      rebuiltProtection += 1;
+      return { orderListId: 999, orders: [{ orderId: 91 }, { orderId: 92 }], listStatusType: "NEW" };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        rawFeatures: { momentum_5: 1 },
+        newsSummary: {},
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        notional: 700,
+        highestPrice: 71000,
+        lowestPrice: 69500,
+        regimeAtEntry: "trend",
+        protectiveOrderListId: null,
+        protectiveOrders: [],
+        protectiveOrderStatus: null,
+        brokerMode: "live",
+        operatorMode: "normal",
+        reconcileRequired: false
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.equal(rebuiltProtection, 0);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, 777);
+  assert.equal(runtime.openPositions[0].protectiveOrders.length, 2);
+  assert.equal(runtime.openPositions[0].reconcileRequired, false);
+  assert.ok(reconciliation.warnings.some((item) => item.issue === "protective_order_state_adopted_from_exchange"));
+});
+
+await runCheck("live broker marks reconcile required when multiple exchange protection lists exist", async () => {
+  let rebuiltProtection = 0;
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0.01000000", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOpenOrderLists() {
+      return [
+        { symbol: "BTCUSDT", orderListId: 701, listStatusType: "EXEC_STARTED", orders: [{ orderId: 1 }, { orderId: 2 }] },
+        { symbol: "BTCUSDT", orderListId: 702, listStatusType: "EXEC_STARTED", orders: [{ orderId: 3 }, { orderId: 4 }] }
+      ];
+    },
+    async placeOrderListOco() {
+      rebuiltProtection += 1;
+      return { orderListId: 999, orders: [{ orderId: 91 }, { orderId: 92 }], listStatusType: "NEW" };
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        rawFeatures: { momentum_5: 1 },
+        newsSummary: {},
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        notional: 700,
+        highestPrice: 71000,
+        lowestPrice: 69500,
+        regimeAtEntry: "trend",
+        protectiveOrderListId: null,
+        protectiveOrders: [],
+        protectiveOrderStatus: null,
+        brokerMode: "live",
+        operatorMode: "normal",
+        reconcileRequired: false
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.equal(rebuiltProtection, 0);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, null);
+  assert.equal(runtime.openPositions[0].reconcileRequired, true);
+  assert.equal(runtime.openPositions[0].lifecycleState, "reconcile_required");
+  assert.ok(reconciliation.warnings.some((item) => item.issue === "multiple_protective_order_lists_detected"));
+  assert.ok(reconciliation.exchangeTruth.mismatchCount >= 1);
+});
+
 await runCheck("live broker reconcile downsyncs quantity drift and rebuilds protection", async () => {
   let rebuiltOrderListId = null;
   const client = {

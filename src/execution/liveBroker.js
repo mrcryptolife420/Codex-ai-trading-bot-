@@ -379,6 +379,31 @@ export class LiveBroker {
     }
   }
 
+  attachProtectiveOrderState(position, orderList, placedAt = position.protectiveOrderPlacedAt || nowIso()) {
+    position.protectiveOrderListId = orderList?.orderListId || null;
+    position.protectiveListClientOrderId = orderList?.listClientOrderId || null;
+    position.protectiveOrders = Array.isArray(orderList?.orders) ? orderList.orders : [];
+    position.protectiveOrderStatus = orderList?.listStatusType || orderList?.listOrderStatus || position.protectiveOrderStatus || "NEW";
+    position.protectiveOrderPlacedAt = placedAt;
+    position.reconcileRequired = false;
+    position.lifecycleState = position.manualReviewRequired
+      ? "manual_review"
+      : position.operatorMode === "protect_only"
+        ? "protect_only"
+        : "protected";
+  }
+
+  getOpenProtectiveOrderListsForSymbol(openOrderLists = [], symbol) {
+    return (openOrderLists || []).filter((item) => {
+      const itemSymbol = `${item?.symbol || ""}`.trim().toUpperCase();
+      const status = `${item?.listStatusType || item?.listOrderStatus || ""}`.toUpperCase();
+      return item?.orderListId != null
+        && itemSymbol === `${symbol || ""}`.trim().toUpperCase()
+        && status !== "ALL_DONE"
+        && status !== "ALL_DONE_REJECT";
+    });
+  }
+
   buildOrderRequestMeta(plan, rules, responseType = "RESULT", clientOrderId = null) {
     const stpMode = resolveStpMode(this.config.stpMode, rules);
     return {
@@ -1288,6 +1313,7 @@ export class LiveBroker {
         warnings.push({ symbol: position.symbol, issue: "position_sync_failed", error: error.message });
       }
       const rules = this.symbolRules[position.symbol];
+      const exchangeProtectiveLists = this.getOpenProtectiveOrderListsForSymbol(openOrderLists, position.symbol);
       const balance = assetMap[rules.baseAsset]?.total || 0;
       const runtimeQuantity = Number(position.quantity || 0);
       const exchangeQuantity = normalizeQuantity(balance, rules, "floor", false) || 0;
@@ -1313,16 +1339,38 @@ export class LiveBroker {
         warnings.push({ symbol: position.symbol, issue: "position_quantity_reduced_to_exchange_balance", runtimeQuantity, exchangeQuantity });
       }
       if (position.protectiveOrderListId && !openOrderListIds.has(position.protectiveOrderListId)) {
-        this.clearProtectiveOrderState(position, "UNKNOWN");
-        warnings.push({ symbol: position.symbol, issue: "protective_order_state_stale" });
+        if (exchangeProtectiveLists.length === 1) {
+          this.attachProtectiveOrderState(position, exchangeProtectiveLists[0]);
+          warnings.push({
+            symbol: position.symbol,
+            issue: "protective_order_state_adopted_from_exchange",
+            orderListId: exchangeProtectiveLists[0].orderListId
+          });
+        } else {
+          this.clearProtectiveOrderState(position, "UNKNOWN");
+          warnings.push({ symbol: position.symbol, issue: "protective_order_state_stale" });
+        }
       }
       if (!position.protectiveOrderListId && this.config.enableExchangeProtection) {
-        try {
-          await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
-        } catch (error) {
+        if (exchangeProtectiveLists.length === 1) {
+          this.attachProtectiveOrderState(position, exchangeProtectiveLists[0]);
+          warnings.push({
+            symbol: position.symbol,
+            issue: "protective_order_state_adopted_from_exchange",
+            orderListId: exchangeProtectiveLists[0].orderListId
+          });
+        } else if (exchangeProtectiveLists.length > 1) {
           position.reconcileRequired = true;
           position.lifecycleState = "reconcile_required";
-          warnings.push({ symbol: position.symbol, issue: "protective_order_rebuild_failed", error: error.message });
+          warnings.push({ symbol: position.symbol, issue: "multiple_protective_order_lists_detected", count: exchangeProtectiveLists.length });
+        } else {
+          try {
+            await this.ensureProtectiveOrder(position, rules, runtime, "protective_rebuild");
+          } catch (error) {
+            position.reconcileRequired = true;
+            position.lifecycleState = "reconcile_required";
+            warnings.push({ symbol: position.symbol, issue: "protective_order_rebuild_failed", error: error.message });
+          }
         }
       }
     }
@@ -1460,7 +1508,8 @@ export class LiveBroker {
             "unmanaged_balance_detected",
             "position_quantity_mismatch",
             "position_quantity_reduced_to_exchange_balance",
-            "stale_untracked_entry_order_cancel_failed"
+            "stale_untracked_entry_order_cancel_failed",
+            "multiple_protective_order_lists_detected",
           ].includes(warning.issue))
           .map((warning) => warning.symbol)
           .filter(Boolean)
