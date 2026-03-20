@@ -1921,6 +1921,85 @@ await runCheck("live broker cancels stale unmatched buy orders after unclean res
   assert.equal(reconciliation.exchangeTruth.openOrderCount, 0);
 });
 
+await runCheck("live broker cancels stale unmatched sell orders after unclean restart", async () => {
+  const canceled = [];
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOpenOrders() {
+      return [{ symbol: "BTCUSDT", orderId: 322, side: "SELL", status: "NEW" }];
+    },
+    async cancelOrder(symbol, { orderId }) {
+      canceled.push({ symbol, orderId });
+      return { symbol, orderId, status: "CANCELED" };
+    }
+  };
+  const runtime = {
+    openPositions: [],
+    recovery: { uncleanShutdownDetected: true }
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.deepEqual(canceled, [{ symbol: "BTCUSDT", orderId: 322 }]);
+  assert.ok(reconciliation.warnings.some((item) => item.issue === "stale_untracked_exit_order_canceled"));
+  assert.deepEqual(reconciliation.exchangeTruth.unmatchedOrderSymbols, []);
+  assert.equal(reconciliation.exchangeTruth.openOrderCount, 0);
+});
+
+await runCheck("live broker keeps unmatched sell orders intact during clean runtime", async () => {
+  const canceled = [];
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOpenOrders() {
+      return [{ symbol: "BTCUSDT", orderId: 655, side: "SELL", status: "NEW" }];
+    },
+    async cancelOrder(symbol, { orderId }) {
+      canceled.push({ symbol, orderId });
+      return { symbol, orderId, status: "CANCELED" };
+    }
+  };
+  const runtime = {
+    openPositions: [],
+    recovery: { uncleanShutdownDetected: false, restoredFromBackupAt: null }
+  };
+  const broker = new LiveBroker({
+    client,
+    config: makeConfig({ botMode: "live", allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.deepEqual(canceled, []);
+  assert.deepEqual(reconciliation.exchangeTruth.unmatchedOrderSymbols, ["BTCUSDT"]);
+  assert.equal(reconciliation.exchangeTruth.openOrderCount, 1);
+});
+
 await runCheck("live broker keeps unmatched buy orders intact during clean runtime", async () => {
   const canceled = [];
   const client = {

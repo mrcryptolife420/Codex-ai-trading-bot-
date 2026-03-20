@@ -1517,15 +1517,19 @@ export class LiveBroker {
         const status = `${order?.status || ""}`.toUpperCase();
         const side = `${order?.side || ""}`.toUpperCase();
         const balance = assetMap[rules.baseAsset]?.total || 0;
-        if (side !== "BUY" || !["NEW", "PARTIALLY_FILLED", "PENDING_NEW"].includes(status) || balance >= Math.max(rules.minQty || 0, 0)) {
+        const activePendingStatus = ["NEW", "PARTIALLY_FILLED", "PENDING_NEW"].includes(status);
+        const hasRecoverableBalance = balance >= Math.max(rules.minQty || 0, 0);
+        const staleEntryOrder = side === "BUY" && activePendingStatus && !hasRecoverableBalance;
+        const staleExitOrder = side === "SELL" && activePendingStatus && !hasRecoverableBalance;
+        if (!staleEntryOrder && !staleExitOrder) {
           continue;
         }
         try {
           await this.client.cancelOrder(symbol, { orderId: order.orderId });
           trackedOpenOrders = trackedOpenOrders.filter((item) => !(item?.symbol === symbol && item?.orderId === order.orderId));
-          warnings.push({ symbol, issue: "stale_untracked_entry_order_canceled" });
+          warnings.push({ symbol, issue: staleEntryOrder ? "stale_untracked_entry_order_canceled" : "stale_untracked_exit_order_canceled" });
         } catch (error) {
-          warnings.push({ symbol, issue: "stale_untracked_entry_order_cancel_failed", error: error.message });
+          warnings.push({ symbol, issue: staleEntryOrder ? "stale_untracked_entry_order_cancel_failed" : "stale_untracked_exit_order_cancel_failed", error: error.message });
         }
       }
     }
@@ -1580,6 +1584,7 @@ export class LiveBroker {
             "position_quantity_mismatch",
             "position_quantity_reduced_to_exchange_balance",
             "stale_untracked_entry_order_cancel_failed",
+            "stale_untracked_exit_order_cancel_failed",
             "multiple_protective_order_lists_detected",
           ].includes(warning.issue))
           .map((warning) => warning.symbol)
