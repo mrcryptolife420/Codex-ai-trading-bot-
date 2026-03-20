@@ -1180,13 +1180,47 @@ export class LiveBroker {
     });
     try {
       const response = await this.client.cancelOrderList({ symbol: position.symbol, orderListId: position.protectiveOrderListId });
+      const responseStatus = `${response?.listStatusType || response?.listOrderStatus || ""}`.toUpperCase();
+      const protectiveOrders = Array.isArray(response?.orders) && response.orders.length
+        ? response.orders
+        : Array.isArray(position.protectiveOrders)
+          ? position.protectiveOrders
+          : [];
+      if (responseStatus === "ALL_DONE" && protectiveOrders.length && this.client.getOrder) {
+        for (const listOrder of protectiveOrders) {
+          const outcome = await this.settleProtectiveOrderFill(
+            position,
+            runtime,
+            Number(listOrder?.orderId || 0) || null,
+            listOrder?.type || null
+          );
+          if (outcome?.closedTrade) {
+            finishLifecycleAction(runtime, actionId, {
+              status: "completed",
+              stage: "closed_via_protective_fill",
+              severity: "neutral",
+              detail: outcome.closedTrade.reason || "exchange_protective_order"
+            });
+            return { response, closedTrade: outcome.closedTrade };
+          }
+          if (outcome?.partialFill) {
+            finishLifecycleAction(runtime, actionId, {
+              status: "warning",
+              stage: "reconcile_required",
+              severity: "negative",
+              detail: "protective_partial_fill"
+            });
+            return { response, positionChanged: true, partialFill: outcome.partialFill };
+          }
+        }
+      }
       this.clearProtectiveOrderState(position, "CANCELED");
       finishLifecycleAction(runtime, actionId, {
         status: "completed",
         stage: "canceled",
         severity: "neutral"
       });
-      return response;
+      return { response, closedTrade: null, positionChanged: false };
     } catch (error) {
       this.logger?.warn?.("Protective order-list cancel failed", { symbol: position.symbol, error: error.message });
       finishLifecycleAction(runtime, actionId, {
@@ -1314,23 +1348,57 @@ export class LiveBroker {
     }
     const order = await this.client.getOrder(position.symbol, { orderId });
     const executedQty = Number(order?.executedQty || 0);
-    if (`${order?.status || ""}`.toUpperCase() !== "FILLED" && executedQty <= 0) {
+    const orderStatus = `${order?.status || ""}`.toUpperCase();
+    if (orderStatus !== "FILLED" && executedQty <= 0) {
       return null;
     }
     const trades = this.client.getMyTrades
       ? await this.client.getMyTrades(position.symbol, { orderId, limit: 50 }).catch(() => [])
       : [];
     const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [orderId]).catch(() => ({}));
-    runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
-    return this.buildTradeFromOrder(
-      position,
-      order,
-      trades,
-      `${order?.type || fallbackOrderType || ""}`.includes("STOP") ? "protective_stop_loss" : "protective_take_profit",
-      "exchange_protective_order",
-      null,
-      orderTelemetry
-    );
+    const remainingQuantity = Math.max(0, Number(position.quantity || 0) - executedQty);
+    const fallbackMarkedPrice = Number(order?.price || order?.stopPrice || position.lastMarkedPrice || position.entryPrice || 0);
+    const remainingNotional = remainingQuantity * Math.max(fallbackMarkedPrice, 0);
+    const fullFill = orderStatus === "FILLED"
+      || remainingQuantity <= 0
+      || this.isDustRemainder({ quantity: remainingQuantity, notional: remainingNotional, rules: this.symbolRules[position.symbol] });
+    if (fullFill) {
+      runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+      return {
+        closedTrade: this.buildTradeFromOrder(
+          position,
+          order,
+          trades,
+          `${order?.type || fallbackOrderType || ""}`.includes("STOP") ? "protective_stop_loss" : "protective_take_profit",
+          "exchange_protective_order",
+          null,
+          orderTelemetry
+        ),
+        partialFill: null
+      };
+    }
+    const originalQuantity = Math.max(Number(position.quantity || 0), 1e-9);
+    const proportion = executedQty / originalQuantity;
+    const allocatedCost = Number(position.totalCost || 0) * proportion;
+    position.quantity = remainingQuantity;
+    position.totalCost = Math.max(0, Number(position.totalCost || 0) - allocatedCost);
+    position.notional = Math.max(0, Number(position.entryPrice || 0) * position.quantity);
+    position.entryFee = Math.max(0, Number(position.entryFee || 0) - Number(position.entryFee || 0) * proportion);
+    position.lastMarkedPrice = fallbackMarkedPrice || position.lastMarkedPrice;
+    this.clearProtectiveOrderState(position, "PARTIALLY_FILLED");
+    position.reconcileRequired = true;
+    position.lifecycleState = "reconcile_required";
+    position.lastProtectivePartialFillAt = nowIso();
+    position.lastManagementError = "Protective order partially filled for " + position.symbol + "; reconcile required.";
+    return {
+      closedTrade: null,
+      partialFill: {
+        orderId,
+        executedQuantity: executedQty,
+        remainingQuantity,
+        reason: `${order?.type || fallbackOrderType || ""}`.includes("STOP") ? "protective_stop_loss_partial" : "protective_take_profit_partial"
+      }
+    };
   }
 
   async syncPosition(position, runtime) {
@@ -1343,9 +1411,12 @@ export class LiveBroker {
       position.protectiveOrderStatus = orderList.listStatusType || orderList.listOrderStatus || position.protectiveOrderStatus;
       if (orderList.listStatusType !== "ALL_DONE" && orderList.listOrderStatus !== "ALL_DONE") {
         if (streamFill?.orderId) {
-          const recoveredTrade = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType);
-          if (recoveredTrade) {
-            return recoveredTrade;
+          const outcome = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType);
+          if (outcome?.closedTrade) {
+            return outcome.closedTrade;
+          }
+          if (outcome?.partialFill) {
+            return null;
           }
         }
         return null;
@@ -1377,9 +1448,9 @@ export class LiveBroker {
       return null;
     } catch (error) {
       if (streamFill?.orderId) {
-        const recoveredTrade = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType).catch(() => null);
-        if (recoveredTrade) {
-          return recoveredTrade;
+        const outcome = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType).catch(() => null);
+        if (outcome?.closedTrade) {
+          return outcome.closedTrade;
         }
       }
       throw error;
@@ -1735,7 +1806,26 @@ export class LiveBroker {
         throw new Error(`Scale-out would leave an invalid remainder for ${position.symbol}.`);
       }
 
-      await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
+      const cancelProtection = await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
+      if (cancelProtection?.closedTrade) {
+        finishLifecycleAction(runtime, scaleOutActionId, {
+          status: "completed",
+          stage: "closed_via_protective_fill",
+          severity: "neutral",
+          detail: cancelProtection.closedTrade.reason || reason || "exchange_protective_order"
+        });
+        return {
+          closedTrade: cancelProtection.closedTrade,
+          positionClosed: true,
+          reason: cancelProtection.closedTrade.reason || reason || "exchange_protective_order"
+        };
+      }
+      if (cancelProtection?.positionChanged) {
+        const protectivePartialError = new Error(`Protective order for ${position.symbol} partially filled while canceling before scale-out.`);
+        protectivePartialError.positionSafeguarded = true;
+        protectivePartialError.blockedReason = "protective_partial_fill_requires_reconcile";
+        throw protectivePartialError;
+      }
 
       const submittedOrder = await this.client.placeOrder({
         symbol: position.symbol,
@@ -1853,7 +1943,22 @@ export class LiveBroker {
       if (!quantity) {
         throw new Error(`Unable to normalize sell quantity for ${position.symbol}.`);
       }
-      await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
+      const cancelProtection = await this.cancelProtectiveOrders(position, { strict: true, runtime, origin: "protective_cancel" });
+      if (cancelProtection?.closedTrade) {
+        finishLifecycleAction(runtime, exitActionId, {
+          status: "completed",
+          stage: "closed_via_protective_fill",
+          severity: "neutral",
+          detail: cancelProtection.closedTrade.reason || reason || "exchange_protective_order"
+        });
+        return cancelProtection.closedTrade;
+      }
+      if (cancelProtection?.positionChanged) {
+        const protectivePartialError = new Error(`Protective order for ${position.symbol} partially filled while canceling before exit.`);
+        protectivePartialError.positionSafeguarded = true;
+        protectivePartialError.blockedReason = "protective_partial_fill_requires_reconcile";
+        throw protectivePartialError;
+      }
       const submittedOrder = await this.client.placeOrder({
         symbol: position.symbol,
         side: "SELL",

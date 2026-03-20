@@ -1739,6 +1739,140 @@ await runCheck("live broker reconciles a filled protective order", async () => {
   assert.equal(reconciliation.closedTrades[0].reason, "protective_take_profit");
 });
 
+await runCheck("live broker keeps a partially protective-filled position open and marks reconcile required", async () => {
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-partial-protect",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        protectiveOrderListId: 321,
+        protectiveOrders: [{ orderId: 55, type: "LIMIT_MAKER" }],
+        protectiveOrderStatus: "NEW",
+        brokerMode: "live"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client: {
+      async getAccountInfo() {
+        return { balances: [{ asset: "BTC", free: "0.006", locked: "0.000" }], canTrade: true, accountType: "SPOT", permissions: [] };
+      },
+      async getOpenOrders() {
+        return [];
+      },
+      async getOpenOrderLists() {
+        return [];
+      },
+      async getOrderList() {
+        return { listStatusType: "ALL_DONE", orders: [{ orderId: 55 }] };
+      },
+      async getOrder() {
+        return {
+          orderId: 55,
+          status: "PARTIALLY_FILLED",
+          executedQty: "0.00400000",
+          cummulativeQuoteQty: "288.00",
+          type: "LIMIT_MAKER",
+          price: "72000"
+        };
+      },
+      async getMyTrades() {
+        return [{ orderId: 55, price: "72000", qty: "0.004", quoteQty: "288.00", commission: "0.20", commissionAsset: "USDT" }];
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false, allowRecoverUnsyncedPositions: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+
+  assert.equal(reconciliation.closedTrades.length, 0);
+  assert.equal(runtime.openPositions.length, 1);
+  assert.equal(runtime.openPositions[0].quantity, 0.006);
+  assert.equal(runtime.openPositions[0].protectiveOrderListId, null);
+  assert.equal(runtime.openPositions[0].reconcileRequired, true);
+  assert.equal(runtime.openPositions[0].lifecycleState, "reconcile_required");
+});
+
+await runCheck("live broker returns the protective close instead of double-selling during exit cancel", async () => {
+  let sellAttempts = 0;
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-exit-protect",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        entryFee: 0.7,
+        notional: 700,
+        highestPrice: 72200,
+        lowestPrice: 69500,
+        lastMarkedPrice: 72000,
+        latestSpreadBps: 2,
+        stopLossPrice: 68600,
+        takeProfitPrice: 72100,
+        protectiveOrderListId: 654,
+        protectiveOrders: [{ orderId: 77, type: "LIMIT_MAKER" }],
+        protectiveOrderStatus: "NEW",
+        brokerMode: "live"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client: {
+      async cancelOrderList() {
+        return { orderListId: 654, listStatusType: "ALL_DONE", orders: [{ orderId: 77, type: "LIMIT_MAKER" }] };
+      },
+      async getOrder() {
+        return {
+          orderId: 77,
+          status: "FILLED",
+          executedQty: "0.01000000",
+          cummulativeQuoteQty: "721.00",
+          type: "LIMIT_MAKER",
+          price: "72100"
+        };
+      },
+      async getMyTrades() {
+        return [{ orderId: 77, price: "72100", qty: "0.01", quoteQty: "721.00", commission: "0.21", commissionAsset: "USDT" }];
+      },
+      async placeOrder() {
+        sellAttempts += 1;
+        throw new Error("market sell should not be submitted");
+      }
+    },
+    config: makeConfig({ botMode: "live", enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+
+  const trade = await broker.exitPosition({
+    position: runtime.openPositions[0],
+    rules,
+    marketSnapshot: { book: { bid: 72090, ask: 72110, mid: 72100, spreadBps: 2 } },
+    reason: "risk_exit",
+    runtime
+  });
+
+  assert.equal(sellAttempts, 0);
+  assert.equal(trade.reason, "protective_take_profit");
+  assert.equal(runtime.openPositions.length, 0);
+});
+
 await runCheck("live broker recovers a protective fill from user-stream when order list state lags", async () => {
   const stream = {
     getRecentExecutionReports() {

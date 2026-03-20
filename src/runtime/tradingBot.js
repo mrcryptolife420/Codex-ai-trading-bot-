@@ -8244,6 +8244,18 @@ export class TradingBot {
             reason: exitDecision.scaleOutReason,
             runtime: this.runtime
           });
+          if (scaleOut?.closedTrade) {
+            scaleOut.closedTrade.exitIntelligenceSummary = exitIntelligenceSummary;
+            scaleOut.closedTrade.replayCheckpoints = arr(position.replayCheckpoints || []);
+            this.journal.trades.push(scaleOut.closedTrade);
+            this.markReportDirty();
+            await this.learnFromTrade(scaleOut.closedTrade, "Closed position");
+            this.recordEvent("position_closed_via_protective_fill", {
+              symbol: scaleOut.closedTrade.symbol,
+              reason: scaleOut.closedTrade.reason
+            });
+            continue;
+          }
           scaleOut.exitIntelligenceSummary = exitIntelligenceSummary;
           this.journal.scaleOuts.push(scaleOut);
           this.markReportDirty();
