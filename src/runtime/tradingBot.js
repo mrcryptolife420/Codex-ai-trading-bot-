@@ -3340,6 +3340,47 @@ export class TradingBot {
     };
   }
 
+  recoverStaleLifecycleActions(reason = "restart_recovery", at = nowIso()) {
+    const recoveryActive = Boolean(this.runtime?.recovery?.uncleanShutdownDetected || this.runtime?.recovery?.restoredFromBackupAt);
+    if (!recoveryActive) {
+      return false;
+    }
+    const lifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
+    const activeActions = lifecycle.activeActions && typeof lifecycle.activeActions === "object" ? lifecycle.activeActions : {};
+    const activeEntries = Object.entries(activeActions);
+    if (!activeEntries.length) {
+      lifecycle.activeActionsPrevious = lifecycle.activeActionsPrevious && typeof lifecycle.activeActionsPrevious === "object"
+        ? lifecycle.activeActionsPrevious
+        : {};
+      this.runtime.orderLifecycle = lifecycle;
+      return false;
+    }
+    const previous = lifecycle.activeActionsPrevious && typeof lifecycle.activeActionsPrevious === "object"
+      ? { ...lifecycle.activeActionsPrevious }
+      : {};
+    for (const [actionId, action] of activeEntries) {
+      previous[actionId] = {
+        ...action,
+        staleAt: at,
+        recoveryOrigin: reason,
+        recoveryAction: action?.recoveryAction || resolveLifecycleRecoveryAction(action?.stage || "reconcile_required", action, action)
+      };
+    }
+    lifecycle.activeActionsPrevious = previous;
+    lifecycle.activeActions = {};
+    lifecycle.pendingActions = [];
+    this.runtime.orderLifecycle = lifecycle;
+    this.journal = this.journal || { events: [] };
+    this.journal.events = arr(this.journal.events || []);
+    this.journal.events.push({
+      at,
+      type: "lifecycle_actions_recovered_after_restart",
+      reason,
+      count: activeEntries.length
+    });
+    return true;
+  }
+
   async loadPersistedStateWithBackupFallback() {
     try {
       return {
@@ -3458,6 +3499,12 @@ export class TradingBot {
     this.journal.equitySnapshots = arr(this.journal.equitySnapshots);
     this.journal.cycles = arr(this.journal.cycles);
     this.journal.events = arr(this.journal.events);
+    const recoveredLifecycleActions = this.recoverStaleLifecycleActions(
+      persistedState.restoredFromBackupAt ? "backup_restore" : "unclean_restart"
+    );
+    if (recoveredLifecycleActions) {
+      this.syncOrderLifecycleState("restart_recovery");
+    }
 
     await this.dataRecorder.init(this.runtime.dataRecorder || null);
     const historicalBootstrap = await this.dataRecorder.loadHistoricalBootstrap();

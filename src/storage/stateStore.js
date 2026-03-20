@@ -82,6 +82,7 @@ const DEFAULT_RUNTIME = {
     recentTransitions: [],
     pendingActions: [],
     activeActions: {},
+    activeActionsPrevious: {},
     actionJournal: []
   },
   ops: {

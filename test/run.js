@@ -9424,6 +9424,45 @@ await runCheck("shadow trading view includes near-miss shadow learning candidate
   assert.ok(view.simulatedEntries.some((item) => item.status === "shadow_learning" && item.symbol === "ETHUSDT"));
 });
 
+await runCheck("trading bot recovers stale lifecycle actions after restart", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig();
+  bot.runtime = {
+    recovery: { uncleanShutdownDetected: true, restoredFromBackupAt: null },
+    orderLifecycle: {
+      lastUpdatedAt: null,
+      positions: {},
+      recentTransitions: [],
+      pendingActions: [{ id: "entry-open", state: "submit" }],
+      activeActions: {
+        "entry-open": {
+          id: "entry-open",
+          type: "entry_open",
+          symbol: "BTCUSDT",
+          stage: "protect_position",
+          status: "pending",
+          severity: "neutral",
+          detail: "protective_order"
+        }
+      },
+      actionJournal: []
+    },
+    openPositions: []
+  };
+  bot.journal = { trades: [], events: [] };
+
+  const changed = bot.recoverStaleLifecycleActions("unclean_restart", "2026-03-20T10:00:00.000Z");
+  assert.equal(changed, true);
+  assert.deepEqual(bot.runtime.orderLifecycle.activeActions, {});
+  assert.equal(bot.runtime.orderLifecycle.pendingActions.length, 0);
+  assert.equal(bot.runtime.orderLifecycle.activeActionsPrevious["entry-open"].recoveryOrigin, "unclean_restart");
+  assert.equal(bot.journal.events.at(-1).type, "lifecycle_actions_recovered_after_restart");
+
+  const lifecycle = bot.syncOrderLifecycleState("restart_recovery");
+  assert.equal(lifecycle.actionJournal[0].status, "disappeared");
+  assert.equal(lifecycle.actionJournal[0].recoveryAction, "monitor");
+});
+
 await runCheck("lifecycle sync records disappeared pending actions and recovery actions", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig();
@@ -12289,5 +12328,6 @@ await runCheck("performance report exposes trade quality review and scorecards",
 });
 
 console.log("All checks passed.");
+
 
 
