@@ -1114,7 +1114,7 @@ export class OfflineTrainer {
     this.lastSummary = null;
   }
 
-  buildSummary({ journal = {}, dataRecorder = {}, counterfactuals = [], nowIso = new Date().toISOString() } = {}) {
+  buildSummary({ journal = {}, dataRecorder = {}, counterfactuals = [], historySummary = {}, nowIso = new Date().toISOString() } = {}) {
     const usableCounterfactuals = (counterfactuals || []).filter((item) => !item?.resolutionFailed && item?.outcome !== "resolution_failed");
     const trades = (journal.trades || []).filter((trade) => trade.exitAt);
     const learningReadyTrades = trades.filter((trade) => Number.isFinite(trade.labelScore) && trade.rawFeatures && Object.keys(trade.rawFeatures).length > 0);
@@ -1160,6 +1160,17 @@ export class OfflineTrainer {
       nowIso
     });
     const retrainReadiness = stabilizeRetrainReadiness(retrainReadinessRaw, this.lastSummary?.retrainReadiness || {});
+    const historyAggregate = historySummary?.aggregate || {};
+    const historyCoverage = {
+      status: historySummary?.status || historyAggregate.status || "unknown",
+      symbolCount: historyAggregate.symbolCount || 0,
+      coveredSymbolCount: historyAggregate.coveredSymbolCount || 0,
+      staleSymbolCount: historyAggregate.staleSymbolCount || 0,
+      gapSymbolCount: historyAggregate.gapSymbolCount || 0,
+      uncoveredSymbolCount: historyAggregate.uncoveredSymbolCount || 0,
+      partitionedSymbolCount: historyAggregate.partitionedSymbolCount || 0,
+      notes: [...(historySummary?.notes || [])].slice(0, 4)
+    };
     const calibrationGovernance = buildCalibrationGovernance({
       tradeCount: learningReadyTrades.length,
       falsePositiveCount: falsePositives.length,
@@ -1224,6 +1235,7 @@ export class OfflineTrainer {
       retrainExecutionPlan,
       calibrationGovernance,
       regimeDeployment,
+      historyCoverage,
       falsePositiveByStrategy: falsePositiveByStrategy.slice(0, 6),
       falseNegativeByStrategy: falseNegativeByStrategy.slice(0, 6),
       readinessScore: num(readinessScore),
@@ -1257,6 +1269,9 @@ export class OfflineTrainer {
           ? `${scopeRetrainReadiness[0].type}:${scopeRetrainReadiness[0].id} is momenteel de sterkste retrain-scope.`
           : "Nog geen duidelijke retrain-scopeleider zichtbaar.",
         calibrationGovernance.note,
+        historyCoverage.gapSymbolCount
+          ? `${historyCoverage.gapSymbolCount} history-symbolen hebben nog gaten voor replay of offline learning.`
+          : "Geen openstaande history gaps in de offline learning dekking.",
         regimeScorecards[0]
           ? `${regimeScorecards[0].id} is het sterkste regime in offline trainer governance.`
           : "Nog geen duidelijke regime-leider in offline trainer.",

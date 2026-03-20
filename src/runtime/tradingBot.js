@@ -27,6 +27,7 @@ import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder
 import { DataRecorder } from "./dataRecorder.js";
 import { ModelRegistry } from "./modelRegistry.js";
 import { StateBackupManager } from "./stateBackupManager.js";
+import { MarketHistoryStore } from "../storage/marketHistoryStore.js";
 import { runResearchLab } from "./researchLab.js";
 import { ResearchRegistry } from "./researchRegistry.js";
 import { UniverseSelector } from "./universeSelector.js";
@@ -1397,6 +1398,16 @@ function summarizeOfflineTrainer(summary = {}) {
     liveTrades: summary.liveTrades || 0,
     learningFrames: summary.learningFrames || 0,
     decisionFrames: summary.decisionFrames || 0,
+    historyCoverage: {
+      status: summary.historyCoverage?.status || "unknown",
+      symbolCount: summary.historyCoverage?.symbolCount || 0,
+      coveredSymbolCount: summary.historyCoverage?.coveredSymbolCount || 0,
+      staleSymbolCount: summary.historyCoverage?.staleSymbolCount || 0,
+      gapSymbolCount: summary.historyCoverage?.gapSymbolCount || 0,
+      uncoveredSymbolCount: summary.historyCoverage?.uncoveredSymbolCount || 0,
+      partitionedSymbolCount: summary.historyCoverage?.partitionedSymbolCount || 0,
+      notes: arr(summary.historyCoverage?.notes || []).slice(0, 4)
+    },
     readinessScore: num(summary.readinessScore || 0, 4),
     status: summary.status || "warmup",
     counterfactuals: {
@@ -2239,6 +2250,91 @@ function summarizeServiceState(summary = {}, config = {}, referenceNow = nowIso(
     initWarnings,
     bootstrapWarningCount: initWarnings.length,
     bootstrapDegraded: initWarnings.length > 0
+  };
+}
+
+function summarizeMarketHistory(summary = {}) {
+  const aggregate = summary.aggregate || {};
+  const symbols = summary.symbols || {};
+  return {
+    generatedAt: summary.generatedAt || null,
+    interval: summary.interval || null,
+    status: summary.status || aggregate.status || "unknown",
+    aggregate: {
+      status: aggregate.status || "unknown",
+      symbolCount: aggregate.symbolCount || 0,
+      coveredSymbolCount: aggregate.coveredSymbolCount || 0,
+      staleSymbolCount: aggregate.staleSymbolCount || 0,
+      gapSymbolCount: aggregate.gapSymbolCount || 0,
+      uncoveredSymbolCount: aggregate.uncoveredSymbolCount || 0,
+      partitionedSymbolCount: aggregate.partitionedSymbolCount || 0,
+      staleSymbols: arr(aggregate.staleSymbols || []).slice(0, 8),
+      gapSymbols: arr(aggregate.gapSymbols || []).slice(0, 8),
+      uncoveredSymbols: arr(aggregate.uncoveredSymbols || []).slice(0, 8)
+    },
+    symbols: Object.fromEntries(
+      Object.entries(symbols).slice(0, 12).map(([symbol, item]) => [symbol, {
+        count: item.count || 0,
+        gapCount: item.gapCount || 0,
+        stale: Boolean(item.stale),
+        freshnessLagCandles: item.freshnessLagCandles == null ? null : item.freshnessLagCandles,
+        coverageRatio: num(item.coverageRatio || 0, 4),
+        partitionCount: item.partitionCount || 0,
+        firstOpenTime: item.firstOpenTime || null,
+        lastOpenTime: item.lastOpenTime || null
+      }])
+    ),
+    notes: arr(summary.notes || []).slice(0, 6)
+  };
+}
+
+function buildMarketHistoryAggregate(items = []) {
+  const staleSymbols = items.filter((item) => item.stale).map((item) => item.symbol);
+  const gapSymbols = items.filter((item) => (item.gapCount || 0) > 0).map((item) => item.symbol);
+  const uncoveredSymbols = items.filter((item) => !(item.count > 0)).map((item) => item.symbol);
+  return {
+    symbolCount: items.length,
+    coveredSymbolCount: items.filter((item) => (item.count || 0) > 0).length,
+    staleSymbolCount: staleSymbols.length,
+    gapSymbolCount: gapSymbols.length,
+    uncoveredSymbolCount: uncoveredSymbols.length,
+    partitionedSymbolCount: items.filter((item) => (item.partitionCount || 0) > 1).length,
+    staleSymbols,
+    gapSymbols,
+    uncoveredSymbols,
+    status: uncoveredSymbols.length
+      ? "missing"
+      : staleSymbols.length || gapSymbols.length
+        ? "degraded"
+        : items.length
+          ? "ready"
+          : "empty"
+  };
+}
+
+function buildTradeReplayHistoryCoverage(trade = {}, marketHistory = {}) {
+  const symbolSummary = marketHistory?.symbols?.[trade.symbol] || null;
+  if (!symbolSummary) {
+    return null;
+  }
+  const entryTime = new Date(trade.entryAt || 0).getTime();
+  const exitTime = new Date(trade.exitAt || trade.entryAt || 0).getTime();
+  const coversTradeWindow = Number.isFinite(entryTime) && Number.isFinite(exitTime)
+    ? (symbolSummary.firstOpenTime || Number.POSITIVE_INFINITY) <= entryTime && (symbolSummary.lastOpenTime || 0) >= exitTime
+    : false;
+  return {
+    status: symbolSummary.gapCount > 0
+      ? "gappy"
+      : symbolSummary.stale
+        ? "stale"
+        : coversTradeWindow
+          ? "covered"
+          : "partial",
+    coversTradeWindow,
+    gapCount: symbolSummary.gapCount || 0,
+    freshnessLagCandles: symbolSummary.freshnessLagCandles == null ? null : symbolSummary.freshnessLagCandles,
+    partitionCount: symbolSummary.partitionCount || 0,
+    coverageRatio: num(symbolSummary.coverageRatio || 0, 4)
   };
 }
 
@@ -3133,6 +3229,7 @@ export class TradingBot {
     this.modelRegistry = new ModelRegistry(config);
     this.dataRecorder = new DataRecorder({ runtimeDir: config.runtimeDir, config, logger });
     this.backupManager = new StateBackupManager({ runtimeDir: config.runtimeDir, config, logger });
+    this.historyStore = new MarketHistoryStore({ rootDir: config.historyDir, logger, partitionGranularity: config.historyPartitionGranularity || "month" });
     this.pairHealthMonitor = new PairHealthMonitor(config);
     this.divergenceMonitor = new DivergenceMonitor(config);
     this.offlineTrainer = new OfflineTrainer(config);
@@ -3207,6 +3304,7 @@ export class TradingBot {
       attribution: report.attribution || {},
       windows: report.windows || {},
       modes: report.modes || {},
+      marketHistory: summarizeMarketHistory(this.runtime.marketHistory || {}),
       recentTrades: report.recentTrades.map((trade) => this.buildTradeView(trade)),
       recentScaleOuts: report.recentScaleOuts.map((event) => this.buildScaleOutView(event)),
       recentEvents: report.recentEvents || [],
@@ -3224,6 +3322,7 @@ export class TradingBot {
     const serviceState = summarizeServiceState(this.runtime.service || {}, this.config, now.toISOString());
     const ackAlerts = arr(this.runtime.ops?.alerts?.alerts || []).filter((item) => requiresOperatorAck(item, this.config.botMode));
     const dataRecorderSummary = this.dataRecorder.getSummary();
+    const marketHistorySummary = summarizeMarketHistory(this.runtime.marketHistory || {});
     const dataRecorderAgeMs = dataRecorderSummary?.lastRecordAt ? now.getTime() - new Date(dataRecorderSummary.lastRecordAt).getTime() : Number.POSITIVE_INFINITY;
     const recentClosedTrades = arr(this.journal.trades || []).slice(-12);
     const replayCoverage = recentClosedTrades.length
@@ -3334,6 +3433,57 @@ export class TradingBot {
     };
     const deduped = warnings.filter((item) => item?.type !== nextWarning.type);
     this.runtime.service.initWarnings = [...deduped, nextWarning].slice(-6);
+  }
+
+  async refreshMarketHistorySnapshot({ symbols = null, referenceNow = nowIso() } = {}) {
+    if (this.config.historyCacheEnabled === false) {
+      this.runtime.marketHistory = summarizeMarketHistory({
+        generatedAt: referenceNow,
+        interval: this.config.klineInterval,
+        status: "disabled",
+        aggregate: { status: "disabled", symbolCount: 0, coveredSymbolCount: 0, staleSymbolCount: 0, gapSymbolCount: 0, uncoveredSymbolCount: 0, partitionedSymbolCount: 0, staleSymbols: [], gapSymbols: [], uncoveredSymbols: [] },
+        symbols: {},
+        notes: ["History cache staat uit; replay en offline learning gebruiken geen persistente candles."]
+      });
+      return this.runtime.marketHistory;
+    }
+    const baseSymbols = symbols?.length
+      ? symbols
+      : [
+          ...this.config.watchlist,
+          ...arr(this.journal?.trades || []).slice(-18).map((trade) => trade.symbol)
+        ];
+    const uniqueSymbols = [...new Set(baseSymbols.map((symbol) => `${symbol || ""}`.trim().toUpperCase()).filter(Boolean))]
+      .slice(0, this.config.researchMaxSymbols || this.config.watchlist.length || 12);
+    const summaries = [];
+    for (const symbol of uniqueSymbols) {
+      summaries.push(await this.historyStore.verifySeries({
+        symbol,
+        interval: this.config.klineInterval,
+        referenceNow,
+        freshnessThresholdMultiplier: this.config.historyVerifyFreshnessMultiplier || 4
+      }));
+    }
+    const aggregate = buildMarketHistoryAggregate(summaries);
+    this.runtime.marketHistory = summarizeMarketHistory({
+      generatedAt: referenceNow,
+      interval: this.config.klineInterval,
+      status: aggregate.status,
+      aggregate,
+      symbols: Object.fromEntries(summaries.map((item) => [item.symbol, item])),
+      notes: [
+        aggregate.partitionedSymbolCount
+          ? `${aggregate.partitionedSymbolCount} symbolen gebruiken al partities in de lokale history-store.`
+          : "History-store gebruikt nog geen meerpartitie-dekking voor de huidige symbolen.",
+        aggregate.gapSymbolCount
+          ? `${aggregate.gapSymbolCount} symbolen hebben nog gaten die backfill of verify vragen.`
+          : "Geen openstaande history gaps in de gecontroleerde symbolen.",
+        aggregate.staleSymbolCount
+          ? `${aggregate.staleSymbolCount} symbolen lopen achter op de verwachte laatste gesloten candle.`
+          : "History freshness is gezond voor de gecontroleerde symbolen."
+      ]
+    });
+    return this.runtime.marketHistory;
   }
 
   applyHistoricalBootstrap(bootstrap = null) {
@@ -3489,6 +3639,12 @@ export class TradingBot {
 
     await this.store.init();
     try {
+      await this.historyStore.init();
+    } catch (error) {
+      this.logger.warn("Market history initialization failed", { error: error.message });
+      this.noteBootstrapWarning("market_history_init_failed", error);
+    }
+    try {
       await this.backupManager.init(null);
     } catch (error) {
       this.logger.warn("State backup initialization failed", { error: error.message });
@@ -3549,6 +3705,7 @@ export class TradingBot {
     this.runtime.ops.alertDelivery = this.runtime.ops.alertDelivery || summarizeAlertDelivery({});
     this.runtime.service = this.runtime.service || { lastHeartbeatAt: null, watchdogStatus: "idle", restartBackoffSeconds: null, lastExitCode: null, statusFile: null, initWarnings: [] };
     this.runtime.service.initWarnings = arr(this.runtime.service.initWarnings || []);
+    this.runtime.marketHistory = summarizeMarketHistory(this.runtime.marketHistory || {});
     this.runtime.counterfactualQueue = arr(this.runtime.counterfactualQueue);
     this.runtime.session = this.runtime.session || {};
     this.runtime.drift = this.runtime.drift || {};
@@ -3598,6 +3755,12 @@ export class TradingBot {
       this.noteBootstrapWarning("state_backup_restore_init_failed", error);
     }
     this.applyHistoricalBootstrap(historicalBootstrap);
+    try {
+      await this.refreshMarketHistorySnapshot({ referenceNow: nowIso() });
+    } catch (error) {
+      this.logger.warn("Market history snapshot refresh failed", { error: error.message });
+      this.noteBootstrapWarning("market_history_snapshot_failed", error);
+    }
     this.runtime.dataRecorder = this.dataRecorder.getSummary();
     this.runtime.stateBackups = this.backupManager.getSummary();
     this.model = new AdaptiveTradingModel(persistedState.modelState, this.config);
@@ -4250,7 +4413,7 @@ export class TradingBot {
     const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     const rawResearchRegistry = this.researchRegistry.buildRegistry({ journal: this.journal, latestSummary: this.runtime.researchLab?.latestSummary || null, modelBackups: this.modelBackups || [], nowIso: referenceNow });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: referenceNow });
-    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: referenceNow });
+    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], historySummary: this.runtime.marketHistory || {}, nowIso: referenceNow });
     const rawStrategyResearch = this.strategyResearchMiner.buildSummary({
       journal: this.journal,
       researchRegistry: rawResearchRegistry,
@@ -4370,7 +4533,7 @@ export class TradingBot {
             const family = trade.strategyFamily || trade.strategyDecision?.family || null;
             const regime = trade.regimeAtEntry || null;
             const session = trade.sessionAtEntry || null;
-            const scopeId = [family, regime, session].filter(Boolean).join(" · ");
+            const scopeId = [family, regime, session].filter(Boolean).join(" Ãƒâ€šÃ‚Â· ");
             return scopeId === item.scope || `${trade.strategyAtEntry || ""}`.trim() === `${item.id || ""}`.trim();
           })
         : [];
@@ -5853,7 +6016,7 @@ export class TradingBot {
     const thresholdSandbox = sandboxStates[0]
       ? {
           status: sandboxStates[0].status,
-          scopeLabel: [sandboxStates[0].scope?.family, sandboxStates[0].scope?.regime, sandboxStates[0].scope?.session].filter(Boolean).join(" · "),
+          scopeLabel: [sandboxStates[0].scope?.family, sandboxStates[0].scope?.regime, sandboxStates[0].scope?.session].filter(Boolean).join(" Ãƒâ€šÃ‚Â· "),
           thresholdShift: sandboxStates[0].thresholdShift || 0,
           sampleSize: sandboxStates[0].sampleSize || 0
         }
@@ -6093,7 +6256,7 @@ export class TradingBot {
           item.paperLearning?.scope?.family || item.strategy?.family || null,
           item.paperLearning?.scope?.regime || item.regime || null,
           item.paperLearning?.scope?.session || item.session?.session || null
-        ].filter(Boolean).join(" · ") || null
+        ].filter(Boolean).join(" Ãƒâ€šÃ‚Â· ") || null
       }))
       .filter((item) => item.score > 0)
       .sort((left, right) => right.score - left.score)
@@ -6111,7 +6274,7 @@ export class TradingBot {
       const family = item.paperLearning?.scope?.family || item.strategy?.family || null;
       const regime = item.paperLearning?.scope?.regime || item.regime || null;
       const session = item.paperLearning?.scope?.session || item.session?.session || null;
-      const scopeId = [family, regime, session].filter(Boolean).join(" · ");
+      const scopeId = [family, regime, session].filter(Boolean).join(" Ãƒâ€šÃ‚Â· ");
       if (!scopeId) {
         continue;
       }
@@ -7199,7 +7362,7 @@ export class TradingBot {
       nowIso: nowIso()
     });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: nowIso() });
-    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: nowIso() });
+    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], historySummary: this.runtime.marketHistory || {}, nowIso: nowIso() });
     trade.promotionPolicy = this.modelRegistry.buildPromotionPolicy({
       report,
       researchRegistry: rawResearchRegistry,
@@ -8515,7 +8678,7 @@ export class TradingBot {
     const sharedOnChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(sharedMarketSentimentSummary) : EMPTY_ONCHAIN;
     const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: this.config.watchlist, nowIso: now.toISOString() });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
-    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], nowIso: now.toISOString() });
+    const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], historySummary: this.runtime.marketHistory || {}, nowIso: now.toISOString() });
     const sourceReliabilitySummary = this.buildSourceReliabilitySnapshot();
     if (!readOnly) {
       this.runtime.aiTelemetry.strategyOptimizer = summarizeOptimizer(optimizerSnapshot);
@@ -9102,7 +9265,7 @@ export class TradingBot {
 
   async runResearch(options = {}) {
     const symbols = (options.symbols || []).map((symbol) => `${symbol}`.trim().toUpperCase()).filter(Boolean);
-    const result = await runResearchLab({ config: this.config, logger: this.logger, symbols });
+    const result = await runResearchLab({ config: this.config, logger: this.logger, symbols, historyStore: this.historyStore });
     this.runtime.researchLab = {
       lastRunAt: result.generatedAt,
       latestSummary: result
@@ -9129,6 +9292,7 @@ export class TradingBot {
     this.journal.researchRuns.push(result);
     this.markReportDirty();
     await this.safeRecordDataRecorder("research", async () => this.dataRecorder.recordResearch(result));
+    await this.refreshMarketHistorySnapshot({ symbols, referenceNow: result.generatedAt }).catch(() => {});
     this.refreshGovernanceViews(result.generatedAt);
     this.recordEvent("research_run_completed", {
       symbolCount: result.symbolCount,
@@ -9857,6 +10021,7 @@ export class TradingBot {
       ? (bestAlternateExit.price / trade.entryPrice) - 1
       : null;
     const review = buildTradeQualityReview(trade);
+    const historyCoverage = buildTradeReplayHistoryCoverage(trade, this.runtime?.marketHistory || {});
     const decisionInputs = [
       {
         label: "Gate",
@@ -9885,7 +10050,7 @@ export class TradingBot {
       {
         label: "Execution vs outcome",
         baseline: `entry ${num(trade.entryExecutionAttribution?.realizedTouchSlippageBps || 0, 2)} bps`,
-        challenger: `${titleize(review.verdict || "observe")} · score ${num((review.compositeScore || 0) * 100, 1)}%`,
+        challenger: `${titleize(review.verdict || "observe")} Ãƒâ€šÃ‚Â· score ${num((review.compositeScore || 0) * 100, 1)}%`,
         delta: num(((review.executionScore || 0) - (review.outcomeScore || 0)) * 100, 1)
       },
       bestAlternateExit
@@ -9924,6 +10089,7 @@ export class TradingBot {
       vetoChain: arr(rationale.blockerReasons || []).slice(0, 5),
       headlines,
       candleContext: arr(rationale.candleContext || []).slice(0, 24),
+      historyCoverage,
       pnlAttribution: {
         executionStyle: trade.entryExecutionAttribution?.entryStyle || null,
         provider: trade.entryRationale?.providerBreakdown?.[0]?.name || null,
@@ -9981,7 +10147,7 @@ export class TradingBot {
     const explainSteps = [
       {
         label: "Setup",
-        detail: decision.summary || decision.setupStyle || `${decision.symbol || "Setup"} wordt geëvalueerd.`
+        detail: decision.summary || decision.setupStyle || `${decision.symbol || "Setup"} wordt geÃƒÆ’Ã‚Â«valueerd.`
       },
       {
         label: decision.allow ? "Waarom nu" : "Waarom niet",
@@ -9991,7 +10157,7 @@ export class TradingBot {
       },
       {
         label: "Data & kwaliteit",
-        detail: `${titleize(decision.dataQuality?.status || "unknown")} · quorum ${num((decision.qualityQuorum?.quorumScore || 0) * 100, 1)}% · confidence ${num((decision.confidenceBreakdown?.overallConfidence || 0) * 100, 1)}%`
+        detail: `${titleize(decision.dataQuality?.status || "unknown")} Ãƒâ€šÃ‚Â· quorum ${num((decision.qualityQuorum?.quorumScore || 0) * 100, 1)}% Ãƒâ€šÃ‚Â· confidence ${num((decision.confidenceBreakdown?.overallConfidence || 0) * 100, 1)}%`
       },
       {
         label: "Volgende actie",
@@ -10019,7 +10185,7 @@ export class TradingBot {
         },
         {
           label: "Kwaliteit",
-          detail: `${titleize(decision.dataQuality?.status || "unknown")} · signal ${num((decision.signalQuality?.overallScore || 0) * 100, 1)}%`
+          detail: `${titleize(decision.dataQuality?.status || "unknown")} Ãƒâ€šÃ‚Â· signal ${num((decision.signalQuality?.overallScore || 0) * 100, 1)}%`
         },
         {
           label: "Regime",
@@ -10062,6 +10228,7 @@ export class TradingBot {
       alternateExits: arr(replay.alternateExits || []).slice(0, 3),
       keyStages: stages,
       fullTimeline: arr(replay.timeline || []).slice(0, 10),
+      historyCoverage: replay.historyCoverage || null,
       keyTakeaway: replay.review?.summary || replay.whyClosed || replay.whyOpened || "Replay beschikbaar."
     };
   }
@@ -10113,7 +10280,7 @@ export class TradingBot {
       dominantBlockers[0]
         ? {
             title: "Dominante rem",
-            detail: `${titleize(dominantBlockers[0].id)} · ${dominantBlockers[0].count}x`,
+            detail: `${titleize(dominantBlockers[0].id)} Ãƒâ€šÃ‚Â· ${dominantBlockers[0].count}x`,
             tone: dominantBlockers[0].category === "infra" || dominantBlockers[0].category === "safety" ? "negative" : "neutral"
           }
         : null,
@@ -10134,7 +10301,7 @@ export class TradingBot {
       safety.orderLifecycle?.pendingActions?.[0]
         ? {
             title: "Lifecycle",
-            detail: `${titleize(safety.orderLifecycle.pendingActions[0].state || "pending")} · ${safety.orderLifecycle.pendingActions[0].symbol || "actie open"}`,
+            detail: `${titleize(safety.orderLifecycle.pendingActions[0].state || "pending")} Ãƒâ€šÃ‚Â· ${safety.orderLifecycle.pendingActions[0].symbol || "actie open"}`,
             tone: "negative"
           }
         : null,
@@ -10417,6 +10584,7 @@ export class TradingBot {
 
   async runDoctor() {
     await this.maybeRunExchangeTruthLoop();
+    await this.refreshMarketHistorySnapshot({ referenceNow: nowIso() }).catch(() => {});
     const balance = await this.broker.getBalance(this.runtime);
     const report = this.getPerformanceReport();
     const previewCandidates = await this.scanCandidatesReadOnly(balance);
@@ -10437,6 +10605,7 @@ export class TradingBot {
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
+      marketHistory: summarizeMarketHistory(this.runtime.marketHistory || {}),
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       sourceReliability: this.buildSourceReliabilitySnapshot(),
       exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
@@ -10446,6 +10615,7 @@ export class TradingBot {
       volatility: summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT),
       stableModelSnapshots: arr(this.modelBackups || []).slice(0, 3).map(summarizeModelBackup),
       dataRecorder: summarizeDataRecorder(this.dataRecorder.getSummary()),
+      marketHistory: summarizeMarketHistory(this.runtime.marketHistory || {}),
       readiness: this.buildOperationalReadiness(),
       checks,
       report: this.buildPublicReportView(report),
@@ -10463,6 +10633,7 @@ export class TradingBot {
 
   async getDashboardSnapshot() {
     await this.maybeRunExchangeTruthLoop();
+    await this.refreshMarketHistorySnapshot({ referenceNow: nowIso() }).catch(() => {});
     if (!Number.isFinite(this.runtime.lastKnownBalance) || !Number.isFinite(this.runtime.lastKnownEquity)) {
       await this.updatePortfolioSnapshot();
     }
@@ -10610,6 +10781,7 @@ export class TradingBot {
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
       offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
+      marketHistory: summarizeMarketHistory(this.runtime.marketHistory || {}),
       upcomingEvents: arr(topDecision.calendarEvents || leadPosition?.entryRationale?.calendarEvents || []).slice(0, 4),
       officialNotices: arr(topDecision.officialNotices || leadPosition?.entryRationale?.officialNotices || []).slice(0, 4),
       watchlist: this.runtime.watchlistSummary || null,
@@ -10626,6 +10798,7 @@ export class TradingBot {
       strategyResearch: summarizeStrategyResearch(this.runtime.strategyResearch || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
       dataRecorder: summarizeDataRecorder(this.dataRecorder.getSummary()),
+      marketHistory: summarizeMarketHistory(this.runtime.marketHistory || {}),
       report: {
         openExposureReview: report.openExposureReview || {
           manualReviewCount: 0,
@@ -10730,6 +10903,7 @@ export class TradingBot {
       strategyResearch: dashboard.strategyResearch,
       research: dashboard.research,
       dataRecorder: dashboard.dataRecorder,
+      marketHistory: dashboard.marketHistory,
       explainability: dashboard.explainability,
       promotionPipeline: dashboard.promotionPipeline,
       operatorDiagnostics: dashboard.operatorDiagnostics,
@@ -10743,6 +10917,7 @@ export class TradingBot {
 
   async getReport() {
     await this.maybeRunExchangeTruthLoop();
+    await this.refreshMarketHistorySnapshot({ referenceNow: nowIso() }).catch(() => {});
     if (!Number.isFinite(this.runtime.lastKnownBalance) || !Number.isFinite(this.runtime.lastKnownEquity)) {
       await this.updatePortfolioSnapshot();
     }

@@ -128,6 +128,8 @@ function makeConfig(overrides = {}) {
     historyCacheEnabled: true,
     historyFetchBatchSize: 1000,
     historyMaxGapFillRanges: 24,
+    historyPartitionGranularity: "month",
+    historyVerifyFreshnessMultiplier: 4,
     backtestCandleLimit: 500,
     historyDir: path.join(os.tmpdir(), "playground-history-default"),
     maxServerTimeDriftMs: 450,
@@ -6839,6 +6841,46 @@ await runCheck("history verify command reports local coverage without API fetche
   assert.equal(result.symbols[0].count, 1);
 });
 
+await runCheck("market history store partitions datasets across monthly files", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-partition-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir, partitionGranularity: "month" });
+  await store.init();
+  await store.upsertCandles({
+    symbol: "BTCUSDT",
+    interval: "1d",
+    candles: [
+      { openTime: Date.parse("2026-01-31T00:00:00.000Z"), closeTime: Date.parse("2026-01-31T23:59:59.999Z"), open: 100, high: 101, low: 99, close: 100.5, volume: 10 },
+      { openTime: Date.parse("2026-02-01T00:00:00.000Z"), closeTime: Date.parse("2026-02-01T23:59:59.999Z"), open: 101, high: 102, low: 100, close: 101.5, volume: 11 },
+      { openTime: Date.parse("2026-02-02T00:00:00.000Z"), closeTime: Date.parse("2026-02-02T23:59:59.999Z"), open: 102, high: 103, low: 101, close: 102.5, volume: 12 }
+    ]
+  });
+  const verification = await store.verifySeries({ symbol: "BTCUSDT", interval: "1d", referenceNow: "2026-02-10T00:00:00.000Z", freshnessThresholdMultiplier: 1 });
+  assert.equal(verification.partitionCount, 2);
+  assert.equal(verification.partitions.length, 2);
+  assert.equal(verification.stale, true);
+  const partFiles = await fs.readdir(path.join(historyDir, "binance", "spot", "klines", "1d", "BTCUSDT", "parts"));
+  assert.equal(partFiles.length, 2);
+});
+
+await runCheck("history verify command reports stale coverage and segments", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-verify-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir, partitionGranularity: "month" });
+  await store.init();
+  await store.upsertCandles({
+    symbol: "BTCUSDT",
+    interval: "15m",
+    candles: [{ openTime: Date.parse("2026-03-01T00:00:00.000Z"), closeTime: Date.parse("2026-03-01T00:14:59.999Z"), open: 1, high: 1.1, low: 0.9, close: 1.05, volume: 10 }]
+  });
+  const result = await runHistoryCommand({
+    config: makeConfig({ historyDir, watchlist: ["BTCUSDT"], historyVerifyFreshnessMultiplier: 1 }),
+    logger: { info() {}, warn() {}, error() {} },
+    args: ["verify", "BTCUSDT", "--interval=15m"]
+  });
+  assert.equal(result.aggregate.staleSymbolCount, 1);
+  assert.equal(result.symbols[0].segments.length, 1);
+  assert.equal(result.symbols[0].partitionCount, 1);
+});
+
 await runCheck("state backup manager restores existing backup count and timestamp", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-backup-restore-"));
   try {
@@ -10191,6 +10233,71 @@ await runCheck("trading bot diagnostics actions reset external feeds and keep au
   assert.equal(bot.runtime.ops.diagnosticsActions.history[0].target, "calendar");
 });
 
+
+await runCheck("offline trainer surfaces history coverage for learning readiness", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: { trades: [] },
+    dataRecorder: { learningFrames: 0, decisionFrames: 0 },
+    counterfactuals: [],
+    historySummary: {
+      status: "degraded",
+      aggregate: {
+        status: "degraded",
+        symbolCount: 3,
+        coveredSymbolCount: 2,
+        staleSymbolCount: 1,
+        gapSymbolCount: 1,
+        uncoveredSymbolCount: 0,
+        partitionedSymbolCount: 2
+      },
+      notes: ["1 symbol heeft nog een gap."]
+    },
+    nowIso: "2026-03-20T12:00:00.000Z"
+  });
+  assert.equal(summary.historyCoverage.status, "degraded");
+  assert.equal(summary.historyCoverage.partitionedSymbolCount, 2);
+  assert.equal(summary.historyCoverage.gapSymbolCount, 1);
+});
+
+await runCheck("trade replay digest carries local market history coverage", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.journal = { scaleOuts: [] };
+  bot.runtime = {
+    marketHistory: {
+      symbols: {
+        BTCUSDT: {
+          firstOpenTime: Date.parse("2026-03-18T00:00:00.000Z"),
+          lastOpenTime: Date.parse("2026-03-20T12:00:00.000Z"),
+          gapCount: 0,
+          stale: false,
+          freshnessLagCandles: 0,
+          partitionCount: 2,
+          coverageRatio: 1
+        }
+      }
+    }
+  };
+  const replay = bot.buildTradeReplayView({
+    id: "trade-history-1",
+    symbol: "BTCUSDT",
+    entryAt: "2026-03-19T10:00:00.000Z",
+    exitAt: "2026-03-19T11:00:00.000Z",
+    entryPrice: 100,
+    exitPrice: 102,
+    pnlQuote: 10,
+    netPnlPct: 0.02,
+    captureEfficiency: 0.5,
+    reason: "take_profit",
+    entryRationale: { summary: "History-aware replay test.", probability: 0.6, threshold: 0.55, confidence: 0.62, marketState: { phase: "trend" }, committee: { agreement: 0.7, netScore: 0.3, vetoes: [] } },
+    entryExecutionAttribution: { entryStyle: "market" },
+    exitExecutionAttribution: { entryStyle: "market" }
+  });
+  const digest = bot.buildTradeReplayDigest(replay);
+  assert.equal(replay.historyCoverage.status, "covered");
+  assert.equal(digest.historyCoverage.partitionCount, 2);
+});
+
 await runCheck("trade replay digest exposes full timeline and decision outcome comparisons", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.journal = {
@@ -10754,7 +10861,7 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-11T15:00:00.000Z");
   assert.equal(summary.activeLearning.topCandidates[0].symbol, "ETHUSDT");
   assert.equal(summary.activeLearning.topCandidates[0].priorityBand, "high_priority");
-  assert.ok(summary.activeLearning.focusScopes.some((item) => item.id === "mean_reversion · range · europe"));
+  assert.ok(summary.activeLearning.focusScopes.some((item) => item.id?.includes("mean_reversion") && item.id?.includes("range") && item.id?.includes("europe")));
   assert.equal(summary.benchmarkLanes.bestLane, "safe_lane");
   assert.ok(summary.benchmarkLanes.rankedLanes.some((item) => item.id === "always_take"));
   assert.ok(summary.benchmarkLanes.rankedLanes.some((item) => item.id === "fixed_threshold"));

@@ -14,6 +14,17 @@ export function createHistoryClient({ config, logger, client = null } = {}) {
   });
 }
 
+export function createHistoryStore({ config, logger, store = null } = {}) {
+  if (store) {
+    return store;
+  }
+  return new MarketHistoryStore({
+    rootDir: config.historyDir,
+    logger,
+    partitionGranularity: config.historyPartitionGranularity || "month"
+  });
+}
+
 async function fetchRangeCandles({ client, symbol, interval, startTime = null, endTime = null, limit = 1000 }) {
   const raw = await client.getKlines(symbol, interval, limit, {
     startTime: startTime == null ? undefined : Number(startTime),
@@ -93,6 +104,53 @@ function filterCoverageGaps(gaps = [], { startTime = null, endTime = null } = {}
   return gaps.filter((gap) => gap.endTime >= lower && gap.startTime <= upper);
 }
 
+function summarizeVerification(result = {}) {
+  return {
+    symbol: result.symbol || null,
+    interval: result.interval || null,
+    count: result.count || 0,
+    expectedCount: result.expectedCount || 0,
+    coverageRatio: result.coverageRatio == null ? null : Number(result.coverageRatio.toFixed(4)),
+    gapCount: result.gapCount || 0,
+    duplicateCount: result.duplicateCount || 0,
+    stale: Boolean(result.stale),
+    freshnessLagCandles: result.freshnessLagCandles == null ? null : result.freshnessLagCandles,
+    partitionCount: result.partitionCount || 0,
+    partitionGranularity: result.partitionGranularity || null,
+    firstOpenTime: result.firstOpenTime || null,
+    lastOpenTime: result.lastOpenTime || null,
+    latestClosedOpenTime: result.latestClosedOpenTime || null,
+    updatedAt: result.updatedAt || null,
+    segments: (result.segments || []).slice(0, 12),
+    gaps: (result.gaps || []).slice(0, 12),
+    path: result.path || null
+  };
+}
+
+function summarizeVerificationCollection(items = []) {
+  const staleSymbols = items.filter((item) => item.stale).map((item) => item.symbol);
+  const gapSymbols = items.filter((item) => (item.gapCount || 0) > 0).map((item) => item.symbol);
+  const uncoveredSymbols = items.filter((item) => !(item.count > 0)).map((item) => item.symbol);
+  return {
+    symbolCount: items.length,
+    coveredSymbolCount: items.filter((item) => (item.count || 0) > 0).length,
+    staleSymbolCount: staleSymbols.length,
+    gapSymbolCount: gapSymbols.length,
+    uncoveredSymbolCount: uncoveredSymbols.length,
+    partitionedSymbolCount: items.filter((item) => (item.partitionCount || 0) > 1).length,
+    staleSymbols,
+    gapSymbols,
+    uncoveredSymbols,
+    status: uncoveredSymbols.length
+      ? "missing"
+      : staleSymbols.length || gapSymbols.length
+        ? "degraded"
+        : items.length
+          ? "ready"
+          : "empty"
+  };
+}
+
 export async function backfillHistoricalCandles({
   config,
   logger = null,
@@ -107,7 +165,7 @@ export async function backfillHistoricalCandles({
 }) {
   const effectiveInterval = interval || config.klineInterval;
   const intervalMs = intervalToMs(effectiveInterval);
-  const effectiveStore = store || new MarketHistoryStore({ rootDir: config.historyDir, logger });
+  const effectiveStore = createHistoryStore({ config, logger, store });
   await effectiveStore.init();
   const effectiveClient = createHistoryClient({ config, logger, client });
   const fetchedRanges = [];
@@ -307,17 +365,23 @@ function parseHistoryArgs(args = [], config = {}) {
 
 export async function runHistoryCommand({ config, logger, args = [] }) {
   const options = parseHistoryArgs(args, config);
-  const store = new MarketHistoryStore({ rootDir: config.historyDir, logger });
+  const store = createHistoryStore({ config, logger });
   await store.init();
   const symbols = (options.symbols.length ? options.symbols : config.watchlist).slice(0, config.researchMaxSymbols || config.watchlist.length);
   if (options.subcommand === "verify") {
     const summaries = [];
     for (const symbol of symbols) {
-      summaries.push(await store.verifySeries({ symbol, interval: options.interval }));
+      summaries.push(summarizeVerification(await store.verifySeries({
+        symbol,
+        interval: options.interval,
+        referenceNow: new Date().toISOString(),
+        freshnessThresholdMultiplier: config.historyVerifyFreshnessMultiplier || 4
+      })));
     }
     return {
       command: "history verify",
       interval: options.interval,
+      aggregate: summarizeVerificationCollection(summaries),
       symbols: summaries
     };
   }
@@ -342,7 +406,7 @@ export async function runHistoryCommand({ config, logger, args = [] }) {
       interval: result.interval,
       count: result.count,
       fetchedRanges: result.fetchedRanges,
-      verification: result.verification
+      verification: summarizeVerification(result.verification)
     });
   }
   return {
@@ -351,6 +415,7 @@ export async function runHistoryCommand({ config, logger, args = [] }) {
     targetCount,
     startTime: options.startTime,
     endTime: options.endTime,
+    aggregate: summarizeVerificationCollection(results.map((item) => item.verification)),
     symbols: results
   };
 }
