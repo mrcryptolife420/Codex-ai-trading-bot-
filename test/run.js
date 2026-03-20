@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +25,7 @@ import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
 import { loadConfig } from "../src/config/index.js";
 import { updateEnvFile } from "../src/config/envFile.js";
+import runCli from "../src/cli/runCli.js";
 import { validateConfig } from "../src/config/validate.js";
 import { resolveExchangeCapabilities } from "../src/config/exchangeCapabilities.js";
 import { HealthMonitor } from "../src/runtime/healthMonitor.js";
@@ -6256,6 +6258,51 @@ await runCheck("self heal manager falls back to paper on critical live degradati
   assert.ok(state.actions.includes("switch_to_paper"));
   assert.ok(state.actions.includes("reset_rl_policy"));
   assert.ok(state.actions.includes("restore_stable_model"));
+});
+
+await runCheck("run cli closes the bot after SIGINT and removes signal handlers", async () => {
+  const signalSource = new EventEmitter();
+  let cycleCount = 0;
+  let closeCount = 0;
+  let stopWarnings = 0;
+  await runCli({
+    command: "run",
+    args: [],
+    config: makeConfig({ tradingIntervalSeconds: 60 }),
+    logger: {
+      info() {},
+      error() {},
+      warn(message, meta) {
+        if (message === "Stopping run loop" && meta?.reason === "SIGINT") {
+          stopWarnings += 1;
+        }
+      }
+    },
+    botFactory: () => ({
+      async init() {},
+      async close() {
+        closeCount += 1;
+      },
+      async runCycle() {
+        cycleCount += 1;
+        return {
+          equity: 100,
+          quoteFree: 50,
+          openPositions: 0,
+          health: { circuitOpen: false }
+        };
+      }
+    }),
+    sleepFn: async () => {
+      signalSource.emit("SIGINT");
+    },
+    signalSource
+  });
+  assert.equal(cycleCount, 1);
+  assert.equal(closeCount, 1);
+  assert.equal(stopWarnings, 1);
+  assert.equal(signalSource.listenerCount("SIGINT"), 0);
+  assert.equal(signalSource.listenerCount("SIGTERM"), 0);
 });
 
 await runCheck("bot manager stops instead of switching live positions to paper", async () => {
