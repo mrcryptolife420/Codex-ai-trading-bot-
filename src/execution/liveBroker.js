@@ -1249,34 +1249,105 @@ export class LiveBroker {
     };
   }
 
+  getProtectiveFillFromStream(position) {
+    const orderIds = (position.protectiveOrders || []).map((item) => Number(item?.orderId || 0)).filter(Boolean);
+    const events = this.stream?.getRecentExecutionReports?.(
+      position.symbol,
+      {
+        orderIds,
+        orderListId: position.protectiveOrderListId || null,
+        maxAgeMs: this.config.orderStreamTruthMaxAgeMs || 180_000
+      }
+    ) || [];
+    const filledEvent = [...events].reverse().find((event) => Number(event.orderId || 0) > 0 && (event.status === "FILLED" || (event.executionType === "TRADE" && Number(event.executedQty || 0) > 0)));
+    if (!filledEvent) {
+      return null;
+    }
+    return {
+      orderId: Number(filledEvent.orderId || 0) || null,
+      orderType: filledEvent.orderType || null,
+      status: filledEvent.status || null,
+      orderListId: filledEvent.orderListId || null,
+      executionType: filledEvent.executionType || null
+    };
+  }
+
+  async settleProtectiveOrderFill(position, runtime, orderId, fallbackOrderType = null) {
+    if (!orderId || !this.client.getOrder) {
+      return null;
+    }
+    const order = await this.client.getOrder(position.symbol, { orderId });
+    const executedQty = Number(order?.executedQty || 0);
+    if (`${order?.status || ""}`.toUpperCase() !== "FILLED" && executedQty <= 0) {
+      return null;
+    }
+    const trades = this.client.getMyTrades
+      ? await this.client.getMyTrades(position.symbol, { orderId, limit: 50 }).catch(() => [])
+      : [];
+    const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [orderId]).catch(() => ({}));
+    runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+    return this.buildTradeFromOrder(
+      position,
+      order,
+      trades,
+      `${order?.type || fallbackOrderType || ""}`.includes("STOP") ? "protective_stop_loss" : "protective_take_profit",
+      "exchange_protective_order",
+      null,
+      orderTelemetry
+    );
+  }
+
   async syncPosition(position, runtime) {
     if (!position.protectiveOrderListId) {
       return null;
     }
-    const orderList = await this.client.getOrderList({ orderListId: position.protectiveOrderListId });
-    position.protectiveOrderStatus = orderList.listStatusType || orderList.listOrderStatus || position.protectiveOrderStatus;
-    if (orderList.listStatusType !== "ALL_DONE" && orderList.listOrderStatus !== "ALL_DONE") {
-      return null;
-    }
-    for (const listOrder of orderList.orders || []) {
-      const order = await this.client.getOrder(position.symbol, { orderId: listOrder.orderId });
-      if (order.status === "FILLED") {
-        const trades = await this.client.getMyTrades(position.symbol, { orderId: order.orderId, limit: 50 });
-        const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
-        runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
-        return this.buildTradeFromOrder(
-          position,
-          order,
-          trades,
-          order.type.includes("STOP") ? "protective_stop_loss" : "protective_take_profit",
-          "exchange_protective_order",
-          null,
-          orderTelemetry
-        );
+    const streamFill = this.getProtectiveFillFromStream(position);
+    try {
+      const orderList = await this.client.getOrderList({ orderListId: position.protectiveOrderListId });
+      position.protectiveOrderStatus = orderList.listStatusType || orderList.listOrderStatus || position.protectiveOrderStatus;
+      if (orderList.listStatusType !== "ALL_DONE" && orderList.listOrderStatus !== "ALL_DONE") {
+        if (streamFill?.orderId) {
+          const recoveredTrade = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType);
+          if (recoveredTrade) {
+            return recoveredTrade;
+          }
+        }
+        return null;
       }
+      for (const listOrder of orderList.orders || []) {
+        const order = await this.client.getOrder(position.symbol, { orderId: listOrder.orderId });
+        if (order.status === "FILLED") {
+          const trades = await this.client.getMyTrades(position.symbol, { orderId: order.orderId, limit: 50 });
+          const orderTelemetry = await this.collectOrderTelemetry(position.symbol, [order.orderId]);
+          runtime.openPositions = runtime.openPositions.filter((item) => item.id !== position.id);
+          return this.buildTradeFromOrder(
+            position,
+            order,
+            trades,
+            order.type.includes("STOP") ? "protective_stop_loss" : "protective_take_profit",
+            "exchange_protective_order",
+            null,
+            orderTelemetry
+          );
+        }
+      }
+      if (streamFill?.orderId) {
+        const recoveredTrade = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType);
+        if (recoveredTrade) {
+          return recoveredTrade;
+        }
+      }
+      this.clearProtectiveOrderState(position, orderList.listStatusType || orderList.listOrderStatus || "ALL_DONE");
+      return null;
+    } catch (error) {
+      if (streamFill?.orderId) {
+        const recoveredTrade = await this.settleProtectiveOrderFill(position, runtime, streamFill.orderId, streamFill.orderType).catch(() => null);
+        if (recoveredTrade) {
+          return recoveredTrade;
+        }
+      }
+      throw error;
     }
-    this.clearProtectiveOrderState(position, orderList.listStatusType || orderList.listOrderStatus || "ALL_DONE");
-    return null;
   }
 
   async reconcileRuntime({ runtime, getMarketSnapshot }) {

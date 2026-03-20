@@ -50,6 +50,7 @@ function normalizeExecutionReport(event) {
     status: event.X,
     orderId: Number(event.i || 0),
     clientOrderId: event.c,
+    orderListId: Number(event.g || 0) || null,
     quantity: Number(event.q || 0),
     executedQty: Number(event.z || 0),
     lastExecutedQty: Number(event.l || 0),
@@ -78,6 +79,28 @@ function normalizeExecutionReport(event) {
     at: new Date(event.E || Date.now()).toISOString()
   };
 }
+
+function normalizeListStatusEvent(event) {
+  return {
+    eventType: event.e,
+    symbol: event.s || null,
+    orderListId: Number(event.g || 0) || null,
+    contingencyType: event.c || null,
+    listStatusType: event.l || null,
+    listOrderStatus: event.L || null,
+    listClientOrderId: event.C || null,
+    rejectReason: event.r || null,
+    transactTime: Number(event.T || event.E || Date.now()),
+    orders: Array.isArray(event.O) ? event.O.map((item) => ({
+      symbol: item?.s || event.s || null,
+      orderId: Number(item?.i || 0) || null,
+      clientOrderId: item?.c || null
+    })) : [],
+    raw: event,
+    at: new Date(event.E || Date.now()).toISOString()
+  };
+}
+
 
 function unique(items = []) {
   return [...new Set(items.filter(Boolean))];
@@ -171,7 +194,8 @@ export class StreamCoordinator {
       bookTicker: null,
       trades: createRollingStats(this.config.streamTradeBufferSize),
       liquidations: createRollingStats(80),
-      userEvents: createRollingStats(120)
+      userEvents: createRollingStats(120),
+      listStatusEvents: createRollingStats(80)
     };
   }
 
@@ -290,6 +314,47 @@ export class StreamCoordinator {
     const ids = new Set((orderIds || []).map((value) => Number(value || 0)).filter(Boolean));
     const events = bucket.userEvents.items.filter((event) => ids.size === 0 || ids.has(Number(event.orderId || 0)));
     return summarizeExecutionEvents(events);
+  }
+
+
+  getRecentExecutionReports(symbol, { orderIds = [], orderListId = null, maxAgeMs = 180_000 } = {}) {
+    const bucket = this.state.symbols[symbol];
+    if (!bucket) {
+      return [];
+    }
+    const cutoff = Date.now() - Math.max(0, Number(maxAgeMs || 0));
+    const ids = new Set((orderIds || []).map((value) => Number(value || 0)).filter(Boolean));
+    return bucket.userEvents.items.filter((event) => {
+      const eventTime = Number(event.transactTime || 0);
+      if (eventTime && eventTime < cutoff) {
+        return false;
+      }
+      if (ids.size > 0 && !ids.has(Number(event.orderId || 0))) {
+        return false;
+      }
+      if (orderListId != null && Number(event.orderListId || 0) !== Number(orderListId)) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  getRecentListStatusEvents(symbol, { orderListId = null, maxAgeMs = 180_000 } = {}) {
+    const bucket = this.state.symbols[symbol];
+    if (!bucket) {
+      return [];
+    }
+    const cutoff = Date.now() - Math.max(0, Number(maxAgeMs || 0));
+    return bucket.listStatusEvents.items.filter((event) => {
+      const eventTime = Number(event.transactTime || 0);
+      if (eventTime && eventTime < cutoff) {
+        return false;
+      }
+      if (orderListId != null && Number(event.orderListId || 0) !== Number(orderListId)) {
+        return false;
+      }
+      return true;
+    });
   }
 
   getSymbolStreamFeatures(symbol) {
@@ -475,6 +540,14 @@ export class StreamCoordinator {
       const symbol = normalized.symbol;
       if (this.state.symbols[symbol]) {
         this.state.symbols[symbol].userEvents.push(normalized);
+      }
+      return;
+    }
+    if (eventType === "listStatus") {
+      const normalized = normalizeListStatusEvent(event);
+      const symbol = normalized.symbol;
+      if (this.state.symbols[symbol]) {
+        this.state.symbols[symbol].listStatusEvents.push(normalized);
       }
     }
   }

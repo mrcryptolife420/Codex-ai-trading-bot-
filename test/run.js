@@ -1739,6 +1739,148 @@ await runCheck("live broker reconciles a filled protective order", async () => {
   assert.equal(reconciliation.closedTrades[0].reason, "protective_take_profit");
 });
 
+await runCheck("live broker recovers a protective fill from user-stream when order list state lags", async () => {
+  const stream = {
+    getRecentExecutionReports() {
+      return [{ orderId: 55, orderListId: 123, status: "FILLED", executionType: "TRADE", executedQty: 0.01, orderType: "LIMIT_MAKER", transactTime: Date.now() }];
+    },
+    getOrderExecutionTelemetry() {
+      return {};
+    }
+  };
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOrderList() {
+      return { listStatusType: "EXEC_STARTED", orders: [{ orderId: 55 }] };
+    },
+    async getOrder() {
+      return {
+        orderId: 55,
+        executedQty: "0.01000000",
+        cummulativeQuoteQty: "720.00",
+        status: "FILLED",
+        type: "LIMIT_MAKER"
+      };
+    },
+    async getMyTrades() {
+      return [{ price: "72000", commission: "0.72", commissionAsset: "USDT" }];
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        rawFeatures: { momentum_5: 1 },
+        newsSummary: {},
+        protectiveOrderListId: 123,
+        protectiveOrders: [{ orderId: 55 }],
+        notional: 700,
+        highestPrice: 71000,
+        lowestPrice: 69500,
+        regimeAtEntry: "trend"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    stream,
+    config: makeConfig({ allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 72000 } })
+  });
+  assert.equal(reconciliation.closedTrades.length, 1);
+  assert.equal(runtime.openPositions.length, 0);
+  assert.equal(reconciliation.closedTrades[0].reason, "protective_take_profit");
+});
+
+await runCheck("live broker recovers a protective fill from user-stream when order list fetch fails", async () => {
+  const stream = {
+    getRecentExecutionReports() {
+      return [{ orderId: 56, orderListId: 124, status: "FILLED", executionType: "TRADE", executedQty: 0.01, orderType: "STOP_LOSS_LIMIT", transactTime: Date.now() }];
+    },
+    getOrderExecutionTelemetry() {
+      return {};
+    }
+  };
+  const client = {
+    async getAccountInfo() {
+      return {
+        balances: [{ asset: "BTC", free: "0", locked: "0" }],
+        canTrade: true,
+        accountType: "SPOT",
+        permissions: ["SPOT"]
+      };
+    },
+    async getOrderList() {
+      throw new Error("order list unavailable");
+    },
+    async getOrder() {
+      return {
+        orderId: 56,
+        executedQty: "0.01000000",
+        cummulativeQuoteQty: "680.00",
+        status: "FILLED",
+        type: "STOP_LOSS_LIMIT"
+      };
+    },
+    async getMyTrades() {
+      return [{ price: "68000", commission: "0.68", commissionAsset: "USDT" }];
+    }
+  };
+  const runtime = {
+    openPositions: [
+      {
+        id: "pos-1",
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-08T10:00:00.000Z",
+        entryPrice: 70000,
+        quantity: 0.01,
+        totalCost: 700.7,
+        rawFeatures: { momentum_5: 1 },
+        newsSummary: {},
+        protectiveOrderListId: 124,
+        protectiveOrders: [{ orderId: 56 }],
+        notional: 700,
+        highestPrice: 71000,
+        lowestPrice: 67500,
+        regimeAtEntry: "trend"
+      }
+    ]
+  };
+  const broker = new LiveBroker({
+    client,
+    stream,
+    config: makeConfig({ allowRecoverUnsyncedPositions: false, enableStpTelemetryQuery: false }),
+    logger: { warn() {}, info() {} },
+    symbolRules: { BTCUSDT: rules }
+  });
+  const reconciliation = await broker.reconcileRuntime({
+    runtime,
+    journal: { trades: [] },
+    getMarketSnapshot: async () => ({ book: { mid: 68000 } })
+  });
+  assert.equal(reconciliation.closedTrades.length, 1);
+  assert.equal(runtime.openPositions.length, 0);
+  assert.equal(reconciliation.closedTrades[0].reason, "protective_stop_loss");
+});
+
 await runCheck("live broker cancels stale unmatched buy orders after unclean restart", async () => {
   const canceled = [];
   const client = {
