@@ -10685,6 +10685,119 @@ await runCheck("stream coordinator clears stale listen key and keepalive on user
     assert.equal(status.userStreamConnected, false);
     assert.equal(status.userStreamSessionActive, false);
     assert.equal(coordinator.keepAliveTimer, null);
+    await coordinator.close();
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+await runCheck("stream coordinator restarts the user stream after an unexpected disconnect", async () => {
+  const openedUrls = [];
+  let listenKeyIndex = 0;
+  const originalWebSocket = globalThis.WebSocket;
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+      openedUrls.push(url);
+    }
+
+    addEventListener(type, handler) {
+      const bucket = this.listeners.get(type) || [];
+      bucket.push(handler);
+      this.listeners.set(type, bucket);
+    }
+
+    emit(type, payload = {}) {
+      for (const handler of this.listeners.get(type) || []) {
+        handler(payload);
+      }
+    }
+
+    close() {}
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const coordinator = new StreamCoordinator({
+      client: {
+        async createUserDataListenKey() {
+          listenKeyIndex += 1;
+          return `listen-${listenKeyIndex}`;
+        },
+        async keepAliveUserDataListenKey() {
+          return true;
+        },
+        getStreamBaseUrl() {
+          return "wss://stream.binance.com:9443";
+        },
+        getFuturesStreamBaseUrl() {
+          return "wss://fstream.binance.com";
+        }
+      },
+      config: makeConfig({ watchlist: ["BTCUSDT"], botMode: "live", binanceApiKey: "key", streamReconnectDelayMs: 1 }),
+      logger: { warn() {}, info() {} }
+    });
+    coordinator.state.enabled = true;
+    await coordinator.startUserStream();
+    const firstSocket = coordinator.userSocket;
+    firstSocket.emit("open");
+    firstSocket.emit("close");
+    await coordinator.userRestartPromise;
+    assert.equal(openedUrls.length, 2);
+    assert.equal(listenKeyIndex, 2);
+    assert.notEqual(coordinator.userSocket, firstSocket);
+    assert.equal(coordinator.state.listenKey, "listen-2");
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+await runCheck("stream coordinator restarts the futures stream after an unexpected error", async () => {
+  const openedUrls = [];
+  const originalWebSocket = globalThis.WebSocket;
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+      openedUrls.push(url);
+    }
+
+    addEventListener(type, handler) {
+      const bucket = this.listeners.get(type) || [];
+      bucket.push(handler);
+      this.listeners.set(type, bucket);
+    }
+
+    emit(type, payload = {}) {
+      for (const handler of this.listeners.get(type) || []) {
+        handler(payload);
+      }
+    }
+
+    close() {}
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const coordinator = new StreamCoordinator({
+      client: {
+        getStreamBaseUrl() {
+          return "wss://stream.binance.com:9443";
+        },
+        getFuturesStreamBaseUrl() {
+          return "wss://fstream.binance.com";
+        }
+      },
+      config: makeConfig({ watchlist: ["BTCUSDT"], streamReconnectDelayMs: 1 }),
+      logger: { warn() {}, info() {} }
+    });
+    coordinator.state.enabled = true;
+    await coordinator.startFuturesStream();
+    const firstSocket = coordinator.futuresSocket;
+    firstSocket.emit("open");
+    firstSocket.emit("error", { message: "network drop" });
+    await coordinator.futuresRestartPromise;
+    assert.equal(openedUrls.length, 2);
+    assert.notEqual(coordinator.futuresSocket, firstSocket);
   } finally {
     globalThis.WebSocket = originalWebSocket;
   }

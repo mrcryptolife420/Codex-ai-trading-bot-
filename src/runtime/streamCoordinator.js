@@ -153,7 +153,15 @@ export class StreamCoordinator {
     this.futuresSocket = null;
     this.userSocket = null;
     this.keepAliveTimer = null;
+    this.restartTimers = {
+      public: null,
+      futures: null,
+      user: null
+    };
     this.publicRestartPromise = Promise.resolve();
+    this.futuresRestartPromise = Promise.resolve();
+    this.userRestartPromise = Promise.resolve();
+    this.isClosing = false;
     this.setWatchlist(config.watchlist);
     this.setLocalBookUniverse(config.watchlist.slice(0, config.localBookMaxSymbols || config.universeMaxSymbols || config.watchlist.length));
   }
@@ -338,7 +346,45 @@ export class StreamCoordinator {
     return this.state.publicStreamConnected;
   }
 
+  getStreamReconnectDelayMs() {
+    return Math.max(250, Number(this.config.streamReconnectDelayMs || 1_500));
+  }
+
+  clearRestartTimer(kind) {
+    if (this.restartTimers[kind]) {
+      clearTimeout(this.restartTimers[kind]);
+      this.restartTimers[kind] = null;
+    }
+  }
+
+  scheduleRestart(kind, restart, reason) {
+    if (this.isClosing || !this.state.enabled || typeof WebSocket === "undefined") {
+      return Promise.resolve();
+    }
+    this.clearRestartTimer(kind);
+    const delayMs = this.getStreamReconnectDelayMs();
+    const promiseName = `${kind}RestartPromise`;
+    this[promiseName] = this[promiseName]
+      .catch(() => {})
+      .then(() => new Promise((resolve) => {
+        this.restartTimers[kind] = setTimeout(async () => {
+          this.restartTimers[kind] = null;
+          try {
+            await restart();
+            this.logger?.info?.(`${kind} stream restarted`, { reason, delayMs });
+          } catch (error) {
+            this.state.lastError = error.message;
+            this.logger?.warn?.(`${kind} stream restart failed`, { reason, error: error.message });
+          } finally {
+            resolve();
+          }
+        }, delayMs);
+      }));
+    return this[promiseName];
+  }
+
   async init() {
+    this.isClosing = false;
     if (!this.config.enableEventDrivenData || typeof WebSocket === "undefined") {
       return this.getStatus();
     }
@@ -434,6 +480,7 @@ export class StreamCoordinator {
   }
 
   async startPublicStream() {
+    this.clearRestartTimer("public");
     const streams = this.config.watchlist.flatMap((symbol) => {
       const lower = symbol.toLowerCase();
       const base = [`${lower}@bookTicker`, `${lower}@trade`];
@@ -468,6 +515,7 @@ export class StreamCoordinator {
       this.state.publicStreamConnected = false;
       this.clearPublicBookTickers();
       this.publicSocket = null;
+      void this.scheduleRestart("public", () => this.startPublicStream(), "socket_close");
     });
     socket.addEventListener("error", (error) => {
       if (this.publicSocket !== socket) {
@@ -477,10 +525,12 @@ export class StreamCoordinator {
       this.state.publicStreamConnected = false;
       this.clearPublicBookTickers();
       this.publicSocket = null;
+      void this.scheduleRestart("public", () => this.startPublicStream(), "socket_error");
     });
   }
 
   async startFuturesStream() {
+    this.clearRestartTimer("futures");
     const socket = new WebSocket(`${this.client.getFuturesStreamBaseUrl()}/stream?streams=!forceOrder@arr`);
     this.futuresSocket = socket;
     socket.addEventListener("open", () => {
@@ -506,6 +556,7 @@ export class StreamCoordinator {
       }
       this.state.futuresStreamConnected = false;
       this.futuresSocket = null;
+      void this.scheduleRestart("futures", () => this.startFuturesStream(), "socket_close");
     });
     socket.addEventListener("error", (error) => {
       if (this.futuresSocket !== socket) {
@@ -514,10 +565,12 @@ export class StreamCoordinator {
       this.state.lastError = error.message || "futures_stream_error";
       this.state.futuresStreamConnected = false;
       this.futuresSocket = null;
+      void this.scheduleRestart("futures", () => this.startFuturesStream(), "socket_error");
     });
   }
 
   async startUserStream() {
+    this.clearRestartTimer("user");
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = null;
@@ -565,6 +618,9 @@ export class StreamCoordinator {
         this.keepAliveTimer = null;
       }
       this.userSocket = null;
+      if (this.config.botMode === "live" && this.config.binanceApiKey) {
+        void this.scheduleRestart("user", () => this.startUserStream(), "socket_close");
+      }
     });
     socket.addEventListener("error", (error) => {
       if (this.userSocket !== socket) {
@@ -580,6 +636,9 @@ export class StreamCoordinator {
         this.keepAliveTimer = null;
       }
       this.userSocket = null;
+      if (this.config.botMode === "live" && this.config.binanceApiKey) {
+        void this.scheduleRestart("user", () => this.startUserStream(), "socket_error");
+      }
     });
     this.keepAliveTimer = setInterval(() => {
       this.client.keepAliveUserDataListenKey(listenKey).catch((error) => {
@@ -589,6 +648,7 @@ export class StreamCoordinator {
   }
 
   async stopPublicStream() {
+    this.clearRestartTimer("public");
     const socket = this.publicSocket;
     this.publicSocket = null;
     this.state.publicStreamConnected = false;
@@ -599,6 +659,7 @@ export class StreamCoordinator {
   }
 
   async restartPublicStream(reason = "watchlist_update") {
+    this.clearRestartTimer("public");
     this.publicRestartPromise = this.publicRestartPromise.catch(() => {}).then(async () => {
       await this.stopPublicStream();
       if (!this.state.enabled || typeof WebSocket === "undefined" || !this.config.watchlist.length) {
@@ -614,6 +675,10 @@ export class StreamCoordinator {
   }
 
   async close() {
+    this.isClosing = true;
+    this.clearRestartTimer("public");
+    this.clearRestartTimer("futures");
+    this.clearRestartTimer("user");
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = null;
