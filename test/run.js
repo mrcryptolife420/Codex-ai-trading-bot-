@@ -6291,6 +6291,56 @@ await runCheck("bot manager stops instead of switching live positions to paper",
   }
 });
 
+await runCheck("bot manager closes the bot on stop and reinitializes before restarting", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  manager.config = makeConfig();
+  let closeCount = 0;
+  manager.bot = {
+    async close() {
+      closeCount += 1;
+    },
+    async getDashboardSnapshot() {
+      return {
+        overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+        ops: { readiness: { status: "ready", reasons: [] }, alerts: { alerts: [] }, service: {} },
+        safety: { orderLifecycle: { pendingActions: [] } }
+      };
+    }
+  };
+  manager.runState = "running";
+  manager.loopPromise = Promise.resolve();
+  const stopped = await manager.stopUnlocked("manual_stop");
+  assert.equal(closeCount, 1);
+  assert.equal(manager.botNeedsReinitialize, true);
+  assert.equal(stopped.manager.runState, "stopped");
+  let reinitialized = 0;
+  manager.reinitializeBot = async () => {
+    reinitialized += 1;
+    manager.config = makeConfig();
+    manager.bot = {
+      async getDashboardSnapshot() {
+        return {
+          overview: { lastAnalysisAt: "2026-03-11T09:00:00.000Z" },
+          ops: { readiness: { status: "ready", reasons: [] }, alerts: { alerts: [] }, service: {} },
+          safety: { orderLifecycle: { pendingActions: [] } }
+        };
+      },
+      async runCycle() {
+        manager.stopRequested = true;
+        return { selfHeal: null };
+      }
+    };
+    manager.botNeedsReinitialize = false;
+    return manager.bot;
+  };
+  manager.runLoop = async () => {
+    manager.runState = "running";
+  };
+  await manager.start();
+  assert.equal(reinitialized, 1);
+  assert.equal(manager.runState, "running");
+});
+
 await runCheck("bot manager surfaces readiness blockers from the dashboard snapshot", async () => {
   const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
   const readiness = manager.buildOperationalReadiness({
@@ -11731,6 +11781,45 @@ await runCheck("dashboard server normalizes research symbols from scalar or arra
   assert.deepEqual(normalizeSymbolList([" BTCUSDT ", "ETHUSDT", "", null]), ["BTCUSDT", "ETHUSDT"]);
   assert.deepEqual(normalizeSymbolList(" solusdt "), ["solusdt"]);
   assert.deepEqual(normalizeSymbolList(undefined), []);
+});
+
+await runCheck("trading bot shutdown backup captures synced lifecycle and readiness state", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    stream: {},
+    lifecycle: { activeRun: true, lastShutdownAt: null },
+    service: { watchdogStatus: "running", lastHeartbeatAt: "2026-03-19T09:59:00.000Z" },
+    recovery: { uncleanShutdownDetected: true, latestBackupAt: null },
+    orderLifecycle: { pendingActions: [] },
+    ops: {},
+    modelRegistry: {}
+  };
+  bot.journal = { events: [] };
+  bot.modelBackups = [];
+  bot.model = { getState: () => ({}) };
+  let backupPayload = null;
+  bot.backupManager = {
+    getSummary: () => ({ lastBackupAt: null }),
+    async maybeBackup(payload, options) {
+      backupPayload = { payload: structuredClone(payload), options: { ...options } };
+      return { at: options.nowIso, reason: options.reason };
+    }
+  };
+  bot.stream = { getStatus: () => ({ connected: true }), close: async () => {} };
+  bot.syncOrderLifecycleState = (reason) => {
+    assert.equal(reason, "shutdown");
+    bot.runtime.orderLifecycle.pendingActions = [{ state: "manual_review", symbol: "BTCUSDT" }];
+  };
+  bot.refreshOperationalViews = () => {
+    bot.runtime.ops = { readiness: { status: "degraded", reasons: ["lifecycle_attention_required"] } };
+  };
+  bot.persist = async () => {};
+  bot.logger = { warn() {} };
+  await bot.close();
+  assert.equal(bot.runtime.service.watchdogStatus, "stopped");
+  assert.equal(backupPayload.options.reason, "shutdown");
+  assert.equal(backupPayload.payload.runtime.orderLifecycle.pendingActions[0].state, "manual_review");
+  assert.equal(backupPayload.payload.runtime.ops.readiness.status, "degraded");
 });
 
 await runCheck("trading bot blocks further entries after recovering a failed live exposure", async () => {

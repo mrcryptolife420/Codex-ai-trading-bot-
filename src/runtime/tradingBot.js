@@ -3926,6 +3926,8 @@ export class TradingBot {
       uncleanShutdownDetected: false,
       latestBackupAt: this.backupManager.getSummary().lastBackupAt || this.runtime.recovery?.latestBackupAt || null
     };
+    this.syncOrderLifecycleState("shutdown");
+    this.refreshOperationalViews({ nowIso: nowIso() });
     await this.backupManager.maybeBackup({
       runtime: this.runtime,
       journal: this.journal,
@@ -3936,8 +3938,6 @@ export class TradingBot {
       this.logger?.warn?.("Shutdown backup failed", { error: error.message });
     });
     this.runtime.stateBackups = this.backupManager.getSummary();
-    this.syncOrderLifecycleState("shutdown");
-    this.refreshOperationalViews({ nowIso: nowIso() });
     await this.persist().catch((error) => {
       this.logger?.warn?.("Shutdown persist failed", { error: error.message });
     });

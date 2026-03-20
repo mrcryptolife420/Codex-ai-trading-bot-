@@ -49,6 +49,7 @@ export class BotManager {
     this.lastStopAt = null;
     this.lastModeSwitchAt = null;
     this.stopReason = null;
+    this.botNeedsReinitialize = false;
     this.serial = Promise.resolve();
   }
 
@@ -76,7 +77,40 @@ export class BotManager {
     await bot.init();
     this.config = config;
     this.bot = bot;
+    this.botNeedsReinitialize = false;
     return bot;
+  }
+
+  async ensureBotReady({ allowClosed = false } = {}) {
+    if (!this.bot || (!allowClosed && this.botNeedsReinitialize)) {
+      await this.reinitializeBot();
+    }
+  }
+
+  buildSnapshotFromDashboard(dashboard) {
+    const snapshot = {
+      manager: {
+        runState: this.runState,
+        currentMode: this.config.botMode,
+        lastStartAt: this.lastStartAt,
+        lastStopAt: this.lastStopAt,
+        lastModeSwitchAt: this.lastModeSwitchAt,
+        stopReason: this.stopReason || null,
+        lastError: publicError(this.lastError),
+        dashboardPort: this.config.dashboardPort
+      },
+      dashboard
+    };
+    snapshot.manager.readiness = this.buildOperationalReadiness(snapshot);
+    return snapshot;
+  }
+
+  async closeBotForStop() {
+    if (!this.bot?.close || this.botNeedsReinitialize) {
+      return;
+    }
+    await this.bot.close();
+    this.botNeedsReinitialize = true;
   }
 
   async interruptibleDelay(ms) {
@@ -165,8 +199,14 @@ export class BotManager {
     this.cancelDelay();
 
     if (this.runState === "stopped") {
+      try {
+        await this.closeBotForStop();
+      } catch (error) {
+        this.lastError = summarizeError(error);
+        this.logger?.error?.("Managed shutdown failed", { error: error.message });
+      }
       this.lastStopAt = nowIso();
-      return this.getSnapshot();
+      return this.getSnapshot({ allowClosedBot: true });
     }
 
     this.runState = "stopping";
@@ -174,15 +214,19 @@ export class BotManager {
       await this.loopPromise;
     }
     this.runState = "stopped";
+    try {
+      await this.closeBotForStop();
+    } catch (error) {
+      this.lastError = summarizeError(error);
+      this.logger?.error?.("Managed shutdown failed", { error: error.message });
+    }
     this.lastStopAt = nowIso();
-    return this.getSnapshot();
+    return this.getSnapshot({ allowClosedBot: true });
   }
 
   async start() {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       if (this.runState === "running") {
         return this.getSnapshot();
       }
@@ -201,9 +245,7 @@ export class BotManager {
 
   async runCycleOnce() {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       if (this.runState === "running") {
         throw new Error("Stop eerst de doorlopende bot voordat je een losse cyclus draait.");
       }
@@ -219,9 +261,7 @@ export class BotManager {
 
   async refreshAnalysis() {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       if (this.runState === "running") {
         throw new Error("Stop eerst de bot voordat je handmatig analyse ververst.");
       }
@@ -233,9 +273,7 @@ export class BotManager {
 
   async runResearch(symbols = []) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       if (this.runState === "running") {
         throw new Error("Stop eerst de bot voordat je research draait.");
       }
@@ -351,9 +389,7 @@ export class BotManager {
   }
 
   async getStatus() {
-    if (!this.bot) {
-      await this.reinitializeBot();
-    }
+    await this.ensureBotReady();
     return {
       manager: {
         runState: this.runState,
@@ -369,9 +405,7 @@ export class BotManager {
   }
 
   async getDoctor() {
-    if (!this.bot) {
-      await this.reinitializeBot();
-    }
+    await this.ensureBotReady();
     return {
       manager: {
         runState: this.runState,
@@ -383,9 +417,7 @@ export class BotManager {
   }
 
   async getReport() {
-    if (!this.bot) {
-      await this.reinitializeBot();
-    }
+    await this.ensureBotReady();
     return {
       manager: {
         runState: this.runState,
@@ -398,9 +430,7 @@ export class BotManager {
 
   async acknowledgeAlert(id, acknowledged = true, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.acknowledgeAlert(id, { acknowledged, note });
       return this.getSnapshot();
     });
@@ -408,9 +438,7 @@ export class BotManager {
 
   async silenceAlert(id, minutes = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.silenceAlert(id, { minutes: minutes ?? this.config?.operatorAlertSilenceMinutes });
       return this.getSnapshot();
     });
@@ -418,9 +446,7 @@ export class BotManager {
 
   async resolveAlert(id, resolved = true, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.resolveAlert(id, { resolved, note });
       return this.getSnapshot();
     });
@@ -428,9 +454,7 @@ export class BotManager {
 
   async forceReconcile(note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.forceReconcile({ note });
       return this.getSnapshot();
     });
@@ -438,9 +462,7 @@ export class BotManager {
 
   async markPositionReviewed(positionId, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.markPositionReviewed(positionId, { note });
       return this.getSnapshot();
     });
@@ -448,9 +470,7 @@ export class BotManager {
 
   async setProbeOnly(enabled = true, minutes = null, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.setProbeOnly({ enabled, minutes: minutes ?? 90, note });
       return this.getSnapshot();
     });
@@ -458,9 +478,7 @@ export class BotManager {
 
   async runDiagnosticsAction(action, target = null, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       const normalizedAction = `${action || ""}`.trim().toLowerCase();
       if (!normalizedAction) {
         throw new Error("Ongeldige diagnostics action.");
@@ -504,9 +522,7 @@ export class BotManager {
 
   async approvePolicyTransition(id, action, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.approvePolicyTransition({ id, action, note });
       return this.getSnapshot();
     });
@@ -514,9 +530,7 @@ export class BotManager {
 
   async rejectPolicyTransition(id, action, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.rejectPolicyTransition({ id, action, note });
       return this.getSnapshot();
     });
@@ -524,9 +538,7 @@ export class BotManager {
 
   async revertPolicyTransition(id, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.revertPolicyTransition({ id, note });
       return this.getSnapshot();
     });
@@ -534,9 +546,7 @@ export class BotManager {
 
   async approvePromotionCandidate(symbol, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.approvePromotionCandidate({ symbol, note });
       return this.getSnapshot();
     });
@@ -544,9 +554,7 @@ export class BotManager {
 
   async rollbackPromotionCandidate(symbol, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.rollbackPromotionCandidate({ symbol, note });
       return this.getSnapshot();
     });
@@ -554,9 +562,7 @@ export class BotManager {
 
   async approvePromotionScope(scopeId, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.approvePromotionScope({ scopeId, note });
       return this.getSnapshot();
     });
@@ -564,9 +570,7 @@ export class BotManager {
 
   async rollbackPromotionScope(scopeId, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.rollbackPromotionScope({ scopeId, note });
       return this.getSnapshot();
     });
@@ -574,34 +578,16 @@ export class BotManager {
 
   async decidePromotionProbation(key, decision, note = null) {
     return this.withLock(async () => {
-      if (!this.bot) {
-        await this.reinitializeBot();
-      }
+      await this.ensureBotReady();
       await this.bot.decidePromotionProbation({ key, decision, note });
       return this.getSnapshot();
     });
   }
 
-  async getSnapshot() {
-    if (!this.bot) {
-      await this.reinitializeBot();
-    }
+  async getSnapshot({ allowClosedBot = false } = {}) {
+    await this.ensureBotReady({ allowClosed: allowClosedBot });
     const dashboard = await this.bot.getDashboardSnapshot();
-    const snapshot = {
-      manager: {
-        runState: this.runState,
-        currentMode: this.config.botMode,
-        lastStartAt: this.lastStartAt,
-        lastStopAt: this.lastStopAt,
-        lastModeSwitchAt: this.lastModeSwitchAt,
-        stopReason: this.stopReason || null,
-        lastError: publicError(this.lastError),
-        dashboardPort: this.config.dashboardPort
-      },
-      dashboard
-    };
-    snapshot.manager.readiness = this.buildOperationalReadiness(snapshot);
-    return snapshot;
+    return this.buildSnapshotFromDashboard(dashboard);
   }
 }
 
