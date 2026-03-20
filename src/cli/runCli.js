@@ -1,4 +1,5 @@
 ﻿import { runBacktest } from "../runtime/backtestRunner.js";
+import { runHistoryCommand } from "../runtime/marketHistory.js";
 import { TradingBot } from "../runtime/tradingBot.js";
 
 function sleep(ms) {
@@ -93,6 +94,12 @@ export default async function runCli({ command, args, config, logger, botFactory
   if (command === "backtest") {
     const symbol = (args[0] || config.watchlist[0] || "BTCUSDT").toUpperCase();
     const result = await runBacktest({ config, logger, symbol });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (command === "history") {
+    const result = await runHistoryCommand({ config, logger, args });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

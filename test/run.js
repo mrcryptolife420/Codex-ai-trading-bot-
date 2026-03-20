@@ -50,7 +50,7 @@ import { resolveDynamicWatchlist } from "../src/runtime/watchlistResolver.js";
 import { buildSessionSummary } from "../src/runtime/sessionManager.js";
 import { DriftMonitor } from "../src/runtime/driftMonitor.js";
 import { SelfHealManager } from "../src/runtime/selfHealManager.js";
-import { buildWalkForwardWindows, runWalkForwardExperiment } from "../src/runtime/researchLab.js";
+import { buildWalkForwardWindows, runWalkForwardExperiment, runResearchLab } from "../src/runtime/researchLab.js";
 import {
   buildSyntheticBook as buildBacktestSyntheticBook,
   buildSimulationEntryDecision,
@@ -64,6 +64,7 @@ import {
 import { DataRecorder } from "../src/runtime/dataRecorder.js";
 import { StateBackupManager } from "../src/runtime/stateBackupManager.js";
 import { StateStore } from "../src/storage/stateStore.js";
+import { MarketHistoryStore } from "../src/storage/marketHistoryStore.js";
 import { PairHealthMonitor } from "../src/runtime/pairHealthMonitor.js";
 import { DivergenceMonitor } from "../src/runtime/divergenceMonitor.js";
 import { CapitalLadder } from "../src/runtime/capitalLadder.js";
@@ -77,6 +78,8 @@ import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/runtime/operatorAlertDispatcher.js";
 import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
+import { backfillHistoricalCandles, fetchLatestCandlesPaginated, runHistoryCommand } from "../src/runtime/marketHistory.js";
+import { runBacktest } from "../src/runtime/backtestRunner.js";
 import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
 import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.js";
 import { TradingBot, buildCandidateQualityQuorum } from "../src/runtime/tradingBot.js";
@@ -122,6 +125,11 @@ function makeConfig(overrides = {}) {
     maxRealizedVolPct: 0.07,
     maxHoldMinutes: 360,
     klineInterval: "15m",
+    historyCacheEnabled: true,
+    historyFetchBatchSize: 1000,
+    historyMaxGapFillRanges: 24,
+    backtestCandleLimit: 500,
+    historyDir: path.join(os.tmpdir(), "playground-history-default"),
     maxServerTimeDriftMs: 450,
     clockSyncSampleCount: 5,
     clockSyncMaxAgeMs: 300000,
@@ -6674,6 +6682,161 @@ await runCheck("data recorder restores persisted summary across restarts", async
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+await runCheck("market history paginates latest candle fetches", async () => {
+  const intervalMs = 15 * 60_000;
+  const rawCandles = Array.from({ length: 1100 }, (_, index) => {
+    const openTime = 1_700_000_000_000 + index * intervalMs;
+    return [openTime, "100", "101", "99", "100.5", "12", openTime + intervalMs - 1, "1206", 10, "6", "603", "0"];
+  });
+  const calls = [];
+  const client = {
+    async getKlines(symbol, interval, limit, options = {}) {
+      calls.push({ symbol, interval, limit, options });
+      const endTime = options.endTime == null ? Number.POSITIVE_INFINITY : Number(options.endTime);
+      return rawCandles.filter((item) => item[0] <= endTime).slice(-limit);
+    }
+  };
+  const candles = await fetchLatestCandlesPaginated({ client, symbol: "BTCUSDT", interval: "15m", targetCount: 900, batchSize: 400 });
+  assert.equal(calls.length, 3);
+  assert.equal(candles.length, 900);
+  assert.equal(candles[0].openTime, rawCandles[200][0]);
+  assert.equal(candles.at(-1).openTime, rawCandles.at(-1)[0]);
+});
+
+await runCheck("market history store dedupes and reloads persisted candles", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-store-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  await store.upsertCandles({
+    symbol: "BTCUSDT",
+    interval: "15m",
+    candles: [
+      { openTime: 1000, closeTime: 1999, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 },
+      { openTime: 1000, closeTime: 1999, open: 1, high: 2, low: 0.5, close: 1.6, volume: 11 },
+      { openTime: 2000, closeTime: 2999, open: 1.5, high: 2.1, low: 1.4, close: 2, volume: 12 }
+    ]
+  });
+  const reloaded = await store.getCandles({ symbol: "BTCUSDT", interval: "15m" });
+  const verification = await store.verifySeries({ symbol: "BTCUSDT", interval: "15m" });
+  assert.equal(reloaded.length, 2);
+  assert.equal(reloaded[0].close, 1.6);
+  assert.equal(verification.gapCount, 0);
+});
+
+await runCheck("market history backfill repairs missing candle gaps from the API", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-gap-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  const intervalMs = 15 * 60_000;
+  const base = 1_700_100_000_000;
+  await store.upsertCandles({
+    symbol: "BTCUSDT",
+    interval: "15m",
+    candles: [
+      { openTime: base, closeTime: base + intervalMs - 1, open: 1, high: 1.1, low: 0.9, close: 1.05, volume: 10 },
+      { openTime: base + 2 * intervalMs, closeTime: base + 3 * intervalMs - 1, open: 1.2, high: 1.3, low: 1.1, close: 1.25, volume: 12 }
+    ]
+  });
+  const rawMissing = [[base + intervalMs, "1.05", "1.2", "1", "1.15", "9", base + 2 * intervalMs - 1, "1035", 10, "4", "460", "0"]];
+  const client = {
+    async getKlines(symbol, interval, limit, options = {}) {
+      const start = Number(options.startTime || 0);
+      const end = options.endTime == null ? Number.POSITIVE_INFINITY : Number(options.endTime);
+      return rawMissing.filter((item) => item[0] >= start && item[0] <= end).slice(0, limit);
+    }
+  };
+  const result = await backfillHistoricalCandles({
+    config: makeConfig({ historyDir, historyFetchBatchSize: 100 }),
+    symbol: "BTCUSDT",
+    interval: "15m",
+    targetCount: 3,
+    client,
+    store,
+    refreshLatest: false
+  });
+  assert.equal(result.requestedCoverage.gapCount, 0);
+  assert.ok(result.fetchedRanges.some((item) => item.kind === "gap_fill"));
+  assert.equal(result.candles.length, 3);
+});
+
+await runCheck("backtest loads candles from the local history store", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-backtest-history-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  const intervalMs = 15 * 60_000;
+  const candles = Array.from({ length: 180 }, (_, index) => ({
+    openTime: 1_700_200_000_000 + index * intervalMs,
+    closeTime: 1_700_200_000_000 + (index + 1) * intervalMs - 1,
+    open: 100 + index * 0.2,
+    high: 100.4 + index * 0.2,
+    low: 99.7 + index * 0.2,
+    close: 100.2 + index * 0.2,
+    volume: 10 + (index % 5)
+  }));
+  await store.upsertCandles({ symbol: "BTCUSDT", interval: "15m", candles });
+  const client = {
+    async getKlines() { return []; },
+    async getExchangeInfo() { return exchangeInfo; }
+  };
+  const result = await runBacktest({
+    config: makeConfig({ historyDir, backtestCandleLimit: 180, minTradeUsdt: 10 }),
+    logger: { info() {}, warn() {}, error() {} },
+    symbol: "BTCUSDT",
+    client,
+    historyStore: store
+  });
+  assert.ok(Array.isArray(result.recentTrades));
+  assert.ok(Number.isFinite(result.openExposure));
+});
+
+await runCheck("research lab loads candles from the local history store", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-research-history-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  const intervalMs = 15 * 60_000;
+  const candles = Array.from({ length: 420 }, (_, index) => ({
+    openTime: 1_700_300_000_000 + index * intervalMs,
+    closeTime: 1_700_300_000_000 + (index + 1) * intervalMs - 1,
+    open: 100 + index * 0.15,
+    high: 100.4 + index * 0.15,
+    low: 99.8 + index * 0.15,
+    close: 100.2 + index * 0.15,
+    volume: 12 + (index % 7)
+  }));
+  await store.upsertCandles({ symbol: "BTCUSDT", interval: "15m", candles });
+  const client = {
+    async getKlines() { return []; },
+    async getExchangeInfo() { return exchangeInfo; }
+  };
+  const result = await runResearchLab({
+    config: makeConfig({ historyDir, researchCandleLimit: 420, researchTrainCandles: 180, researchTestCandles: 48, researchStepCandles: 48, researchMaxWindows: 2 }),
+    logger: { info() {}, warn() {}, error() {} },
+    symbols: ["BTCUSDT"],
+    client,
+    historyStore: store
+  });
+  assert.equal(result.symbolCount, 1);
+  assert.equal(result.reports[0].symbol, "BTCUSDT");
+});
+
+await runCheck("history verify command reports local coverage without API fetches", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-cli-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  await store.upsertCandles({
+    symbol: "BTCUSDT",
+    interval: "15m",
+    candles: [{ openTime: 1000, closeTime: 1999, open: 1, high: 1.1, low: 0.9, close: 1.05, volume: 10 }]
+  });
+  const result = await runHistoryCommand({
+    config: makeConfig({ historyDir, watchlist: ["BTCUSDT"] }),
+    logger: { info() {}, warn() {}, error() {} },
+    args: ["verify", "BTCUSDT", "--interval=15m"]
+  });
+  assert.equal(result.command, "history verify");
+  assert.equal(result.symbols[0].count, 1);
 });
 
 await runCheck("state backup manager restores existing backup count and timestamp", async () => {

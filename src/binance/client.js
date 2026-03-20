@@ -378,8 +378,17 @@ export class BinanceClient {
     return this.publicRequest("GET", "/api/v3/exchangeInfo", params);
   }
 
-  async getKlines(symbol, interval, limit = 200) {
-    return this.publicRequest("GET", "/api/v3/klines", { symbol, interval, limit });
+  async getKlines(symbol, interval, limit = 200, options = {}) {
+    const normalizedOptions = typeof limit === "object" && limit !== null ? limit : options;
+    const normalizedLimit = typeof limit === "object" && limit !== null
+      ? Number(limit.limit || 200)
+      : Number(limit || 200);
+    return this.publicRequest("GET", "/api/v3/klines", {
+      symbol,
+      interval,
+      limit: normalizedLimit,
+      ...normalizedOptions
+    });
   }
 
   async get24hTicker(symbol) {

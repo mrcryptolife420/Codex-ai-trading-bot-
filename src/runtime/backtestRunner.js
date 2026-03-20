@@ -1,5 +1,5 @@
 import { AdaptiveTradingModel } from "../ai/adaptiveModel.js";
-import { BinanceClient, normalizeKlines } from "../binance/client.js";
+import { BinanceClient } from "../binance/client.js";
 import { buildSymbolRules } from "../binance/symbolFilters.js";
 import { ExecutionEngine } from "../execution/executionEngine.js";
 import { buildPerformanceReport } from "./reportBuilder.js";
@@ -8,6 +8,7 @@ import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures } from "../strategy/indicators.js";
 import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
+import { loadHistoricalCandles } from "./marketHistory.js";
 import {
   buildSyntheticBook,
   buildExitExecutionBook,
@@ -74,17 +75,25 @@ function buildBacktestContext({ window, candle, symbol, model, config }) {
   return { market, book, newsSummary, regimeSummary, strategySummary, trendStateSummary, marketStateSummary, rawFeatures };
 }
 
-export async function runBacktest({ config, logger, symbol }) {
-  const client = new BinanceClient({
+export async function runBacktest({ config, logger, symbol, client = null, historyStore = null, candles = null }) {
+  const effectiveClient = client || new BinanceClient({
     apiKey: "",
     apiSecret: "",
     baseUrl: config.binanceApiBaseUrl,
     recvWindow: config.binanceRecvWindow,
     logger
   });
-  const rawKlines = await client.getKlines(symbol, config.klineInterval, 500);
-  const exchangeInfo = await client.getExchangeInfo();
-  const candles = normalizeKlines(rawKlines);
+  const candleSeries = candles || await loadHistoricalCandles({
+    config,
+    logger,
+    symbol,
+    interval: config.klineInterval,
+    targetCount: config.backtestCandleLimit || 500,
+    client: effectiveClient,
+    store: historyStore,
+    refreshLatest: true
+  });
+  const exchangeInfo = await effectiveClient.getExchangeInfo();
   const symbolRules = buildSymbolRules(exchangeInfo, config.baseQuoteAsset || null)[symbol] || null;
   const model = new AdaptiveTradingModel({ version: 2 }, config);
   const execution = new ExecutionEngine(config);
@@ -96,11 +105,11 @@ export async function runBacktest({ config, logger, symbol }) {
   const scaleOuts = [];
   const equitySnapshots = [];
   const feeRate = config.paperFeeBps / 10000;
-  const candleIntervalMinutes = resolveCandleIntervalMinutes(candles, 1, 15);
+  const candleIntervalMinutes = resolveCandleIntervalMinutes(candleSeries, 1, 15);
 
-  for (let index = 60; index < candles.length; index += 1) {
-    const window = candles.slice(0, index + 1);
-    const candle = candles[index];
+  for (let index = 60; index < candleSeries.length; index += 1) {
+    const window = candleSeries.slice(0, index + 1);
+    const candle = candleSeries[index];
     const context = buildBacktestContext({ window, candle, symbol, model, config });
     const balance = { quoteFree };
 
@@ -338,7 +347,7 @@ export async function runBacktest({ config, logger, symbol }) {
         bookFeatures: context.book
       });
       if (!pendingEntry && !score.shouldAbstain && score.probability >= config.modelThreshold && context.market.realizedVolPct <= config.maxRealizedVolPct) {
-        const entryExecution = resolveEntryExecution(candles, index, context.market, config);
+        const entryExecution = resolveEntryExecution(candleSeries, index, context.market, config);
         if (!entryExecution) {
           continue;
         }

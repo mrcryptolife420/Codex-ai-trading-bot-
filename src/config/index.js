@@ -72,6 +72,10 @@ const DEFAULTS = {
   crossTimeframeMinAlignmentScore: 0.42,
   crossTimeframeMaxVolGapPct: 0.03,
   klineLimit: 180,
+  backtestCandleLimit: 500,
+  historyCacheEnabled: true,
+  historyFetchBatchSize: 1000,
+  historyMaxGapFillRanges: 24,
   marketSnapshotCacheMinutes: 4,
   marketSnapshotConcurrency: 5,
   marketSnapshotBudgetSymbols: 28,
@@ -474,10 +478,12 @@ export async function loadConfig(projectRoot = process.cwd()) {
   const watchlistInclude = parseCsv(env.WATCHLIST_INCLUDE, DEFAULTS.watchlistInclude);
   const watchlistExclude = parseCsv(env.WATCHLIST_EXCLUDE, DEFAULTS.watchlistExclude);
   const runtimeDir = path.join(projectRoot, "data", "runtime");
+  const historyDir = env.HISTORY_DIR || path.join(projectRoot, "data", "history");
 
   const config = {
     projectRoot,
     runtimeDir,
+    historyDir,
     envPath,
     botMode,
     baseQuoteAsset: env.BASE_QUOTE_ASSET || DEFAULTS.baseQuoteAsset,
@@ -519,6 +525,10 @@ export async function loadConfig(projectRoot = process.cwd()) {
     watchlistExclude,
     klineInterval: env.KLINE_INTERVAL || DEFAULTS.klineInterval,
     klineLimit: parseNumber(env.KLINE_LIMIT, DEFAULTS.klineLimit),
+    backtestCandleLimit: parseNumber(env.BACKTEST_CANDLE_LIMIT, DEFAULTS.backtestCandleLimit),
+    historyCacheEnabled: parseBoolean(env.HISTORY_CACHE_ENABLED, DEFAULTS.historyCacheEnabled),
+    historyFetchBatchSize: parseNumber(env.HISTORY_FETCH_BATCH_SIZE, DEFAULTS.historyFetchBatchSize),
+    historyMaxGapFillRanges: parseNumber(env.HISTORY_MAX_GAP_FILL_RANGES, DEFAULTS.historyMaxGapFillRanges),
     marketSnapshotCacheMinutes: parseNumber(env.MARKET_SNAPSHOT_CACHE_MINUTES, DEFAULTS.marketSnapshotCacheMinutes),
     marketSnapshotConcurrency: parseNumber(env.MARKET_SNAPSHOT_CONCURRENCY, DEFAULTS.marketSnapshotConcurrency),
     marketSnapshotBudgetSymbols: parseNumber(env.MARKET_SNAPSHOT_BUDGET_SYMBOLS, DEFAULTS.marketSnapshotBudgetSymbols),

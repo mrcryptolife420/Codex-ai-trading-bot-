@@ -1,5 +1,5 @@
 import { AdaptiveTradingModel } from "../ai/adaptiveModel.js";
-import { BinanceClient, normalizeKlines } from "../binance/client.js";
+import { BinanceClient } from "../binance/client.js";
 import { buildSymbolRules } from "../binance/symbolFilters.js";
 import { ExecutionEngine } from "../execution/executionEngine.js";
 import { buildFeatureVector } from "../strategy/features.js";
@@ -8,6 +8,7 @@ import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { buildTrendStateSummary } from "../strategy/trendState.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
+import { loadHistoricalCandles } from "./marketHistory.js";
 import { nowIso } from "../utils/time.js";
 import { buildSyntheticBook, buildExitExecutionBook, resolveEntryExecution, resolveCandleIntervalMinutes, buildSimulationEntryDecision, buildSimulationExitDecision, resolveSimulationBuyFill, resolveSimulationSellQuantity } from "./backtestExecution.js";
 
@@ -586,8 +587,8 @@ export function runWalkForwardExperiment({ candles, config, symbol, rules = null
   };
 }
 
-export async function runResearchLab({ config, logger, symbols = [] }) {
-  const client = new BinanceClient({
+export async function runResearchLab({ config, logger, symbols = [], client = null, historyStore = null, candlesBySymbol = null }) {
+  const effectiveClient = client || new BinanceClient({
     apiKey: "",
     apiSecret: "",
     baseUrl: config.binanceApiBaseUrl,
@@ -595,13 +596,21 @@ export async function runResearchLab({ config, logger, symbols = [] }) {
     logger
   });
   const selectedSymbols = (symbols.length ? symbols : config.watchlist).slice(0, config.researchMaxSymbols);
-  const exchangeInfo = await client.getExchangeInfo();
+  const exchangeInfo = await effectiveClient.getExchangeInfo();
   const symbolRules = buildSymbolRules(exchangeInfo, config.baseQuoteAsset || null);
   const reports = [];
 
   for (const symbol of selectedSymbols) {
-    const rawKlines = await client.getKlines(symbol, config.klineInterval, config.researchCandleLimit);
-    const candles = normalizeKlines(rawKlines);
+    const candles = candlesBySymbol?.[symbol] || await loadHistoricalCandles({
+      config,
+      logger,
+      symbol,
+      interval: config.klineInterval,
+      targetCount: config.researchCandleLimit,
+      client: effectiveClient,
+      store: historyStore,
+      refreshLatest: true
+    });
     reports.push(runWalkForwardExperiment({ candles, config, symbol, rules: symbolRules[symbol] || null }));
   }
 
