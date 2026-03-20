@@ -326,6 +326,16 @@ export class BotManager {
     if ((snapshot?.dashboard?.ops?.capitalGovernor?.status || "") === "blocked") {
       addReason("capital_governor_blocked", "blocked");
     }
+    const service = snapshot?.dashboard?.ops?.service || {};
+    if (service.watchdogStatus === "degraded") {
+      addReason("service_watchdog_degraded", "degraded");
+    }
+    if (service.heartbeatStale) {
+      addReason("service_heartbeat_stale", "degraded");
+    }
+    if (service.recoveryActive) {
+      addReason("service_restart_backoff_active", "degraded");
+    }
     const mode = snapshot?.manager?.currentMode || this.config?.botMode || "paper";
     if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, mode))) {
       addReason("operator_ack_required", "degraded");

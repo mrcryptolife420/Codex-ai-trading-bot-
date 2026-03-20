@@ -6372,6 +6372,31 @@ await runCheck("bot manager preserves dashboard readiness reasons in snapshot re
   assert.ok(readiness.reasons.includes("capital_ladder_shadow_only"));
 });
 
+await runCheck("bot manager surfaces stale service watchdog state from the dashboard snapshot", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  const readiness = manager.buildOperationalReadiness({
+    manager: { runState: "running", currentMode: "live" },
+    dashboard: {
+      overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+      ops: {
+        readiness: { status: "ready", reasons: [] },
+        alerts: { alerts: [] },
+        service: {
+          watchdogStatus: "degraded",
+          heartbeatStale: true,
+          recoveryActive: true
+        }
+      },
+      safety: { orderLifecycle: { pendingActions: [] } }
+    }
+  });
+  assert.equal(readiness.ok, false);
+  assert.equal(readiness.status, "degraded");
+  assert.ok(readiness.reasons.includes("service_watchdog_degraded"));
+  assert.ok(readiness.reasons.includes("service_heartbeat_stale"));
+  assert.ok(readiness.reasons.includes("service_restart_backoff_active"));
+});
+
 await runCheck("bot manager exposes status doctor and report wrappers", async () => {
   const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
   manager.config = makeConfig();
@@ -8965,6 +8990,63 @@ await runCheck("doctor recomputes report after reconciliation changes runtime st
   const doctor = await bot.runDoctor();
   assert.equal(doctor.report.tradeCount, 1);
   assert.equal(doctor.report.realizedPnl, 12);
+});
+
+await runCheck("trading bot readiness flags manual interference and stale service state", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "live", tradingIntervalSeconds: 60 });
+  bot.runtime = {
+    lastAnalysisAt: "2026-03-19T10:00:00.000Z",
+    health: { circuitOpen: false },
+    exchangeTruth: {
+      orphanedSymbols: [],
+      manualInterferenceSymbols: ["BTCUSDT"]
+    },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [] },
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    ops: { alerts: { alerts: [] } },
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:55:00.000Z",
+      watchdogStatus: "degraded",
+      restartBackoffSeconds: 15
+    }
+  };
+  const readiness = bot.buildOperationalReadiness("2026-03-19T10:00:00.000Z");
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.status, "degraded");
+  assert.ok(readiness.reasons.includes("exchange_truth_manual_interference"));
+  assert.ok(readiness.reasons.includes("service_watchdog_degraded"));
+  assert.ok(readiness.reasons.includes("service_heartbeat_stale"));
+  assert.ok(readiness.reasons.includes("service_restart_backoff_active"));
+});
+
+await runCheck("doctor surfaces stale service heartbeat checks", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ tradingIntervalSeconds: 60 });
+  bot.runtime = {
+    mode: "paper",
+    lastAnalysisAt: "2026-03-19T09:55:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:55:00.000Z",
+    lastKnownBalance: 1000,
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:54:00.000Z",
+      watchdogStatus: "degraded",
+      restartBackoffSeconds: 5
+    },
+    ops: { alerts: { alerts: [] } }
+  };
+  bot.journal = { trades: [] };
+  bot.dataRecorder = { getSummary: () => ({ lastRecordAt: "2026-03-19T09:59:00.000Z" }) };
+  const checks = bot.buildDoctorChecks({
+    report: { recentTrades: [] },
+    balance: { quoteFree: 1000 },
+    previewCandidates: [],
+    now: new Date("2026-03-19T10:00:00.000Z")
+  });
+  assert.equal(checks.checks.find((item) => item.id === "service_watchdog_healthy")?.passed, false);
+  assert.equal(checks.checks.find((item) => item.id === "service_heartbeat_fresh")?.passed, false);
 });
 
 await runCheck("trading bot caches performance report until report state changes", async () => {

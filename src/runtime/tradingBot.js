@@ -2210,13 +2210,27 @@ function summarizePaperLearning(summary = {}) {
   };
 }
 
-function summarizeServiceState(summary = {}) {
+function summarizeServiceState(summary = {}, config = {}, referenceNow = nowIso()) {
+  const thresholdMs = Math.max(60000, (config.tradingIntervalSeconds || 60) * 3 * 1000);
+  const referenceTime = new Date(referenceNow).getTime();
+  const heartbeatTime = summary.lastHeartbeatAt ? new Date(summary.lastHeartbeatAt).getTime() : Number.NaN;
+  const heartbeatAgeMs = Number.isFinite(referenceTime) && Number.isFinite(heartbeatTime)
+    ? Math.max(0, referenceTime - heartbeatTime)
+    : null;
+  const watchdogStatus = summary.watchdogStatus || "idle";
+  const heartbeatStale = heartbeatAgeMs == null
+    ? ["running", "degraded"].includes(watchdogStatus)
+    : heartbeatAgeMs > thresholdMs;
   return {
     lastHeartbeatAt: summary.lastHeartbeatAt || null,
-    watchdogStatus: summary.watchdogStatus || "idle",
+    watchdogStatus,
     restartBackoffSeconds: summary.restartBackoffSeconds == null ? null : num(summary.restartBackoffSeconds || 0, 1),
     lastExitCode: summary.lastExitCode == null ? null : summary.lastExitCode,
-    statusFile: summary.statusFile || null
+    statusFile: summary.statusFile || null,
+    heartbeatAgeSeconds: heartbeatAgeMs == null ? null : num(heartbeatAgeMs / 1000, 1),
+    heartbeatStale,
+    heartbeatThresholdSeconds: num(thresholdMs / 1000, 1),
+    recoveryActive: Boolean((summary.restartBackoffSeconds || 0) > 0 || watchdogStatus === "degraded")
   };
 }
 
@@ -3188,6 +3202,7 @@ export class TradingBot {
     const analysisAgeMs = this.runtime.lastAnalysisAt ? now.getTime() - new Date(this.runtime.lastAnalysisAt).getTime() : Number.POSITIVE_INFINITY;
     const portfolioAgeMs = this.runtime.lastPortfolioUpdateAt ? now.getTime() - new Date(this.runtime.lastPortfolioUpdateAt).getTime() : Number.POSITIVE_INFINITY;
     const balanceDelta = Math.abs((balance?.quoteFree || 0) - (this.runtime.lastKnownBalance || 0));
+    const serviceState = summarizeServiceState(this.runtime.service || {}, this.config, now.toISOString());
     const ackAlerts = arr(this.runtime.ops?.alerts?.alerts || []).filter((item) => requiresOperatorAck(item, this.config.botMode));
     const dataRecorderSummary = this.dataRecorder.getSummary();
     const dataRecorderAgeMs = dataRecorderSummary?.lastRecordAt ? now.getTime() - new Date(dataRecorderSummary.lastRecordAt).getTime() : Number.POSITIVE_INFINITY;
@@ -3217,6 +3232,20 @@ export class TradingBot {
         passed: balanceDelta <= 0.01,
         severity: "medium",
         detail: `Broker balance delta ${num(balanceDelta, 2)} USD.`
+      },
+      {
+        id: "service_watchdog_healthy",
+        passed: serviceState.watchdogStatus !== "degraded",
+        severity: "high",
+        detail: `Service watchdog status ${serviceState.watchdogStatus}.`
+      },
+      {
+        id: "service_heartbeat_fresh",
+        passed: !serviceState.heartbeatStale,
+        severity: "high",
+        detail: serviceState.lastHeartbeatAt
+          ? `Service heartbeat ${num(serviceState.heartbeatAgeSeconds || 0, 1)}s geleden.`
+          : "Service heartbeat nog niet beschikbaar."
       },
       {
         id: "operator_alerts_acknowledged",
@@ -5374,6 +5403,7 @@ export class TradingBot {
 
   buildOperationalReadiness(referenceNow = nowIso()) {
     const reasons = [];
+    const serviceState = summarizeServiceState(this.runtime.service || {}, this.config, referenceNow);
     if (!this.runtime.lastAnalysisAt) {
       reasons.push("analysis_not_ready");
     }
@@ -5394,9 +5424,18 @@ export class TradingBot {
     }
     if ((this.runtime.exchangeTruth?.orphanedSymbols || []).length) {
       reasons.push("exchange_truth_orphaned_balance");
+    }
     if ((this.runtime.exchangeTruth?.manualInterferenceSymbols || []).length) {
       reasons.push("exchange_truth_manual_interference");
     }
+    if (serviceState.watchdogStatus === "degraded") {
+      reasons.push("service_watchdog_degraded");
+    }
+    if (serviceState.heartbeatStale) {
+      reasons.push("service_heartbeat_stale");
+    }
+    if (serviceState.recoveryActive) {
+      reasons.push("service_restart_backoff_active");
     }
     if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
       reasons.push("capital_ladder_shadow_only");
@@ -10478,7 +10517,7 @@ export class TradingBot {
         alerts: summarizeOperatorAlerts(this.runtime.ops?.alerts || {}),
         replayChaos: summarizeReplayChaos(this.runtime.ops?.replayChaos || this.runtime.replayChaos || {}),
         shadowTrading: summarizeShadowTrading(this.runtime.shadowTrading || {}),
-        service: summarizeServiceState(this.runtime.service || {}),
+        service: summarizeServiceState(this.runtime.service || {}, this.config, nowIso()),
         thresholdTuning: summarizeThresholdTuningState(this.runtime.thresholdTuning || {}),
         executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {}),
         capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {}),
