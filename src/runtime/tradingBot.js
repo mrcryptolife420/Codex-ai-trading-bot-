@@ -23,7 +23,7 @@ import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
 import { ParameterGovernor } from "../ai/parameterGovernor.js";
 import { StateStore, migrateJournal, migrateRuntime } from "../storage/stateStore.js";
-import { buildPerformanceReport, buildTradeQualityReview } from "./reportBuilder.js";
+import { buildPerformanceReport, buildTradePnlBreakdown, buildTradeQualityReview } from "./reportBuilder.js";
 import { DataRecorder } from "./dataRecorder.js";
 import { ModelRegistry } from "./modelRegistry.js";
 import { StateBackupManager } from "./stateBackupManager.js";
@@ -3311,6 +3311,45 @@ function summarizeCapitalPolicy({ capitalLadder = {}, capitalGovernor = {} } = {
     familyKillSwitches: arr(policyEngine.familyKillSwitches || []).slice(0, 4),
     regimeLossStreaks: arr(policyEngine.regimeLossStreaks || []).slice(0, 6),
     notes: arr(policyEngine.notes || []).slice(0, 6)
+  };
+}
+
+function summarizeEffectiveBudget({ equity = 0, quoteFree = 0, capitalPolicy = {} } = {}) {
+  const equityBase = Math.max(0, safeNumber(equity, 0));
+  const freeQuote = Math.max(0, safeNumber(quoteFree, 0));
+  const sizeMultiplier = Math.max(0, safeNumber(capitalPolicy?.sizeMultiplier, 1));
+  const policyBudget = equityBase * sizeMultiplier;
+  const deployableBudget = Math.min(freeQuote, policyBudget);
+  return {
+    policyBudget: num(policyBudget, 2),
+    deployableBudget: num(deployableBudget, 2),
+    quoteFree: num(freeQuote, 2),
+    equity: num(equityBase, 2),
+    sizeMultiplier: num(sizeMultiplier, 4),
+    cashCapped: freeQuote + 0.005 < policyBudget,
+    utilizationPct: num(policyBudget > 0 ? deployableBudget / policyBudget : 0, 4)
+  };
+}
+
+function summarizeTradeReasonView(trade = {}, pnl = {}) {
+  const rawReason = trade.reason || null;
+  if (rawReason === "stop_loss" && safeNumber(trade.exitPrice, 0) > safeNumber(trade.entryPrice, 0)) {
+    return {
+      reasonLabel: "protective_stop",
+      reasonNote: pnl.grossMovePnl > 0 && pnl.netRealizedPnl < 0
+        ? "Bruto hoger gesloten, maar fees en execution maakten de trade netto rood."
+        : "De stop loss was omhoog getrokken en sloot beschermend boven entry."
+    };
+  }
+  if (pnl.grossMovePnl > 0 && pnl.netRealizedPnl < 0) {
+    return {
+      reasonLabel: rawReason,
+      reasonNote: "Bruto prijsbeweging was groen, maar round-trip kosten draaiden de trade netto rood."
+    };
+  }
+  return {
+    reasonLabel: rawReason,
+    reasonNote: null
   };
 }
 
@@ -11211,6 +11250,12 @@ export class TradingBot {
       pnlQuote: tradeView.pnlQuote,
       netPnlPct: tradeView.netPnlPct,
       reason: tradeView.reason || null,
+      reasonLabel: tradeView.reasonLabel || tradeView.reason || null,
+      reasonNote: tradeView.reasonNote || null,
+      grossMovePnl: num(tradeView.grossMovePnl || 0, 2),
+      totalFees: num(tradeView.totalFees || 0, 2),
+      netAfterFees: num(tradeView.netAfterFees || 0, 2),
+      executionDragEstimate: num(tradeView.executionDragEstimate || 0, 2),
       entryExecutionAttribution: {
         entryStyle: tradeView.entryExecutionAttribution?.entryStyle || null,
         realizedTouchSlippageBps: num(tradeView.entryExecutionAttribution?.realizedTouchSlippageBps || 0, 2)
@@ -11223,6 +11268,8 @@ export class TradingBot {
   }
 
   buildTradeView(trade) {
+    const pnl = buildTradePnlBreakdown(trade, this.config);
+    const reasonView = summarizeTradeReasonView(trade, pnl);
     return {
       id: trade.id,
       symbol: trade.symbol,
@@ -11235,6 +11282,10 @@ export class TradingBot {
       totalCost: num(trade.totalCost || 0, 2),
       proceeds: num(trade.proceeds || 0, 2),
       pnlQuote: num(trade.pnlQuote || 0, 2),
+      grossMovePnl: num(pnl.grossMovePnl || 0, 2),
+      totalFees: num(pnl.totalFees || 0, 2),
+      netAfterFees: num(pnl.netAfterFees || 0, 2),
+      executionDragEstimate: num(pnl.executionDragEstimate || 0, 2),
       netPnlPct: num(trade.netPnlPct || 0, 4),
       mfePct: num(trade.mfePct || 0, 4),
       maePct: num(trade.maePct || 0, 4),
@@ -11250,6 +11301,8 @@ export class TradingBot {
       entrySpreadBps: num(trade.entrySpreadBps || 0, 2),
       exitSpreadBps: num(trade.exitSpreadBps || 0, 2),
       reason: trade.reason,
+      reasonLabel: reasonView.reasonLabel,
+      reasonNote: reasonView.reasonNote,
       exitSource: trade.exitSource || null,
       exitIntelligence: summarizeExitIntelligence(trade.exitIntelligenceSummary || {}),
       review: buildTradeQualityReview(trade),
@@ -11984,6 +12037,19 @@ export class TradingBot {
     const marketHistorySummary = summarizeMarketHistory(this.runtime.marketHistory || {});
     const performanceChangeSummary = this.buildPerformanceChangeView(report);
     const runbooksSummary = this.buildOperatorRunbooks(report);
+    const capitalPolicySummary = summarizeCapitalPolicy({
+      capitalLadder: this.runtime.capitalLadder || {},
+      capitalGovernor: {
+        ...(this.runtime.capitalGovernor || {}),
+        policyEngine: this.runtime?.capitalPolicy || {}
+      }
+    });
+    const effectiveBudget = summarizeEffectiveBudget({
+      equity: this.runtime.lastKnownEquity || 0,
+      quoteFree: this.runtime.lastKnownBalance || 0,
+      capitalPolicy: capitalPolicySummary
+    });
+    capitalPolicySummary.effectiveBudget = effectiveBudget;
     const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
       topDecisions: dashboardTopDecisions,
       blockedSetups: dashboardBlockedSetups,
@@ -12029,6 +12095,7 @@ export class TradingBot {
         lastPortfolioUpdateAt: this.runtime.lastPortfolioUpdateAt,
         quoteFree: num(this.runtime.lastKnownBalance || 0, 2),
         equity: num(this.runtime.lastKnownEquity || 0, 2),
+        effectiveBudget,
         openPositionCount: positions.length,
         totalUnrealizedPnl: num(totalUnrealizedPnl, 2),
         openExposure: num(report.openExposure || 0, 2),
@@ -12081,13 +12148,7 @@ export class TradingBot {
         executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {}),
         capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {}),
         capitalGovernor: summarizeCapitalGovernor(this.runtime.capitalGovernor || {}),
-        capitalPolicy: summarizeCapitalPolicy({
-          capitalLadder: this.runtime.capitalLadder || {},
-          capitalGovernor: {
-            ...(this.runtime.capitalGovernor || {}),
-            policyEngine: this.runtime?.capitalPolicy || {}
-          }
-        }),
+        capitalPolicy: capitalPolicySummary,
         tuningGovernance: summarizeTuningGovernance({
           thresholdTuning: this.runtime.thresholdTuning || {},
           parameterGovernor: this.runtime.parameterGovernor || {},

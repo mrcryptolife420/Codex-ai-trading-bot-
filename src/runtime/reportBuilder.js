@@ -366,7 +366,7 @@ function resolveExpectedRoundTripFeeBps(trade = {}, config = {}) {
   return 0;
 }
 
-function buildExecutionCostBreakdown(trade = {}, config = {}) {
+export function buildExecutionCostBreakdown(trade = {}, config = {}) {
   const entry = trade.entryExecutionAttribution || {};
   const exit = trade.exitExecutionAttribution || {};
   const notional = Math.max(trade.totalCost || trade.quantity * trade.entryPrice || 0, 1);
@@ -539,20 +539,32 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
   };
 }
 
+export function buildTradePnlBreakdown(trade = {}, config = {}) {
+  const cost = buildExecutionCostBreakdown(trade, config);
+  const grossMovePnl = ((trade.exitPrice || 0) - (trade.entryPrice || 0)) * (trade.quantity || 0);
+  return {
+    netRealizedPnl: trade.pnlQuote || 0,
+    grossMovePnl,
+    netAfterFees: grossMovePnl - cost.totalFees,
+    entryFee: cost.entryFee,
+    exitFee: cost.exitFee,
+    totalFees: cost.totalFees,
+    feeBps: cost.feeBps,
+    feeBudgetBps: cost.feeBudgetBps,
+    excessFeeBps: cost.excessFeeBps,
+    touchSlippageBps: cost.touchSlippageBps,
+    slippageDeltaBps: cost.slippageDeltaBps,
+    latencyBps: cost.latencyBps,
+    queueBps: cost.queueBps,
+    executionDragEstimate: ((trade.totalCost || 0) * (cost.touchSlippageBps || 0)) / 10_000,
+    latencyDragEstimate: ((trade.totalCost || 0) * (cost.latencyBps || 0)) / 10_000,
+    queueDragEstimate: ((trade.totalCost || 0) * (cost.queueBps || 0)) / 10_000,
+    captureEfficiency: trade.captureEfficiency || 0
+  };
+}
+
 function buildPnlDecomposition(trades = []) {
-  const breakdowns = trades.map((trade) => {
-    const grossMovePnl = ((trade.exitPrice || 0) - (trade.entryPrice || 0)) * (trade.quantity || 0);
-    const cost = buildExecutionCostBreakdown(trade);
-    return {
-      netRealizedPnl: trade.pnlQuote || 0,
-      grossMovePnl,
-      totalFees: cost.totalFees,
-      executionDragEstimate: ((trade.totalCost || 0) * (cost.touchSlippageBps || 0)) / 10_000,
-      latencyDragEstimate: ((trade.totalCost || 0) * (cost.latencyBps || 0)) / 10_000,
-      queueDragEstimate: ((trade.totalCost || 0) * (cost.queueBps || 0)) / 10_000,
-      captureEfficiency: trade.captureEfficiency || 0
-    };
-  });
+  const breakdowns = trades.map((trade) => buildTradePnlBreakdown(trade));
   return {
     netRealizedPnl: breakdowns.reduce((total, item) => total + item.netRealizedPnl, 0),
     grossMovePnl: breakdowns.reduce((total, item) => total + item.grossMovePnl, 0),

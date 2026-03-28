@@ -31,7 +31,7 @@ import { validateConfig } from "../src/config/validate.js";
 import { resolveExchangeCapabilities } from "../src/config/exchangeCapabilities.js";
 import { HealthMonitor } from "../src/runtime/healthMonitor.js";
 import { LiveBroker } from "../src/execution/liveBroker.js";
-import { buildPerformanceReport } from "../src/runtime/reportBuilder.js";
+import { buildPerformanceReport, buildTradePnlBreakdown } from "../src/runtime/reportBuilder.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../src/strategy/indicators.js";
 import { classifyRegime } from "../src/ai/regimeModel.js";
 import { OnlineTradingModel } from "../src/ai/onlineModel.js";
@@ -12553,6 +12553,36 @@ await runCheck("trading bot report and dashboard preserve unreconciled exposure 
   assert.equal(snapshot.report.openExposureReview.unreconciledCount, 1);
   assert.equal(snapshot.report.openExposureReview.unreconciledExposure, 400);
 });
+
+await runCheck("trade pnl breakdown explains gross-up but net-down paper stops", async () => {
+  const trade = {
+    id: "btc-stop",
+    symbol: "BTCUSDT",
+    brokerMode: "paper",
+    entryAt: "2026-03-29T10:00:00.000Z",
+    exitAt: "2026-03-29T10:08:00.000Z",
+    entryPrice: 66431.2453,
+    exitPrice: 66450.4072,
+    quantity: 0.0005,
+    totalCost: 33.2482,
+    proceeds: 33.1914,
+    pnlQuote: -0.0568,
+    netPnlPct: -0.0017,
+    reason: "stop_loss"
+  };
+  const breakdown = buildTradePnlBreakdown(trade, makeConfig({ paperFeeBps: 10 }));
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ paperFeeBps: 10 });
+  const view = TradingBot.prototype.buildTradeView.call(bot, trade);
+  assert.ok(breakdown.grossMovePnl > 0);
+  assert.ok(breakdown.totalFees > breakdown.grossMovePnl);
+  assert.ok(breakdown.netRealizedPnl < 0);
+  assert.equal(view.reasonLabel, "protective_stop");
+  assert.ok(view.reasonNote.includes("netto rood"));
+  assert.equal(view.totalFees, 0.07);
+  assert.equal(view.grossMovePnl, 0.01);
+});
+
 await runCheck("trading bot status preserves research recorder and explainability snapshot fields", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.getDashboardSnapshot = async () => ({
@@ -12767,6 +12797,107 @@ await runCheck("dashboard snapshot surfaces market history feed failures without
   assert.equal(snapshot.ops.service.dashboardFeeds.degradedFeeds[0].lastError, "verify failed");
   assert.equal(snapshot.marketHistory.status, "ready");
   assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Dashboard feed"));
+});
+
+await runCheck("dashboard snapshot surfaces effective capital budget", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", tradingIntervalSeconds: 60, watchlist: ["BTCUSDT"] });
+  bot.runtime = {
+    lastCycleAt: "2026-03-19T09:59:00.000Z",
+    lastAnalysisAt: "2026-03-19T09:59:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:59:00.000Z",
+    lastKnownBalance: 180,
+    lastKnownEquity: 1000,
+    openPositions: [],
+    latestDecisions: [],
+    latestBlockedSetups: [],
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    offlineTrainer: {},
+    strategyResearch: {},
+    researchRegistry: {},
+    modelRegistry: {},
+    executionCalibration: {},
+    thresholdTuning: {},
+    parameterGovernor: {},
+    capitalLadder: { allowEntries: true, sizeMultiplier: 0.7, stage: "guarded_live" },
+    capitalGovernor: { allowEntries: true, sizeMultiplier: 0.5, status: "ready" },
+    capitalPolicy: { status: "degraded", budgets: {}, notes: [] },
+    venueConfirmation: {},
+    exchangeTruth: { unmatchedOrderSymbols: [], orphanedSymbols: [], manualInterferenceSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    marketHistory: { status: "ready", aggregate: { status: "ready", symbolCount: 1, coveredSymbolCount: 1 }, symbols: {} },
+    sourceReliability: {},
+    watchlistSummary: null,
+    exchangeCapabilities: bot.config.exchangeCapabilities,
+    aiTelemetry: {},
+    stateBackups: {},
+    recovery: {},
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:40.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0,
+      initWarnings: [],
+      dashboardFeeds: {}
+    },
+    health: { circuitOpen: false },
+    ops: {
+      readiness: { status: "ready", reasons: [] },
+      alerts: { alerts: [] },
+      alertDelivery: {},
+      incidentTimeline: [],
+      diagnosticsActions: { history: [] },
+      promotionState: {}
+    }
+  };
+  bot.historyStore = null;
+  bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
+  bot.health = { getStatus: () => ({ status: "ok" }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = {
+    getCalibrationSummary: () => ({}),
+    getDeploymentSummary: () => ({}),
+    getTransformerSummary: () => ({}),
+    getStrategyAllocationSummary: () => ({})
+  };
+  bot.rlPolicy = { getSummary: () => ({}) };
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.backupManager = { getSummary: () => ({}) };
+  bot.buildPortfolioView = () => ({});
+  bot.buildPositionView = (position) => ({ ...position, unrealizedPnl: 0 });
+  bot.buildDashboardPositionView = (position) => position;
+  bot.buildDashboardDecisionView = (decision) => decision;
+  bot.buildTradeReplayView = (trade) => trade;
+  bot.buildOperatorDiagnosticsSnapshot = () => ({ counts: { blocked: 0 }, actionItems: [] });
+  bot.buildDecisionExplanationView = (decision) => decision;
+  bot.buildTradeReplayDigest = (trade) => trade;
+  bot.buildPromotionPipelineSnapshot = () => ({});
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.buildResearchView = () => null;
+  bot.buildModelWeightsView = () => [];
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getDashboardSnapshot = TradingBot.prototype.getDashboardSnapshot;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.safeRefreshMarketHistorySnapshot = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.buildOperationalReadiness = () => ({ status: "ready", reasons: [], ready: true });
+  bot.buildPerformanceChangeView = () => ({});
+  bot.buildOperatorRunbooks = () => [];
+  bot.buildAdaptationHealthSnapshot = () => ({ status: "warmup" });
+
+  const snapshot = await bot.getDashboardSnapshot();
+  assert.equal(snapshot.overview.effectiveBudget.policyBudget, 350);
+  assert.equal(snapshot.overview.effectiveBudget.deployableBudget, 180);
+  assert.equal(snapshot.overview.effectiveBudget.cashCapped, true);
+  assert.equal(snapshot.ops.capitalPolicy.effectiveBudget.sizeMultiplier, 0.35);
 });
 
 await runCheck("doctor checks flag failed market history dashboard feed", async () => {

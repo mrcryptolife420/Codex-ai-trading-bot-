@@ -514,6 +514,7 @@ function buildHeroSummary(snapshot) {
   const freezeEntries = Boolean(dashboard.safety?.exchangeTruth?.freezeEntries);
   const probeOnly = Boolean(dashboard.safety?.orderLifecycle?.probeOnly?.enabled || dashboard.ops?.readiness?.reasons?.includes("probe_only"));
   const overview = dashboard.overview || {};
+  const effectiveBudget = overview.effectiveBudget || {};
 
   const subline = leadDecision?.allow
     ? `${leadDecision.symbol} is momenteel de beste tradebare setup.`
@@ -526,6 +527,11 @@ function buildHeroSummary(snapshot) {
       label: "Equity",
       value: formatMoney(overview.equity),
       tone: "neutral"
+    },
+    {
+      label: "Effectief budget",
+      value: formatMoney(effectiveBudget.deployableBudget || 0),
+      tone: (effectiveBudget.deployableBudget || 0) > 0 ? "positive" : "neutral"
     },
     {
       label: "Beste kans",
@@ -1229,6 +1235,7 @@ function buildOpsCards(snapshot) {
   const lifecycle = pendingActions(snapshot);
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
+  const effectiveBudget = capitalPolicy.effectiveBudget || snapshot?.dashboard?.overview?.effectiveBudget || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
@@ -1266,6 +1273,12 @@ function buildOpsCards(snapshot) {
       value: titleize(capitalPolicy.status || "normal"),
       foot: exchangeTruth.freezeEntries ? "Entries bevroren" : "Entries toegestaan",
       tone: exchangeTruth.freezeEntries || capitalPolicy.status === "blocked" ? "negative" : "neutral"
+    },
+    {
+      label: "Effectief budget",
+      value: formatMoney(effectiveBudget.deployableBudget || 0),
+      foot: `${formatMoney(effectiveBudget.policyBudget || 0)} policy · ${formatMoney(effectiveBudget.quoteFree || 0)} vrij · x${formatNumber(effectiveBudget.sizeMultiplier || 0, 2)}`,
+      tone: (effectiveBudget.deployableBudget || 0) > 0 ? (effectiveBudget.cashCapped ? "neutral" : "positive") : "negative"
     },
     {
       label: "External feeds",
@@ -1391,15 +1404,30 @@ function renderTrades(snapshot) {
   }
   replaceChildren(elements.tradesBody, trades.map((trade) => {
     const row = makeNode("tr");
+    const reasonCell = makeNode("td", {
+      attrs: {
+        title: trade.reasonNote || ""
+      }
+    });
+    reasonCell.append(makeNode("span", { text: titleize(trade.reasonLabel || trade.reason || "-") }));
+    if (trade.reasonNote) {
+      reasonCell.append(makeNode("span", { className: "metric-foot", text: trade.reasonNote }));
+    }
+    const pnlCell = makeNode("td", { className: toneClass(trade.pnlQuote) });
+    pnlCell.append(makeNode("span", { text: formatMoney(trade.pnlQuote) }));
+    pnlCell.append(makeNode("span", {
+      className: "metric-foot",
+      text: `Bruto ${formatMoney(trade.grossMovePnl)} · Fees ${formatMoney(-(trade.totalFees || 0))}`
+    }));
     const fields = [
-      { text: trade.symbol || "-" },
-      { text: number(trade.entryPrice, 4) },
-      { text: number(trade.exitPrice, 4) },
-      { text: titleize(trade.reason || "-") },
-      { text: formatMoney(trade.pnlQuote), className: toneClass(trade.pnlQuote) },
-      { text: formatSignedPct(trade.netPnlPct), className: toneClass(trade.netPnlPct) }
+      makeNode("td", { text: trade.symbol || "-" }),
+      makeNode("td", { text: number(trade.entryPrice, 4) }),
+      makeNode("td", { text: number(trade.exitPrice, 4) }),
+      reasonCell,
+      pnlCell,
+      makeNode("td", { className: toneClass(trade.netPnlPct), text: formatSignedPct(trade.netPnlPct) })
     ];
-    row.append(...fields.map((field) => makeNode("td", { className: field.className || "", text: field.text })));
+    row.append(...fields);
     return row;
   }));
 }
