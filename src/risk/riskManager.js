@@ -50,7 +50,8 @@ function isSoftPaperReason(reason) {
     "capital_governor_recovery",
     "trade_size_below_minimum",
     "entry_cooldown_active",
-    "daily_entry_budget_reached"
+    "daily_entry_budget_reached",
+    "weekend_high_risk_strategy_block"
   ].includes(reason);
 }
 
@@ -1247,10 +1248,12 @@ export class RiskManager {
     }
     const committeeGuardBuffer = this.config.botMode === "paper" ? 0.08 : 0.02;
     const committeeNetGuard = this.config.botMode === "paper" ? -0.14 : -0.05;
+    const committeeProbabilityDelta = safeValue(committeeSummary.probability, 0.5) - safeValue(score.probability, 0.5);
     if (
       (committeeSummary.confidence || 0) >= this.config.committeeMinConfidence &&
       (committeeSummary.probability || 0) < threshold - committeeGuardBuffer &&
-      (committeeSummary.netScore || 0) <= committeeNetGuard
+      (committeeSummary.netScore || 0) <= committeeNetGuard &&
+      committeeProbabilityDelta <= -0.01
     ) {
       reasons.push("committee_confidence_too_low");
     }

@@ -5356,6 +5356,109 @@ await runCheck("risk manager keeps synced local-book sell pressure as a blocker"
   assert.ok(decision.reasons.includes("orderbook_sell_pressure"));
 });
 
+await runCheck("risk manager treats weekend breakout block as soft in paper exploration", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "XRPUSDT",
+    score: {
+      probability: 0.505,
+      calibrationConfidence: 0.72,
+      confidence: 0.4,
+      disagreement: 0.05,
+      shouldAbstain: true,
+      abstainReasons: ["probability_neutral_band"],
+      transformer: { probability: 0.53, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 1.1,
+        bookPressure: 0.04,
+        microPriceEdgeBps: 0.14,
+        depthConfidence: 0.82,
+        bookSource: "rest_book",
+        bookFallbackReady: true,
+        localBookSynced: false
+      },
+      market: {
+        realizedVolPct: 0.014,
+        atrPct: 0.009,
+        bearishPatternScore: 0.02,
+        bullishPatternScore: 0.08,
+        closeLocationQuality: 0.62,
+        volumeAcceptanceScore: 0.42,
+        breakoutFollowThroughScore: 0.18,
+        anchoredVwapAcceptanceScore: 0.55,
+        anchoredVwapRejectionScore: 0.16
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.05, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.94, probability: 0.505, confidence: 0.72, netScore: 0.01, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "bollinger_squeeze", family: "breakout", fitScore: 0.53, confidence: 0.42, blockers: [], agreementGap: 0.04 },
+    sessionSummary: { isWeekend: true, blockerReasons: [], lowLiquidity: false, riskScore: 0.08, sizeMultiplier: 0.82, thresholdPenalty: 0.012 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-14T18:00:00.000Z"
+  });
+
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.suppressedReasons.includes("weekend_high_risk_strategy_block"));
+});
+
+await runCheck("risk manager does not add committee confidence blocker when committee improves the model score", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.32,
+      calibrationConfidence: 0.46,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.34, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.02, microPriceEdgeBps: 0.12, depthConfidence: 0.78 },
+      market: { realizedVolPct: 0.016, atrPct: 0.01, bearishPatternScore: 0.03, bullishPatternScore: 0.08 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.06 },
+    volatilitySummary: { riskScore: 0.3, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.03, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.88, probability: 0.37, confidence: 0.68, netScore: -0.16, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "bollinger_squeeze", family: "breakout", fitScore: 0.49, confidence: 0.4, blockers: [], agreementGap: 0.04 },
+    sessionSummary: { isWeekend: false, blockerReasons: [], lowLiquidity: false, riskScore: 0.04, sizeMultiplier: 1, thresholdPenalty: 0 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.7 },
+    nowIso: "2026-03-12T18:00:00.000Z"
+  });
+
+  assert.ok(!decision.reasons.includes("committee_confidence_too_low"));
+});
+
 await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
