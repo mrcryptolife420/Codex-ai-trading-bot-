@@ -186,6 +186,32 @@ function canUsePaperProbeScopeOverflow({
   );
 }
 
+function hasConfirmedPaperSellPressure({ marketSnapshot = {}, strategySummary = {}, config = {} } = {}) {
+  const book = marketSnapshot.book || {};
+  const restBookFallbackPressureOnly =
+    (book.bookSource || "") === "rest_book" &&
+    book.bookFallbackReady === true &&
+    book.localBookSynced !== true;
+  const baseConfirmed =
+    !restBookFallbackPressureOnly ||
+    (book.bookPressure || 0) < config.minBookPressureForEntry - 0.12 ||
+    (book.microPriceEdgeBps || 0) < -0.35 ||
+    (book.weightedDepthImbalance || 0) < -0.18;
+  if (!["breakout", "market_structure"].includes(strategySummary.family || "")) {
+    return baseConfirmed;
+  }
+  if (restBookFallbackPressureOnly) {
+    return baseConfirmed;
+  }
+  return (
+    (book.bookPressure || 0) < config.minBookPressureForEntry - 0.1 ||
+    ((book.bookPressure || 0) < config.minBookPressureForEntry && (book.microPriceEdgeBps || 0) < 0) ||
+    ((book.bookPressure || 0) < config.minBookPressureForEntry && (book.weightedDepthImbalance || 0) < -0.1) ||
+    (book.microPriceEdgeBps || 0) < -0.22 ||
+    (book.weightedDepthImbalance || 0) < -0.16
+  );
+}
+
 function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
@@ -257,6 +283,23 @@ function isSoftPaperCommitteeConfidenceOnly({ committeeSummary = {}, score = {},
     safeValue(committeeSummary.agreement, 0) >= 0.72 &&
     safeValue(committeeSummary.netScore, 0) >= -0.08 &&
     committeeProbability >= modelProbability - 0.04 &&
+    committeeProbability >= threshold - 0.1
+  );
+}
+
+function isRedundantPaperCommitteeConfidence({ committeeSummary = {}, score = {}, threshold = 0, reasons = [] } = {}) {
+  if (!reasons.includes("model_confidence_too_low")) {
+    return false;
+  }
+  if (getCommitteeVetoIds(committeeSummary).length) {
+    return false;
+  }
+  const committeeProbability = safeValue(committeeSummary.probability, 0.5);
+  const modelProbability = safeValue(score.probability, 0.5);
+  return (
+    safeValue(committeeSummary.agreement, 0) >= 0.78 &&
+    safeValue(committeeSummary.netScore, 0) >= -0.1 &&
+    committeeProbability >= modelProbability - 0.03 &&
     committeeProbability >= threshold - 0.1
   );
 }
@@ -1297,7 +1340,12 @@ export class RiskManager {
       !hasOpenPositionForSymbol &&
       strategyRetirementPolicy.active &&
       (strategyRetirementPolicy.status || "") === "cooldown" &&
-      score.probability < threshold + 0.04
+      score.probability < threshold + (this.config.botMode === "paper" ? 0.02 : 0.04) &&
+      !(
+        this.config.botMode === "paper" &&
+        canRelaxPaperSelfHeal(selfHealState) &&
+        safeValue(strategyRetirementPolicy.confidence, 0) < 0.72
+      )
     ) {
       reasons.push("strategy_cooldown");
     }
@@ -1331,16 +1379,10 @@ export class RiskManager {
     if (marketSnapshot.market.realizedVolPct > this.config.maxRealizedVolPct) {
       reasons.push("volatility_too_high");
     }
-    const restBookFallbackPressureOnly = this.config.botMode === "paper" &&
-      (marketSnapshot.book.bookSource || "") === "rest_book" &&
-      marketSnapshot.book.bookFallbackReady === true &&
-      marketSnapshot.book.localBookSynced !== true;
-    const fallbackSellPressureConfirmed =
-      !restBookFallbackPressureOnly ||
-      (marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry - 0.12 ||
-      (marketSnapshot.book.microPriceEdgeBps || 0) < -0.35 ||
-      (marketSnapshot.book.weightedDepthImbalance || 0) < -0.18;
-    if ((marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry && fallbackSellPressureConfirmed) {
+    const sellPressureConfirmed = this.config.botMode === "paper"
+      ? hasConfirmedPaperSellPressure({ marketSnapshot, strategySummary, config: this.config })
+      : (marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry;
+    if ((marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry && sellPressureConfirmed) {
       reasons.push("orderbook_sell_pressure");
     }
     if ((marketSnapshot.market.bearishPatternScore || 0) > 0.72 && (marketSnapshot.market.momentum5 || 0) <= 0) {
@@ -1404,12 +1446,16 @@ export class RiskManager {
     const softPaperCommitteeConfidence =
       this.config.botMode === "paper" &&
       isSoftPaperCommitteeConfidenceOnly({ committeeSummary, score, threshold });
+    const redundantPaperCommitteeConfidence =
+      this.config.botMode === "paper" &&
+      isRedundantPaperCommitteeConfidence({ committeeSummary, score, threshold, reasons });
     if (
       (committeeSummary.confidence || 0) >= this.config.committeeMinConfidence &&
       (committeeSummary.probability || 0) < threshold - committeeGuardBuffer &&
       (committeeSummary.netScore || 0) <= committeeNetGuard &&
       committeeProbabilityDelta <= -0.01 &&
-      !softPaperCommitteeConfidence
+      !softPaperCommitteeConfidence &&
+      !redundantPaperCommitteeConfidence
     ) {
       reasons.push("committee_confidence_too_low");
     }

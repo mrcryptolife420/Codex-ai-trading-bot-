@@ -5690,6 +5690,50 @@ await runCheck("risk manager softens near-threshold committee confidence caution
   assert.equal(decision.committeeVetoObservation.confidenceSoftenedInPaper, true);
 });
 
+await runCheck("risk manager suppresses redundant committee confidence blocker in paper when model confidence is already the binding miss", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "XRPUSDT",
+    score: {
+      probability: 0.49,
+      calibrationConfidence: 0.78,
+      confidence: 0.38,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.497, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 0.9, bookPressure: 0.12, microPriceEdgeBps: 0.08, depthConfidence: 0.84 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.02, bullishPatternScore: 0.1 }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.06, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 2.5 },
+    calendarSummary: { riskScore: 0.03, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.84, probability: 0.486, confidence: 0.68, netScore: -0.08, sizeMultiplier: 0.92, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "bollinger_squeeze", family: "breakout", fitScore: 0.52, confidence: 0.46, blockers: [], agreementGap: 0.04 },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.04, sizeMultiplier: 1, thresholdPenalty: 0 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "low_risk_only", active: true, sizeMultiplier: 0.42, thresholdPenalty: 0.06, lowRiskOnly: true, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T18:00:00.000Z"
+  });
+
+  assert.ok(decision.reasons.includes("model_confidence_too_low"));
+  assert.ok(!decision.reasons.includes("committee_confidence_too_low"));
+});
+
 await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -7058,6 +7102,122 @@ await runCheck("risk manager suppresses strategy cooldown when the same symbol p
     nowIso: "2026-03-28T05:15:00.000Z"
   });
   assert.ok(decision.reasons.includes("position_already_open"));
+  assert.ok(!decision.reasons.includes("strategy_cooldown"));
+});
+
+await runCheck("risk manager does not block breakout paper setups on mild local sell pressure without corroboration", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "BNBUSDT",
+    score: {
+      probability: 0.57,
+      calibrationConfidence: 0.78,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      transformer: { probability: 0.568, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 1.6,
+        bookPressure: -0.08,
+        microPriceEdgeBps: 0.03,
+        weightedDepthImbalance: -0.04,
+        depthConfidence: 0.9,
+        bookSource: "local_book",
+        bookFallbackReady: false,
+        localBookSynced: true
+      },
+      market: { realizedVolPct: 0.013, atrPct: 0.009, bearishPatternScore: 0.03, bullishPatternScore: 0.14, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.03, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.05, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.1 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: {
+      agreement: 0.84,
+      probability: 0.564,
+      confidence: 0.68,
+      netScore: 0.01,
+      sizeMultiplier: 0.92,
+      vetoes: []
+    },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.008 },
+    strategySummary: {
+      activeStrategy: "bollinger_squeeze",
+      family: "breakout",
+      fitScore: 0.54,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 6, sampleConfidence: 0.55 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.63, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.69 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T09:00:00.000Z"
+  });
+  assert.ok(!decision.reasons.includes("orderbook_sell_pressure"));
+});
+
+await runCheck("risk manager softens low-confidence strategy cooldown in paper recovery mode", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.55,
+      calibrationConfidence: 0.8,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.552, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 1.8, bookPressure: 0.09, microPriceEdgeBps: 0.16, depthConfidence: 0.84 },
+      market: { realizedVolPct: 0.012, atrPct: 0.009, bearishPatternScore: 0.03, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.03, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.05, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.06 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 1.6 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.7, probability: 0.558, netScore: 0.04, confidence: 0.62, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "bollinger_squeeze",
+      family: "breakout",
+      fitScore: 0.62,
+      confidence: 0.58,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 12, sampleConfidence: 0.68 }
+    },
+    strategyRetirementSummary: {
+      policies: [{ id: "bollinger_squeeze", status: "cooldown", sizeMultiplier: 0.7, confidence: 0.54, note: "recent losses" }]
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1, isWeekend: false },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "low_risk_only", active: true, sizeMultiplier: 0.42, thresholdPenalty: 0.06, lowRiskOnly: true, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 500 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.68 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.74, blockerReasons: [], cautionReasons: [] },
+    capitalGovernorSummary: { status: "ready", allowEntries: true, sizeMultiplier: 1, recoveryMode: false, notes: [] },
+    nowIso: "2026-03-28T05:15:00.000Z"
+  });
   assert.ok(!decision.reasons.includes("strategy_cooldown"));
 });
 
