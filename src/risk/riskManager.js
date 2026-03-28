@@ -194,6 +194,20 @@ function isSoftPaperCommitteeDisagreementOnly({ committeeSummary = {}, score = {
   );
 }
 
+function isSoftPaperCommitteeConfidenceOnly({ committeeSummary = {}, score = {}, threshold = 0 } = {}) {
+  if (getCommitteeVetoIds(committeeSummary).length) {
+    return false;
+  }
+  const committeeProbability = safeValue(committeeSummary.probability, 0.5);
+  const modelProbability = safeValue(score.probability, 0.5);
+  return (
+    safeValue(committeeSummary.agreement, 0) >= 0.72 &&
+    safeValue(committeeSummary.netScore, 0) >= -0.08 &&
+    committeeProbability >= modelProbability - 0.04 &&
+    committeeProbability >= threshold - 0.1
+  );
+}
+
 function matchesBrokerMode(item, botMode = "paper") {
   return (item?.brokerMode || "paper") === botMode;
 }
@@ -1334,11 +1348,15 @@ export class RiskManager {
     const committeeGuardBuffer = this.config.botMode === "paper" ? 0.08 : 0.02;
     const committeeNetGuard = this.config.botMode === "paper" ? -0.14 : -0.05;
     const committeeProbabilityDelta = safeValue(committeeSummary.probability, 0.5) - safeValue(score.probability, 0.5);
+    const softPaperCommitteeConfidence =
+      this.config.botMode === "paper" &&
+      isSoftPaperCommitteeConfidenceOnly({ committeeSummary, score, threshold });
     if (
       (committeeSummary.confidence || 0) >= this.config.committeeMinConfidence &&
       (committeeSummary.probability || 0) < threshold - committeeGuardBuffer &&
       (committeeSummary.netScore || 0) <= committeeNetGuard &&
-      committeeProbabilityDelta <= -0.01
+      committeeProbabilityDelta <= -0.01 &&
+      !softPaperCommitteeConfidence
     ) {
       reasons.push("committee_confidence_too_low");
     }
@@ -1944,8 +1962,9 @@ export class RiskManager {
       modelAbstainReasons: abstainReasons,
       committeeVetoObservation: {
         vetoIds: committeeVetoIds,
-        softenedInPaper: softPaperCommitteeDisagreement || redundantCommitteeVeto,
-        redundantInDecision: redundantCommitteeVeto
+        softenedInPaper: softPaperCommitteeDisagreement || redundantCommitteeVeto || softPaperCommitteeConfidence,
+        redundantInDecision: redundantCommitteeVeto,
+        confidenceSoftenedInPaper: softPaperCommitteeConfidence
       },
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,

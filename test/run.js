@@ -5646,6 +5646,50 @@ await runCheck("risk manager does not add committee confidence blocker when comm
   assert.ok(!decision.reasons.includes("committee_confidence_too_low"));
 });
 
+await runCheck("risk manager softens near-threshold committee confidence caution in paper when no veto exists", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "BNBUSDT",
+    score: {
+      probability: 0.55,
+      calibrationConfidence: 0.74,
+      confidence: 0.42,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.552, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 1.1, bookPressure: 0.18, microPriceEdgeBps: 0.22, depthConfidence: 0.84 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.02, bullishPatternScore: 0.1 }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.06, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 2.5 },
+    calendarSummary: { riskScore: 0.03, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.82, probability: 0.514, confidence: 0.68, netScore: -0.07, sizeMultiplier: 0.92, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "bollinger_squeeze", family: "breakout", fitScore: 0.52, confidence: 0.46, blockers: [], agreementGap: 0.04 },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.04, sizeMultiplier: 1, thresholdPenalty: 0 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T18:00:00.000Z"
+  });
+
+  assert.ok(!decision.reasons.includes("committee_confidence_too_low"));
+  assert.equal(decision.committeeVetoObservation.confidenceSoftenedInPaper, true);
+});
+
 await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -16115,6 +16159,82 @@ await runCheck("portfolio optimizer softens broad regime-only overlap in paper m
   assert.ok(!summary.reasons.includes("regime_exposure_limit_hit"));
   assert.ok(!summary.hardReasons.includes("regime_exposure_limit_hit"));
   assert.ok(summary.sizeMultiplier < 1);
+});
+
+await runCheck("portfolio optimizer softens regime overlap in paper when family overlap stays below its own cap", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    botMode: "paper",
+    maxFamilyPositions: 2,
+    maxRegimePositions: 2,
+    symbolProfiles: {
+      AAVEUSDT: { cluster: "defi", sector: "defi" },
+      ZROUSDT: { cluster: "infra", sector: "infra" },
+      TIAUSDT: { cluster: "infra", sector: "infra" }
+    }
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "TIAUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: { trades: [], scaleOuts: [] },
+    marketSnapshot: {
+      candles: Array.from({ length: 20 }, (_, index) => ({
+        close: 100 + Math.sin(index / 3) * 0.8 + index * 0.04,
+        high: 101 + Math.sin(index / 3) * 0.8 + index * 0.04,
+        low: 99 + Math.sin(index / 3) * 0.8 + index * 0.04
+      })),
+      market: { realizedVolPct: 0.013 }
+    },
+    candidateProfile: { cluster: "infra", sector: "infra" },
+    openPositionContexts: [
+      {
+        symbol: "AAVEUSDT",
+        profile: { cluster: "defi", sector: "defi" },
+        marketSnapshot: {
+          candles: Array.from({ length: 20 }, (_, index) => ({
+            close: 90 + Math.sin(index / 4) * 0.7 + index * 0.05,
+            high: 91 + Math.sin(index / 4) * 0.7 + index * 0.05,
+            low: 89 + Math.sin(index / 4) * 0.7 + index * 0.05
+          }))
+        },
+        position: {
+          notional: 500,
+          entryPrice: 90,
+          quantity: 5.5,
+          strategyDecision: { family: "trend_following" },
+          strategyAtEntry: "vwap_trend",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "trend_following", activeStrategy: "vwap_trend" }, regimeSummary: { regime: "range" } }
+        }
+      },
+      {
+        symbol: "ZROUSDT",
+        profile: { cluster: "infra", sector: "infra" },
+        marketSnapshot: {
+          candles: Array.from({ length: 20 }, (_, index) => ({
+            close: 70 + Math.sin(index / 5) * 0.6 + index * 0.03,
+            high: 71 + Math.sin(index / 5) * 0.6 + index * 0.03,
+            low: 69 + Math.sin(index / 5) * 0.6 + index * 0.03
+          }))
+        },
+        position: {
+          notional: 420,
+          entryPrice: 70,
+          quantity: 6,
+          strategyDecision: { family: "trend_following" },
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "trend_following", activeStrategy: "ema_trend" }, regimeSummary: { regime: "range" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.equal(summary.sameRegimeCount, 2);
+  assert.equal(summary.sameFamilyCount, 2);
+  assert.equal(summary.regimeExposureSoftenedInPaper, true);
+  assert.ok(!summary.reasons.includes("regime_exposure_limit_hit"));
+  assert.ok(!summary.hardReasons.includes("regime_exposure_limit_hit"));
 });
 
 await runCheck("portfolio optimizer excludes the same open symbol from self-overlap blockers", async () => {

@@ -401,9 +401,10 @@ export class PortfolioOptimizer {
       sameRegimePositions.length >= this.config.maxRegimePositions &&
       sameClusterPositions.length < this.config.maxClusterPositions &&
       sameSectorPositions.length < this.config.maxSectorPositions &&
-      sameFamilyPositions.length === 0 &&
+      sameFamilyPositions.length < this.config.maxFamilyPositions &&
       sameStrategyPositions.length === 0 &&
-      maxCorrelation <= this.config.maxPairCorrelation;
+      maxCorrelation <= this.config.maxPairCorrelation &&
+      regimeHeat < 0.18;
     const regimeExposurePenalty = sameRegimePositions.length >= this.config.maxRegimePositions
       ? (regimeExposureSoftenedInPaper ? 0.84 : 0.7)
       : 1;
