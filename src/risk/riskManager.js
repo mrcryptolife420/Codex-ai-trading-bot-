@@ -1130,6 +1130,9 @@ export class RiskManager {
       canRelaxPaperSelfHeal(selfHealState)
       ? Math.max(rawSelfHealSizeMultiplier, 0.72)
       : rawSelfHealSizeMultiplier;
+    const paperLearningRecoveryActive = this.config.botMode === "paper" &&
+      selfHealState.mode === "low_risk_only" &&
+      canRelaxPaperSelfHeal(selfHealState);
     const metaSizeMultiplier = clamp(safeValue(metaSummary.sizeMultiplier) || 1, 0.1, 1.15);
     const strategyMetaSizeMultiplier = clamp(safeValue(strategyMetaSummary.sizeMultiplier) || 1, 0.75, 1.15);
     const venueSizeMultiplier = clamp((venueConfirmationSummary.status || "") === "blocked" ? 0.45 : (venueConfirmationSummary.confirmed ? 1.04 : 0.9), 0.45, 1.05);
@@ -1296,10 +1299,10 @@ export class RiskManager {
     if ((strategySummary.confidence || 0) >= strategyConfidenceFloor && (strategySummary.blockers || []).length && score.probability < threshold + 0.07) {
       reasons.push("strategy_context_mismatch");
     }
-    if (globalLossStreak >= this.config.maxLossStreak) {
+    if (globalLossStreak >= this.config.maxLossStreak && !paperLearningRecoveryActive) {
       reasons.push("portfolio_loss_streak_guard");
     }
-    if (symbolLossStreak >= this.config.maxSymbolLossStreak) {
+    if (symbolLossStreak >= this.config.maxSymbolLossStreak && !paperLearningRecoveryActive) {
       reasons.push("symbol_loss_streak_guard");
     }
     if (dailyLossFraction >= this.config.maxDailyDrawdown) {
@@ -1496,7 +1499,9 @@ export class RiskManager {
     const signalQualityFactor = clamp(0.76 + (signalQualitySummary.overallScore || 0.5) * 0.34, 0.5, 1.08);
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
-    const streakPenalty = clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
+    const streakPenalty = paperLearningRecoveryActive
+      ? clamp(1 - globalLossStreak * 0.02 - symbolLossStreak * 0.01, 0.88, 1)
+      : clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
 
     const quoteAmount =
       Math.min(maxByPosition, maxByRisk, remainingExposureBudget) *

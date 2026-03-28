@@ -1126,6 +1126,7 @@ function summarizePortfolio(portfolioSummary = {}) {
     regimeLastTradeAgeHours: Number.isFinite(portfolioSummary.regimeLastTradeAgeHours) ? num(portfolioSummary.regimeLastTradeAgeHours || 0, 1) : null,
     regimeKillSwitchActive: Boolean(portfolioSummary.regimeKillSwitchActive),
     regimeKillSwitchStale: Boolean(portfolioSummary.regimeKillSwitchStale),
+    regimeKillSwitchSoftenedInPaper: Boolean(portfolioSummary.regimeKillSwitchSoftenedInPaper),
     regimeExposureSoftenedInPaper: Boolean(portfolioSummary.regimeExposureSoftenedInPaper),
     selfPositionExcluded: Boolean(portfolioSummary.selfPositionExcluded),
     unknownClusterOverlapIgnored: Boolean(portfolioSummary.unknownClusterOverlapIgnored),

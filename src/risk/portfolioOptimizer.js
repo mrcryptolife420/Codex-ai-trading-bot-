@@ -415,6 +415,7 @@ export class PortfolioOptimizer {
     const regimeLossStreak = regimeLossStreakMeta?.streak ?? budgetState.regimeLossStreakMap?.[activeRegime] ?? 0;
     const regimeKillSwitchStale = Boolean(regimeLossStreakMeta?.stale);
     const regimeKillSwitchActive = !regimeKillSwitchStale && regimeLossStreak >= (this.config.portfolioRegimeKillSwitchLossStreak || 3);
+    const regimeKillSwitchSoftenedInPaper = this.config.botMode === "paper" && regimeKillSwitchActive;
 
     const sizeMultiplier = clamp(
       volatilityTargetFraction *
@@ -438,7 +439,7 @@ export class PortfolioOptimizer {
         portfolioHeatPenalty *
         cvarPenalty *
         drawdownBudgetPenalty *
-        (regimeKillSwitchActive ? 0.22 : 1),
+        (regimeKillSwitchActive ? (regimeKillSwitchSoftenedInPaper ? 0.74 : 0.22) : 1),
       0.18,
       1.12
     );
@@ -458,7 +459,7 @@ export class PortfolioOptimizer {
         portfolioHeat * 0.14 -
         Math.max(0, (budgetState.portfolioCvarPct || 0) - (this.config.portfolioMaxCvarPct || 0.028)) * 1.6 -
         Math.max(0, (budgetState.drawdownBudgetUsage || 0) - 1) * 0.18 -
-        (regimeKillSwitchActive ? 0.28 : 0),
+        (regimeKillSwitchActive ? (regimeKillSwitchSoftenedInPaper ? 0.08 : 0.28) : 0),
       0,
       1
     );
@@ -542,7 +543,9 @@ export class PortfolioOptimizer {
     }
     if (regimeKillSwitchActive) {
       reasons.push("regime_kill_switch_active");
-      hardReasons.push("regime_kill_switch_active");
+      if (!regimeKillSwitchSoftenedInPaper) {
+        hardReasons.push("regime_kill_switch_active");
+      }
     }
     if (clusterHeat >= 0.24) {
       reasons.push("cluster_heat_elevated");
@@ -589,6 +592,7 @@ export class PortfolioOptimizer {
       regimeLastTradeAgeHours: Number.isFinite(regimeLossStreakMeta?.lastTradeAgeHours) ? regimeLossStreakMeta.lastTradeAgeHours : null,
       regimeKillSwitchActive,
       regimeKillSwitchStale,
+      regimeKillSwitchSoftenedInPaper,
       regimeExposureSoftenedInPaper,
       cvarPenalty,
       drawdownBudgetPenalty,

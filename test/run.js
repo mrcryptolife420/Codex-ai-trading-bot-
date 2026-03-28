@@ -6728,6 +6728,65 @@ await runCheck("risk manager treats paper loss-streak guards as lenient near-mis
   assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
 });
 
+await runCheck("risk manager avoids duplicating loss-streak guard during paper self-heal recovery", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "TRXUSDT",
+    score: {
+      probability: 0.541,
+      confidence: 0.64,
+      calibrationConfidence: 0.74,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.545, confidence: 0.16 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 1.8, bookPressure: 0.09, microPriceEdgeBps: 0.22, depthConfidence: 0.82 },
+      market: { realizedVolPct: 0.011, atrPct: 0.008, bearishPatternScore: 0.02, bullishPatternScore: 0.18, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.04, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.09, signalScore: 0.05, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0.01, liquidationIntensity: 0.01 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 1.5 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.74, probability: 0.538, netScore: 0.03, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "trend_following",
+      family: "trend_following",
+      fitScore: 0.61,
+      confidence: 0.56,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 10, sampleConfidence: 0.66 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1, session: "late_us", isWeekend: false },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "low_risk_only", active: true, sizeMultiplier: 0.32, thresholdPenalty: 0.08, lowRiskOnly: true, learningAllowed: true, issues: ["loss_streak_limit"] },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-12T09:00:00.000Z", netPnlPct: -0.006, pnlQuote: -8, brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-12T10:00:00.000Z", netPnlPct: -0.004, pnlQuote: -5, brokerMode: "paper" },
+        { symbol: "SOLUSDT", exitAt: "2026-03-12T11:00:00.000Z", netPnlPct: -0.003, pnlQuote: -4, brokerMode: "paper" }
+      ]
+    },
+    balance: { quoteFree: 600 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.92, blockerReasons: [], cautionReasons: [] },
+    nowIso: "2026-03-12T12:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(!decision.suppressedReasons.includes("portfolio_loss_streak_guard"));
+  assert.ok(!decision.reasons.includes("portfolio_loss_streak_guard"));
+  assert.ok(decision.quoteAmount >= 25);
+});
+
 await runCheck("risk manager blocks additional paper recovery probes once the paper concurrent learning cap is reached", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningMaxConcurrentPositions: 1
@@ -15650,6 +15709,35 @@ await runCheck("portfolio optimizer does not keep stale regime kill switches act
   assert.equal(summary.regimeKillSwitchActive, false);
   assert.equal(summary.regimeKillSwitchStale, true);
   assert.ok(!summary.reasons.includes("regime_kill_switch_active"));
+});
+
+await runCheck("portfolio optimizer softens active regime kill switch in paper mode", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    botMode: "paper",
+    portfolioRegimeKillSwitchLossStreak: 2
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "ETHUSDT",
+    runtime: { lastKnownEquity: 9800 },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.02, exitAt: "2026-03-27T10:00:00.000Z", pnlQuote: -20 },
+        { symbol: "SOLUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.018, exitAt: "2026-03-27T11:00:00.000Z", pnlQuote: -18 },
+        { symbol: "ADAUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.017, exitAt: "2026-03-27T12:00:00.000Z", pnlQuote: -16 }
+      ],
+      scaleOuts: []
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.02 } },
+    candidateProfile: { cluster: "layer1", sector: "layer1" },
+    openPositionContexts: [],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.equal(summary.regimeKillSwitchActive, true);
+  assert.equal(summary.regimeKillSwitchSoftenedInPaper, true);
+  assert.ok(summary.reasons.includes("regime_kill_switch_active"));
+  assert.ok(!summary.hardReasons.includes("regime_kill_switch_active"));
+  assert.ok(summary.sizeMultiplier > 0.22);
 });
 
 await runCheck("portfolio optimizer softens broad regime-only overlap in paper mode", async () => {
