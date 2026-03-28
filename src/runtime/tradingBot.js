@@ -1128,6 +1128,8 @@ function summarizePortfolio(portfolioSummary = {}) {
     regimeKillSwitchStale: Boolean(portfolioSummary.regimeKillSwitchStale),
     regimeExposureSoftenedInPaper: Boolean(portfolioSummary.regimeExposureSoftenedInPaper),
     selfPositionExcluded: Boolean(portfolioSummary.selfPositionExcluded),
+    unknownClusterOverlapIgnored: Boolean(portfolioSummary.unknownClusterOverlapIgnored),
+    unknownSectorOverlapIgnored: Boolean(portfolioSummary.unknownSectorOverlapIgnored),
     sameFactorCount: portfolioSummary.sameFactorCount || 0,
     candidateFactors: [...(portfolioSummary.candidateFactors || [])],
     reasons: [...(portfolioSummary.reasons || [])],

@@ -15771,6 +15771,54 @@ await runCheck("portfolio optimizer excludes the same open symbol from self-over
   assert.ok(!summary.reasons.includes("cluster_budget_cooled"));
 });
 
+await runCheck("portfolio optimizer ignores generic other buckets for cluster and sector overlap", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    symbolProfiles: {
+      BFUSDUSDT: { cluster: "other", sector: "other" },
+      XPLUSDT: { cluster: "other", sector: "other" }
+    }
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "BFUSDUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: {
+      trades: [
+        { symbol: "XPLUSDT", strategyAtEntry: "bollinger_squeeze", strategyDecision: { family: "breakout" }, regimeAtEntry: "range", netPnlPct: -0.01, exitAt: "2026-03-27T10:00:00.000Z", pnlQuote: -10 }
+      ],
+      scaleOuts: []
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.01 } },
+    candidateProfile: { cluster: "other", sector: "other" },
+    openPositionContexts: [
+      {
+        symbol: "XPLUSDT",
+        profile: { cluster: "other", sector: "other" },
+        marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 50 + index, high: 51 + index, low: 49 + index })) },
+        position: {
+          notional: 500,
+          entryPrice: 50,
+          quantity: 10,
+          strategyDecision: { family: "mean_reversion" },
+          strategyAtEntry: "vwap_reversion",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "mean_reversion", activeStrategy: "vwap_reversion" }, regimeSummary: { regime: "range" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.equal(summary.sameClusterCount, 0);
+  assert.equal(summary.sameSectorCount, 0);
+  assert.equal(summary.unknownClusterOverlapIgnored, true);
+  assert.equal(summary.unknownSectorOverlapIgnored, true);
+  assert.equal(summary.clusterBudgetFactor, 1);
+  assert.equal(summary.sectorBudgetFactor, 1);
+  assert.ok(!summary.reasons.includes("cluster_exposure_limit_hit"));
+  assert.ok(!summary.reasons.includes("sector_exposure_limit_hit"));
+  assert.ok(!summary.reasons.includes("cluster_budget_cooled"));
+});
+
 await runCheck("portfolio optimizer ignores mild stale budget cooling without active exposure", async () => {
   const optimizer = new PortfolioOptimizer(makeConfig({
     symbolProfiles: {
@@ -15859,6 +15907,42 @@ await runCheck("committee still vetoes hard portfolio overlap risks", async () =
     rlAdvice: { expectedReward: 0.01, sizeMultiplier: 1, confidence: 0.4 }
   });
   assert.equal(summary.vetoes.some((item) => item.id === "portfolio_overlap"), true);
+});
+
+await runCheck("committee surfaces regime overlap explicitly for portfolio vetoes", async () => {
+  const committee = new MultiAgentCommittee(makeConfig());
+  const summary = committee.evaluate({
+    symbol: "ETHUSDT",
+    score: { probability: 0.57, confidence: 0.56, calibrationConfidence: 0.54, disagreement: 0.03 },
+    transformerScore: { probability: 0.56, confidence: 0.08, horizons: [], dominantHead: "trend" },
+    marketSnapshot: { book: { spreadBps: 2.2, bookPressure: 0.14, microPriceEdgeBps: 0.5 }, market: {} },
+    newsSummary: { coverage: 0, socialCoverage: 0, sentimentScore: 0, socialSentiment: 0, riskScore: 0.04, socialRisk: 0, confidence: 0, dominantEventType: "general" },
+    announcementSummary: { riskScore: 0.04 },
+    marketStructureSummary: { signalScore: 0.18, riskScore: 0.08, fundingRate: 0.00001, openInterestChangePct: 0.01 },
+    marketSentimentSummary: { contrarianScore: 0.05 },
+    volatilitySummary: { riskScore: 0.22 },
+    calendarSummary: { riskScore: 0.05, nextEventType: null, proximityHours: 48, confidence: 0.6 },
+    portfolioSummary: {
+      sizeMultiplier: 0.71,
+      maxCorrelation: 0.44,
+      sameClusterCount: 0,
+      sameSectorCount: 0,
+      sameFamilyCount: 0,
+      sameRegimeCount: 2,
+      sameStrategyCount: 0,
+      reasons: ["regime_exposure_limit_hit"],
+      hardReasons: ["regime_exposure_limit_hit"]
+    },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.59 },
+    executionPlan: { preferMaker: true, queueScore: 0.12, tradeFlow: 0.05, entryStyle: "pegged_limit_maker", makerPatienceMs: 2000 },
+    rlAdvice: { expectedReward: 0.01, sizeMultiplier: 1, confidence: 0.4 }
+  });
+  const portfolioAgent = summary.agents.find((item) => item.id === "portfolio");
+  assert.ok(portfolioAgent);
+  assert.equal(portfolioAgent.veto, "portfolio_overlap");
+  assert.ok(portfolioAgent.reasons.includes("regime_exposure_limit_hit"));
+  assert.ok(portfolioAgent.reasons.includes("regime 2"));
 });
 
 await runCheck("on-chain lite v2 summary captures majors and trending proxies", async () => {

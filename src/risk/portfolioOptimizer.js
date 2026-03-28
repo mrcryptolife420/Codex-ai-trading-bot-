@@ -54,6 +54,10 @@ function num(value, digits = 4) {
   return Number(safeValue(value).toFixed(digits));
 }
 
+function hasSpecificBucket(value) {
+  return typeof value === "string" && value.trim() && value !== "other";
+}
+
 function shouldFlagBudgetCooling({
   factor = 1,
   exposureCount = 0,
@@ -286,11 +290,15 @@ export class PortfolioOptimizer {
   evaluateCandidate({ symbol, runtime, journal = {}, marketSnapshot, candidateProfile, openPositionContexts, regimeSummary, strategySummary = {}, marketStructureSummary = {}, calendarSummary = {} }) {
     const allOpenPositionContexts = openPositionContexts || [];
     const comparableOpenPositionContexts = allOpenPositionContexts.filter((context) => context?.symbol && context.symbol !== symbol);
+    const candidateCluster = candidateProfile.cluster || "other";
+    const candidateSector = candidateProfile.sector || "other";
+    const hasSpecificCluster = hasSpecificBucket(candidateCluster);
+    const hasSpecificSector = hasSpecificBucket(candidateSector);
     const sameClusterPositions = comparableOpenPositionContexts.filter(
-      (context) => context.profile.cluster === candidateProfile.cluster
+      (context) => hasSpecificCluster && hasSpecificBucket(context.profile.cluster) && context.profile.cluster === candidateCluster
     );
     const sameSectorPositions = comparableOpenPositionContexts.filter(
-      (context) => context.profile.sector === candidateProfile.sector
+      (context) => hasSpecificSector && hasSpecificBucket(context.profile.sector) && context.profile.sector === candidateSector
     );
     const activeFamily = strategySummary.family || "unknown";
     const activeRegime = regimeSummary.regime || "unknown";
@@ -370,8 +378,8 @@ export class PortfolioOptimizer {
     const strategyBudgetFactor = budgetState.strategyBudgetMap[activeStrategy] || 1;
     const familyBudgetFactor = budgetState.familyBudgetMap[activeFamily] || 1;
     const regimeBudgetFactor = budgetState.regimeBudgetMap[activeRegime] || 1;
-    const clusterBudgetFactor = budgetState.clusterBudgetMap[candidateProfile.cluster] || 1;
-    const sectorBudgetFactor = budgetState.sectorBudgetMap[candidateProfile.sector] || 1;
+    const clusterBudgetFactor = hasSpecificCluster ? (budgetState.clusterBudgetMap[candidateCluster] || 1) : 1;
+    const sectorBudgetFactor = hasSpecificSector ? (budgetState.sectorBudgetMap[candidateSector] || 1) : 1;
     const factorBudgetFactor = candidateFactors.length
       ? average(candidateFactors.map((factor) => budgetState.factorBudgetMap[factor] || 1))
       : 1;
@@ -587,6 +595,8 @@ export class PortfolioOptimizer {
       candidateFactors,
       sameFactorCount: sameFactorPositions.length,
       selfPositionExcluded: allOpenPositionContexts.some((context) => context?.symbol === symbol),
+      unknownClusterOverlapIgnored: !hasSpecificCluster,
+      unknownSectorOverlapIgnored: !hasSpecificSector,
       allocatorScore,
       sizeMultiplier,
       reasons,
