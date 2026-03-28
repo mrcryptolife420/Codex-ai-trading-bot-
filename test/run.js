@@ -5134,6 +5134,73 @@ await runCheck("candidate quality quorum downgrades soft infra-only paper failur
   assert.ok(summary.blockerReasons.includes("provider_ops"));
 });
 
+await runCheck("candidate quality quorum accepts healthy rest-book fallback while local book is warming", async () => {
+  const summary = buildCandidateQualityQuorum({
+    symbol: "BTCUSDT",
+    marketSnapshot: {
+      book: {
+        localBookSynced: false,
+        depthConfidence: 0.42,
+        totalDepthNotional: 180000,
+        spreadBps: 3.4,
+        bookFallbackReady: true,
+        bookSource: "rest_book"
+      }
+    },
+    newsSummary: { coverage: 0, reliabilityScore: 0 },
+    exchangeSummary: { riskScore: 0.12, highPriorityCount: 0 },
+    calendarSummary: { riskScore: 0.12, proximityHours: 48 },
+    pairHealthSummary: { quarantined: false, health: "watch", score: 0.48 },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.66 },
+    sourceReliabilitySummary: { providerCount: 0, averageScore: 1, degradedCount: 0, coolingDownCount: 0 },
+    divergenceSummary: { leadBlocker: { status: "watch" }, averageScore: 0.08 },
+    venueConfirmationSummary: { status: "ready", venueCount: 0, divergenceBps: 0 },
+    config: makeConfig({ botMode: "paper", enableLocalOrderBook: true }),
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(summary.status, "ready");
+  assert.ok(!summary.blockerReasons.includes("local_book"));
+  assert.equal(summary.checks.find((item) => item.id === "local_book")?.detail.includes("rest fallback"), true);
+});
+
+await runCheck("candidate quality quorum ignores degraded news providers when the setup has no news input", async () => {
+  const summary = buildCandidateQualityQuorum({
+    symbol: "BTCUSDT",
+    marketSnapshot: {
+      book: {
+        localBookSynced: true,
+        depthConfidence: 0.74,
+        totalDepthNotional: 180000,
+        spreadBps: 3.4
+      }
+    },
+    newsSummary: { coverage: 0, reliabilityScore: 0 },
+    exchangeSummary: { riskScore: 0.12, highPriorityCount: 0 },
+    calendarSummary: { riskScore: 0.12, proximityHours: 48 },
+    pairHealthSummary: { quarantined: false, health: "watch", score: 0.48 },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.66 },
+    sourceReliabilitySummary: {
+      providerCount: 5,
+      averageScore: 0.05,
+      degradedCount: 5,
+      coolingDownCount: 0,
+      externalFeeds: {
+        providerCount: 9,
+        averageScore: 0.96,
+        degradedCount: 0,
+        coolingDownCount: 0
+      }
+    },
+    divergenceSummary: { leadBlocker: { status: "watch" }, averageScore: 0.08 },
+    venueConfirmationSummary: { status: "ready", venueCount: 0, divergenceBps: 0 },
+    config: makeConfig({ botMode: "paper", enableLocalOrderBook: true }),
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(summary.status, "ready");
+  assert.ok(!summary.blockerReasons.includes("provider_ops"));
+  assert.equal(summary.checks.find((item) => item.id === "provider_ops")?.detail, "external 0 degraded | avg 0.96");
+});
+
 await runCheck("risk manager blocks retired strategies and hot execution cost scopes", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -13320,6 +13387,80 @@ await runCheck("timeframe consensus blocks conflicting trend signals", async () 
   });
   assert.ok(summary.alignmentScore < 0.42);
   assert.ok(summary.blockerReasons.includes("cross_timeframe_misalignment"));
+});
+
+await runCheck("timeframe consensus avoids higher timeframe conflict when the trigger timeframe is still neutral", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: { interval: "5m", market: { emaTrendScore: 0.02, momentum20: -0.001, breakoutPct: 0.0004, supertrendDirection: 0, realizedVolPct: 0.018 } },
+        higher: { interval: "1h", market: { emaTrendScore: -0.72, momentum20: -0.02, breakoutPct: -0.013, supertrendDirection: -1, realizedVolPct: 0.021 } }
+      }
+    },
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "orderflow" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.ok(summary.alignmentScore < 0.42);
+  assert.ok(!summary.blockerReasons.includes("higher_tf_conflict"));
+  assert.ok(summary.reasons.includes("higher_tf_bias_without_lower_trigger"));
+});
+
+await runCheck("trading bot keeps healthy rest-book depth when local books are still warming", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ enableLocalOrderBook: true, enableCrossTimeframeConsensus: false, klineLimit: 24 });
+  bot.marketCache = {};
+  bot.recordEvent = () => {};
+  bot.logger = { warn() {} };
+  bot.health = { validateSnapshot: () => [] };
+  bot.stream = {
+    getSymbolStreamFeatures() {
+      return {
+        latestBookTicker: null,
+        recentTradeCount: 18,
+        tradeFlowImbalance: 0.12,
+        microTrend: 0.0025
+      };
+    },
+    getOrderBookSnapshot() {
+      return {
+        synced: false,
+        depthConfidence: 0.14,
+        totalDepthNotional: 0,
+        queueImbalance: 0,
+        queueRefreshScore: 0,
+        resilienceScore: 0,
+        depthAgeMs: null,
+        bids: [],
+        asks: []
+      };
+    }
+  };
+  bot.client = {
+    async getKlines() {
+      const intervalMs = 15 * 60_000;
+      return Array.from({ length: 24 }, (_, index) => {
+        const openTime = 1_700_000_000_000 + index * intervalMs;
+        return [openTime, "100", "101", "99", `${100 + index * 0.1}`, "12", openTime + intervalMs - 1, "1206", 10, "6", "603", "0"];
+      });
+    },
+    async getBookTicker() {
+      return { bidPrice: "100.00", askPrice: "100.08" };
+    },
+    async getOrderBook() {
+      return {
+        bids: [["100.00", "700"], ["99.99", "650"]],
+        asks: [["100.08", "680"], ["100.09", "620"]]
+      };
+    }
+  };
+
+  const snapshot = await TradingBot.prototype.getMarketSnapshot.call(bot, "BTCUSDT");
+  assert.equal(snapshot.book.localBookSynced, false);
+  assert.equal(snapshot.book.bookSource, "rest_book");
+  assert.equal(snapshot.book.bookFallbackReady, true);
+  assert.ok(snapshot.book.depthConfidence > 0.34);
+  assert.ok(snapshot.book.totalDepthNotional > 100000);
 });
 
 await runCheck("divergence monitor flags strategy drift between paper and live", async () => {

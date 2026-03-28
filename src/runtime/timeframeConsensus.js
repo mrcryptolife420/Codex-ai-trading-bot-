@@ -40,6 +40,8 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
   );
   const reasons = [];
   const blockers = [];
+  const lowerDirectional = Math.abs(lowerBias) >= 0.08;
+  const higherDirectional = Math.abs(higherBias) >= 0.16;
   if (directionAgreement >= 1 && Math.abs(higherBias) >= 0.18) {
     reasons.push("higher_tf_confirms_direction");
   }
@@ -53,8 +55,10 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
   if (alignmentScore < (config.crossTimeframeMinAlignmentScore || 0.42) && ["trend_following", "breakout", "market_structure"].includes(family)) {
     blockers.push("cross_timeframe_misalignment");
   }
-  if (Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0) && Math.abs(higherBias) >= 0.16) {
+  if (lowerDirectional && higherDirectional && Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0)) {
     blockers.push("higher_tf_conflict");
+  } else if (!lowerDirectional && higherDirectional) {
+    reasons.push("higher_tf_bias_without_lower_trigger");
   }
   if (regimeSummary.regime === "event_risk" && directionAgreement === 0 && volatilityGap > (config.crossTimeframeMaxVolGapPct || 0.03)) {
     blockers.push("event_regime_tf_noise");

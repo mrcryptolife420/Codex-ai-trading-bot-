@@ -502,7 +502,62 @@ function summarizeOrderBook(book = {}) {
     depthConfidence: num(book.depthConfidence || book.localBook?.depthConfidence || 0, 3),
     totalDepthNotional: num(book.totalDepthNotional || book.localBook?.totalDepthNotional || 0, 2),
     depthAgeMs: book.depthAgeMs ?? book.localBook?.depthAgeMs ?? null,
-    localBookSynced: Boolean(book.localBookSynced ?? book.localBook?.synced)
+    localBookSynced: Boolean(book.localBookSynced ?? book.localBook?.synced),
+    bookSource: book.bookSource || null,
+    bookFallbackReady: Boolean(book.bookFallbackReady)
+  };
+}
+
+function sumDepthNotional(levels = []) {
+  return arr(levels).reduce((total, [price, quantity]) => total + Number(price || 0) * Number(quantity || 0), 0);
+}
+
+function deriveOrderBookQuality({
+  book = {},
+  orderBook = {},
+  localBookSnapshot = null,
+  streamFeatures = {},
+  config = {}
+} = {}) {
+  const localBookSynced = Boolean(localBookSnapshot?.synced);
+  const restDepthNotional = sumDepthNotional(orderBook?.bids || []) + sumDepthNotional(orderBook?.asks || []);
+  const levelCount = arr(orderBook?.bids || []).length + arr(orderBook?.asks || []).length;
+  const spreadQuality = clamp(
+    1 - Number(book.spreadBps || 0) / Math.max((config.maxSpreadBps || 25) * 1.5, 1),
+    0,
+    1
+  );
+  const levelCoverage = clamp(levelCount / Math.max((config.streamDepthLevels || 20) * 2, 1), 0, 1);
+  const notionalCoverage = clamp(restDepthNotional / Math.max((config.universeMinDepthUsd || 30_000) * 4, 1), 0, 1);
+  const recentTradeCoverage = clamp(Number(streamFeatures.recentTradeCount || 0) / 24, 0, 1);
+  const fallbackDepthConfidence = clamp(
+    0.16 + spreadQuality * 0.26 + levelCoverage * 0.22 + notionalCoverage * 0.18 + recentTradeCoverage * 0.18,
+    0,
+    0.88
+  );
+  const depthConfidence = localBookSynced
+    ? Number(localBookSnapshot?.depthConfidence || 0)
+    : fallbackDepthConfidence;
+  const totalDepthNotional = localBookSynced
+    ? Number(localBookSnapshot?.totalDepthNotional || restDepthNotional || 0)
+    : restDepthNotional;
+  const bookSource = localBookSynced
+    ? "local_book"
+    : restDepthNotional > 0
+      ? "rest_book"
+      : "ticker_only";
+  const bookFallbackReady = !localBookSynced &&
+    bookSource === "rest_book" &&
+    depthConfidence >= 0.34 &&
+    totalDepthNotional >= Math.max((config.universeMinDepthUsd || 30_000) * 0.8, 25_000) &&
+    Number(book.spreadBps || 0) > 0 &&
+    Number(book.spreadBps || 0) <= Math.max((config.maxSpreadBps || 25) * 0.7, 10);
+  return {
+    localBookSynced,
+    depthConfidence,
+    totalDepthNotional,
+    bookSource,
+    bookFallbackReady
   };
 }
 
@@ -3309,18 +3364,43 @@ export function buildCandidateQualityQuorum({
   config,
   nowIso: generatedAt = new Date().toISOString()
 } = {}) {
+  const hasNewsCoverage = (newsSummary?.coverage || 0) > 0;
+  const providerOpsScope = hasNewsCoverage
+    ? {
+        providerCount: sourceReliabilitySummary?.providerCount || 0,
+        averageScore: sourceReliabilitySummary?.averageScore || 0,
+        degradedCount: sourceReliabilitySummary?.degradedCount || 0,
+        coolingDownCount: sourceReliabilitySummary?.coolingDownCount || 0,
+        label: "news"
+      }
+    : {
+        providerCount: sourceReliabilitySummary?.externalFeeds?.providerCount ?? sourceReliabilitySummary?.providerCount ?? 0,
+        averageScore: sourceReliabilitySummary?.externalFeeds?.averageScore ?? sourceReliabilitySummary?.averageScore ?? 0,
+        degradedCount: sourceReliabilitySummary?.externalFeeds?.degradedCount ?? sourceReliabilitySummary?.degradedCount ?? 0,
+        coolingDownCount: sourceReliabilitySummary?.externalFeeds?.coolingDownCount ?? sourceReliabilitySummary?.coolingDownCount ?? 0,
+        label: sourceReliabilitySummary?.externalFeeds ? "external" : "news"
+      };
+  const localBookDepthConfidence = marketSnapshot?.book?.depthConfidence || 0;
+  const localBookFallbackReady = Boolean(marketSnapshot?.book?.bookFallbackReady);
+  const localBookPassed = !config.enableLocalOrderBook || (
+    (
+      Boolean(marketSnapshot?.book?.localBookSynced) &&
+      localBookDepthConfidence >= 0.22
+    ) ||
+    localBookFallbackReady
+  );
+  const localBookDetail = !config.enableLocalOrderBook
+    ? "disabled"
+    : localBookFallbackReady
+      ? `rest fallback | depth ${num(localBookDepthConfidence, 2)}`
+      : `sync ${marketSnapshot?.book?.localBookSynced ? "ok" : "missing"} | depth ${num(localBookDepthConfidence, 2)}`;
   const checks = [
     {
       id: "local_book",
       label: "Local book",
       critical: true,
-      passed: !config.enableLocalOrderBook || (
-        Boolean(marketSnapshot?.book?.localBookSynced) &&
-        (marketSnapshot?.book?.depthConfidence || 0) >= 0.22
-      ),
-      detail: !config.enableLocalOrderBook
-        ? "disabled"
-        : `sync ${marketSnapshot?.book?.localBookSynced ? "ok" : "missing"} | depth ${num(marketSnapshot?.book?.depthConfidence || 0, 2)}`
+      passed: localBookPassed,
+      detail: localBookDetail
     },
     {
       id: "news_reliability",
@@ -3333,12 +3413,12 @@ export function buildCandidateQualityQuorum({
       id: "provider_ops",
       label: "Provider ops",
       critical: true,
-      passed: (sourceReliabilitySummary?.providerCount || 0) === 0 || (
-        (sourceReliabilitySummary?.averageScore || 0) >= config.sourceReliabilityMinOperationalScore &&
-        (sourceReliabilitySummary?.degradedCount || 0) <= 1 &&
-        (sourceReliabilitySummary?.coolingDownCount || 0) <= Math.max(1, Math.floor((sourceReliabilitySummary?.providerCount || 0) / 2))
+      passed: (providerOpsScope.providerCount || 0) === 0 || (
+        (providerOpsScope.averageScore || 0) >= config.sourceReliabilityMinOperationalScore &&
+        (providerOpsScope.degradedCount || 0) <= 1 &&
+        (providerOpsScope.coolingDownCount || 0) <= Math.max(1, Math.floor((providerOpsScope.providerCount || 0) / 2))
       ),
-      detail: `${sourceReliabilitySummary?.degradedCount || 0} degraded | avg ${num(sourceReliabilitySummary?.averageScore || 0, 2)}`
+      detail: `${providerOpsScope.label} ${providerOpsScope.degradedCount || 0} degraded | avg ${num(providerOpsScope.averageScore || 0, 2)}`
     },
     {
       id: "pair_health",
@@ -8192,14 +8272,23 @@ export class TradingBot {
       book.microTrend = streamFeatures.microTrend || 0;
       book.recentTradeCount = streamFeatures.recentTradeCount || 0;
       book.localBook = localBookSnapshot;
-      book.localBookSynced = Boolean(localBookSnapshot?.synced);
       book.queueImbalance = localBookSnapshot?.queueImbalance || 0;
       book.queueRefreshScore = localBookSnapshot?.queueRefreshScore || 0;
       book.replenishmentScore = localBookSnapshot?.queueRefreshScore || 0;
       book.resilienceScore = localBookSnapshot?.resilienceScore || 0;
-      book.depthConfidence = localBookSnapshot?.depthConfidence || 0;
-      book.depthAgeMs = localBookSnapshot?.depthAgeMs ?? null;
-      book.totalDepthNotional = localBookSnapshot?.totalDepthNotional || 0;
+      const orderBookQuality = deriveOrderBookQuality({
+        book,
+        orderBook: effectiveOrderBook,
+        localBookSnapshot,
+        streamFeatures,
+        config: this.config
+      });
+      book.localBookSynced = orderBookQuality.localBookSynced;
+      book.depthConfidence = orderBookQuality.depthConfidence;
+      book.depthAgeMs = orderBookQuality.localBookSynced ? localBookSnapshot?.depthAgeMs ?? null : null;
+      book.totalDepthNotional = orderBookQuality.totalDepthNotional;
+      book.bookSource = orderBookQuality.bookSource;
+      book.bookFallbackReady = orderBookQuality.bookFallbackReady;
       const snapshot = {
         symbol,
         candles,
