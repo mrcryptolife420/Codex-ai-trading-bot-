@@ -4089,6 +4089,100 @@ await runCheck("strategy router surfaces bear rally reclaim during spot-only dow
   assert.ok(summary.strategies.some((item) => item.id === "bear_rally_reclaim" && item.fitScore > 0.45));
 });
 
+await runCheck("strategy router can rerank strategy choice with adaptive allocation guidance", async () => {
+  const baseContext = {
+    symbol: "BTCUSDT",
+    marketSnapshot: {
+      market: {
+        rsi14: 32,
+        vwapGapPct: -0.009,
+        realizedVolPct: 0.012,
+        momentum5: -0.003,
+        momentum20: -0.0005,
+        emaGap: 0.0008,
+        emaTrendScore: 0.002,
+        emaTrendSlopePct: 0.001,
+        bullishPatternScore: 0.26,
+        bearishPatternScore: 0.06,
+        rangeCompression: 0.86,
+        breakoutPct: 0.001,
+        volumeZ: 0.6,
+        closeLocation: 0.72,
+        trendPersistence: 0.66,
+        obvSlope: 0.09,
+        trendStrength: 0.004,
+        structureBreakScore: 0.18,
+        liquiditySweepScore: 0.24,
+        wickSkew: -0.2,
+        adx14: 24,
+        dmiSpread: 0.08,
+        stochRsiK: 28,
+        mfi14: 39,
+        cmf20: 0.08
+      },
+      book: {
+        bookPressure: 0.29,
+        weightedDepthImbalance: 0.22,
+        microPriceEdgeBps: 1.2,
+        wallImbalance: 0.16,
+        spreadBps: 5
+      }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.06 },
+    announcementSummary: { riskScore: 0.01 },
+    calendarSummary: { riskScore: 0.03 },
+    marketStructureSummary: { signalScore: 0.12, crowdingBias: 0.03, fundingRate: 0.00001, openInterestChangePct: 0.02, takerImbalance: 0.12 },
+    regimeSummary: { regime: "range", confidence: 0.74 },
+    streamFeatures: { tradeFlowImbalance: 0.14 },
+    sessionSummary: { session: "london" }
+  };
+  const baseline = evaluateStrategySet(baseContext);
+  const reranked = evaluateStrategySet({
+    ...baseContext,
+    strategyAllocationScorer(strategyCandidate = {}) {
+      if (strategyCandidate.id === "ema_trend") {
+        return {
+          preferredStrategy: "ema_trend",
+          preferredFamily: "trend_following",
+          fitBoost: 0.035,
+          confidenceBoost: 0.02,
+          confidence: 0.72,
+          activeBias: 0.32,
+          posture: "favor",
+          notes: ["Allocator bevoordeelt ema_trend in range:london."]
+        };
+      }
+      if (strategyCandidate.family === "mean_reversion") {
+        return {
+          preferredStrategy: "ema_trend",
+          preferredFamily: "trend_following",
+          fitBoost: -0.02,
+          confidenceBoost: -0.015,
+          confidence: 0.72,
+          activeBias: -0.2,
+          posture: "cool",
+          notes: ["Allocator koelt mean reversion in deze bucket af."]
+        };
+      }
+      return {
+        preferredStrategy: "ema_trend",
+        preferredFamily: "trend_following",
+        fitBoost: 0,
+        confidenceBoost: 0,
+        confidence: 0.72,
+        activeBias: 0,
+        posture: "neutral",
+        notes: []
+      };
+    }
+  });
+  assert.notEqual(baseline.activeStrategy, reranked.activeStrategy);
+  assert.equal(reranked.activeStrategy, "ema_trend");
+  assert.equal(reranked.adaptiveSelection.applied, true);
+  assert.equal(reranked.adaptiveSelection.preferredStrategy, "ema_trend");
+  assert.ok(reranked.strategies.find((item) => item.id === "ema_trend")?.adaptiveBoost > 0);
+});
+
 await runCheck("market feature computation surfaces non-duplicate trend-state indicators", async () => {
   const candles = Array.from({ length: 36 }, (_, index) => {
     const drift = index < 24 ? index * 0.45 : 24 * 0.45 + (index - 24) * 0.82;

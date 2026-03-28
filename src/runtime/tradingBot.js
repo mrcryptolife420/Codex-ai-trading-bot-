@@ -857,6 +857,13 @@ function summarizeStrategy(strategySummary = {}) {
       fitScore: num(family.fitScore || 0, 4),
       confidence: num(family.confidence || 0, 4)
     })),
+    adaptiveSelection: {
+      applied: Boolean(strategySummary.adaptiveSelection?.applied),
+      changedActiveStrategy: Boolean(strategySummary.adaptiveSelection?.changedActiveStrategy),
+      preferredStrategy: strategySummary.adaptiveSelection?.preferredStrategy || null,
+      preferredFamily: strategySummary.adaptiveSelection?.preferredFamily || null,
+      notes: arr(strategySummary.adaptiveSelection?.notes || []).slice(0, 3)
+    },
     strategies: arr(strategySummary.strategies || []).slice(0, 5).map((strategy) => ({
       id: strategy.id,
       label: strategy.label,
@@ -868,8 +875,11 @@ function summarizeStrategy(strategySummary = {}) {
       fitScore: num(strategy.fitScore || 0, 4),
       rawFitScore: num(strategy.rawFitScore || strategy.fitScore || 0, 4),
       optimizerBoost: num(strategy.optimizerBoost || 0, 4),
+      adaptiveBoost: num(strategy.adaptiveBoost || 0, 4),
+      adaptiveConfidenceBoost: num(strategy.adaptiveConfidenceBoost || 0, 4),
       historicalTradeCount: strategy.historicalTradeCount || 0,
       historicalWinRate: strategy.historicalWinRate == null ? null : num(strategy.historicalWinRate, 4),
+      adaptiveAllocation: summarizeStrategyAllocation(strategy.adaptiveAllocation || {}),
       reasons: [...(strategy.reasons || [])],
       blockers: [...(strategy.blockers || [])]
     }))
@@ -9081,6 +9091,24 @@ export class TradingBot {
       calendarSummary,
       regimeSummary,
       streamFeatures,
+      sessionSummary,
+      strategyAllocationScorer: (strategyCandidate = {}) => this.model.scoreStrategyAllocation({
+        score: {
+          probability: strategyCandidate.fitScore || 0.5,
+          confidence: strategyCandidate.confidence || 0
+        },
+        marketSnapshot,
+        newsSummary,
+        marketStructureSummary,
+        strategySummary: {
+          family: strategyCandidate.family || "trend_following",
+          activeStrategy: strategyCandidate.id || "trend_following",
+          fitScore: strategyCandidate.fitScore || 0.5,
+          confidence: strategyCandidate.confidence || 0
+        },
+        regimeSummary,
+        sessionSummary
+      }),
       optimizerSummary,
       exchangeCapabilities: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}
     });

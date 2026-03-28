@@ -210,6 +210,66 @@ function applyOptimizer(strategies, optimizerSummary = {}) {
   });
 }
 
+function applyAdaptiveAllocation(strategies, context = {}) {
+  const scorer = typeof context.strategyAllocationScorer === "function"
+    ? context.strategyAllocationScorer
+    : null;
+  if (!scorer) {
+    return {
+      strategies,
+      selection: {
+        applied: false,
+        changedActiveStrategy: false,
+        preferredStrategy: null,
+        preferredFamily: null,
+        notes: []
+      }
+    };
+  }
+  const originalLeader = strategies[0]?.id || null;
+  const reranked = strategies.map((strategy) => {
+    const adaptive = scorer(strategy) || {};
+    const fitBoost = clamp(safeValue(adaptive.fitBoost), -0.04, 0.04);
+    const confidenceBoost = clamp(safeValue(adaptive.confidenceBoost), -0.025, 0.025);
+    const fitScore = clamp(strategy.fitScore + fitBoost, 0, 1);
+    const confidence = clamp(strategy.confidence + confidenceBoost, 0, 1);
+    const reasons = [...strategy.reasons];
+    if (adaptive.preferredStrategy === strategy.id && Math.abs(fitBoost) >= 0.003) {
+      reasons.push(`allocator ${fitBoost >= 0 ? "boost" : "cool"} ${(fitBoost * 100).toFixed(1)}%`);
+    }
+    return {
+      ...strategy,
+      fitScore,
+      confidence,
+      adaptiveBoost: fitBoost,
+      adaptiveConfidenceBoost: confidenceBoost,
+      adaptiveAllocation: {
+        preferredFamily: adaptive.preferredFamily || null,
+        preferredStrategy: adaptive.preferredStrategy || null,
+        posture: adaptive.posture || "neutral",
+        confidence: clamp(safeValue(adaptive.confidence), 0, 1),
+        activeBias: safeValue(adaptive.activeBias),
+        thresholdShift: safeValue(adaptive.thresholdShift),
+        sizeMultiplier: safeValue(adaptive.sizeMultiplier, 1),
+        explorationWeight: clamp(safeValue(adaptive.explorationWeight), 0, 1),
+        notes: [...(adaptive.notes || [])].slice(0, 3)
+      },
+      reasons: reasons.slice(0, 6)
+    };
+  }).sort((left, right) => right.fitScore - left.fitScore);
+  const leaderAdaptive = reranked[0]?.adaptiveAllocation || {};
+  return {
+    strategies: reranked,
+    selection: {
+      applied: true,
+      changedActiveStrategy: Boolean(originalLeader && reranked[0]?.id && reranked[0].id !== originalLeader),
+      preferredStrategy: leaderAdaptive.preferredStrategy || reranked[0]?.id || null,
+      preferredFamily: leaderAdaptive.preferredFamily || reranked[0]?.family || null,
+      notes: [...(leaderAdaptive.notes || [])].slice(0, 3)
+    }
+  };
+}
+
 function buildFamilyRankings(strategies) {
   const byFamily = new Map();
   for (const strategy of strategies) {
@@ -723,7 +783,9 @@ export function evaluateStrategySet(context) {
     evaluateOpenInterestBreakout(context),
     evaluateOrderbookImbalance(context)
   ];
-  const strategies = applyOptimizer(baseStrategies, context.optimizerSummary).sort((left, right) => right.fitScore - left.fitScore);
+  const optimizedStrategies = applyOptimizer(baseStrategies, context.optimizerSummary).sort((left, right) => right.fitScore - left.fitScore);
+  const adaptiveSelection = applyAdaptiveAllocation(optimizedStrategies, context);
+  const strategies = adaptiveSelection.strategies;
   const familyRankings = buildFamilyRankings(strategies);
   const active = strategies[0];
   const runnerUp = strategies[1] || null;
@@ -748,7 +810,8 @@ export function evaluateStrategySet(context) {
     strategies,
     familyRankings,
     strategyMap: Object.fromEntries(strategies.map((strategy) => [strategy.id, strategy])),
-    optimizer: context.optimizerSummary || null
+    optimizer: context.optimizerSummary || null,
+    adaptiveSelection: adaptiveSelection.selection
   };
 }
 
