@@ -708,6 +708,101 @@ function resolvePaperLearningLane({
   };
 }
 
+function buildStrategyAllocationGovernanceState({
+  config = {},
+  botMode = "paper",
+  allow = false,
+  reasons = [],
+  learningLane = null,
+  strategySummary = {},
+  strategyAllocationSummary = {},
+  paperLearningBudget = {},
+  samplingState = {},
+  canOpenAnotherPaperLearningPosition = true
+} = {}) {
+  const activeStrategy = strategySummary.activeStrategy || strategyAllocationSummary.activeStrategy || null;
+  const activeFamily = strategySummary.family || strategyAllocationSummary.activeFamily || null;
+  const preferredStrategy = strategyAllocationSummary.preferredStrategy || null;
+  const preferredFamily = strategyAllocationSummary.preferredFamily || null;
+  const posture = strategyAllocationSummary.posture || "neutral";
+  const confidence = clamp(safeValue(strategyAllocationSummary.confidence, 0), 0, 1);
+  const activeBias = safeValue(strategyAllocationSummary.activeBias, 0);
+  const explorationWeight = clamp(safeValue(strategyAllocationSummary.explorationWeight, 0), 0, 1);
+  const fitBoost = safeValue(strategyAllocationSummary.fitBoost, 0);
+  const hardBlocked = reasons.some((reason) => isHardPaperLearningBlocker(reason));
+  const shadowRemaining = Math.max(0, Math.round(paperLearningBudget.shadowRemaining || 0));
+  const probeRemaining = Math.max(0, Math.round(paperLearningBudget.probeRemaining || 0));
+  const canOpenProbe = canOpenAnotherPaperLearningPosition && probeRemaining > 0 && samplingState.canOpenProbe !== false;
+  const canQueueShadow = shadowRemaining > 0 && !hardBlocked;
+  const favorThreshold = Math.max(0.42, safeValue(config.strategyAllocationGovernanceMinConfidence, 0.44));
+  const coolThreshold = Math.max(0.4, favorThreshold - 0.04);
+  const notes = [...(strategyAllocationSummary.notes || [])];
+  const preferenceMismatch =
+    (preferredStrategy && activeStrategy && preferredStrategy !== activeStrategy) ||
+    (preferredFamily && activeFamily && preferredFamily !== activeFamily);
+  const state = {
+    status: "neutral",
+    applied: false,
+    mode: "observe",
+    recommendedLane: learningLane,
+    priorityBoost: 0,
+    posture,
+    confidence,
+    activeBias,
+    preferredStrategy,
+    preferredFamily,
+    activeStrategy,
+    activeFamily,
+    preferenceMismatch,
+    notes
+  };
+
+  if (botMode !== "paper" || !activeStrategy) {
+    return state;
+  }
+
+  if (posture === "favor" && confidence >= favorThreshold && activeBias >= 0.08) {
+    state.status = "favoring";
+    state.priorityBoost = clamp(0.03 + confidence * 0.05 + explorationWeight * 0.04 + Math.max(0, fitBoost) * 0.4, 0.03, 0.12);
+    if (allow && learningLane === "safe" && canOpenProbe && explorationWeight >= 0.12) {
+      state.recommendedLane = "probe";
+      state.mode = "priority_probe";
+      state.applied = true;
+      state.notes = [...notes, `Allocator geeft ${activeStrategy} extra paper-prioriteit binnen ${preferredFamily || activeFamily || "de huidige family"}.`];
+      return state;
+    }
+    state.mode = state.priorityBoost >= 0.04 ? "priority" : "observe";
+    state.applied = state.priorityBoost >= 0.04;
+    if (state.applied) {
+      state.notes = [...notes, `Allocator bevoordeelt ${activeStrategy} nu voor extra paper-sampling.`];
+    }
+    return state;
+  }
+
+  if (posture === "cool" && confidence >= coolThreshold && activeBias <= -0.08) {
+    state.status = "cooling";
+    if (allow && learningLane === "safe" && canOpenProbe) {
+      state.recommendedLane = "probe";
+      state.mode = "probe_only";
+      state.applied = true;
+      state.notes = [...notes, `Allocator koelt ${activeStrategy} af; alleen probe-exposure blijft nu verantwoord.`];
+      return state;
+    }
+    if (!allow && canQueueShadow) {
+      state.recommendedLane = "shadow";
+      state.mode = "shadow_only";
+      state.applied = true;
+      state.notes = [...notes, `Allocator koelt ${activeStrategy} af; shadow learning krijgt nu voorrang.`];
+      return state;
+    }
+    state.mode = "cooling_only";
+    state.notes = [...notes, `Allocator koelt ${activeStrategy} af, maar er is nu geen extra probe/shadow capaciteit beschikbaar.`];
+    return state;
+  }
+
+  return state;
+}
+
 function toBoolean(value, fallback = false) {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
@@ -1169,6 +1264,7 @@ export class RiskManager {
     ,
     venueConfirmationSummary = {},
     strategyMetaSummary = {},
+    strategyAllocationSummary = {},
     exchangeCapabilitiesSummary = {}
   }) {
     const reasons = [];
@@ -2044,6 +2140,35 @@ export class RiskManager {
         samplingState: paperLearningSampling
       }));
     }
+    let strategyAllocationGovernance = buildStrategyAllocationGovernanceState({
+      config: this.config,
+      botMode: this.config.botMode,
+      allow,
+      reasons,
+      learningLane,
+      strategySummary,
+      strategyAllocationSummary,
+      paperLearningBudget,
+      samplingState: paperLearningSampling,
+      canOpenAnotherPaperLearningPosition
+    });
+    if (this.config.botMode === "paper" && strategyAllocationGovernance.applied) {
+      if (strategyAllocationGovernance.recommendedLane && strategyAllocationGovernance.recommendedLane !== learningLane) {
+        learningLane = strategyAllocationGovernance.recommendedLane;
+      }
+      if (strategyAllocationGovernance.priorityBoost > 0) {
+        learningValueScore = clamp(learningValueScore + strategyAllocationGovernance.priorityBoost, 0, 1);
+        activeLearningState = {
+          ...activeLearningState,
+          activeLearningScore: clamp(
+            safeValue(activeLearningState.activeLearningScore, 0) + strategyAllocationGovernance.priorityBoost * 0.55,
+            0,
+            1
+          ),
+          focusReason: activeLearningState.focusReason || "allocator_priority"
+        };
+      }
+    }
 
     return {
       allow,
@@ -2055,6 +2180,7 @@ export class RiskManager {
       paperLearningBudget,
       paperLearningSampling,
       paperActiveLearning: activeLearningState,
+      strategyAllocationGovernance,
       paperThresholdSandbox: {
         ...paperThresholdSandbox,
         thresholdBeforeSandbox,

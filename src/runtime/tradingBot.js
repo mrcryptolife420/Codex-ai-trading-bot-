@@ -7201,12 +7201,18 @@ export class TradingBot {
     const rankedActiveCandidates = scoredLearningEntries
       .map((item) => ({
         symbol: item.symbol || null,
-        score: item.paperLearning?.activeLearning?.score || 0,
+        score: clamp(
+          (item.paperLearning?.activeLearning?.score || 0) +
+          (item.paperLearning?.allocatorGovernance?.priorityBoost || 0),
+          0,
+          1
+        ),
         reason: item.paperLearning?.activeLearning?.focusReason || null,
         noveltyScore: item.paperLearning?.noveltyScore || 0,
         rarityScore: item.paperLearning?.rarityScore || 0,
         disagreementScore: item.paperLearning?.activeLearning?.disagreementScore || 0,
         uncertaintyScore: item.paperLearning?.activeLearning?.uncertaintyScore || 0,
+        allocatorGovernance: item.paperLearning?.allocatorGovernance || null,
         scopeLabel: [
           item.paperLearning?.scope?.family || item.strategy?.family || null,
           item.paperLearning?.scope?.regime || item.regime || null,
@@ -7884,7 +7890,11 @@ export class TradingBot {
             type: "active_candidate",
             id: rankedActiveCandidates[0].symbol || "candidate",
             priority: rankedActiveCandidates[0].priorityBand === "high_priority" ? "high" : "normal",
-            note: `${rankedActiveCandidates[0].symbol || "Deze candidate"} is nu de meest informatieve active-learning case.`
+            note: rankedActiveCandidates[0].allocatorGovernance?.mode === "shadow_only"
+              ? `${rankedActiveCandidates[0].symbol || "Deze candidate"} wordt nu allocator-gestuurd als shadow-only leercase.`
+              : rankedActiveCandidates[0].allocatorGovernance?.mode === "priority_probe"
+                ? `${rankedActiveCandidates[0].symbol || "Deze candidate"} krijgt allocator-prioriteit als probe-case.`
+                : `${rankedActiveCandidates[0].symbol || "Deze candidate"} is nu de meest informatieve active-learning case.`
           }
         : null
     ].filter(Boolean);
@@ -8006,6 +8016,11 @@ export class TradingBot {
         activeLearning.focusReason
           ? `Active learning focust nu vooral op ${activeLearning.focusReason}.`
           : "Active learning heeft nog geen uitgesproken focus.",
+        rankedActiveCandidates[0]?.allocatorGovernance?.mode === "shadow_only"
+          ? `${rankedActiveCandidates[0].symbol || "De top candidate"} wordt door de allocator afgekoeld naar shadow learning.`
+          : rankedActiveCandidates[0]?.allocatorGovernance?.mode === "priority_probe"
+            ? `${rankedActiveCandidates[0].symbol || "De top candidate"} krijgt extra allocator-prioriteit als probe.`
+            : "Allocator-governance houdt de paper-lanes voorlopig neutraal.",
         benchmarkLanes.bestLane
           ? `Benchmark lane nu sterkst: ${benchmarkLanes.bestLane}.`
           : "Nog geen benchmark lane zichtbaar.",
@@ -9429,6 +9444,7 @@ export class TradingBot {
       venueConfirmationSummary,
       exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
       strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
+      strategyAllocationSummary: score.strategyAllocation || strategyAllocationSummary,
       nowIso: now.toISOString()
     });
     decision.rankScore = num((decision.rankScore || 0) + (attributionSummary.rankBoost || 0), 4);
@@ -10003,6 +10019,7 @@ export class TradingBot {
           regime: candidate.decision.paperLearningSampling?.scope?.regime || null,
           session: candidate.decision.paperLearningSampling?.scope?.session || null
         },
+        allocatorGovernance: candidate.decision.strategyAllocationGovernance || null,
         probeCaps: candidate.decision.paperLearningSampling?.probeCaps || null,
         budget: candidate.decision.paperLearningBudget || null,
         blockerCategories: candidate.decision.paperBlockerCategories || {},
@@ -11060,6 +11077,7 @@ export class TradingBot {
           family: decision.paperLearning.scope?.family || null,
           regime: decision.paperLearning.scope?.regime || null
         },
+        allocatorGovernance: decision.paperLearning.allocatorGovernance || null,
         probeCaps: decision.paperLearning.probeCaps || null,
         budget: decision.paperLearning.budget || null
       } : null,

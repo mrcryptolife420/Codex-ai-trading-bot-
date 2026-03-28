@@ -8206,6 +8206,143 @@ await runCheck("risk manager spreads paper probes across sessions", async () => 
   assert.equal(decision.paperLearningSampling.probeCaps.sessionLimit, 1);
 });
 
+await runCheck("risk manager upgrades allocator-favored paper entries into probe priority", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.612,
+      confidence: 0.58,
+      calibrationConfidence: 0.82,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.605, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 0.42, bookPressure: 0.14, microPriceEdgeBps: 0.08, depthConfidence: 0.86 },
+      market: { realizedVolPct: 0.011, atrPct: 0.008, bearishPatternScore: 0.02, bullishPatternScore: 0.11, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.04, eventBullishScore: 0, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.05, signalScore: 0.08, crowdingBias: 0.01, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.16, contrarianScore: 0.06 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.02, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.83, probability: 0.6, confidence: 0.68, netScore: 0.06, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.66,
+      confidence: 0.61,
+      blockers: [],
+      agreementGap: 0.01,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    strategyAllocationSummary: {
+      preferredStrategy: "ema_trend",
+      preferredFamily: "trend_following",
+      activeStrategy: "ema_trend",
+      activeFamily: "trend_following",
+      posture: "favor",
+      confidence: 0.74,
+      activeBias: 0.22,
+      explorationWeight: 0.24,
+      fitBoost: 0.022,
+      notes: ["Allocator ziet ema_trend nu als de beste paper probe."]
+    },
+    sessionSummary: { session: "europe", blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [], counterfactualQueue: [] },
+    journal: { trades: [], counterfactuals: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0.12, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.76 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T11:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "standard");
+  assert.equal(decision.learningLane, "probe");
+  assert.equal(decision.strategyAllocationGovernance.mode, "priority_probe");
+  assert.equal(decision.strategyAllocationGovernance.applied, true);
+  assert.ok((decision.strategyAllocationGovernance.priorityBoost || 0) > 0.03);
+});
+
+await runCheck("risk manager cools allocator-disfavored paper setups into shadow learning", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const baseInput = {
+    symbol: "DOGEUSDT",
+    score: {
+      probability: 0.31,
+      confidence: 0.2,
+      calibrationConfidence: 0.72,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.32, confidence: 0.04 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 0.7, bookPressure: -0.04, microPriceEdgeBps: 0.02, depthConfidence: 0.78 },
+      market: { realizedVolPct: 0.013, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.08, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.01, eventBullishScore: 0, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.26, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.02, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.74, probability: 0.34, confidence: 0.42, netScore: -0.02, sizeMultiplier: 0.96, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.3, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "liquidity_sweep",
+      family: "market_structure",
+      fitScore: 0.61,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { session: "weekend", blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.61, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [], counterfactualQueue: [] },
+    journal: { trades: [], counterfactuals: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0.1, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.7 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-12T11:00:00.000Z"
+  };
+  const baseline = manager.evaluateEntry(baseInput);
+  const cooled = manager.evaluateEntry({
+    ...baseInput,
+    strategyAllocationSummary: {
+      preferredStrategy: "ema_trend",
+      preferredFamily: "trend_following",
+      activeStrategy: "liquidity_sweep",
+      activeFamily: "market_structure",
+      posture: "cool",
+      confidence: 0.72,
+      activeBias: -0.24,
+      explorationWeight: 0.18,
+      fitBoost: -0.028,
+      notes: ["Allocator koelt liquidity_sweep in deze bucket af."]
+    }
+  });
+  assert.equal(baseline.learningLane, null);
+  assert.equal(cooled.allow, false);
+  assert.equal(cooled.learningLane, "shadow");
+  assert.equal(cooled.strategyAllocationGovernance.mode, "shadow_only");
+  assert.equal(cooled.strategyAllocationGovernance.applied, true);
+});
+
 await runCheck("risk manager blocks repetitive paper probes when novelty is too low", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningMinNoveltyScore: 0.95,
