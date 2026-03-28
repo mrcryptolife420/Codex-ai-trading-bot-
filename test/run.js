@@ -5545,6 +5545,67 @@ await runCheck("risk manager treats weekend breakout block as soft in paper expl
   assert.ok(decision.suppressedReasons.includes("weekend_high_risk_strategy_block"));
 });
 
+await runCheck("risk manager does not weekend-block liquidity sweep setups in paper", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "UNIUSDT",
+    score: {
+      probability: 0.521,
+      calibrationConfidence: 0.74,
+      confidence: 0.44,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.524, confidence: 0.09 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 1.4,
+        bookPressure: 0.12,
+        microPriceEdgeBps: 0.2,
+        depthConfidence: 0.88,
+        bookSource: "local_book",
+        bookFallbackReady: false,
+        localBookSynced: true
+      },
+      market: {
+        realizedVolPct: 0.014,
+        atrPct: 0.01,
+        bearishPatternScore: 0.02,
+        bullishPatternScore: 0.12,
+        closeLocationQuality: 0.68,
+        volumeAcceptanceScore: 0.56,
+        breakoutFollowThroughScore: 0.22,
+        anchoredVwapAcceptanceScore: 0.61,
+        anchoredVwapRejectionScore: 0.12
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.06, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.9, probability: 0.52, confidence: 0.7, netScore: 0.02, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "liquidity_sweep", family: "market_structure", fitScore: 0.54, confidence: 0.44, blockers: [], agreementGap: 0.04 },
+    sessionSummary: { isWeekend: true, blockerReasons: [], lowLiquidity: false, riskScore: 0.08, sizeMultiplier: 0.82, thresholdPenalty: 0.012 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "high_vol", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-14T18:00:00.000Z"
+  });
+
+  assert.ok(!decision.reasons.includes("weekend_high_risk_strategy_block"));
+});
+
 await runCheck("risk manager does not add committee confidence blocker when committee improves the model score", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -6579,6 +6640,66 @@ await runCheck("risk manager softens pure model-disagreement committee vetoes in
   assert.ok(decision.reasons.includes("model_confidence_too_low"));
   assert.ok(!decision.reasons.includes("committee_veto"));
   assert.deepEqual(decision.committeeVetoObservation.vetoIds, ["model_disagreement"]);
+  assert.equal(decision.committeeVetoObservation.softenedInPaper, true);
+});
+
+await runCheck("risk manager does not duplicate portfolio overlap as committee veto in paper", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "UNIUSDT",
+    score: {
+      probability: 0.53,
+      confidence: 0.46,
+      calibrationConfidence: 0.66,
+      disagreement: 0.04,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.525, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.04, microPriceEdgeBps: 0.16, depthConfidence: 0.86 },
+      market: { realizedVolPct: 0.015, atrPct: 0.009, bearishPatternScore: 0.03, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.02, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.05, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.1 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: {
+      agreement: 0.84,
+      probability: 0.518,
+      confidence: 0.68,
+      netScore: -0.01,
+      sizeMultiplier: 0.92,
+      vetoes: [{ id: "portfolio_overlap" }]
+    },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.008 },
+    strategySummary: {
+      activeStrategy: "liquidity_sweep",
+      family: "market_structure",
+      fitScore: 0.54,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 6, sampleConfidence: 0.55 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.63, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 0.86, maxCorrelation: 0.8, reasons: ["cluster_exposure_limit_hit", "cluster_budget_cooled"] },
+    regimeSummary: { regime: "high_vol", confidence: 0.69 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T09:00:00.000Z"
+  });
+  assert.ok(!decision.reasons.includes("committee_veto"));
+  assert.ok(decision.reasons.includes("cluster_exposure_limit_hit"));
+  assert.equal(decision.committeeVetoObservation.redundantInDecision, true);
   assert.equal(decision.committeeVetoObservation.softenedInPaper, true);
 });
 

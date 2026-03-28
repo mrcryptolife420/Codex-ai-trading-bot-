@@ -84,6 +84,47 @@ function isPaperLeniencyReason(reason, selfHealState = {}) {
   return isSoftPaperReason(reason);
 }
 
+function usesWeekendHighRiskStrategyGate(strategySummary = {}) {
+  const family = strategySummary.family || "";
+  const activeStrategy = strategySummary.activeStrategy || "";
+  if (["breakout", "derivatives"].includes(family)) {
+    return true;
+  }
+  if (family === "market_structure") {
+    return ["market_structure_break"].includes(activeStrategy);
+  }
+  return false;
+}
+
+function isRedundantCommitteeVeto({ committeeVetoIds = [], portfolioSummary = {}, strategySummary = {} } = {}) {
+  if (!committeeVetoIds.length) {
+    return false;
+  }
+  const vetoSet = new Set(committeeVetoIds);
+  const portfolioReasons = new Set(portfolioSummary.reasons || []);
+  const strategyBlockers = new Set(strategySummary.blockers || []);
+  const portfolioCovered =
+    vetoSet.has("portfolio_overlap") &&
+    [
+      "cluster_exposure_limit_hit",
+      "sector_exposure_limit_hit",
+      "pair_correlation_too_high",
+      "family_exposure_limit_hit",
+      "regime_exposure_limit_hit",
+      "strategy_exposure_limit_hit",
+      "portfolio_cvar_budget_hit",
+      "portfolio_drawdown_budget_hit",
+      "regime_kill_switch_active"
+    ].some((reason) => portfolioReasons.has(reason));
+  const strategyCovered =
+    vetoSet.has("strategy_context_mismatch") &&
+    strategyBlockers.size > 0;
+  return committeeVetoIds.every((id) =>
+    (id === "portfolio_overlap" && portfolioCovered) ||
+    (id === "strategy_context_mismatch" && strategyCovered)
+  );
+}
+
 function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
@@ -1242,7 +1283,7 @@ export class RiskManager {
     if ((sessionSummary.lowLiquidity || false) && (marketSnapshot.book.spreadBps || 0) > this.config.sessionLowLiquiditySpreadBps) {
       reasons.push("session_liquidity_guard");
     }
-    if (sessionSummary.isWeekend && this.config.blockWeekendHighRiskStrategies && ["breakout", "market_structure", "derivatives"].includes(strategySummary.family || "")) {
+    if (sessionSummary.isWeekend && this.config.blockWeekendHighRiskStrategies && usesWeekendHighRiskStrategyGate(strategySummary)) {
       reasons.push("weekend_high_risk_strategy_block");
     }
     if ((marketStructureSummary.riskScore || 0) > 0.82) {
@@ -1276,7 +1317,10 @@ export class RiskManager {
     const softPaperCommitteeDisagreement =
       this.config.botMode === "paper" &&
       isSoftPaperCommitteeDisagreementOnly({ committeeSummary, score });
-    if (committeeVetoIds.length && !softPaperCommitteeDisagreement) {
+    const redundantCommitteeVeto =
+      this.config.botMode === "paper" &&
+      isRedundantCommitteeVeto({ committeeVetoIds, portfolioSummary, strategySummary });
+    if (committeeVetoIds.length && !softPaperCommitteeDisagreement && !redundantCommitteeVeto) {
       reasons.push("committee_veto");
     }
     const committeeGuardBuffer = this.config.botMode === "paper" ? 0.08 : 0.02;
@@ -1891,7 +1935,8 @@ export class RiskManager {
       modelAbstainReasons: abstainReasons,
       committeeVetoObservation: {
         vetoIds: committeeVetoIds,
-        softenedInPaper: softPaperCommitteeDisagreement
+        softenedInPaper: softPaperCommitteeDisagreement || redundantCommitteeVeto,
+        redundantInDecision: redundantCommitteeVeto
       },
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
