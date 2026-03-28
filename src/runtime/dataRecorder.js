@@ -1162,7 +1162,7 @@ export class DataRecorder {
     return payload;
   }
 
-  async recordDatasetCuration({ at, journal = {}, newsCache = {}, sourceReliability = {}, paperLearning = {} } = {}) {
+  async recordDatasetCuration({ at, journal = {}, newsCache = {}, sourceReliability = {}, paperLearning = {}, offlineTrainer = {} } = {}) {
     if (!this.config.dataRecorderEnabled || !at) {
       return null;
     }
@@ -1208,6 +1208,18 @@ export class DataRecorder {
         executionLearning: {
           executionDragCount: trades.filter((trade) => trade.paperLearningOutcome?.executionQuality === "weak" || trade.paperLearningOutcome?.outcome === "execution_drag").length,
           avgExecutionQuality: num(average(trades.map((trade) => trade.executionQualityScore || 0), 0), 4)
+        },
+        featureGovernance: {
+          status: offlineTrainer.featureGovernance?.status || "warmup",
+          parityStatus: offlineTrainer.featureGovernance?.parityAudit?.status || "warmup",
+          pruningStatus: offlineTrainer.featureGovernance?.pruning?.status || "warmup",
+          guardStatus: offlineTrainer.featureGovernance?.guardEffectiveness?.status || "warmup",
+          topPositiveFeatures: arr(offlineTrainer.featureGovernance?.attribution?.topPositive || []).slice(0, 4).map((item) => item.id || null).filter(Boolean),
+          topNegativeFeatures: arr(offlineTrainer.featureGovernance?.attribution?.topNegative || []).slice(0, 4).map((item) => item.id || null).filter(Boolean),
+          dropCandidates: arr(offlineTrainer.featureGovernance?.pruning?.dropCandidates || []).slice(0, 4),
+          guardOnlyFeatures: arr(offlineTrainer.featureGovernance?.pruning?.guardOnlyFeatures || []).slice(0, 4),
+          missingInLive: arr(offlineTrainer.featureGovernance?.parityAudit?.missingInLive || []).slice(0, 4),
+          topRetuneGuard: offlineTrainer.featureGovernance?.guardEffectiveness?.topRetuneGuard || null
         },
         regimeLearning: {
           topRegimes: Object.entries(

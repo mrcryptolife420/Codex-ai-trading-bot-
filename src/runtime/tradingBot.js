@@ -1550,6 +1550,85 @@ function summarizeOfflineTrainer(summary = {}) {
       averagePredictiveScore: num(summary.featureDecay?.averagePredictiveScore || 0, 4),
       notes: [...(summary.featureDecay?.notes || [])]
     },
+    featureGovernance: {
+      status: summary.featureGovernance?.status || "warmup",
+      attribution: {
+        trackedFeatureCount: summary.featureGovernance?.attribution?.trackedFeatureCount || 0,
+        topPositive: arr(summary.featureGovernance?.attribution?.topPositive || []).slice(0, 6).map((item) => ({
+          id: item.id || null,
+          group: item.group || "context",
+          tier: item.tier || "atomic",
+          tradeCount: item.tradeCount || 0,
+          signedEdge: num(item.signedEdge || 0, 4),
+          predictiveScore: num(item.predictiveScore || 0, 4),
+          influenceScore: num(item.influenceScore || 0, 4),
+          status: item.status || null
+        })),
+        topNegative: arr(summary.featureGovernance?.attribution?.topNegative || []).slice(0, 6).map((item) => ({
+          id: item.id || null,
+          group: item.group || "context",
+          tier: item.tier || "atomic",
+          tradeCount: item.tradeCount || 0,
+          signedEdge: num(item.signedEdge || 0, 4),
+          predictiveScore: num(item.predictiveScore || 0, 4),
+          influenceScore: num(item.influenceScore || 0, 4),
+          status: item.status || null
+        }))
+      },
+      parityAudit: {
+        status: summary.featureGovernance?.parityAudit?.status || "warmup",
+        trackedFeatureCount: summary.featureGovernance?.parityAudit?.trackedFeatureCount || 0,
+        alignedCount: summary.featureGovernance?.parityAudit?.alignedCount || 0,
+        watchCount: summary.featureGovernance?.parityAudit?.watchCount || 0,
+        misalignedCount: summary.featureGovernance?.parityAudit?.misalignedCount || 0,
+        missingInLive: [...(summary.featureGovernance?.parityAudit?.missingInLive || [])].slice(0, 8),
+        details: arr(summary.featureGovernance?.parityAudit?.details || []).slice(0, 8).map((item) => ({
+          id: item.id || null,
+          status: item.status || "aligned",
+          paperCoverage: num(item.paperCoverage || 0, 4),
+          liveCoverage: num(item.liveCoverage || 0, 4),
+          coverageGap: num(item.coverageGap || 0, 4),
+          predictiveScore: num(item.predictiveScore || 0, 4)
+        }))
+      },
+      pruning: {
+        status: summary.featureGovernance?.pruning?.status || "warmup",
+        activeFeatures: [...(summary.featureGovernance?.pruning?.activeFeatures || [])].slice(0, 8),
+        shadowFeatures: [...(summary.featureGovernance?.pruning?.shadowFeatures || [])].slice(0, 8),
+        guardOnlyFeatures: [...(summary.featureGovernance?.pruning?.guardOnlyFeatures || [])].slice(0, 8),
+        dropCandidates: [...(summary.featureGovernance?.pruning?.dropCandidates || [])].slice(0, 8),
+        recommendations: arr(summary.featureGovernance?.pruning?.recommendations || []).slice(0, 8).map((item) => ({
+          id: item.id || null,
+          action: item.action || "observe_only",
+          status: item.status || "shadow",
+          group: item.group || "context",
+          tier: item.tier || "atomic",
+          predictiveScore: num(item.predictiveScore || 0, 4),
+          influenceScore: num(item.influenceScore || 0, 4),
+          parityStatus: item.parityStatus || "aligned",
+          redundancyScore: num(item.redundancyScore || 0, 4),
+          rationale: item.rationale || null
+        }))
+      },
+      guardEffectiveness: {
+        status: summary.featureGovernance?.guardEffectiveness?.status || "warmup",
+        topReliableGuard: summary.featureGovernance?.guardEffectiveness?.topReliableGuard || null,
+        topRetuneGuard: summary.featureGovernance?.guardEffectiveness?.topRetuneGuard || null,
+        scorecards: arr(summary.featureGovernance?.guardEffectiveness?.scorecards || []).slice(0, 8).map((item) => ({
+          id: item.id || null,
+          total: item.total || 0,
+          goodVetoCount: item.goodVetoCount || 0,
+          badVetoCount: item.badVetoCount || 0,
+          lateVetoCount: item.lateVetoCount || 0,
+          timingIssueCount: item.timingIssueCount || 0,
+          precision: num(item.precision || 0, 4),
+          missRate: num(item.missRate || 0, 4),
+          governanceScore: num(item.governanceScore || 0, 4),
+          status: item.status || "watch"
+        }))
+      },
+      notes: [...(summary.featureGovernance?.notes || [])]
+    },
     retrainReadiness: summary.retrainReadiness ? {
       status: summary.retrainReadiness.status || "warmup",
       score: num(summary.retrainReadiness.score || 0, 4),
@@ -4469,7 +4548,8 @@ export class TradingBot {
       journal: this.journal,
       newsCache: this.runtime.newsCache || {},
       sourceReliability: this.runtime.sourceReliability || {},
-      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
+      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {},
+      offlineTrainer: offlineTrainerSummary
     }).then(() => {
       this.runtime.dataRecorder = this.dataRecorder.getSummary();
     }).catch((error) => {
@@ -9410,7 +9490,8 @@ export class TradingBot {
       journal: this.journal,
       newsCache: this.runtime.newsCache || {},
       sourceReliability: this.runtime.sourceReliability || {},
-      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {}
+      paperLearning: this.runtime.paperLearning || this.runtime.ops?.paperLearning || {},
+      offlineTrainer: governance.offlineTrainerSummary || this.runtime.offlineTrainer || {}
     }));
     await this.dispatchOperatorAlerts(cycleAt);
     await this.backupManager.maybeBackup({
@@ -10924,4 +11005,3 @@ export class TradingBot {
     return this.buildPublicReportView(this.getPerformanceReport());
   }
 }
-

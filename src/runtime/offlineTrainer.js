@@ -1,4 +1,5 @@
 import { clamp } from "../utils/math.js";
+import { buildFeatureGovernanceSummary } from "../strategy/featureGovernance.js";
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -1147,6 +1148,13 @@ export class OfflineTrainer {
     const thresholdPolicy = buildThresholdPolicy(blockerScorecards, this.config);
     const exitLearning = buildExitLearning(learningReadyTrades);
     const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
+    const featureGovernance = buildFeatureGovernanceSummary({
+      trades: learningReadyTrades,
+      paperTrades,
+      liveTrades,
+      counterfactuals: usableCounterfactuals,
+      featureScorecards: featureDecay.scorecards || []
+    });
     const scopeRetrainReadiness = buildScopedRetrainReadiness({
       paperTrades,
       liveTrades,
@@ -1229,6 +1237,7 @@ export class OfflineTrainer {
       exitScorecards: exitLearning.scorecards || [],
       featureDecay,
       featureDecayScorecards: featureDecay.scorecards || [],
+      featureGovernance,
       scopeRetrainReadiness,
       retrainReadiness,
       retrainFocusPlan,
@@ -1262,6 +1271,8 @@ export class OfflineTrainer {
         featureDecay.weakestFeature
           ? `${featureDecay.weakestFeature} toont momenteel de meeste feature decay.`
           : "Feature-decay tracking warmt nog op.",
+        featureGovernance.notes?.[0] || "Feature-governance warmt nog op.",
+        featureGovernance.notes?.[1] || "Feature parity en pruning hebben nog meer data nodig.",
         retrainReadiness.note,
         retrainFocusPlan.note,
         retrainExecutionPlan.notes?.[0],

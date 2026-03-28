@@ -7526,6 +7526,15 @@ await runCheck("data recorder stores historical news frames and dataset curation
       },
       sourceReliability: { operationalReliability: 0.77 },
       paperLearning: { status: "building" },
+      offlineTrainer: {
+        featureGovernance: {
+          status: "watch",
+          attribution: { topPositive: [{ id: "trend_quality_composite" }], topNegative: [{ id: "downside_vol_dominance" }] },
+          parityAudit: { status: "misaligned", missingInLive: ["trend_quality_composite"] },
+          pruning: { status: "action_required", dropCandidates: ["stoch_cross"], guardOnlyFeatures: ["trend_quality_composite"] },
+          guardEffectiveness: { status: "retune", topRetuneGuard: "relative_weakness_vs_market" }
+        }
+      },
       journal: {
         trades: [
           { brokerMode: "paper", regimeAtEntry: "trend", executionQualityScore: 0.74, paperLearningOutcome: { outcome: "good_trade", executionQuality: "solid" } },
@@ -7545,6 +7554,9 @@ await runCheck("data recorder stores historical news frames and dataset curation
     assert.equal(datasetPayload.frameType, "dataset_curation");
     assert.equal(datasetPayload.datasets.paperLearning.status, "building");
     assert.equal(datasetPayload.datasets.vetoReview.badVetoCount, 1);
+    assert.equal(datasetPayload.datasets.featureGovernance.parityStatus, "misaligned");
+    assert.equal(datasetPayload.datasets.featureGovernance.topRetuneGuard, "relative_weakness_vs_market");
+    assert.ok(datasetPayload.datasets.featureGovernance.dropCandidates.includes("stoch_cross"));
     assert.equal(recorder.getSummary().newsFrames, 1);
     assert.equal(recorder.getSummary().datasetFrames, 1);
     assert.equal(recorder.getSummary().sourceCoverage[0].provider, "coindesk");
@@ -12878,6 +12890,38 @@ await runCheck("offline trainer builds blocker and regime veto scorecards", asyn
   assert.ok(summary.regimeDeployment.readyRegimes.includes("trend"));
 });
 
+await runCheck("offline trainer builds feature governance attribution parity and pruning plans", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 18, netPnlPct: 0.016, executionQualityScore: 0.74, labelScore: 0.82, rawFeatures: { trend_quality_composite: 1.2, breakout_quality_composite: 0.9, stoch_cross: 0.4 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T11:00:00.000Z", pnlQuote: 15, netPnlPct: 0.013, executionQualityScore: 0.72, labelScore: 0.78, rawFeatures: { trend_quality_composite: 1.1, breakout_quality_composite: 0.8, stoch_cross: 0.35 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "SOLUSDT", exitAt: "2026-03-09T12:00:00.000Z", pnlQuote: 12, netPnlPct: 0.011, executionQualityScore: 0.69, labelScore: 0.75, rawFeatures: { trend_quality_composite: 1.05, breakout_quality_composite: 0.72, stoch_cross: 0.3 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "BNBUSDT", exitAt: "2026-03-09T13:00:00.000Z", pnlQuote: 10, netPnlPct: 0.009, executionQualityScore: 0.68, labelScore: 0.72, rawFeatures: { trend_quality_composite: 0.98, breakout_quality_composite: 0.65, stoch_cross: 0.28 }, strategyAtEntry: "ema_trend", regimeAtEntry: "trend", brokerMode: "paper" },
+        { symbol: "ADAUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -9, netPnlPct: -0.01, executionQualityScore: 0.46, labelScore: 0.32, rawFeatures: { trend_quality_composite: -0.9, breakout_quality_composite: -0.65, stoch_cross: 0.62 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" },
+        { symbol: "XRPUSDT", exitAt: "2026-03-09T15:00:00.000Z", pnlQuote: -7, netPnlPct: -0.008, executionQualityScore: 0.48, labelScore: 0.36, rawFeatures: { trend_quality_composite: -0.82, breakout_quality_composite: -0.58, stoch_cross: 0.6 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" },
+        { symbol: "DOGEUSDT", exitAt: "2026-03-09T16:00:00.000Z", pnlQuote: -6, netPnlPct: -0.007, executionQualityScore: 0.44, labelScore: 0.38, rawFeatures: { trend_quality_composite: -0.76, breakout_quality_composite: -0.52, stoch_cross: 0.59 }, strategyAtEntry: "vwap_reversion", regimeAtEntry: "range", brokerMode: "paper" },
+        { symbol: "AVAXUSDT", exitAt: "2026-03-09T17:00:00.000Z", pnlQuote: 5, netPnlPct: 0.004, executionQualityScore: 0.62, labelScore: 0.61, rawFeatures: { breakout_quality_composite: 0.42 }, strategyAtEntry: "donchian_breakout", regimeAtEntry: "breakout", brokerMode: "live" }
+      ]
+    },
+    dataRecorder: { learningFrames: 14, decisionFrames: 22 },
+    counterfactuals: [
+      { outcome: "good_veto", blockerReasons: ["trend_acceptance_failed"], realizedMovePct: -0.014 },
+      { outcome: "bad_veto", blockerReasons: ["relative_weakness_vs_market"], realizedMovePct: 0.022 },
+      { outcome: "late_veto", blockerReasons: ["relative_weakness_vs_market"], realizedMovePct: 0.011 }
+    ],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+
+  assert.equal(summary.featureGovernance.attribution.topPositive[0].id, "trend_quality_composite");
+  assert.equal(summary.featureGovernance.parityAudit.status, "misaligned");
+  assert.ok(summary.featureGovernance.parityAudit.missingInLive.includes("trend_quality_composite"));
+  assert.ok(summary.featureGovernance.pruning.dropCandidates.includes("stoch_cross"));
+  assert.equal(summary.featureGovernance.guardEffectiveness.topRetuneGuard, "relative_weakness_vs_market");
+  assert.ok(summary.notes.some((note) => note.includes("feature")));
+});
+
 await runCheck("adaptive model exposes expert mix and neural overlays", async () => {
   const model = new AdaptiveTradingModel(undefined, makeConfig({ enableTransformerChallenger: false }));
   const rawFeatures = {
@@ -13221,4 +13265,3 @@ await runCheck("performance report exposes trade quality review and scorecards",
 });
 
 console.log("All checks passed.");
-
