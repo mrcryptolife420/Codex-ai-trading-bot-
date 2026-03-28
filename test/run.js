@@ -464,6 +464,76 @@ await runCheck("adaptive model exposes transformer challenger outputs", async ()
   assert.ok(score.transformer.confidence >= 0);
 });
 
+await runCheck("adaptive model limits low-confidence challenger drag on blended probability", async () => {
+  const config = makeConfig();
+  const model = new AdaptiveTradingModel(undefined, config);
+  for (const specialist of Object.values(model.models.champion)) {
+    specialist.score = () => ({ probability: 0.64, confidence: 0.72, contributions: [], preparedFeatures: {} });
+  }
+  for (const specialist of Object.values(model.models.challenger)) {
+    specialist.score = () => ({ probability: 0.18, confidence: 0.01, contributions: [], preparedFeatures: {} });
+  }
+  model.calibrator.calibrate = () => ({
+    calibratedProbability: 0.62,
+    confidence: 0.78,
+    globalConfidence: 0.76,
+    warmupProgress: 1
+  });
+  model.transformer.score = () => ({ probability: 0.64, confidence: 0, dominantHead: "trend", headScores: {}, attention: [], horizons: [], drivers: [], query: {} });
+  model.sequence.score = () => ({ probability: 0.64, confidence: 0, inputs: {}, drivers: [], sampleCount: 0 });
+  model.metaNeural.score = () => ({ probability: 0.64, confidence: 0.5, action: "allow", contributions: [] });
+  model.executionNeural.score = () => ({ probability: 0.64, confidence: 0.5, action: "allow", contributions: [] });
+  model.strategyMeta.score = () => ({ preferredFamily: "trend_following", preferredExecutionStyle: "limit_maker", families: [], executionStyles: [], confidence: 0.4 });
+
+  const score = model.score(
+    { trend_quality_composite: 0.42, strategy_fit: 0.66 },
+    {
+      regimeSummary: { regime: "trend", confidence: 0.78, bias: 0.2, reasons: ["persistent_trend"] },
+      marketSnapshot: { market: { emaTrendScore: 0.24, momentum20: 0.018 }, book: {} },
+      timeframeSummary: { alignmentScore: 0.74 }
+    }
+  );
+
+  assert.ok(score.challengerWeight < 0.09);
+  assert.ok(score.probability > 0.6);
+  assert.ok(score.probability > score.challengerProbability + 0.35);
+});
+
+await runCheck("adaptive model still lets high-confidence challenger influence the blend", async () => {
+  const config = makeConfig();
+  const model = new AdaptiveTradingModel(undefined, config);
+  for (const specialist of Object.values(model.models.champion)) {
+    specialist.score = () => ({ probability: 0.64, confidence: 0.72, contributions: [], preparedFeatures: {} });
+  }
+  for (const specialist of Object.values(model.models.challenger)) {
+    specialist.score = () => ({ probability: 0.18, confidence: 0.82, contributions: [], preparedFeatures: {} });
+  }
+  model.calibrator.calibrate = () => ({
+    calibratedProbability: 0.62,
+    confidence: 0.78,
+    globalConfidence: 0.76,
+    warmupProgress: 1
+  });
+  model.transformer.score = () => ({ probability: 0.64, confidence: 0, dominantHead: "trend", headScores: {}, attention: [], horizons: [], drivers: [], query: {} });
+  model.sequence.score = () => ({ probability: 0.64, confidence: 0, inputs: {}, drivers: [], sampleCount: 0 });
+  model.metaNeural.score = () => ({ probability: 0.64, confidence: 0.5, action: "allow", contributions: [] });
+  model.executionNeural.score = () => ({ probability: 0.64, confidence: 0.5, action: "allow", contributions: [] });
+  model.strategyMeta.score = () => ({ preferredFamily: "trend_following", preferredExecutionStyle: "limit_maker", families: [], executionStyles: [], confidence: 0.4 });
+
+  const score = model.score(
+    { trend_quality_composite: 0.42, strategy_fit: 0.66 },
+    {
+      regimeSummary: { regime: "trend", confidence: 0.78, bias: 0.2, reasons: ["persistent_trend"] },
+      marketSnapshot: { market: { emaTrendScore: 0.24, momentum20: 0.018 }, book: {} },
+      timeframeSummary: { alignmentScore: 0.74 }
+    }
+  );
+
+  assert.ok(score.challengerWeight >= 0.14);
+  assert.ok(score.probability < 0.58);
+  assert.ok(score.probability > 0.54);
+});
+
 await runCheck("adaptive model exposes strategy meta guidance", async () => {
   const config = makeConfig();
   const model = new AdaptiveTradingModel(undefined, config);

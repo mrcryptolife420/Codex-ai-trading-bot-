@@ -21,6 +21,14 @@ function num(value, digits = 4) {
   return Number(safeNumber(value).toFixed(digits));
 }
 
+function computeChallengerBlendWeight(challengerConfidence, calibrationWarmup) {
+  const confidence = clamp(challengerConfidence, 0, 1);
+  const warmup = clamp(calibrationWarmup, 0, 1);
+  const baseBlend = 0.02 + warmup * 0.05;
+  const adaptiveBlend = confidence * (0.04 + warmup * 0.08);
+  return clamp(baseBlend + adaptiveBlend, 0.02, 0.15);
+}
+
 function bootstrapSpecialists(baseState) {
   return Object.fromEntries(
     REGIMES.map((regime) => [regime, OnlineTradingModel.bootstrapState(baseState)])
@@ -394,7 +402,7 @@ export class AdaptiveTradingModel {
     );
     const hasCalibrationGate = calibrationWarmup >= 1;
     const calibrationWeight = 0.08 + calibrationWarmup * 0.2;
-    const challengerWeight = 0.14;
+    const challengerWeight = computeChallengerBlendWeight(challengerScore.confidence, calibrationWarmup);
     const transformerBlend = clamp(transformerScore.confidence * (0.04 + calibrationWarmup * 0.06), 0, 0.1);
     const sequenceBlend = clamp(sequenceScore.confidence * (0.03 + calibrationWarmup * 0.05), 0, 0.09);
     const championWeight = clamp(1 - calibrationWeight - challengerWeight - transformerBlend - sequenceBlend, 0.45, 0.76);
@@ -508,6 +516,7 @@ export class AdaptiveTradingModel {
       expertMix,
       calibrator: calibration,
       championProbability: championScore.probability,
+      challengerWeight,
       challengerProbability: challengerScore.probability,
       transformerProbability: transformerScore.probability,
       sequenceProbability: sequenceScore.probability,
