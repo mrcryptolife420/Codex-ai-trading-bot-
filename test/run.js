@@ -14909,6 +14909,97 @@ await runCheck("trading bot hides rejected policy transitions during cooldown wi
   assert.ok(!summary.policyTransitions.candidates.some((item) => item.id === "safe_lane" && item.action === "promote_candidate"));
 });
 
+await runCheck("paper learning summary surfaces allocator-driven probe promotion candidates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "BTCUSDT",
+        allow: true,
+        learningLane: "probe",
+        learningValueScore: 0.81,
+        strategy: { family: "trend_following" },
+        regime: "trend",
+        session: { session: "asia" },
+        paperLearning: {
+          scope: { family: "trend_following", regime: "trend", session: "asia" },
+          noveltyScore: 0.64,
+          activeLearning: { score: 0.78, focusReason: "allocator_priority" },
+          allocatorGovernance: {
+            applied: true,
+            mode: "priority_probe",
+            confidence: 0.74,
+            priorityBoost: 0.08,
+            preferredStrategy: "ema_trend",
+            activeStrategy: "ema_trend"
+          }
+        }
+      }
+    ],
+    counterfactualQueue: [],
+    openPositions: [],
+    operatorPolicyState: { approvals: [], dismissals: [], strategyOverrides: {} },
+    offlineTrainer: { blockerScorecards: [] },
+    modelRegistry: { promotionPolicy: { allowPromotion: false, readyLevel: "paper", blockerReasons: ["sample_size_low"] } },
+    strategyRetirement: { policies: [], notes: [] },
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = { trades: [], counterfactuals: [] };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T10:00:00.000Z");
+  const candidate = summary.policyTransitions.candidates.find((item) => item.source === "adaptive_allocator" && item.action === "promote_candidate");
+  assert.ok(candidate);
+  assert.equal(candidate.allocatorMode, "priority_probe");
+  assert.equal(candidate.scope, "trend_following | trend | asia");
+  assert.equal(candidate.preferredStrategy, "ema_trend");
+});
+
+await runCheck("paper learning summary surfaces allocator-driven cooling candidates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [
+      {
+        symbol: "DOGEUSDT",
+        allow: false,
+        learningLane: "shadow",
+        learningValueScore: 0.58,
+        strategy: { family: "market_structure", activeStrategy: "liquidity_sweep" },
+        regime: "range",
+        session: { session: "weekend" },
+        blockerReasons: ["model_confidence_too_low"],
+        paperLearning: {
+          scope: { family: "market_structure", regime: "range", session: "weekend" },
+          noveltyScore: 0.57,
+          activeLearning: { score: 0.52, focusReason: "threshold_near_miss" },
+          allocatorGovernance: {
+            applied: true,
+            mode: "shadow_only",
+            confidence: 0.72,
+            activeBias: -0.24,
+            preferredStrategy: "ema_trend",
+            activeStrategy: "liquidity_sweep"
+          }
+        }
+      }
+    ],
+    counterfactualQueue: [],
+    openPositions: [],
+    operatorPolicyState: { approvals: [], dismissals: [], strategyOverrides: {} },
+    offlineTrainer: { blockerScorecards: [] },
+    modelRegistry: { promotionPolicy: { allowPromotion: false, readyLevel: "warmup", blockerReasons: ["collect_more_data"] } },
+    strategyRetirement: { policies: [], notes: [] },
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = { trades: [], counterfactuals: [] };
+  const summary = bot.buildPaperLearningSummary(bot.runtime.latestDecisions, "2026-03-12T10:00:00.000Z");
+  const candidate = summary.policyTransitions.candidates.find((item) => item.source === "adaptive_allocator" && item.action === "cooldown_candidate");
+  assert.ok(candidate);
+  assert.equal(candidate.id, "liquidity_sweep");
+  assert.equal(candidate.allocatorMode, "shadow_only");
+  assert.equal(candidate.preferredStrategy, "ema_trend");
+});
+
 await runCheck("refresh analysis resolves counterfactual queue so shadow cases stay current", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {

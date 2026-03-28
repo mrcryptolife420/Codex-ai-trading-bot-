@@ -2422,6 +2422,9 @@ function summarizePaperLearning(summary = {}) {
         scope: item.scope || null,
         reason: item.reason || null,
         blocker: item.blocker || null,
+        source: item.source || null,
+        allocatorMode: item.allocatorMode || null,
+        preferredStrategy: item.preferredStrategy || null,
         approved: Boolean(item.approved)
       })),
       note: summary.policyTransitions.note || null
@@ -7699,6 +7702,75 @@ export class TradingBot {
       return Number.isFinite(at) && (new Date(referenceNow).getTime() - at) <= 24 * 60 * 60 * 1000;
     });
     const approvedTransitions = arr(operatorPolicyState.approvals || []).slice(0, 10);
+    const allocatorPolicyCandidates = [];
+    const allocatorCandidateKeys = new Set();
+    for (const item of scoredLearningEntries) {
+      const allocatorGovernance = item.paperLearning?.allocatorGovernance || null;
+      if (!allocatorGovernance?.applied) {
+        continue;
+      }
+      const scopeLabel = [
+        item.paperLearning?.scope?.family || item.strategy?.family || null,
+        item.paperLearning?.scope?.regime || item.regime || null,
+        item.paperLearning?.scope?.session || item.session?.session || null
+      ].filter(Boolean).join(" | ") || item.symbol || null;
+      if (!scopeLabel) {
+        continue;
+      }
+      if (allocatorGovernance.mode === "priority_probe") {
+        const key = `allocator_priority:${scopeLabel}`;
+        if (allocatorCandidateKeys.has(key)) {
+          continue;
+        }
+        allocatorCandidateKeys.add(key);
+        allocatorPolicyCandidates.push({
+          id: item.symbol || allocatorGovernance.activeStrategy || scopeLabel,
+          type: "allocator_scope",
+          action: "promote_candidate",
+          confidence: clamp(
+            0.44 +
+            (item.paperLearning?.activeLearning?.score || 0) * 0.22 +
+            (allocatorGovernance.priorityBoost || 0) * 0.8 +
+            (allocatorGovernance.confidence || 0) * 0.14,
+            0,
+            0.96
+          ),
+          scope: scopeLabel,
+          reason: `${item.symbol || allocatorGovernance.activeStrategy || "Deze scope"} krijgt allocator-prioriteit als probe-case.`,
+          blocker: null,
+          source: "adaptive_allocator",
+          allocatorMode: allocatorGovernance.mode,
+          preferredStrategy: allocatorGovernance.preferredStrategy || allocatorGovernance.activeStrategy || null
+        });
+        continue;
+      }
+      if (["shadow_only", "probe_only"].includes(allocatorGovernance.mode)) {
+        const strategyId = allocatorGovernance.activeStrategy || item.strategy?.activeStrategy || item.symbol || scopeLabel;
+        const key = `allocator_cool:${strategyId}`;
+        if (allocatorCandidateKeys.has(key)) {
+          continue;
+        }
+        allocatorCandidateKeys.add(key);
+        allocatorPolicyCandidates.push({
+          id: strategyId,
+          type: "strategy",
+          action: "cooldown_candidate",
+          confidence: clamp(
+            0.42 +
+            (allocatorGovernance.confidence || 0) * 0.22 +
+            Math.abs(allocatorGovernance.activeBias || 0) * 0.28,
+            0,
+            0.92
+          ),
+          scope: scopeLabel,
+          reason: `${strategyId} wordt door de allocator afgekoeld naar ${allocatorGovernance.mode === "shadow_only" ? "shadow learning" : "probe-only"}.`,
+          blocker: null,
+          source: "adaptive_allocator",
+          allocatorMode: allocatorGovernance.mode,
+          preferredStrategy: allocatorGovernance.preferredStrategy || null
+        });
+      }
+    }
     const scopedTransitionCandidates = [
       ...challengerScorecards
         .filter((item) => item.status === "challenger")
@@ -7723,7 +7795,8 @@ export class TradingBot {
           scope: item.id,
           reason: item.note || `${item.id} vraagt governance-ingreep.`,
           blocker: null
-        }))
+        })),
+      ...allocatorPolicyCandidates
     ]
       .filter((item) => !recentDismissals.some((dismissed) => dismissed.id === item.id && dismissed.action === item.action))
       .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
@@ -7776,7 +7849,9 @@ export class TradingBot {
         approved: approvedTransitions.some((approved) => approved.id === item.id && approved.action === item.action)
       })),
       note: scopedTransitionCandidates[0]
-        ? `${titleize(scopedTransitionCandidates[0].id)} is nu de sterkste policy-overgangskandidaat.`
+        ? scopedTransitionCandidates[0].source === "adaptive_allocator"
+          ? `${titleize(scopedTransitionCandidates[0].id)} is nu de sterkste allocator-gedreven policy-kandidaat.`
+          : `${titleize(scopedTransitionCandidates[0].id)} is nu de sterkste policy-overgangskandidaat.`
         : "Nog geen policy-promotie of retirement die de huidige guardrails haalt."
     };
     const miscalibrationSamples = recentPaperTrades
