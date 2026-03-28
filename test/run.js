@@ -7726,6 +7726,89 @@ await runCheck("risk manager spreads paper probes across strategy families and r
   assert.equal(decision.paperLearningSampling.probeCaps.regimeUsed, 1);
 });
 
+await runCheck("risk manager allows one high-quality paper probe overflow when only the regime cap is hit", async () => {
+  const manager = new RiskManager(makeConfig({
+    paperLearningProbeDailyLimit: 4,
+    paperLearningMaxProbePerFamilyPerDay: 3,
+    paperLearningMaxProbePerRegimePerDay: 1,
+    paperLearningMaxProbePerSessionPerDay: 3
+  }));
+  const decision = manager.evaluateEntry({
+    symbol: "BNBUSDT",
+    score: {
+      probability: 0.545,
+      confidence: 0.35,
+      calibrationConfidence: 0.82,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.548, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 0.28, bookPressure: 0.18, microPriceEdgeBps: 0.09, depthConfidence: 0.9 },
+      market: { realizedVolPct: 0.012, atrPct: 0.009, bearishPatternScore: 0.02, bullishPatternScore: 0.08, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.01, eventBullishScore: 0, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.06, signalScore: 0.03, crowdingBias: 0.01, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.02, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.84, probability: 0.533, confidence: 0.66, netScore: -0.03, sizeMultiplier: 0.9, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "orderbook_imbalance",
+      family: "orderflow",
+      fitScore: 0.42,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { session: "rollover", blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "low_risk_only", active: true, sizeMultiplier: 0.42, thresholdPenalty: 0.06, lowRiskOnly: true, learningAllowed: true, issues: ["loss_streak_limit"] },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: {
+      trades: [
+        {
+          brokerMode: "paper",
+          learningLane: "probe",
+          symbol: "XRPUSDT",
+          entryAt: "2026-03-12T10:00:00.000Z",
+          strategyFamily: "breakout",
+          regimeAtEntry: "breakout",
+          sessionAtEntry: "europe"
+        },
+        {
+          brokerMode: "paper",
+          symbol: "BNBUSDT",
+          entryAt: "2026-03-12T10:40:00.000Z",
+          exitAt: "2026-03-12T10:57:00.000Z",
+          pnlQuote: -1.2,
+          learningLane: "probe",
+          strategyFamily: "orderflow",
+          regimeAtEntry: "breakout",
+          sessionAtEntry: "rollover"
+        }
+      ]
+    },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 0.82, maxCorrelation: 0.18, allocatorScore: 0.66, reasons: ["regime_kill_switch_active"] },
+    regimeSummary: { regime: "breakout", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T11:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.suppressedReasons.includes("entry_cooldown_active"));
+  assert.ok(decision.suppressedReasons.includes("regime_kill_switch_active"));
+  assert.ok(decision.suppressedReasons.includes("paper_learning_regime_probe_cap_reached"));
+  assert.equal(decision.paperExploration.scopeCapOverflow.regime, true);
+});
+
 await runCheck("risk manager spreads paper probes across sessions", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningProbeDailyLimit: 4,

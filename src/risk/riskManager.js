@@ -64,6 +64,14 @@ function isMildPaperQualityReason(reason) {
   ].includes(reason);
 }
 
+function isPaperProbeCapReason(reason) {
+  return [
+    "paper_learning_family_probe_cap_reached",
+    "paper_learning_regime_probe_cap_reached",
+    "paper_learning_session_probe_cap_reached"
+  ].includes(reason);
+}
+
 function isPaperRecoveryProbeReason(reason) {
   return [
     "capital_governor_blocked",
@@ -140,6 +148,42 @@ function getStrategyFitGuardFloor(strategySummary = {}, botMode = "paper") {
     }
   }
   return 0.5;
+}
+
+function canUsePaperProbeScopeOverflow({
+  entryMode = "standard",
+  reasons = [],
+  score = {},
+  threshold = 0,
+  paperLearningBudget = {},
+  paperLearningSampling = {},
+  signalQualitySummary = {},
+  dataQualitySummary = {},
+  confidenceBreakdown = {},
+  selfHealState = {}
+} = {}) {
+  if (!["paper_exploration", "paper_recovery_probe"].includes(entryMode)) {
+    return false;
+  }
+  if ((paperLearningBudget.probeRemaining || 0) <= 0) {
+    return false;
+  }
+  const capReasons = reasons.filter((reason) => isPaperProbeCapReason(reason));
+  if (capReasons.length !== 1) {
+    return false;
+  }
+  const nonCapReasons = reasons.filter((reason) => !isPaperProbeCapReason(reason));
+  if (!nonCapReasons.length || !nonCapReasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason))) {
+    return false;
+  }
+  return (
+    score.probability >= threshold - 0.04 &&
+    safeValue(score.calibrationConfidence, 0) >= 0.66 &&
+    safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.6 &&
+    safeValue(signalQualitySummary.overallScore, 0) >= 0.66 &&
+    safeValue(dataQualitySummary.overallScore, 0) >= 0.6 &&
+    safeValue(paperLearningSampling.noveltyScore, 0) >= 0.18
+  );
 }
 
 function average(values = [], fallback = 0) {
@@ -1859,12 +1903,6 @@ export class RiskManager {
       ["paper_exploration", "paper_recovery_probe"].includes(entryMode) &&
       !paperLearningSampling.canOpenProbe
     ) {
-      allow = false;
-      entryMode = "standard";
-      finalQuoteAmount = 0;
-      paperExploration = null;
-      suppressedReasons = [];
-      paperGuardrailRelief = [];
       if (
         paperLearningSampling.probeCaps.familyLimit > 0 &&
         paperLearningSampling.probeCaps.familyUsed >= paperLearningSampling.probeCaps.familyLimit &&
@@ -1885,6 +1923,36 @@ export class RiskManager {
         !reasons.includes("paper_learning_session_probe_cap_reached")
       ) {
         reasons.push("paper_learning_session_probe_cap_reached");
+      }
+      const scopeCapOverflowAllowed = this.config.botMode === "paper" && canUsePaperProbeScopeOverflow({
+        entryMode,
+        reasons,
+        score,
+        threshold,
+        paperLearningBudget,
+        paperLearningSampling,
+        signalQualitySummary,
+        dataQualitySummary,
+        confidenceBreakdown,
+        selfHealState
+      });
+      if (scopeCapOverflowAllowed) {
+        suppressedReasons = [...new Set([...suppressedReasons, ...reasons.filter((reason) => isPaperProbeCapReason(reason))])];
+        paperExploration = {
+          ...(paperExploration || {}),
+          scopeCapOverflow: {
+            family: reasons.includes("paper_learning_family_probe_cap_reached"),
+            regime: reasons.includes("paper_learning_regime_probe_cap_reached"),
+            session: reasons.includes("paper_learning_session_probe_cap_reached")
+          }
+        };
+      } else {
+        allow = false;
+        entryMode = "standard";
+        finalQuoteAmount = 0;
+        paperExploration = null;
+        suppressedReasons = [];
+        paperGuardrailRelief = [];
       }
     }
     let { lane: learningLane, learningValueScore, activeLearningState } = resolvePaperLearningLane({
