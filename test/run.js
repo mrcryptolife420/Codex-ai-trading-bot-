@@ -6703,6 +6703,58 @@ await runCheck("risk manager does not duplicate portfolio overlap as committee v
   assert.equal(decision.committeeVetoObservation.softenedInPaper, true);
 });
 
+await runCheck("risk manager does not flag liquidity sweep near-fit as strategy fit failure in paper", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "BNBUSDT",
+    score: {
+      probability: 0.536,
+      confidence: 0.3,
+      calibrationConfidence: 0.84,
+      disagreement: 0.11,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.521, confidence: 0.02 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 0.2, bookPressure: 0.16, microPriceEdgeBps: 0.03, depthConfidence: 0.9 },
+      market: {
+        realizedVolPct: 0.012,
+        atrPct: 0.011,
+        bearishPatternScore: 0.02,
+        bullishPatternScore: 0.12,
+        closeLocationQuality: 0.7,
+        volumeAcceptanceScore: 0.6,
+        breakoutFollowThroughScore: 0.28,
+        anchoredVwapAcceptanceScore: 0.62,
+        anchoredVwapRejectionScore: 0.12
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.03, signalScore: -0.1, crowdingBias: 0.01, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.82, probability: 0.521, confidence: 0.67, netScore: 0.01, sizeMultiplier: 0.82, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "liquidity_sweep", family: "market_structure", fitScore: 0.485, confidence: 0.47, blockers: [], agreementGap: 0.03 },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.08, sizeMultiplier: 0.82, thresholdPenalty: 0.012 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "high_vol", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T09:00:00.000Z"
+  });
+  assert.ok(!decision.reasons.includes("strategy_fit_too_low"));
+});
+
 await runCheck("risk manager keeps paper recovery probe blocked when market quality blockers remain", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -16184,6 +16236,105 @@ await runCheck("portfolio optimizer ignores mild stale budget cooling without ac
   assert.ok(!summary.reasons.includes("family_budget_cooled"));
   assert.ok(!summary.reasons.includes("strategy_budget_cooled"));
   assert.ok(!summary.reasons.includes("cluster_budget_cooled"));
+});
+
+await runCheck("portfolio optimizer softens single-cluster overlap in paper when no tighter overlap exists", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    botMode: "paper",
+    symbolProfiles: {
+      AAVEUSDT: { cluster: "defi", sector: "defi" },
+      UNIUSDT: { cluster: "defi", sector: "dex" }
+    }
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "UNIUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: { trades: [], scaleOuts: [] },
+    marketSnapshot: {
+      candles: Array.from({ length: 20 }, (_, index) => ({
+        close: 100 + Math.sin(index / 4) * 1.1 + index * 0.06,
+        high: 101 + Math.sin(index / 4) * 1.1 + index * 0.06,
+        low: 99 + Math.sin(index / 4) * 1.1 + index * 0.06
+      })),
+      market: { realizedVolPct: 0.014 }
+    },
+    candidateProfile: { cluster: "defi", sector: "dex" },
+    openPositionContexts: [
+      {
+        symbol: "AAVEUSDT",
+        profile: { cluster: "defi", sector: "defi" },
+        marketSnapshot: {
+          candles: Array.from({ length: 20 }, (_, index) => ({
+            close: 90 + Math.sin(index / 5) * 0.9 + index * 0.04,
+            high: 91 + Math.sin(index / 5) * 0.9 + index * 0.04,
+            low: 89 + Math.sin(index / 5) * 0.9 + index * 0.04
+          }))
+        },
+        position: {
+          notional: 450,
+          entryPrice: 90,
+          quantity: 5,
+          strategyDecision: { family: "trend_following" },
+          strategyAtEntry: "vwap_trend",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "trend_following", activeStrategy: "vwap_trend" }, regimeSummary: { regime: "range" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "high_vol" },
+    strategySummary: { family: "market_structure", activeStrategy: "liquidity_sweep" }
+  });
+  assert.equal(summary.sameClusterCount, 1);
+  assert.equal(summary.clusterExposureSoftenedInPaper, true);
+  assert.ok(!summary.reasons.includes("cluster_exposure_limit_hit"));
+  assert.ok(!summary.hardReasons.includes("cluster_exposure_limit_hit"));
+  assert.ok(summary.sizeMultiplier > 0.4);
+});
+
+await runCheck("portfolio optimizer keeps hard cluster block when same-cluster overlap is also tightly correlated", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    botMode: "paper",
+    symbolProfiles: {
+      AAVEUSDT: { cluster: "defi", sector: "defi" },
+      UNIUSDT: { cluster: "defi", sector: "dex" }
+    }
+  }));
+  const alignedCandles = Array.from({ length: 20 }, (_, index) => ({
+    close: 100 + index * 0.5,
+    high: 101 + index * 0.5,
+    low: 99 + index * 0.5
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "UNIUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: { trades: [], scaleOuts: [] },
+    marketSnapshot: {
+      candles: alignedCandles,
+      market: { realizedVolPct: 0.014 }
+    },
+    candidateProfile: { cluster: "defi", sector: "dex" },
+    openPositionContexts: [
+      {
+        symbol: "AAVEUSDT",
+        profile: { cluster: "defi", sector: "defi" },
+        marketSnapshot: { candles: alignedCandles },
+        position: {
+          notional: 900,
+          entryPrice: 90,
+          quantity: 10,
+          strategyDecision: { family: "trend_following" },
+          strategyAtEntry: "vwap_trend",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "trend_following", activeStrategy: "vwap_trend" }, regimeSummary: { regime: "range" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "high_vol" },
+    strategySummary: { family: "market_structure", activeStrategy: "liquidity_sweep" }
+  });
+  assert.equal(summary.clusterExposureSoftenedInPaper, false);
+  assert.ok(summary.reasons.includes("cluster_exposure_limit_hit"));
+  assert.ok(summary.hardReasons.includes("cluster_exposure_limit_hit"));
 });
 
 await runCheck("committee ignores soft portfolio cooling without hard overlap veto", async () => {

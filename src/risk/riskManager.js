@@ -125,6 +125,14 @@ function isRedundantCommitteeVeto({ committeeVetoIds = [], portfolioSummary = {}
   );
 }
 
+function getStrategyFitGuardFloor(strategySummary = {}, botMode = "paper") {
+  const activeStrategy = strategySummary.activeStrategy || "";
+  if (botMode === "paper" && activeStrategy === "liquidity_sweep") {
+    return 0.46;
+  }
+  return 0.5;
+}
+
 function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
@@ -1337,7 +1345,8 @@ export class RiskManager {
     if ((committeeSummary.agreement || 0) < this.config.committeeMinAgreement && score.probability < threshold + 0.04) {
       reasons.push("committee_low_agreement");
     }
-    if ((strategySummary.confidence || 0) >= strategyConfidenceFloor && (strategySummary.fitScore || 0) < 0.5 && score.probability < threshold + 0.05) {
+    const strategyFitGuardFloor = getStrategyFitGuardFloor(strategySummary, this.config.botMode);
+    if ((strategySummary.confidence || 0) >= strategyConfidenceFloor && (strategySummary.fitScore || 0) < strategyFitGuardFloor && score.probability < threshold + 0.05) {
       reasons.push("strategy_fit_too_low");
     }
     if ((strategySummary.confidence || 0) >= strategyConfidenceFloor && (strategySummary.blockers || []).length && score.probability < threshold + 0.07) {

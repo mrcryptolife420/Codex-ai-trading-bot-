@@ -372,7 +372,18 @@ export class PortfolioOptimizer {
       event_risk: 0.45
     }[regimeSummary.regime] || 0.8;
 
-    const sameClusterPenalty = sameClusterPositions.length >= this.config.maxClusterPositions ? 0.4 : 1;
+    const clusterExposureSoftenedInPaper =
+      this.config.botMode === "paper" &&
+      sameClusterPositions.length >= this.config.maxClusterPositions &&
+      sameSectorPositions.length === 0 &&
+      sameFamilyPositions.length === 0 &&
+      sameStrategyPositions.length === 0 &&
+      sameRegimePositions.length < this.config.maxRegimePositions &&
+      maxCorrelation <= this.config.maxPairCorrelation &&
+      clusterHeat < 0.16;
+    const sameClusterPenalty = sameClusterPositions.length >= this.config.maxClusterPositions
+      ? (clusterExposureSoftenedInPaper ? 0.82 : 0.4)
+      : 1;
     const sameSectorPenalty = sameSectorPositions.length >= this.config.maxSectorPositions ? 0.7 : 1;
     const correlationPenalty = maxCorrelation > this.config.maxPairCorrelation ? 0.35 : 1;
     const strategyBudgetFactor = budgetState.strategyBudgetMap[activeStrategy] || 1;
@@ -466,7 +477,7 @@ export class PortfolioOptimizer {
 
     const reasons = [];
     const hardReasons = [];
-    if (sameClusterPositions.length >= this.config.maxClusterPositions) {
+    if (sameClusterPositions.length >= this.config.maxClusterPositions && !clusterExposureSoftenedInPaper) {
       reasons.push("cluster_exposure_limit_hit");
       hardReasons.push("cluster_exposure_limit_hit");
     }
@@ -593,6 +604,7 @@ export class PortfolioOptimizer {
       regimeKillSwitchActive,
       regimeKillSwitchStale,
       regimeKillSwitchSoftenedInPaper,
+      clusterExposureSoftenedInPaper,
       regimeExposureSoftenedInPaper,
       cvarPenalty,
       drawdownBudgetPenalty,
