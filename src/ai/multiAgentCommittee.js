@@ -64,6 +64,38 @@ function buildPortfolioReasons(portfolioSummary = {}, hardReasons = []) {
   return reasons.filter(Boolean).slice(0, 4);
 }
 
+function buildPortfolioAgentEdge(portfolioSummary = {}, hardReasons = [], botMode = "paper") {
+  if (hardReasons.length) {
+    return -safeValue(portfolioSummary.maxCorrelation) * 0.8 -
+      (portfolioSummary.sameClusterCount || 0) * 0.16 -
+      (portfolioSummary.sameSectorCount || 0) * 0.08 +
+      (safeValue(portfolioSummary.sizeMultiplier) - 1) * 0.8;
+  }
+  return clamp(
+    (safeValue(portfolioSummary.allocatorScore, 0.5) - 0.5) * 0.7 +
+      (safeValue(portfolioSummary.sizeMultiplier, 1) - 1) * 0.35 -
+      safeValue(portfolioSummary.maxCorrelation) * (botMode === "paper" ? 0.28 : 0.4) -
+      (portfolioSummary.sameClusterCount || 0) * 0.08 -
+      (portfolioSummary.sameSectorCount || 0) * 0.04,
+    botMode === "paper" ? -0.38 : -0.52,
+    0.18
+  );
+}
+
+function buildPortfolioAgentConfidence(portfolioSummary = {}, hardReasons = [], botMode = "paper") {
+  if (hardReasons.length) {
+    return 0.72;
+  }
+  return clamp(
+    0.32 +
+      safeValue(portfolioSummary.maxCorrelation) * (botMode === "paper" ? 0.22 : 0.3) +
+      Math.max(0, 1 - safeValue(portfolioSummary.sizeMultiplier, 1)) * 0.16 +
+      Math.max(0, 0.5 - safeValue(portfolioSummary.allocatorScore, 0.5)) * 0.24,
+    0.28,
+    botMode === "paper" ? 0.56 : 0.64
+  );
+}
+
 export class MultiAgentCommittee {
   constructor(config) {
     this.config = config;
@@ -252,13 +284,14 @@ export class MultiAgentCommittee {
     );
 
     const portfolioHardReasons = (portfolioSummary.hardReasons || portfolioSummary.reasons || []).filter((reason) => isHardPortfolioReason(reason));
-    const portfolioEdge = -safeValue(portfolioSummary.maxCorrelation) * 0.8 - (portfolioSummary.sameClusterCount || 0) * 0.16 - (portfolioSummary.sameSectorCount || 0) * 0.08 + (safeValue(portfolioSummary.sizeMultiplier) - 1) * 0.8;
+    const portfolioEdge = buildPortfolioAgentEdge(portfolioSummary, portfolioHardReasons, this.config.botMode);
+    const portfolioConfidence = buildPortfolioAgentConfidence(portfolioSummary, portfolioHardReasons, this.config.botMode);
     agents.push(
       buildAgent(
         "portfolio",
         "Portfolio agent",
         portfolioEdge,
-        0.72,
+        portfolioConfidence,
         buildPortfolioReasons(portfolioSummary, portfolioHardReasons),
         0.7,
         portfolioHardReasons.length ? "portfolio_overlap" : null

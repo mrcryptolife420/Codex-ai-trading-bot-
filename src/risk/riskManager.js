@@ -127,8 +127,17 @@ function isRedundantCommitteeVeto({ committeeVetoIds = [], portfolioSummary = {}
 
 function getStrategyFitGuardFloor(strategySummary = {}, botMode = "paper") {
   const activeStrategy = strategySummary.activeStrategy || "";
-  if (botMode === "paper" && activeStrategy === "liquidity_sweep") {
-    return 0.46;
+  const family = strategySummary.family || "";
+  if (botMode === "paper") {
+    if (activeStrategy === "liquidity_sweep") {
+      return 0.46;
+    }
+    if (activeStrategy === "orderbook_imbalance") {
+      return 0.4;
+    }
+    if (["zscore_reversion", "vwap_reversion"].includes(activeStrategy) || family === "mean_reversion") {
+      return 0.47;
+    }
   }
   return 0.5;
 }

@@ -6799,6 +6799,54 @@ await runCheck("risk manager does not flag liquidity sweep near-fit as strategy 
   assert.ok(!decision.reasons.includes("strategy_fit_too_low"));
 });
 
+await runCheck("risk manager does not flag orderbook imbalance near-fit as strategy fit failure in paper", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "BNBUSDT",
+    score: {
+      probability: 0.541,
+      confidence: 0.34,
+      calibrationConfidence: 0.83,
+      disagreement: 0.07,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.548, confidence: 0.07 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 0.22, bookPressure: 0.18, microPriceEdgeBps: 0.08, depthConfidence: 0.9 },
+      market: {
+        realizedVolPct: 0.012,
+        atrPct: 0.01,
+        bearishPatternScore: 0.02,
+        bullishPatternScore: 0.08,
+        dominantPattern: "none"
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.05, signalScore: 0.02, crowdingBias: 0.01, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.84, probability: 0.525, confidence: 0.67, netScore: -0.01, sizeMultiplier: 0.88, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "orderbook_imbalance", family: "orderflow", fitScore: 0.41, confidence: 0.46, blockers: [], agreementGap: 0.03 },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.08, sizeMultiplier: 0.82, thresholdPenalty: 0.012 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 0.86, maxCorrelation: 0.74, allocatorScore: 0.67, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T09:00:00.000Z"
+  });
+  assert.ok(!decision.reasons.includes("strategy_fit_too_low"));
+});
+
 await runCheck("risk manager keeps paper recovery probe blocked when market quality blockers remain", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -16513,6 +16561,40 @@ await runCheck("committee still vetoes hard portfolio overlap risks", async () =
     rlAdvice: { expectedReward: 0.01, sizeMultiplier: 1, confidence: 0.4 }
   });
   assert.equal(summary.vetoes.some((item) => item.id === "portfolio_overlap"), true);
+});
+
+await runCheck("committee keeps soft paper portfolio pressure advisory instead of heavily bearish without hard overlap", async () => {
+  const committee = new MultiAgentCommittee(makeConfig({ botMode: "paper" }));
+  const summary = committee.evaluate({
+    symbol: "BNBUSDT",
+    score: { probability: 0.56, confidence: 0.42, calibrationConfidence: 0.83, disagreement: 0.07 },
+    transformerScore: { probability: 0.548, confidence: 0.07, horizons: [], dominantHead: "orderflow" },
+    marketSnapshot: { book: { spreadBps: 0.22, bookPressure: 0.18, microPriceEdgeBps: 0.08 }, market: {} },
+    newsSummary: { coverage: 0, socialCoverage: 0, sentimentScore: 0, socialSentiment: 0, riskScore: 0.03, socialRisk: 0, confidence: 0, dominantEventType: "general" },
+    announcementSummary: { riskScore: 0.02 },
+    marketStructureSummary: { signalScore: 0.02, riskScore: 0.05, fundingRate: 0, openInterestChangePct: 0 },
+    marketSentimentSummary: { contrarianScore: 0.08, riskScore: 0.18, confidence: 0.7 },
+    volatilitySummary: { riskScore: 0.28, confidence: 0.8 },
+    calendarSummary: { riskScore: 0.02, nextEventType: null, proximityHours: 48, confidence: 0.6 },
+    portfolioSummary: {
+      sizeMultiplier: 0.86,
+      allocatorScore: 0.67,
+      maxCorrelation: 0.76,
+      sameClusterCount: 0,
+      sameSectorCount: 0,
+      reasons: [],
+      hardReasons: []
+    },
+    regimeSummary: { regime: "breakout", confidence: 0.72 },
+    strategySummary: { family: "orderflow", activeStrategy: "orderbook_imbalance", fitScore: 0.41, confidence: 0.46 },
+    executionPlan: { preferMaker: true, queueScore: 0.12, tradeFlow: 0.05, entryStyle: "pegged_limit_maker", makerPatienceMs: 2000 },
+    rlAdvice: { expectedReward: 0.01, sizeMultiplier: 1, confidence: 0.4 }
+  });
+  const portfolioAgent = summary.agents.find((item) => item.id === "portfolio");
+  assert.ok(portfolioAgent);
+  assert.equal(portfolioAgent.veto, null);
+  assert.ok(portfolioAgent.stance > -0.5);
+  assert.ok(portfolioAgent.confidence < 0.6);
 });
 
 await runCheck("committee surfaces regime overlap explicitly for portfolio vetoes", async () => {
