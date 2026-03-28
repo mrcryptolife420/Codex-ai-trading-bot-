@@ -9718,6 +9718,14 @@ export class TradingBot {
       selfHeal: summarizeSelfHeal(candidate.selfHealState),
       paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
       meta: summarizeMeta(candidate.metaSummary),
+      strategyRetirement: candidate.decision.strategyRetirementApplied ? {
+        active: Boolean(candidate.decision.strategyRetirementApplied.active),
+        status: candidate.decision.strategyRetirementApplied.status || "ready",
+        blocked: Boolean(candidate.decision.strategyRetirementApplied.blocked),
+        sizeMultiplier: num(candidate.decision.strategyRetirementApplied.sizeMultiplier || 1, 4),
+        confidence: num(candidate.decision.strategyRetirementApplied.confidence || 0, 4),
+        reason: candidate.decision.strategyRetirementApplied.reason || null
+      } : null,
       sessionReasons: [...(candidate.sessionSummary?.reasons || [])],
       sessionBlockers: [...(candidate.sessionSummary?.blockerReasons || [])],
       driftReasons: [...(candidate.driftSummary?.reasons || [])],
@@ -10077,12 +10085,14 @@ export class TradingBot {
       }
       const balance = await this.broker.getBalance(this.runtime);
       await this.maybeRunExchangeTruthLoop();
+      const analysisAt = nowIso();
+      this.refreshGovernanceViews(analysisAt);
       const candidates = await this.scanCandidatesForCycle(balance);
       const equity = await this.broker.getEquity(this.runtime, midPrices);
       this.runtime.lastKnownBalance = balance.quoteFree;
       this.runtime.lastKnownEquity = equity;
-      this.runtime.lastPortfolioUpdateAt = nowIso();
-      this.runtime.lastAnalysisAt = nowIso();
+      this.runtime.lastPortfolioUpdateAt = analysisAt;
+      this.runtime.lastAnalysisAt = analysisAt;
       await this.resolveCounterfactualQueue(this.runtime.lastAnalysisAt);
       this.runtime.lastAnalysisError = null;
       this.syncOrderLifecycleState("analysis_refresh");
@@ -10158,6 +10168,7 @@ export class TradingBot {
     }
     const driftIssues = this.health.enforceClockDrift(this.client, this.runtime);
     const markedPrices = await this.manageOpenPositions();
+    this.refreshGovernanceViews(cycleAt);
     const balance = await this.broker.getBalance(this.runtime);
     const candidates = await this.scanCandidatesForCycle(balance);
     await this.resolveCounterfactualQueue(cycleAt);

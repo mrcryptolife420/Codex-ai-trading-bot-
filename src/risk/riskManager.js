@@ -118,6 +118,12 @@ function buildReplenishmentQuality(book = {}) {
   ].filter((value) => Number.isFinite(value)), 0.5), 0, 1);
 }
 
+function getMetaCautionReasons(metaSummary = {}) {
+  return [...new Set((metaSummary.reasons || []).filter((reason) =>
+    ["meta_gate_caution", "meta_neural_caution", "trade_quality_caution"].includes(reason)
+  ))];
+}
+
 function matchesBrokerMode(item, botMode = "paper") {
   return (item?.brokerMode || "paper") === botMode;
 }
@@ -1023,6 +1029,8 @@ export class RiskManager {
     const downsideVolDominance = buildDownsideVolDominance(marketSnapshot.market || {});
     const acceptanceQuality = buildAcceptanceQuality(marketSnapshot.market || {});
     const replenishmentQuality = buildReplenishmentQuality(marketSnapshot.book || {});
+    const metaCautionReasons = getMetaCautionReasons(metaSummary);
+    const hasDirectMetaCautionGate = metaCautionReasons.some((reason) => ["meta_gate_caution", "trade_quality_caution"].includes(reason));
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -1069,7 +1077,12 @@ export class RiskManager {
     const symbolLossStreak = this.getLossStreak(journal, symbol, lossStreakOptions);
     const sessionSizeMultiplier = clamp(safeValue(sessionSummary.sizeMultiplier) || 1, 0.2, 1);
     const driftSizeMultiplier = clamp((safeValue(driftSummary.severity || 0) >= 0.82) ? 0.55 : (safeValue(driftSummary.severity || 0) >= 0.45 ? 0.78 : 1), 0.2, 1);
-    const selfHealSizeMultiplier = clamp(safeValue(selfHealState.sizeMultiplier) || 1, 0, 1);
+    const rawSelfHealSizeMultiplier = clamp(safeValue(selfHealState.sizeMultiplier) || 1, 0, 1);
+    const selfHealSizeMultiplier = this.config.botMode === "paper" &&
+      selfHealState.mode === "low_risk_only" &&
+      canRelaxPaperSelfHeal(selfHealState)
+      ? Math.max(rawSelfHealSizeMultiplier, 0.72)
+      : rawSelfHealSizeMultiplier;
     const metaSizeMultiplier = clamp(safeValue(metaSummary.sizeMultiplier) || 1, 0.1, 1.15);
     const strategyMetaSizeMultiplier = clamp(safeValue(strategyMetaSummary.sizeMultiplier) || 1, 0.75, 1.15);
     const venueSizeMultiplier = clamp((venueConfirmationSummary.status || "") === "blocked" ? 0.45 : (venueConfirmationSummary.confirmed ? 1.04 : 0.9), 0.45, 1.05);
@@ -1321,7 +1334,7 @@ export class RiskManager {
     if ((metaSummary.dailyTradeCount || 0) >= this.config.maxEntriesPerDay) {
       reasons.push("daily_entry_budget_reached");
     }
-    if (metaSummary.action === "caution" && score.probability < threshold + 0.015) {
+    if (metaSummary.action === "caution" && hasDirectMetaCautionGate && score.probability < threshold + 0.015) {
       reasons.push("meta_gate_caution");
     }
 

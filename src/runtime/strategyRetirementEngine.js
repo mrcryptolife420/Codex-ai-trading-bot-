@@ -16,6 +16,23 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function buildLatestTradeMap(journal = {}) {
+  const latest = new Map();
+  for (const trade of arr(journal.trades || [])) {
+    const strategyId = trade.strategyAtEntry || trade.strategyDecision?.activeStrategy || trade.entryRationale?.strategy?.activeStrategy || "unknown";
+    const tradeAt = trade.exitAt || trade.entryAt || null;
+    const tradeMs = new Date(tradeAt || 0).getTime();
+    if (!Number.isFinite(tradeMs)) {
+      continue;
+    }
+    const previousMs = latest.get(strategyId)?.tradeMs || 0;
+    if (tradeMs > previousMs) {
+      latest.set(strategyId, { tradeAt, tradeMs });
+    }
+  }
+  return latest;
+}
+
 export function buildStrategyRetirementSnapshot({
   report = {},
   offlineTrainer = {},
@@ -27,6 +44,9 @@ export function buildStrategyRetirementSnapshot({
   const minTrades = safeNumber(config.strategyRetirementMinTrades, 4);
   const cooldownFloor = safeNumber(config.strategyRetirementGovernanceCooldown, 0.47);
   const retireFloor = safeNumber(config.strategyRetirementGovernanceRetire, 0.33);
+  const retirementMaxIdleHours = safeNumber(config.strategyRetirementMaxIdleHours, 120);
+  const nowMs = new Date(nowIso).getTime();
+  const latestTradeMap = buildLatestTradeMap(journal);
 
   const getPolicy = (id) => {
     const key = id || "unknown";
@@ -92,6 +112,11 @@ export function buildStrategyRetirementSnapshot({
 
   const entries = [...policies.values()]
     .map((policy) => {
+      const latestTrade = latestTradeMap.get(policy.id) || null;
+      const lastTradeAgeHours = latestTrade && Number.isFinite(nowMs)
+        ? (nowMs - latestTrade.tradeMs) / 3_600_000
+        : null;
+      const stale = Number.isFinite(lastTradeAgeHours) && lastTradeAgeHours > retirementMaxIdleHours;
       const governanceScore = average(policy.governanceScores, policy.tradeCount >= minTrades ? 0.5 : 0.42);
       const negativePnl = (policy.realizedPnl || 0) < 0;
       const lowReview = (policy.avgReviewScore || 0) > 0 ? (policy.avgReviewScore || 0) < 0.45 : false;
@@ -99,13 +124,16 @@ export function buildStrategyRetirementSnapshot({
       const falseNegativeHeavy = (policy.falseNegativeRate || 0) >= 0.28;
       const hasCooldownHint = policy.statusHints.includes("cooldown");
       const hasWarmupOnly = policy.tradeCount < minTrades;
-      const status = hasWarmupOnly
+      const provisionalStatus = hasWarmupOnly
         ? "observe"
         : governanceScore <= retireFloor || (negativePnl && falsePositiveHeavy && lowReview)
           ? "retire"
           : governanceScore <= cooldownFloor || hasCooldownHint || negativePnl || falseNegativeHeavy
             ? "cooldown"
             : "active";
+      const status = stale && ["cooldown", "retire"].includes(provisionalStatus)
+        ? "observe"
+        : provisionalStatus;
       const sizeMultiplier = status === "retire" ? 0 : status === "cooldown" ? 0.72 : 1;
       const confidence = clamp(0.34 + Math.min(policy.tradeCount, 10) * 0.05, 0.34, 0.94);
       return {
@@ -119,15 +147,20 @@ export function buildStrategyRetirementSnapshot({
         falsePositiveRate: num(policy.falsePositiveRate),
         falseNegativeRate: num(policy.falseNegativeRate),
         confidence: num(confidence),
+        stale,
+        latestTradeAt: latestTrade?.tradeAt || null,
+        lastTradeAgeHours: Number.isFinite(lastTradeAgeHours) ? num(lastTradeAgeHours, 1) : null,
         status,
         sizeMultiplier: num(sizeMultiplier, 3),
-        note: policy.noteSeeds[0] || (
-          status === "retire"
-            ? "Governance score zakte te ver weg voor nieuwe allocatie."
-            : status === "cooldown"
-              ? "Strategie blijft actief maar met lagere prioriteit."
-              : "Geen retirement-actie nodig."
-        )
+        note: stale
+          ? "Historische strategy-governance is stale; cooldown telt nu alleen nog als observatie."
+          : policy.noteSeeds[0] || (
+            status === "retire"
+              ? "Governance score zakte te ver weg voor nieuwe allocatie."
+              : status === "cooldown"
+                ? "Strategie blijft actief maar met lagere prioriteit."
+                : "Geen retirement-actie nodig."
+          )
       };
     })
     .sort((left, right) => {

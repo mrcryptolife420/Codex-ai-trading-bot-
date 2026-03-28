@@ -5491,6 +5491,67 @@ await runCheck("risk manager can keep paper exploration available after warm-up 
   assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
 });
 
+await runCheck("risk manager only escalates explicit meta caution gates, not neural-only caution", async () => {
+  const config = makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 });
+  const manager = new RiskManager(config);
+  const basePayload = {
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.57,
+      calibrationConfidence: 0.62,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.59, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.25, microPriceEdgeBps: 0.4 },
+      market: { realizedVolPct: 0.011, atrPct: 0.006, bearishPatternScore: 0.04, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.05, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.12, crowdingBias: 0.03, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.34, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.68, probability: 0.58, netScore: 0.12, sizeMultiplier: 1, confidence: 0.7, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.44, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.63,
+      confidence: 0.52,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 12, sampleConfidence: 0.8 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1, isWeekend: false },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.76 },
+    pairHealthSummary: { quarantined: false, score: 0.72 },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  };
+
+  const neuralOnly = manager.evaluateEntry({
+    ...basePayload,
+    metaSummary: { action: "caution", reasons: ["meta_neural_caution"], score: 0.91, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0.018 }
+  });
+  assert.ok(!neuralOnly.reasons.includes("meta_gate_caution"));
+
+  const explicitGate = manager.evaluateEntry({
+    ...basePayload,
+    metaSummary: { action: "caution", reasons: ["meta_gate_caution"], score: 0.58, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0.018 }
+  });
+  assert.ok(explicitGate.reasons.includes("meta_gate_caution"));
+});
+
 await runCheck("risk manager keeps paper exploration available for governance pauses and paper-only guardrails", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -5547,6 +5608,57 @@ await runCheck("risk manager keeps paper exploration available for governance pa
   assert.ok(decision.suppressedReasons.includes("execution_cost_budget_exceeded"));
   assert.ok(decision.suppressedReasons.includes("capital_governor_blocked"));
   assert.ok(decision.paperGuardrailRelief.includes("self_heal_pause_entries"));
+});
+
+await runCheck("risk manager relaxes low-risk paper self-heal sizing enough to avoid artificial min-trade failures", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "SUIUSDT",
+    score: {
+      probability: 0.62,
+      calibrationConfidence: 0.55,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 1, globalConfidence: 0.92 },
+      transformer: { probability: 0.61, confidence: 0.09 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 1.2, bookPressure: 0.22, microPriceEdgeBps: 0.4 },
+      market: { realizedVolPct: 0.013, atrPct: 0.008, bearishPatternScore: 0.03, bullishPatternScore: 0.14, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.05, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.05, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.34, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.06, bullishScore: 0, urgencyScore: 0.02 },
+    committeeSummary: { agreement: 0.62, probability: 0.63, netScore: 0.11, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.03 },
+    strategySummary: {
+      activeStrategy: "orderbook_imbalance",
+      family: "orderflow",
+      fitScore: 0.62,
+      confidence: 0.48,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 8, sampleConfidence: 0.62 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1, thresholdPenalty: 0 },
+    driftSummary: { blockerReasons: [], severity: 0.06 },
+    selfHealState: { mode: "low_risk_only", active: true, sizeMultiplier: 0.42, thresholdPenalty: 0.06, lowRiskOnly: true, learningAllowed: true, issues: ["calibration_warning"] },
+    metaSummary: { action: "pass", score: 0.7, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0.01 },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.62 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 0.426, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.68 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-28T12:00:00.000Z"
+  });
+  assert.ok(decision.quoteAmount >= 25);
+  assert.ok(!decision.reasons.includes("trade_size_below_minimum"));
 });
 
 await runCheck("risk manager treats regime kill switches and cooled portfolio budgets as paper-lenient governance", async () => {
@@ -9109,6 +9221,54 @@ await runCheck("strategy retirement engine retires weak strategies", async () =>
   assert.equal(summary.policies[0].status, "retire");
 });
 
+await runCheck("strategy retirement engine downgrades stale cooldowns to observe", async () => {
+  const summary = buildStrategyRetirementSnapshot({
+    report: {
+      tradeQualityReview: {
+        strategyScorecards: [
+          {
+            id: "bollinger_squeeze",
+            tradeCount: 5,
+            realizedPnl: -1.87,
+            winRate: 0.4,
+            avgReviewScore: 0.7045,
+            governanceScore: 0.5318
+          }
+        ]
+      },
+      attribution: {
+        strategies: [
+          { id: "bollinger_squeeze", tradeCount: 5, realizedPnl: -1.87, winRate: 0.4, averagePnlPct: -0.0045 }
+        ]
+      }
+    },
+    offlineTrainer: {
+      strategyScorecards: [
+        {
+          id: "bollinger_squeeze",
+          tradeCount: 5,
+          realizedPnl: -1.87,
+          winRate: 0.4,
+          avgMovePct: -0.0045,
+          falsePositiveRate: 0.6,
+          falseNegativeRate: 0.5,
+          governanceScore: 0.5318,
+          status: "cooldown"
+        }
+      ]
+    },
+    journal: {
+      trades: [{ symbol: "SOLUSDT", pnlQuote: -6, strategyAtEntry: "bollinger_squeeze", exitAt: "2026-03-13T07:20:12.515Z" }]
+    },
+    config: makeConfig(),
+    nowIso: "2026-03-28T12:00:00.000Z"
+  });
+  assert.equal(summary.cooldownStrategies.includes("bollinger_squeeze"), false);
+  assert.equal(summary.policies[0].status, "observe");
+  assert.equal(summary.policies[0].stale, true);
+  assert.equal(summary.policies[0].latestTradeAt, "2026-03-13T07:20:12.515Z");
+});
+
 await runCheck("exchange safety audit blocks stale live reconciliation", async () => {
   const audit = buildExchangeSafetyAudit({
     runtime: {
@@ -12588,7 +12748,11 @@ await runCheck("refresh analysis resolves counterfactual queue so shadow cases s
   };
   bot.getLatestMidPrices = async () => ({});
   bot.maybeRunExchangeTruthLoop = async () => {};
-  bot.scanCandidatesForCycle = async () => [];
+  const order = [];
+  bot.scanCandidatesForCycle = async () => {
+    order.push("scan");
+    return [];
+  };
   bot.syncOrderLifecycleState = () => {};
   let resolvedAt = null;
   let governanceRefreshedAt = null;
@@ -12597,6 +12761,7 @@ await runCheck("refresh analysis resolves counterfactual queue so shadow cases s
     bot.runtime.counterfactualQueue = [];
   };
   bot.refreshGovernanceViews = (at) => {
+    order.push("governance");
     governanceRefreshedAt = at;
   };
   bot.trimJournal = () => {};
@@ -12608,6 +12773,81 @@ await runCheck("refresh analysis resolves counterfactual queue so shadow cases s
   assert.equal(bot.runtime.counterfactualQueue.length, 0);
   assert.ok(resolvedAt);
   assert.equal(governanceRefreshedAt, resolvedAt);
+  assert.deepEqual(order.slice(0, 3), ["governance", "scan", "governance"]);
+});
+
+await runCheck("run cycle refreshes governance before scanning candidates to avoid stale vetoes", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const order = [];
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    signalFlow: {},
+    service: {},
+    newsCache: {},
+    ops: {}
+  };
+  bot.journal = {
+    trades: [],
+    equitySnapshots: [],
+    cycles: []
+  };
+  bot.logger = { info() {}, warn() {} };
+  bot.client = { syncServerTime: async () => {} };
+  bot.health = {
+    enforceClockDrift: () => [],
+    getStatus: () => ({ status: "ready" })
+  };
+  bot.updateSafetyState = () => ({ driftSummary: {}, selfHealState: {} });
+  bot.manageOpenPositions = async () => {
+    order.push("manage");
+    return {};
+  };
+  bot.refreshGovernanceViews = () => {
+    order.push("governance");
+    return { report: {}, offlineTrainerSummary: {} };
+  };
+  bot.broker = {
+    getBalance: async () => ({ quoteFree: 1000 })
+  };
+  bot.scanCandidatesForCycle = async () => {
+    order.push("scan");
+    return [];
+  };
+  bot.resolveCounterfactualQueue = async () => {};
+  bot.openBestCandidate = async () => ({ status: "no_allowed_candidates", blockedReasons: [], symbolBlockers: [], entryErrors: [], attemptedSymbols: [] });
+  bot.finalizeSignalFlowCycle = () => {};
+  bot.applyEntryAttemptToDecisions = () => {};
+  bot.syncOrderLifecycleState = () => {};
+  bot.updatePortfolioSnapshot = async () => ({ equity: 1000, balance: { quoteFree: 1000 } });
+  bot.markReportDirty = () => {};
+  bot.safeRecordDataRecorder = async (_label, fn) => {
+    await fn();
+  };
+  bot.dataRecorder = {
+    recordDecisions: async () => {},
+    recordCycle: async () => {},
+    recordSnapshotManifest: async () => {},
+    recordDatasetCuration: async () => {},
+    getSummary: () => ({})
+  };
+  bot.dispatchOperatorAlerts = async () => {};
+  bot.backupManager = {
+    maybeBackup: async () => {},
+    getSummary: () => ({})
+  };
+  bot.model = {
+    getState: () => ({}),
+    getCalibrationSummary: () => ({}),
+    getDeploymentSummary: () => ({})
+  };
+  bot.stream = {
+    getStatus: () => ({})
+  };
+
+  await bot.runCycleCore();
+  assert.deepEqual(order.slice(0, 3), ["manage", "governance", "scan"]);
 });
 
 await runCheck("trading bot paper learning summary uses runtime journal truth for shadow budget instead of stale decision snapshots", async () => {
@@ -13405,6 +13645,22 @@ await runCheck("timeframe consensus avoids higher timeframe conflict when the tr
   assert.ok(summary.alignmentScore < 0.42);
   assert.ok(!summary.blockerReasons.includes("higher_tf_conflict"));
   assert.ok(summary.reasons.includes("higher_tf_bias_without_lower_trigger"));
+});
+
+await runCheck("timeframe consensus keeps higher timeframe conflict soft for non-directional orderflow setups", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: { interval: "5m", market: { emaTrendScore: 0.22, momentum20: 0.004, breakoutPct: 0.003, supertrendDirection: 0, realizedVolPct: 0.015 } },
+        higher: { interval: "1h", market: { emaTrendScore: -0.86, momentum20: -0.028, breakoutPct: -0.015, supertrendDirection: -1, realizedVolPct: 0.018 } }
+      }
+    },
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "orderflow" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.ok(!summary.blockerReasons.includes("higher_tf_conflict"));
+  assert.ok(summary.reasons.includes("higher_tf_bias_against_entry"));
 });
 
 await runCheck("trading bot keeps healthy rest-book depth when local books are still warming", async () => {

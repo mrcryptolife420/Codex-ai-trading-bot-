@@ -40,6 +40,7 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
   );
   const reasons = [];
   const blockers = [];
+  const directionSensitiveFamilies = ["trend_following", "breakout", "market_structure", "derivatives"];
   const lowerDirectional = Math.abs(lowerBias) >= 0.08;
   const higherDirectional = Math.abs(higherBias) >= 0.16;
   if (directionAgreement >= 1 && Math.abs(higherBias) >= 0.18) {
@@ -56,7 +57,11 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
     blockers.push("cross_timeframe_misalignment");
   }
   if (lowerDirectional && higherDirectional && Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0)) {
-    blockers.push("higher_tf_conflict");
+    if (directionSensitiveFamilies.includes(family)) {
+      blockers.push("higher_tf_conflict");
+    } else {
+      reasons.push("higher_tf_bias_against_entry");
+    }
   } else if (!lowerDirectional && higherDirectional) {
     reasons.push("higher_tf_bias_without_lower_trigger");
   }
@@ -76,6 +81,8 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
     blockerReasons: blockers,
     summary: blockers.length
       ? `${higherInterval} en ${lowerInterval} liggen niet netjes in lijn.`
-      : `${higherInterval} bevestigt ${lowerInterval} voldoende.`
+      : reasons.includes("higher_tf_bias_against_entry") || reasons.includes("higher_tf_bias_without_lower_trigger")
+        ? `${higherInterval} geeft tegendruk, maar ${lowerInterval} is nog niet overtuigend genoeg voor een hard veto.`
+        : `${higherInterval} bevestigt ${lowerInterval} voldoende.`
   };
 }
