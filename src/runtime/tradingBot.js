@@ -1126,6 +1126,7 @@ function summarizePortfolio(portfolioSummary = {}) {
     regimeLastTradeAgeHours: Number.isFinite(portfolioSummary.regimeLastTradeAgeHours) ? num(portfolioSummary.regimeLastTradeAgeHours || 0, 1) : null,
     regimeKillSwitchActive: Boolean(portfolioSummary.regimeKillSwitchActive),
     regimeKillSwitchStale: Boolean(portfolioSummary.regimeKillSwitchStale),
+    regimeExposureSoftenedInPaper: Boolean(portfolioSummary.regimeExposureSoftenedInPaper),
     selfPositionExcluded: Boolean(portfolioSummary.selfPositionExcluded),
     sameFactorCount: portfolioSummary.sameFactorCount || 0,
     candidateFactors: [...(portfolioSummary.candidateFactors || [])],

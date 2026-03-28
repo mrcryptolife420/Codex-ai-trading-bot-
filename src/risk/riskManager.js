@@ -46,6 +46,8 @@ function isSoftPaperReason(reason) {
     "factor_budget_cooled",
     "daily_risk_budget_cooled",
     "regime_kill_switch_active",
+    "portfolio_loss_streak_guard",
+    "symbol_loss_streak_guard",
     "capital_governor_blocked",
     "capital_governor_recovery",
     "trade_size_below_minimum",

@@ -34,6 +34,10 @@ function canUsePaperCalibrationProbe({ botMode, criticalIssues = [], health = {}
   return botMode === "paper" && !health.circuitOpen && criticalIssues.length === 1 && criticalIssues[0] === "calibration_break";
 }
 
+function canUsePaperLossStreakFallback({ botMode, criticalIssues = [], health = {} }) {
+  return botMode === "paper" && !health.circuitOpen && criticalIssues.length === 1 && criticalIssues[0] === "loss_streak_limit";
+}
+
 export class SelfHealManager {
   constructor(config, logger) {
     this.config = config;
@@ -111,6 +115,21 @@ export class SelfHealManager {
     const cooldownActive = previous.cooldownUntil && new Date(previous.cooldownUntil).getTime() > now.getTime();
     const recoveredPaperCooldown = botMode === "paper" && cooldownActive && !health.circuitOpen && !criticalIssues.length && !warningIssues.length;
     if (criticalIssues.length) {
+      if (canUsePaperLossStreakFallback({ botMode, criticalIssues, health })) {
+        state.mode = "low_risk_only";
+        state.active = true;
+        state.reason = "loss_streak_limit";
+        state.issues = criticalIssues;
+        state.actions = ["limit_entries"];
+        state.managerAction = null;
+        state.sizeMultiplier = 0.32;
+        state.thresholdPenalty = 0.08;
+        state.lowRiskOnly = true;
+        state.learningAllowed = true;
+        state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
+        state.lastTriggeredAt = nowIso();
+        return state;
+      }
       if (canUsePaperCalibrationProbe({ botMode, criticalIssues, health })) {
         state.mode = "paper_calibration_probe";
         state.active = true;

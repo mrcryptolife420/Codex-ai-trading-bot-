@@ -377,7 +377,17 @@ export class PortfolioOptimizer {
       : 1;
     const dailyBudgetFactor = budgetState.dailyBudgetFactor || 1;
     const familyExposurePenalty = sameFamilyPositions.length >= this.config.maxFamilyPositions ? 0.58 : 1;
-    const regimeExposurePenalty = sameRegimePositions.length >= this.config.maxRegimePositions ? 0.7 : 1;
+    const regimeExposureSoftenedInPaper =
+      this.config.botMode === "paper" &&
+      sameRegimePositions.length >= this.config.maxRegimePositions &&
+      sameClusterPositions.length < this.config.maxClusterPositions &&
+      sameSectorPositions.length < this.config.maxSectorPositions &&
+      sameFamilyPositions.length === 0 &&
+      sameStrategyPositions.length === 0 &&
+      maxCorrelation <= this.config.maxPairCorrelation;
+    const regimeExposurePenalty = sameRegimePositions.length >= this.config.maxRegimePositions
+      ? (regimeExposureSoftenedInPaper ? 0.84 : 0.7)
+      : 1;
     const strategyExposurePenalty = sameStrategyPositions.length >= Math.max(1, Math.min(2, this.config.maxFamilyPositions || 2)) ? 0.78 : 1;
     const clusterHeatPenalty = clamp(1 - Math.max(0, clusterHeat - 0.18) * 1.8, 0.58, 1);
     const sectorHeatPenalty = clamp(1 - Math.max(0, sectorHeat - 0.28) * 1.4, 0.62, 1);
@@ -463,7 +473,7 @@ export class PortfolioOptimizer {
       reasons.push("family_exposure_limit_hit");
       hardReasons.push("family_exposure_limit_hit");
     }
-    if (sameRegimePositions.length >= this.config.maxRegimePositions) {
+    if (sameRegimePositions.length >= this.config.maxRegimePositions && !regimeExposureSoftenedInPaper) {
       reasons.push("regime_exposure_limit_hit");
       hardReasons.push("regime_exposure_limit_hit");
     }
@@ -571,6 +581,7 @@ export class PortfolioOptimizer {
       regimeLastTradeAgeHours: Number.isFinite(regimeLossStreakMeta?.lastTradeAgeHours) ? regimeLossStreakMeta.lastTradeAgeHours : null,
       regimeKillSwitchActive,
       regimeKillSwitchStale,
+      regimeExposureSoftenedInPaper,
       cvarPenalty,
       drawdownBudgetPenalty,
       candidateFactors,

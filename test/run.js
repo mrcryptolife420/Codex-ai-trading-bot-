@@ -6670,6 +6670,64 @@ await runCheck("risk manager suppresses strategy cooldown when the same symbol p
   assert.ok(!decision.reasons.includes("strategy_cooldown"));
 });
 
+await runCheck("risk manager treats paper loss-streak guards as lenient near-miss blockers", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "TRXUSDT",
+    score: {
+      probability: 0.541,
+      confidence: 0.64,
+      calibrationConfidence: 0.74,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.545, confidence: 0.16 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 1.8, bookPressure: 0.09, microPriceEdgeBps: 0.22, depthConfidence: 0.82 },
+      market: { realizedVolPct: 0.011, atrPct: 0.008, bearishPatternScore: 0.02, bullishPatternScore: 0.18, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.04, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.09, signalScore: 0.05, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0.01, liquidationIntensity: 0.01 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 1.5 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.74, probability: 0.538, netScore: 0.03, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "trend_following",
+      family: "trend_following",
+      fitScore: 0.61,
+      confidence: 0.56,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 10, sampleConfidence: 0.66 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1, session: "late_us", isWeekend: false },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-12T09:00:00.000Z", netPnlPct: -0.006, pnlQuote: -8, brokerMode: "paper" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-12T10:00:00.000Z", netPnlPct: -0.004, pnlQuote: -5, brokerMode: "paper" },
+        { symbol: "SOLUSDT", exitAt: "2026-03-12T11:00:00.000Z", netPnlPct: -0.003, pnlQuote: -4, brokerMode: "paper" }
+      ]
+    },
+    balance: { quoteFree: 600 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.72 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.92, blockerReasons: [], cautionReasons: [] },
+    nowIso: "2026-03-12T12:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.suppressedReasons.includes("portfolio_loss_streak_guard"));
+  assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
+});
+
 await runCheck("risk manager blocks additional paper recovery probes once the paper concurrent learning cap is reached", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningMaxConcurrentPositions: 1
@@ -7805,6 +7863,28 @@ await runCheck("self heal manager falls back to paper on critical live degradati
   assert.ok(state.actions.includes("switch_to_paper"));
   assert.ok(state.actions.includes("reset_rl_policy"));
   assert.ok(state.actions.includes("restore_stable_model"));
+});
+
+await runCheck("self heal manager keeps paper mode in low-risk learning on pure loss streak limits", async () => {
+  const manager = new SelfHealManager(makeConfig(), { warn() {} });
+  const state = manager.evaluate({
+    previousState: manager.buildDefaultState(),
+    report: {
+      recentTrades: [{ pnlQuote: -10 }, { pnlQuote: -12 }, { pnlQuote: -8 }],
+      windows: { today: { realizedPnl: -30 } },
+      maxDrawdownPct: 0.01
+    },
+    driftSummary: { severity: 0.2 },
+    health: { circuitOpen: false },
+    calibration: { observations: 24, expectedCalibrationError: 0.1 },
+    botMode: "paper",
+    hasStableModel: true,
+    now: new Date("2026-03-08T12:00:00.000Z")
+  });
+  assert.equal(state.mode, "low_risk_only");
+  assert.equal(state.reason, "loss_streak_limit");
+  assert.equal(state.learningAllowed, true);
+  assert.ok(!state.actions.includes("pause_entries"));
 });
 
 await runCheck("run cli closes the bot after SIGINT and removes signal handlers", async () => {
@@ -15570,6 +15650,84 @@ await runCheck("portfolio optimizer does not keep stale regime kill switches act
   assert.equal(summary.regimeKillSwitchActive, false);
   assert.equal(summary.regimeKillSwitchStale, true);
   assert.ok(!summary.reasons.includes("regime_kill_switch_active"));
+});
+
+await runCheck("portfolio optimizer softens broad regime-only overlap in paper mode", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    botMode: "paper",
+    maxFamilyPositions: 2,
+    maxRegimePositions: 2,
+    maxClusterPositions: 1,
+    symbolProfiles: {
+      BTCUSDT: { cluster: "majors", sector: "majors" },
+      AAVEUSDT: { cluster: "defi", sector: "defi" },
+      XRPUSDT: { cluster: "payments", sector: "payments" },
+      LINKUSDT: { cluster: "oracle", sector: "infra" }
+    }
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "LINKUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: { trades: [], scaleOuts: [] },
+    marketSnapshot: {
+      candles: Array.from({ length: 20 }, (_, index) => ({
+        close: 100 + Math.sin(index / 3) * 2 + index * 0.15,
+        high: 101 + Math.sin(index / 3) * 2 + index * 0.15,
+        low: 99 + Math.sin(index / 3) * 2 + index * 0.15
+      })),
+      market: { realizedVolPct: 0.016 }
+    },
+    candidateProfile: { cluster: "oracle", sector: "infra" },
+    openPositionContexts: [
+      {
+        symbol: "BTCUSDT",
+        profile: { cluster: "majors", sector: "majors" },
+        marketSnapshot: {
+          candles: Array.from({ length: 20 }, (_, index) => ({
+            close: 200 + Math.cos(index / 4) * 3 - index * 0.08,
+            high: 201 + Math.cos(index / 4) * 3 - index * 0.08,
+            low: 199 + Math.cos(index / 4) * 3 - index * 0.08
+          }))
+        },
+        position: {
+          notional: 1100,
+          entryPrice: 200,
+          quantity: 5.5,
+          strategyDecision: { family: "breakout" },
+          strategyAtEntry: "bollinger_squeeze",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "breakout", activeStrategy: "bollinger_squeeze" }, regimeSummary: { regime: "range" } }
+        }
+      },
+      {
+        symbol: "AAVEUSDT",
+        profile: { cluster: "defi", sector: "defi" },
+        marketSnapshot: {
+          candles: Array.from({ length: 20 }, (_, index) => ({
+            close: 90 + Math.sin(index / 5) * 1.5 + index * 0.11,
+            high: 91 + Math.sin(index / 5) * 1.5 + index * 0.11,
+            low: 89 + Math.sin(index / 5) * 1.5 + index * 0.11
+          }))
+        },
+        position: {
+          notional: 900,
+          entryPrice: 90,
+          quantity: 10,
+          strategyDecision: { family: "trend_following" },
+          strategyAtEntry: "vwap_trend",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "trend_following", activeStrategy: "vwap_trend" }, regimeSummary: { regime: "range" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "mean_reversion", activeStrategy: "vwap_reversion" }
+  });
+  assert.equal(summary.sameRegimeCount, 2);
+  assert.equal(summary.regimeExposureSoftenedInPaper, true);
+  assert.ok(!summary.reasons.includes("regime_exposure_limit_hit"));
+  assert.ok(!summary.hardReasons.includes("regime_exposure_limit_hit"));
+  assert.ok(summary.sizeMultiplier < 1);
 });
 
 await runCheck("portfolio optimizer excludes the same open symbol from self-overlap blockers", async () => {
