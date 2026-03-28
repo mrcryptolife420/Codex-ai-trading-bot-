@@ -6426,6 +6426,103 @@ await runCheck("risk manager treats paper entry cooldown and daily budget as sof
   assert.ok(decision.suppressedReasons.includes("daily_entry_budget_reached"));
 });
 
+await runCheck("risk manager extends paper probe threshold for strong soft-only near misses", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.473,
+      calibrationConfidence: 0.73,
+      confidence: 0.41,
+      disagreement: 0.09,
+      shouldAbstain: false,
+      abstainReasons: [],
+      transformer: { probability: 0.54, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.6, bookPressure: -0.11, microPriceEdgeBps: 0.24, depthConfidence: 0.88 },
+      market: {
+        realizedVolPct: 0.015,
+        atrPct: 0.009,
+        bearishPatternScore: 0.03,
+        bullishPatternScore: 0.18,
+        dominantPattern: "none",
+        anchoredVwapRejectionScore: 0.18,
+        breakoutFollowThroughScore: 0.54,
+        closeLocationQuality: 0.78,
+        volumeAcceptanceScore: 0.62,
+        trendFailureScore: 0.12
+      }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.04, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.12, signalScore: 0.08, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.1 },
+    volatilitySummary: { riskScore: 0.3, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.82, probability: 0.51, netScore: 0.12, sizeMultiplier: 0.98, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "trend_following",
+      family: "trend_following",
+      fitScore: 0.59,
+      confidence: 0.52,
+      blockers: [],
+      agreementGap: 0.06,
+      optimizer: { sampleSize: 1, sampleConfidence: 0.2 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.7, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: {
+      sizeMultiplier: 0.52,
+      maxCorrelation: 0,
+      reasons: ["family_budget_cooled", "strategy_budget_cooled"],
+      dailyBudgetFactor: 0.98,
+      allocatorScore: 0.82
+    },
+    regimeSummary: { regime: "breakout", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.92, blockerReasons: [] },
+    pairHealthSummary: { score: 0.66, quarantined: false },
+    timeframeSummary: { alignmentScore: 0.84, blockerReasons: [] },
+    trendStateSummary: { dataConfidenceScore: 0.74 },
+    signalQualitySummary: { overallScore: 0.78, executionViability: 0.72 },
+    dataQualitySummary: { overallScore: 0.66 },
+    confidenceBreakdown: { overallConfidence: 0.72, executionConfidence: 0.7, modelConfidence: 0.66 },
+    nowIso: "2026-03-12T11:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.paperExploration.thresholdBuffer > makeConfig().paperExplorationThresholdBuffer);
+  assert.ok(decision.suppressedReasons.includes("family_budget_cooled"));
+  assert.ok(decision.suppressedReasons.includes("strategy_budget_cooled"));
+});
+
+await runCheck("adaptive model exposes abstain reasons for neutral-band uncertainty", async () => {
+  const model = new AdaptiveTradingModel({}, makeConfig());
+  const score = model.score({
+    momentum_20: 0.02,
+    trend_quality_composite: 0.03,
+    execution_quality_composite: 0.02
+  }, {
+    regimeSummary: { regime: "range", confidence: 0.72 },
+    marketSnapshot: { market: {}, book: {} },
+    strategySummary: {},
+    committeeSummary: {},
+    newsSummary: {},
+    marketStructureSummary: {},
+    pairHealthSummary: {},
+    timeframeSummary: {}
+  });
+  assert.equal(score.shouldAbstain, true);
+  assert.ok(score.abstainReasons.includes("probability_neutral_band"));
+});
+
 await runCheck("risk manager blocks extra paper probes after the daily learning budget is exhausted", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningProbeDailyLimit: 0,

@@ -1175,6 +1175,7 @@ export class RiskManager {
     if (score.shouldAbstain) {
       reasons.push("model_uncertainty_abstain");
     }
+    const abstainReasons = [...new Set((score.abstainReasons || []).filter(Boolean))];
     if ((score.transformer?.confidence || 0) >= this.config.transformerMinConfidence && (score.transformer?.probability || 0) < threshold - 0.03) {
       reasons.push("transformer_challenger_reject");
     }
@@ -1522,6 +1523,21 @@ export class RiskManager {
       reasons.some((reason) => isMildPaperQualityReason(reason)) &&
       reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason));
 
+    const softPaperOnlyReasons = reasons.length > 0 && reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState));
+    const highQualitySoftPaperProbeCandidate =
+      softPaperOnlyReasons &&
+      (committeeSummary.vetoes || []).length === 0 &&
+      (committeeSummary.netScore || 0) >= 0 &&
+      safeValue(signalQualitySummary.overallScore, 0) >= 0.72 &&
+      safeValue(dataQualitySummary.overallScore, 0) >= 0.62 &&
+      safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.68 &&
+      (
+        abstainReasons.length === 0 ||
+        abstainReasons.every((reason) => reason === "probability_neutral_band")
+      );
+    const paperProbeThresholdBuffer = this.config.paperExplorationThresholdBuffer +
+      (highQualitySoftPaperProbeCandidate ? 0.03 : 0);
+
     if (
       !allow &&
       this.config.botMode === "paper" &&
@@ -1531,7 +1547,7 @@ export class RiskManager {
       reasons.length > 0 &&
       !reasons.includes("capital_governor_recovery") &&
       reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
-      score.probability >= threshold - this.config.paperExplorationThresholdBuffer &&
+      score.probability >= threshold - paperProbeThresholdBuffer &&
       (marketSnapshot.book.bookPressure || 0) >= this.config.paperExplorationMinBookPressure &&
       (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.4, 8) &&
       (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
@@ -1567,13 +1583,14 @@ export class RiskManager {
         finalQuoteAmount = explorationQuoteAmount;
         paperExploration = {
           mode: "paper_exploration",
-          thresholdBuffer: this.config.paperExplorationThresholdBuffer,
+          thresholdBuffer: paperProbeThresholdBuffer,
           sizeMultiplier: this.config.paperExplorationSizeMultiplier,
           minBookPressure: this.config.paperExplorationMinBookPressure,
           minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
           warmupProgress: calibrationWarmup,
           suppressedReasons,
           guardrailReliefReasons: paperGuardrailRelief,
+          adaptiveThresholdRelief: clamp(paperProbeThresholdBuffer - this.config.paperExplorationThresholdBuffer, 0, 0.05),
           selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
           selfHealIssues: [...(selfHealState.issues || [])]
         };
@@ -1803,6 +1820,7 @@ export class RiskManager {
       dataQualitySummary,
       signalQualitySummary,
       confidenceBreakdown,
+      modelAbstainReasons: abstainReasons,
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,

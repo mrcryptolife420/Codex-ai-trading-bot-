@@ -440,11 +440,20 @@ export class AdaptiveTradingModel {
     const abstainBand = hasCalibrationGate
       ? this.config.abstainBand
       : Math.max(0.01, this.config.abstainBand * 0.55);
-    const shouldAbstain =
-      (hasCalibrationGate && calibrationConfidence < this.config.minCalibrationConfidence) ||
-      regimeSummary.confidence < this.config.minRegimeConfidence ||
-      disagreement > disagreementLimit ||
-      Math.abs(blendedProbability - 0.5) < abstainBand;
+    const abstainReasons = [];
+    if (hasCalibrationGate && calibrationConfidence < this.config.minCalibrationConfidence) {
+      abstainReasons.push("calibration_confidence_low");
+    }
+    if (regimeSummary.confidence < this.config.minRegimeConfidence) {
+      abstainReasons.push("regime_confidence_low");
+    }
+    if (disagreement > disagreementLimit) {
+      abstainReasons.push("model_disagreement_high");
+    }
+    if (Math.abs(blendedProbability - 0.5) < abstainBand) {
+      abstainReasons.push("probability_neutral_band");
+    }
+    const shouldAbstain = abstainReasons.length > 0;
 
     const metaNeural = this.metaNeural.score({
       score: {
@@ -502,6 +511,7 @@ export class AdaptiveTradingModel {
       executionNeural,
       strategyMeta,
       shouldAbstain,
+      abstainReasons,
       preparedFeatures: championScore.preparedFeatures,
       rawFeatures: { ...rawFeatures },
       contributions: championScore.contributions,
