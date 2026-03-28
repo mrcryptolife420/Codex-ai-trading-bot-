@@ -266,6 +266,17 @@ function classifySignalRejectionCategory(reason = "") {
   return "other";
 }
 
+function resolveStatusTone(value) {
+  const normalized = `${value || ""}`.toLowerCase();
+  if (["healthy", "ready", "running", "positive", "clear", "paper", "eligible", "active"].includes(normalized)) {
+    return "positive";
+  }
+  if (["blocked", "critical", "failed", "negative", "stopped", "live", "manual_review"].includes(normalized)) {
+    return "negative";
+  }
+  return "neutral";
+}
+
 function isUsableCounterfactual(item = {}) {
   return !item.resolutionFailed && item.outcome !== "resolution_failed";
 }
@@ -10780,7 +10791,7 @@ export class TradingBot {
         ? {
             title: "Readiness",
             detail: titleize(readiness.reasons[0]),
-            tone: statusTone(readiness.status || "unknown")
+            tone: resolveStatusTone(readiness.status || "unknown")
           }
         : null,
       dominantBlockers[0]

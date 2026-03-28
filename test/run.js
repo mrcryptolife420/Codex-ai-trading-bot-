@@ -2960,6 +2960,29 @@ await runCheck("paper signal flow can execute and persist a deterministic paper 
   assert.ok(persisted.journal.events.some((event) => event.type === "paper_trade_persisted"));
 });
 
+await runCheck("operator diagnostics snapshot stays server-safe when readiness is degraded", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const snapshot = bot.buildOperatorDiagnosticsSnapshot({
+    topDecisions: [],
+    blockedSetups: [],
+    tradeReplays: [],
+    readiness: {
+      status: "degraded",
+      reasons: ["paper_signal_flow_stalled"]
+    },
+    alerts: { alerts: [] },
+    sourceReliability: { externalFeeds: { coolingDownCount: 0, providers: [] } },
+    qualityQuorum: {},
+    safety: { orderLifecycle: { pendingActions: [] } },
+    paperLearning: { promotionRoadmap: {} },
+    diagnosticsActions: {}
+  });
+
+  assert.equal(snapshot.status, "degraded");
+  assert.equal(snapshot.actionItems[0]?.title, "Readiness");
+  assert.equal(snapshot.actionItems[0]?.tone, "neutral");
+});
+
 await runCheck("syncOrderLifecycleState surfaces manual exchange interference as manual review", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {
