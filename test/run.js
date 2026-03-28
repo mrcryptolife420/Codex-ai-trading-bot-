@@ -6617,6 +6617,59 @@ await runCheck("risk manager allows additional paper recovery probes while below
   assert.equal(decision.entryMode, "paper_recovery_probe");
 });
 
+await runCheck("risk manager suppresses strategy cooldown when the same symbol position is already open", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BFUSDUSDT",
+    score: {
+      probability: 0.54,
+      calibrationConfidence: 0.72,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.55, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.4, bookPressure: 0.08, microPriceEdgeBps: 0.18, depthConfidence: 0.74 },
+      market: { realizedVolPct: 0.012, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.18, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.14, signalScore: 0.08, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0.02, liquidationIntensity: 0.01 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.06 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 1.6 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.58, probability: 0.56, netScore: 0.04, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "bollinger_squeeze",
+      family: "breakout",
+      fitScore: 0.62,
+      confidence: 0.58,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 12, sampleConfidence: 0.68 }
+    },
+    strategyRetirementSummary: {
+      policies: [{ id: "bollinger_squeeze", status: "cooldown", sizeMultiplier: 0.7, confidence: 0.78, note: "recent losses" }]
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1, isWeekend: false },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [{ symbol: "BFUSDUSDT" }] },
+    journal: { trades: [] },
+    balance: { quoteFree: 500 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "breakout", confidence: 0.68 },
+    qualityQuorumSummary: { status: "pass", observeOnly: false, quorumScore: 0.74, blockerReasons: [], cautionReasons: [] },
+    capitalGovernorSummary: { status: "ready", allowEntries: true, sizeMultiplier: 1, recoveryMode: false, notes: [] },
+    nowIso: "2026-03-28T05:15:00.000Z"
+  });
+  assert.ok(decision.reasons.includes("position_already_open"));
+  assert.ok(!decision.reasons.includes("strategy_cooldown"));
+});
+
 await runCheck("risk manager blocks additional paper recovery probes once the paper concurrent learning cap is reached", async () => {
   const manager = new RiskManager(makeConfig({
     paperLearningMaxConcurrentPositions: 1
@@ -7706,6 +7759,30 @@ await runCheck("drift monitor escalates candidate and runtime drift", async () =
   });
   assert.equal(runtime.status, "critical");
   assert.ok(runtime.blockerReasons.includes("live_drift_guard"));
+});
+
+await runCheck("drift monitor accepts healthy rest-book fallback without local-book blocker", async () => {
+  const monitor = new DriftMonitor(makeConfig(), { warn() {} });
+  const candidate = monitor.evaluateCandidate({
+    symbol: "BFUSDUSDT",
+    rawFeatures: { momentum_5: 0.4, news_sentiment: 0.1 },
+    score: {},
+    regimeSummary: { regime: "trend" },
+    newsSummary: { reliabilityScore: 0.92, coverage: 0 },
+    marketSnapshot: { book: { depthConfidence: 0.18, bookFallbackReady: true } },
+    model: {
+      assessFeatureDrift() {
+        return {
+          comparableFeatures: 6,
+          averageAbsZ: 0.4,
+          maxAbsZ: 0.9,
+          driftedFeatures: []
+        };
+      }
+    }
+  });
+  assert.ok(!candidate.blockerReasons.includes("local_book_quality_too_low"));
+  assert.equal(candidate.localBookScore, 0);
 });
 
 await runCheck("self heal manager falls back to paper on critical live degradation", async () => {

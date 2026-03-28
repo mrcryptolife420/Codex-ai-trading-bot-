@@ -25,6 +25,8 @@ export class DriftMonitor {
     model
   }) {
     const featureDrift = model.assessFeatureDrift(rawFeatures, regimeSummary?.regime);
+    const localBookFallbackReady = Boolean(marketSnapshot.book?.bookFallbackReady);
+    const localBookDepthConfidence = marketSnapshot.book?.depthConfidence || 0;
     const featureDriftScore = clamp(
       (featureDrift.averageAbsZ - this.config.driftFeatureScoreAlert) /
         Math.max(this.config.driftFeatureScoreBlock - this.config.driftFeatureScoreAlert, 0.001),
@@ -38,7 +40,7 @@ export class DriftMonitor {
       1
     );
     const localBookScore = this.config.enableLocalOrderBook
-      ? clamp(1 - (marketSnapshot.book?.depthConfidence || 0), 0, 1)
+      ? clamp(localBookFallbackReady ? 0 : 1 - localBookDepthConfidence, 0, 1)
       : 0;
     const severity = clamp(featureDriftScore * 0.56 + sourceDriftScore * 0.22 + localBookScore * 0.22, 0, 1);
     const blockerReasons = [];
@@ -53,7 +55,7 @@ export class DriftMonitor {
     if ((newsSummary.reliabilityScore || 0) < this.config.driftLowReliabilityAlert && (newsSummary.coverage || 0) > 0) {
       reasons.push("news_source_drift");
     }
-    if (this.config.enableLocalOrderBook && (marketSnapshot.book?.depthConfidence || 0) < 0.22) {
+    if (this.config.enableLocalOrderBook && !localBookFallbackReady && localBookDepthConfidence < 0.22) {
       blockerReasons.push("local_book_quality_too_low");
     }
 

@@ -1169,9 +1169,15 @@ export class RiskManager {
     if ((venueConfirmationSummary.status || "") === "blocked") {
       reasons.push(...(venueConfirmationSummary.blockerReasons || ["reference_venue_divergence"]));
     }
+    const hasOpenPositionForSymbol = openPositions.some((position) => position.symbol === symbol);
     if (strategyRetirementPolicy.blocked) {
       reasons.push("strategy_retired");
-    } else if (strategyRetirementPolicy.active && (strategyRetirementPolicy.status || "") === "cooldown" && score.probability < threshold + 0.04) {
+    } else if (
+      !hasOpenPositionForSymbol &&
+      strategyRetirementPolicy.active &&
+      (strategyRetirementPolicy.status || "") === "cooldown" &&
+      score.probability < threshold + 0.04
+    ) {
       reasons.push("strategy_cooldown");
     }
     if (
@@ -1185,7 +1191,7 @@ export class RiskManager {
     if (["paused", "paper_fallback"].includes(selfHealState.mode)) {
       reasons.push("self_heal_pause_entries");
     }
-    if (openPositions.some((position) => position.symbol === symbol)) {
+    if (hasOpenPositionForSymbol) {
       reasons.push("position_already_open");
     }
     if (score.probability < threshold) {
