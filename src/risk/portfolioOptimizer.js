@@ -54,6 +54,20 @@ function num(value, digits = 4) {
   return Number(safeValue(value).toFixed(digits));
 }
 
+function shouldFlagBudgetCooling({
+  factor = 1,
+  exposureCount = 0,
+  heat = 0,
+  mildThreshold = 0.9,
+  severeThreshold = 0.85,
+  activeHeatThreshold = 0.08
+} = {}) {
+  if (!Number.isFinite(factor) || factor >= mildThreshold) {
+    return false;
+  }
+  return factor < severeThreshold || exposureCount > 0 || heat >= activeHeatThreshold;
+}
+
 function computeLossStreakStateMap(trades = [], keyFn, {
   limit = 60,
   nowIso = new Date().toISOString(),
@@ -455,22 +469,47 @@ export class PortfolioOptimizer {
       reasons.push("strategy_exposure_limit_hit");
       hardReasons.push("strategy_exposure_limit_hit");
     }
-    if (familyBudgetFactor < 0.9) {
+    if (shouldFlagBudgetCooling({
+      factor: familyBudgetFactor,
+      exposureCount: sameFamilyPositions.length,
+      heat: familyHeat,
+      activeHeatThreshold: 0.08
+    })) {
       reasons.push("family_budget_cooled");
     }
-    if (regimeBudgetFactor < 0.9) {
+    if (shouldFlagBudgetCooling({
+      factor: regimeBudgetFactor,
+      exposureCount: sameRegimePositions.length,
+      heat: regimeHeat,
+      activeHeatThreshold: 0.08
+    })) {
       reasons.push("regime_budget_cooled");
     }
-    if (strategyBudgetFactor < 0.9) {
+    if (shouldFlagBudgetCooling({
+      factor: strategyBudgetFactor,
+      exposureCount: sameStrategyPositions.length,
+      heat: strategyHeat,
+      activeHeatThreshold: 0.05
+    })) {
       reasons.push("strategy_budget_cooled");
     }
-    if (clusterBudgetFactor < 0.9) {
+    if (shouldFlagBudgetCooling({
+      factor: clusterBudgetFactor,
+      exposureCount: sameClusterPositions.length,
+      heat: clusterHeat,
+      activeHeatThreshold: 0.12
+    })) {
       reasons.push("cluster_budget_cooled");
     }
     if (dailyBudgetFactor < 0.9) {
       reasons.push("daily_risk_budget_cooled");
     }
-    if (factorBudgetFactor < 0.9) {
+    if (shouldFlagBudgetCooling({
+      factor: factorBudgetFactor,
+      exposureCount: sameFactorPositions.length,
+      heat: factorHeat,
+      activeHeatThreshold: 0.08
+    })) {
       reasons.push("factor_budget_cooled");
     }
     if ((budgetState.portfolioCvarPct || 0) >= (this.config.portfolioMaxCvarPct || 0.028)) {

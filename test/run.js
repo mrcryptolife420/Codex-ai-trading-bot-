@@ -6395,6 +6395,67 @@ await runCheck("risk manager keeps paper recovery probes alive through soft gove
   assert.ok(decision.suppressedReasons.includes("regime_budget_cooled"));
 });
 
+await runCheck("risk manager softens pure model-disagreement committee vetoes in paper mode", async () => {
+  const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
+  const decision = manager.evaluateEntry({
+    symbol: "ATOMUSDT",
+    score: {
+      probability: 0.45,
+      confidence: 0.39,
+      calibrationConfidence: 0.61,
+      disagreement: 0.13,
+      shouldAbstain: true,
+      abstainReasons: ["model_disagreement_high"],
+      transformer: { probability: 0.47, confidence: 0.24 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.1, bookPressure: -0.08, microPriceEdgeBps: 0.18, depthConfidence: 0.82 },
+      market: { realizedVolPct: 0.013, atrPct: 0.009, bearishPatternScore: 0.03, bullishPatternScore: 0.14, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.03, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.1, signalScore: 0.04, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.1 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: {
+      agreement: 0.34,
+      probability: 0.442,
+      confidence: 0.62,
+      netScore: -0.04,
+      sizeMultiplier: 0.95,
+      vetoes: [{ id: "model_disagreement" }]
+    },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.008 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.54,
+      confidence: 0.46,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 6, sampleConfidence: 0.55 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.63, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.69 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-03-12T09:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("model_confidence_too_low"));
+  assert.ok(!decision.reasons.includes("committee_veto"));
+  assert.deepEqual(decision.committeeVetoObservation.vetoIds, ["model_disagreement"]);
+  assert.equal(decision.committeeVetoObservation.softenedInPaper, true);
+});
+
 await runCheck("risk manager keeps paper recovery probe blocked when market quality blockers remain", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
@@ -15304,6 +15365,38 @@ await runCheck("portfolio optimizer does not keep stale regime kill switches act
   assert.equal(summary.regimeKillSwitchActive, false);
   assert.equal(summary.regimeKillSwitchStale, true);
   assert.ok(!summary.reasons.includes("regime_kill_switch_active"));
+});
+
+await runCheck("portfolio optimizer ignores mild stale budget cooling without active exposure", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    symbolProfiles: {
+      BTCUSDT: { cluster: "majors", sector: "majors" },
+      ETHUSDT: { cluster: "majors", sector: "majors" },
+      SOLUSDT: { cluster: "majors", sector: "majors" }
+    }
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "SOLUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.009, exitAt: "2026-03-26T10:00:00.000Z", pnlQuote: -9 },
+        { symbol: "ETHUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.01, exitAt: "2026-03-27T10:00:00.000Z", pnlQuote: -10 }
+      ],
+      scaleOuts: []
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.017 } },
+    candidateProfile: { cluster: "majors", sector: "majors" },
+    openPositionContexts: [],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.ok(summary.familyBudgetFactor < 0.9);
+  assert.ok(summary.strategyBudgetFactor < 0.9);
+  assert.ok(summary.clusterBudgetFactor < 0.9);
+  assert.ok(!summary.reasons.includes("family_budget_cooled"));
+  assert.ok(!summary.reasons.includes("strategy_budget_cooled"));
+  assert.ok(!summary.reasons.includes("cluster_budget_cooled"));
 });
 
 await runCheck("committee ignores soft portfolio cooling without hard overlap veto", async () => {

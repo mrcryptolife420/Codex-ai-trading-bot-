@@ -125,6 +125,24 @@ function getMetaCautionReasons(metaSummary = {}) {
   ))];
 }
 
+function getCommitteeVetoIds(committeeSummary = {}) {
+  return [...new Set((committeeSummary.vetoes || []).map((item) => item?.id).filter(Boolean))];
+}
+
+function isSoftPaperCommitteeDisagreementOnly({ committeeSummary = {}, score = {} } = {}) {
+  const vetoIds = getCommitteeVetoIds(committeeSummary);
+  if (!vetoIds.length || !vetoIds.every((id) => id === "model_disagreement")) {
+    return false;
+  }
+  const committeeProbability = safeValue(committeeSummary.probability, 0.5);
+  const modelProbability = safeValue(score.probability, 0.5);
+  return (
+    committeeProbability >= modelProbability - 0.02 &&
+    safeValue(committeeSummary.netScore, 0) >= -0.08 &&
+    safeValue(committeeSummary.agreement, 0) >= 0.22
+  );
+}
+
 function matchesBrokerMode(item, botMode = "paper") {
   return (item?.brokerMode || "paper") === botMode;
 }
@@ -1243,7 +1261,11 @@ export class RiskManager {
     if ((volatilitySummary.riskScore || 0) > 0.86 && (marketSnapshot.market.realizedVolPct || 0) > this.config.maxRealizedVolPct * 0.55) {
       reasons.push("options_volatility_stress");
     }
-    if ((committeeSummary.vetoes || []).length) {
+    const committeeVetoIds = getCommitteeVetoIds(committeeSummary);
+    const softPaperCommitteeDisagreement =
+      this.config.botMode === "paper" &&
+      isSoftPaperCommitteeDisagreementOnly({ committeeSummary, score });
+    if (committeeVetoIds.length && !softPaperCommitteeDisagreement) {
       reasons.push("committee_veto");
     }
     const committeeGuardBuffer = this.config.botMode === "paper" ? 0.08 : 0.02;
@@ -1550,7 +1572,7 @@ export class RiskManager {
     const softPaperOnlyReasons = reasons.length > 0 && reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState));
     const highQualitySoftPaperProbeCandidate =
       softPaperOnlyReasons &&
-      (committeeSummary.vetoes || []).length === 0 &&
+      (committeeVetoIds.length === 0 || softPaperCommitteeDisagreement) &&
       (committeeSummary.netScore || 0) >= 0 &&
       safeValue(signalQualitySummary.overallScore, 0) >= 0.72 &&
       safeValue(dataQualitySummary.overallScore, 0) >= 0.62 &&
@@ -1845,6 +1867,10 @@ export class RiskManager {
       signalQualitySummary,
       confidenceBreakdown,
       modelAbstainReasons: abstainReasons,
+      committeeVetoObservation: {
+        vetoIds: committeeVetoIds,
+        softenedInPaper: softPaperCommitteeDisagreement
+      },
       strategyMetaApplied: strategyMetaSummary,
       capitalLadderApplied: capitalLadderSummary,
       strategyConfidenceFloor,
