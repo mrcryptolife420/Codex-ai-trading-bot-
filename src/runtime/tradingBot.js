@@ -2827,6 +2827,54 @@ function summarizeStrategyMeta(summary = {}) {
   };
 }
 
+function summarizeStrategyAllocation(summary = {}) {
+  return {
+    status: summary.status || "warmup",
+    tradeCount: summary.tradeCount || 0,
+    bucketCount: summary.bucketCount || 0,
+    lastTradeAt: summary.lastTradeAt || null,
+    preferredFamily: summary.preferredFamily || null,
+    preferredStrategy: summary.preferredStrategy || null,
+    activeFamily: summary.activeFamily || null,
+    activeStrategy: summary.activeStrategy || null,
+    regime: summary.regime || null,
+    session: summary.session || null,
+    posture: summary.posture || "neutral",
+    fitBoost: num(summary.fitBoost || 0, 4),
+    confidenceBoost: num(summary.confidenceBoost || 0, 4),
+    thresholdShift: num(summary.thresholdShift || 0, 4),
+    sizeMultiplier: num(summary.sizeMultiplier ?? 1, 4),
+    explorationWeight: num(summary.explorationWeight || 0, 4),
+    confidence: num(summary.confidence || 0, 4),
+    activeBias: num(summary.activeBias || 0, 4),
+    scopes: arr(summary.scopes || []).slice(0, 5).map((item) => ({
+      id: item.id || null,
+      label: item.label || null,
+      signal: num(item.signal || 0, 4),
+      confidence: num(item.confidence || 0, 4),
+      trades: item.trades || 0,
+      ageHours: item.ageHours == null ? null : num(item.ageHours, 1)
+    })),
+    topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      context: item.context || null,
+      signal: num(item.signal || 0, 4),
+      confidence: num(item.confidence || 0, 4),
+      trades: item.trades || 0,
+      lastTradeAt: item.lastTradeAt || null
+    })),
+    topStrategies: arr(summary.topStrategies || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      context: item.context || null,
+      signal: num(item.signal || 0, 4),
+      confidence: num(item.confidence || 0, 4),
+      trades: item.trades || 0,
+      lastTradeAt: item.lastTradeAt || null
+    })),
+    notes: arr(summary.notes || []).slice(0, 4)
+  };
+}
+
 function summarizeStrategyResearch(summary = {}) {
   const mapCandidate = (item) => ({
     ...summarizeStrategyDsl(item),
@@ -3397,6 +3445,7 @@ function summarizeAdaptationHealth(summary = {}) {
     optimizerStatus: summary.optimizerStatus || "warmup",
     attributionStatus: summary.attributionStatus || "warmup",
     parameterGovernorStatus: summary.parameterGovernorStatus || "warmup",
+    strategyAllocation: summarizeStrategyAllocation(summary.strategyAllocation || {}),
     adaptiveInputs: {
       enabledCount: summary.adaptiveInputs?.enabledCount || 0,
       totalCount: summary.adaptiveInputs?.totalCount || 0,
@@ -7988,11 +8037,13 @@ export class TradingBot {
     const optimizerSummary = this.runtime?.aiTelemetry?.strategyOptimizer || {};
     const parameterGovernor = this.runtime?.parameterGovernor || {};
     const attribution = this.runtime?.strategyAttribution || {};
+    const strategyAllocation = this.model?.getStrategyAllocationSummary ? (this.model.getStrategyAllocationSummary() || {}) : {};
     const lastCalibrationUpdateAt = calibration.lastUpdatedAt || null;
     const calibrationAgeHours = lastCalibrationUpdateAt
       ? Math.max(0, (referenceMs - new Date(lastCalibrationUpdateAt).getTime()) / 3_600_000)
       : null;
     const adaptiveInputs = [
+      { id: "strategy_allocation_bandit", enabled: true },
       { id: "cross_timeframe_consensus", enabled: Boolean(this.config.enableCrossTimeframeConsensus) },
       { id: "market_sentiment", enabled: Boolean(this.config.enableMarketSentimentContext) },
       { id: "on_chain_lite", enabled: Boolean(this.config.enableOnChainLiteContext) },
@@ -8030,6 +8081,9 @@ export class TradingBot {
         : null,
       deployment.active
         ? `Actieve deployment: ${deployment.active}.`
+        : null,
+      strategyAllocation.topStrategies?.[0]?.id
+        ? `Adaptive allocator bevoordeelt nu ${strategyAllocation.topStrategies[0].id}${strategyAllocation.topStrategies[0].context ? ` binnen ${strategyAllocation.topStrategies[0].context}` : ""}.`
         : null
     ].filter(Boolean);
     return {
@@ -8050,6 +8104,7 @@ export class TradingBot {
       optimizerStatus: optimizerSummary.status || "warmup",
       attributionStatus: attribution.status || "warmup",
       parameterGovernorStatus: parameterGovernor.status || "warmup",
+      strategyAllocation: summarizeStrategyAllocation(strategyAllocation),
       adaptiveInputs: {
         enabledCount: enabledAdaptiveInputs.length,
         totalCount: adaptiveInputs.length,
@@ -8920,6 +8975,7 @@ export class TradingBot {
       metaNeural: summarizeMetaNeural(candidate.score.metaNeural),
       executionNeural: summarizeExecutionNeural(candidate.score.executionNeural),
       strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
+      strategyAllocation: summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score.strategyAllocation || {}),
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
       parameterGovernor: candidate.decision.parameterGovernorApplied || null,
@@ -9047,11 +9103,40 @@ export class TradingBot {
       pairHealthSummary,
       regimeSummary
     });
+    const strategyAllocationSummary = this.model.scoreStrategyAllocation({
+      score: {
+        probability: strategySummary.fitScore || 0.5,
+        confidence: strategySummary.confidence || 0
+      },
+      marketSnapshot,
+      newsSummary,
+      marketStructureSummary,
+      strategySummary,
+      timeframeSummary,
+      pairHealthSummary,
+      regimeSummary,
+      sessionSummary
+    });
+    const combinedStrategyMetaSummary = {
+      ...strategyMetaSummary,
+      fitBoost: clamp((strategyMetaSummary.fitBoost || 0) + (strategyAllocationSummary.fitBoost || 0), -0.12, 0.12),
+      thresholdShift: clamp((strategyMetaSummary.thresholdShift || 0) + (strategyAllocationSummary.thresholdShift || 0), -0.05, 0.05),
+      sizeMultiplier: clamp((strategyMetaSummary.sizeMultiplier || 1) * (strategyAllocationSummary.sizeMultiplier || 1), 0.72, 1.18),
+      confidence: clamp(((strategyMetaSummary.confidence || 0) * 0.6) + ((strategyAllocationSummary.confidence || 0) * 0.4), 0, 1),
+      strategyAllocation: summarizeStrategyAllocation(strategyAllocationSummary)
+    };
     strategySummary = {
       ...strategySummary,
-      fitScore: clamp((strategySummary.fitScore || 0) + (strategyMetaSummary.fitBoost || 0), 0, 1),
-      confidence: clamp((strategySummary.confidence || 0) + Math.max(-0.04, Math.min(0.04, strategyMetaSummary.familyAlignment || 0)), 0, 1),
-      metaSelector: summarizeStrategyMeta(strategyMetaSummary),
+      fitScore: clamp((strategySummary.fitScore || 0) + (combinedStrategyMetaSummary.fitBoost || 0), 0, 1),
+      confidence: clamp(
+        (strategySummary.confidence || 0) +
+        Math.max(-0.04, Math.min(0.04, strategyMetaSummary.familyAlignment || 0)) +
+        Math.max(-0.03, Math.min(0.03, strategyAllocationSummary.confidenceBoost || 0)),
+        0,
+        1
+      ),
+      metaSelector: summarizeStrategyMeta(combinedStrategyMetaSummary),
+      adaptiveSelector: summarizeStrategyAllocation(strategyAllocationSummary),
       preferredExecutionStyle: strategyMetaSummary.preferredExecutionStyle || null
     };
     const venueConfirmationSummary = context.venueConfirmationSummary || await this.referenceVenue.getSymbolSummary(symbol, marketSnapshot, {
@@ -9167,6 +9252,8 @@ export class TradingBot {
       announcementSummary: exchangeSummary,
       calendarSummary,
       strategySummary,
+      strategyMetaSummary: combinedStrategyMetaSummary,
+      strategyAllocationSummary,
       timeframeSummary,
       pairHealthSummary,
       divergenceSummary
@@ -9313,7 +9400,7 @@ export class TradingBot {
       marketStateSummary,
       venueConfirmationSummary,
       exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
-      strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
+      strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
       nowIso: now.toISOString()
     });
     decision.rankScore = num((decision.rankScore || 0) + (attributionSummary.rankBoost || 0), 4);
@@ -9338,7 +9425,7 @@ export class TradingBot {
       committeeSummary,
       rlAdvice,
       executionNeuralSummary: score.executionNeural,
-      strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
+      strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
       capitalLadderSummary: this.runtime.capitalLadder || {},
       venueConfirmationSummary,
       sessionSummary
@@ -9393,7 +9480,8 @@ export class TradingBot {
       score,
       regimeSummary,
       strategySummary,
-      strategyMetaSummary: score.strategyMeta || strategyMetaSummary,
+      strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
+      strategyAllocationSummary: score.strategyAllocation || strategyAllocationSummary,
       optimizerSummary,
       portfolioSummary,
       attributionSummary,
@@ -9755,6 +9843,7 @@ export class TradingBot {
       setupStyle: buildSetupStyle(candidate),
       strategy: summarizeStrategy(candidate.strategySummary),
       strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
+      strategyAllocation: summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score.strategyAllocation || {}),
       probability: num(candidate.score.probability, 4),
       rawProbability: num(candidate.score.rawProbability || 0, 4),
       confidence: num(candidate.score.confidence || 0, 4),
@@ -10866,6 +10955,7 @@ export class TradingBot {
         familyLabel: strategy.familyLabel || strategy.family || null,
         fitScore: num(strategy.fitScore || 0, 4)
       },
+      strategyAllocation: summarizeStrategyAllocation(decision.strategyAllocation || decision.strategyAllocationSummary || {}),
       committee: summarizeCommittee(decision.committee || decision.committeeSummary || {}),
       orderBook: {
         bookPressure: num(decision.orderBook?.bookPressure || 0, 3)
@@ -11831,6 +11921,7 @@ export class TradingBot {
         deployment: this.model.getDeploymentSummary(),
         transformer: this.model.getTransformerSummary(),
         strategyMeta: topDecision.strategyMeta || leadPosition?.entryRationale?.strategyMeta || summarizeStrategyMeta({}),
+        strategyAllocation: topDecision.strategyAllocation || leadPosition?.entryRationale?.strategyAllocation || summarizeStrategyAllocation(this.model.getStrategyAllocationSummary()),
         parameterGovernor: summarizeParameterGovernor(this.runtime.parameterGovernor || {}),
         strategyRetirement: summarizeStrategyRetirement(this.runtime.strategyRetirement || {}),
         rlPolicy: this.rlPolicy.getSummary(),

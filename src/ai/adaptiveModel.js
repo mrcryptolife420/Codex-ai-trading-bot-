@@ -10,6 +10,7 @@ import { ExecutionNeuralAdvisor } from "./executionNeuralAdvisor.js";
 import { ExitNeuralAdvisor } from "./exitNeuralAdvisor.js";
 import { buildCrossTimeframeEncoding } from "./crossTimeframeEncoder.js";
 import { StrategyMetaSelector } from "./strategyMetaSelector.js";
+import { StrategyAllocationBandit } from "./strategyAllocationBandit.js";
 
 const REGIMES = ["trend", "range", "breakout", "high_vol", "event_risk"];
 
@@ -50,7 +51,7 @@ function cloneShadowMetric(metric) {
 function buildDefaultAdaptiveState(legacyState) {
   const championBase = OnlineTradingModel.bootstrapState(legacyState);
   return {
-    version: 5,
+    version: 6,
     champion: {
       specialists: bootstrapSpecialists(championBase)
     },
@@ -63,6 +64,7 @@ function buildDefaultAdaptiveState(legacyState) {
     executionNeural: ExecutionNeuralAdvisor.bootstrapState(),
     exitNeural: ExitNeuralAdvisor.bootstrapState(),
     strategyMeta: StrategyMetaSelector.bootstrapState(),
+    strategyAllocation: StrategyAllocationBandit.bootstrapState(),
     calibration: {},
     deployment: {
       active: "champion",
@@ -74,9 +76,9 @@ function buildDefaultAdaptiveState(legacyState) {
 }
 
 function normalizeState(state) {
-  if (state?.version === 5) {
+  if (state?.version === 6) {
     return {
-      version: 5,
+      version: 6,
       champion: {
         specialists: Object.fromEntries(
           REGIMES.map((regime) => [
@@ -99,6 +101,7 @@ function normalizeState(state) {
       executionNeural: state.executionNeural?.version === 1 ? state.executionNeural : ExecutionNeuralAdvisor.bootstrapState(),
       exitNeural: state.exitNeural?.version === 1 ? state.exitNeural : ExitNeuralAdvisor.bootstrapState(),
       strategyMeta: state.strategyMeta?.version === 1 ? state.strategyMeta : StrategyMetaSelector.bootstrapState(),
+      strategyAllocation: state.strategyAllocation?.version === 1 ? state.strategyAllocation : StrategyAllocationBandit.bootstrapState(),
       calibration: { ...(state.calibration || {}) },
       deployment: {
         active: state.deployment?.active || "champion",
@@ -109,7 +112,7 @@ function normalizeState(state) {
     };
   }
 
-  if (state?.version === 4 || state?.version === 3 || state?.version === 2) {
+  if (state?.version === 5 || state?.version === 4 || state?.version === 3 || state?.version === 2) {
     return {
       ...buildDefaultAdaptiveState(),
       champion: {
@@ -134,6 +137,7 @@ function normalizeState(state) {
       executionNeural: state.executionNeural?.version === 1 ? state.executionNeural : ExecutionNeuralAdvisor.bootstrapState(),
       exitNeural: state.exitNeural?.version === 1 ? state.exitNeural : ExitNeuralAdvisor.bootstrapState(),
       strategyMeta: state.strategyMeta?.version === 1 ? state.strategyMeta : StrategyMetaSelector.bootstrapState(),
+      strategyAllocation: state.strategyAllocation?.version === 1 ? state.strategyAllocation : StrategyAllocationBandit.bootstrapState(),
       calibration: { ...(state.calibration || {}) },
       deployment: {
         active: state.deployment?.active || "champion",
@@ -272,10 +276,11 @@ export class AdaptiveTradingModel {
     this.executionNeural = new ExecutionNeuralAdvisor(this.state.executionNeural, config);
     this.exitNeural = new ExitNeuralAdvisor(this.state.exitNeural, config);
     this.strategyMeta = new StrategyMetaSelector(this.state.strategyMeta, config);
+    this.strategyAllocation = new StrategyAllocationBandit(this.state.strategyAllocation, config);
   }
 
   getState() {
-    this.state.version = 5;
+    this.state.version = 6;
     this.state.calibration = this.calibrator.getState();
     this.state.champion.specialists = Object.fromEntries(
       REGIMES.map((regime) => [regime, this.models.champion[regime].getState()])
@@ -289,6 +294,7 @@ export class AdaptiveTradingModel {
     this.state.executionNeural = this.executionNeural.getState();
     this.state.exitNeural = this.exitNeural.getState();
     this.state.strategyMeta = this.strategyMeta.getState();
+    this.state.strategyAllocation = this.strategyAllocation.getState();
     return this.state;
   }
 
@@ -342,6 +348,10 @@ export class AdaptiveTradingModel {
 
   scoreStrategyMeta(context = {}) {
     return this.strategyMeta.score(context);
+  }
+
+  scoreStrategyAllocation(context = {}) {
+    return this.strategyAllocation.score(context);
   }
 
   score(rawFeatures, context = {}) {
@@ -495,7 +505,14 @@ export class AdaptiveTradingModel {
       pairHealthSummary: context.pairHealthSummary || {},
       timeframeSummary: context.timeframeSummary || {}
     });
-    const strategyMeta = this.strategyMeta.score({
+    const strategyMeta = context.strategyMetaSummary || this.strategyMeta.score({
+      ...context,
+      score: {
+        probability: blendedProbability,
+        confidence
+      }
+    });
+    const strategyAllocation = context.strategyAllocationSummary || this.strategyAllocation.score({
       ...context,
       score: {
         probability: blendedProbability,
@@ -525,6 +542,7 @@ export class AdaptiveTradingModel {
       metaNeural,
       executionNeural,
       strategyMeta,
+      strategyAllocation,
       shouldAbstain,
       abstainReasons,
       preparedFeatures: championScore.preparedFeatures,
@@ -597,6 +615,7 @@ export class AdaptiveTradingModel {
     const executionNeuralLearning = this.executionNeural.updateFromTrade(trade, label);
     const exitNeuralLearning = this.exitNeural.updateFromTrade(trade, label);
     const strategyMetaLearning = this.strategyMeta.updateFromTrade(trade, label);
+    const strategyAllocationLearning = this.strategyAllocation.updateFromTrade(trade, label);
 
     const championLearning = this.models.champion[regime].updateFromTrade(
       { ...trade, ...label, labelScore: label.labelScore },
@@ -657,6 +676,7 @@ export class AdaptiveTradingModel {
       executionNeuralLearning,
       exitNeuralLearning,
       strategyMetaLearning,
+      strategyAllocationLearning,
       expertLearning,
       promotion,
       calibration: this.calibrator.getSummary()
@@ -669,6 +689,10 @@ export class AdaptiveTradingModel {
 
   getTransformerSummary() {
     return this.transformer.getSummary();
+  }
+
+  getStrategyAllocationSummary() {
+    return this.strategyAllocation.getSummary();
   }
 
   getWeightView() {

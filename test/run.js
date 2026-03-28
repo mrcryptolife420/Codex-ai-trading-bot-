@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { AdaptiveTradingModel } from "../src/ai/adaptiveModel.js";
 import { ParameterGovernor } from "../src/ai/parameterGovernor.js";
 import { StrategyMetaSelector } from "../src/ai/strategyMetaSelector.js";
+import { StrategyAllocationBandit } from "../src/ai/strategyAllocationBandit.js";
 import { ExecutionEngine } from "../src/execution/executionEngine.js";
 import { BinanceClient } from "../src/binance/client.js";
 import { buildSymbolRules, resolveMarketBuyQuantity } from "../src/binance/symbolFilters.js";
@@ -602,6 +603,102 @@ await runCheck("strategy meta selector learns family and execution preferences",
   assert.equal(after.preferredFamily, "trend_following");
   assert.ok(["limit_maker", "pegged_limit_maker"].includes(after.preferredExecutionStyle));
   assert.ok(after.confidence > before.confidence);
+});
+
+await runCheck("strategy allocation bandit learns regime and strategy bias from closed trades", async () => {
+  const allocator = new StrategyAllocationBandit(undefined, makeConfig());
+  const context = {
+    score: { probability: 0.58, confidence: 0.54 },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.64, confidence: 0.58 },
+    regimeSummary: { regime: "trend", confidence: 0.78 },
+    sessionSummary: { session: "london" },
+    timeframeSummary: { alignmentScore: 0.72 },
+    pairHealthSummary: { score: 0.81 },
+    newsSummary: { riskScore: 0.06 },
+    marketSnapshot: { market: { realizedVolPct: 0.018 } }
+  };
+  const before = allocator.score(context);
+  for (let index = 0; index < 12; index += 1) {
+    allocator.updateFromTrade({
+      exitAt: `2026-03-1${index % 8}T1${index % 4}:00:00.000Z`,
+      netPnlPct: 0.012 + index * 0.0004,
+      executionQualityScore: 0.76,
+      captureEfficiency: 0.68,
+      regimeAtEntry: "trend",
+      entryRationale: {
+        probability: 0.58,
+        confidence: 0.54,
+        strategy: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.64 },
+        regimeSummary: { regime: "trend", confidence: 0.78 },
+        session: { session: "london" },
+        timeframe: { alignmentScore: 0.72 },
+        pairHealth: { score: 0.81 },
+        newsRisk: 0.06,
+        realizedVolPct: 0.018
+      }
+    }, { labelScore: 0.81 });
+  }
+  const after = allocator.score(context);
+  const summary = allocator.getSummary();
+  assert.ok(after.fitBoost > before.fitBoost);
+  assert.ok(after.thresholdShift < 0);
+  assert.ok(after.sizeMultiplier >= 1);
+  assert.equal(summary.topStrategies[0]?.id, "ema_trend");
+  assert.equal(summary.topFamilies[0]?.id, "trend_following");
+});
+
+await runCheck("adaptive model exposes and persists strategy allocation guidance", async () => {
+  const model = new AdaptiveTradingModel(undefined, makeConfig({ enableTransformerChallenger: false }));
+  const rawFeatures = { momentum_20: 0.012, ema_gap: 0.004, breakout_pct: 0.005, realized_vol_pct: 0.018 };
+  for (let index = 0; index < 10; index += 1) {
+    model.updateFromTrade({
+      symbol: "BTCUSDT",
+      exitAt: `2026-03-${String(10 + index).padStart(2, "0")}T10:00:00.000Z`,
+      brokerMode: "paper",
+      pnlQuote: 18,
+      netPnlPct: 0.011 + index * 0.0003,
+      mfePct: 0.02,
+      maePct: -0.004,
+      captureEfficiency: 0.62,
+      executionQualityScore: 0.74,
+      rawFeatures,
+      regimeAtEntry: "trend",
+      strategyAtEntry: "ema_trend",
+      strategyDecision: { family: "trend_following", activeStrategy: "ema_trend" },
+      entryExecutionAttribution: { entryStyle: "limit_maker" },
+      entryRationale: {
+        probability: 0.59,
+        confidence: 0.55,
+        strategy: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.66 },
+        regimeSummary: { regime: "trend", confidence: 0.76 },
+        session: { session: "london" },
+        timeframe: { alignmentScore: 0.71 },
+        pairHealth: { score: 0.82 },
+        newsRisk: 0.05,
+        realizedVolPct: 0.018
+      }
+    });
+  }
+  const score = model.score(rawFeatures, {
+    regimeSummary: { regime: "trend", confidence: 0.76 },
+    marketSnapshot: {
+      market: { momentum20: 0.012, realizedVolPct: 0.018, emaTrendScore: 0.42 },
+      book: { spreadBps: 4.1, bookPressure: 0.18, depthConfidence: 0.72, queueImbalance: 0.12 }
+    },
+    newsSummary: { riskScore: 0.05 },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.66, confidence: 0.58 },
+    timeframeSummary: { alignmentScore: 0.71 },
+    pairHealthSummary: { score: 0.82 },
+    sessionSummary: { session: "london" }
+  });
+  const modelState = model.getState();
+  const allocationSummary = model.getStrategyAllocationSummary();
+  assert.ok(score.strategyAllocation);
+  assert.ok(score.strategyAllocation.fitBoost > 0);
+  assert.ok(score.strategyAllocation.thresholdShift < 0);
+  assert.equal(modelState.version, 6);
+  assert.equal(modelState.strategyAllocation.version, 1);
+  assert.equal(allocationSummary.topStrategies[0]?.id, "ema_trend");
 });
 
 await runCheck("strategy DSL blocks unsafe imports and keeps safe research candidates scorable", async () => {

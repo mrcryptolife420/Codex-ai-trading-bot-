@@ -984,6 +984,7 @@ function renderLearning(snapshot) {
 
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
+  const strategyAllocation = adaptation.strategyAllocation || snapshot?.dashboard?.ai?.strategyAllocation || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
@@ -1088,10 +1089,15 @@ function renderLearning(snapshot) {
     .slice(0, 3)
     .map((item) => titleize(item.id))
     .join(", ");
+  const allocationLead =
+    strategyAllocation.topStrategies?.[0] ||
+    strategyAllocation.topFamilies?.[0] ||
+    null;
   const adaptationFoot = [
     `${adaptation.learningFrames || 0} learning frames`,
     `${adaptation.calibrationObservations || 0} calibration obs`,
-    adaptation.offlineReadinessScore != null ? `${formatPct(adaptation.offlineReadinessScore || 0, 1)} offline ready` : null
+    adaptation.offlineReadinessScore != null ? `${formatPct(adaptation.offlineReadinessScore || 0, 1)} offline ready` : null,
+    strategyAllocation.tradeCount != null ? `${strategyAllocation.tradeCount || 0} allocator closes` : null
   ].filter(Boolean).join(" · ");
   const adaptationNote = adaptation.status === "stalled"
     ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De bot ziet nu te weinig verse closed trades om de online leerlus actief te houden."
@@ -1100,7 +1106,10 @@ function renderLearning(snapshot) {
       : [
           adaptation.notes?.[0],
           adaptation.lastLearningTradeAt ? `Laatste leertrade: ${formatDate(adaptation.lastLearningTradeAt)}.` : null,
-          adaptationInputs ? `Actieve adaptieve inputs: ${adaptationInputs}.` : null
+          adaptationInputs ? `Actieve adaptieve inputs: ${adaptationInputs}.` : null,
+          allocationLead?.id
+            ? `Allocator bias nu naar ${titleize(allocationLead.id)}${allocationLead.context ? ` binnen ${titleize(allocationLead.context)}` : ""}.`
+            : null
         ].filter(Boolean).join(" ");
   summaryGrid.append(
     makeLearningDetailCard(
