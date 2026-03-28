@@ -11627,7 +11627,64 @@ await runCheck("trading bot paper learning summary derives primary scope from sh
   assert.equal(summary.primaryScope.source, "shadow_learning");
   assert.equal(summary.scopeReadiness[0].id, "breakout");
   assert.equal(summary.scopeReadiness[0].source, "shadow_learning");
-  assert.match(summary.notes[4], /shadow-learning/i);
+  assert.ok(summary.notes.some((note) => /shadow-learning/i.test(note)));
+});
+
+await runCheck("trading bot paper learning summary marks stale closed learning input and falls back to fresher shadow scope", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    counterfactualQueue: [],
+    offlineTrainer: {},
+    ops: { replayChaos: { replayPacks: {} } }
+  };
+  bot.journal = {
+    trades: [
+      {
+        id: "stale-probe",
+        symbol: "TRXUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-13T07:20:12.515Z",
+        netPnlPct: -0.012,
+        executionQualityScore: 0.58,
+        paperLearningOutcome: { outcome: "bad_trade" }
+      }
+    ],
+    counterfactuals: [
+      {
+        id: "fresh-shadow",
+        symbol: "PEPEUSDT",
+        brokerMode: "paper",
+        resolvedAt: "2026-03-28T03:13:10.900Z",
+        outcome: "good_veto",
+        learningLane: "shadow",
+        learningValueScore: 0.74,
+        strategyFamily: "breakout",
+        regime: "high_vol",
+        sessionAtEntry: "asia",
+        branches: [{ id: "maker_bias", outcome: "small_winner", adjustedMovePct: 0.012 }]
+      }
+    ]
+  };
+
+  const summary = bot.buildPaperLearningSummary([], "2026-03-28T03:15:06.153Z");
+
+  assert.equal(summary.inputHealth.status, "stalled");
+  assert.equal(summary.inputHealth.staleClosedLearning, true);
+  assert.equal(summary.inputHealth.latestClosedLearningAt, "2026-03-13T07:20:12.515Z");
+  assert.equal(summary.inputHealth.latestProbeClosedAt, "2026-03-13T07:20:12.515Z");
+  assert.equal(summary.inputHealth.latestShadowReviewAt, "2026-03-28T03:13:10.900Z");
+  assert.equal(summary.primaryScope.id, "breakout");
+  assert.equal(summary.primaryScope.source, "shadow_learning");
+  assert.equal(summary.scopeCoaching.strongest.id, "breakout");
+  assert.equal(summary.scopeCoaching.strongest.source, "shadow_learning");
+  assert.ok(summary.notes.some((note) => /Geen nieuwe probe\/live closed trades sinds/i.test(note)));
 });
 
 await runCheck("trading bot paper learning summary counts shadow outcomes in recent outcomes", async () => {

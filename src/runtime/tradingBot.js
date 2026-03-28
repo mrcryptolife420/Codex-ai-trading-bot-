@@ -2087,8 +2087,21 @@ function summarizePaperLearning(summary = {}) {
       status: item.status || "warmup",
       goodRate: num(item.goodRate || 0, 4),
       weakRate: num(item.weakRate || 0, 4),
-      source: item.source || "probe_trades"
+      source: item.source || "probe_trades",
+      latestObservedAt: item.latestObservedAt || null
     })),
+    inputHealth: summary.inputHealth ? {
+      status: summary.inputHealth.status || "fresh",
+      staleClosedLearning: Boolean(summary.inputHealth.staleClosedLearning),
+      latestClosedLearningAt: summary.inputHealth.latestClosedLearningAt || null,
+      latestProbeClosedAt: summary.inputHealth.latestProbeClosedAt || null,
+      latestLiveClosedAt: summary.inputHealth.latestLiveClosedAt || null,
+      latestShadowReviewAt: summary.inputHealth.latestShadowReviewAt || null,
+      latestScopeSource: summary.inputHealth.latestScopeSource || null,
+      closedLearningAgeHours: num(summary.inputHealth.closedLearningAgeHours || 0, 1),
+      shadowReviewAgeHours: num(summary.inputHealth.shadowReviewAgeHours || 0, 1),
+      note: summary.inputHealth.note || null
+    } : null,
     thresholdSandbox: summary.thresholdSandbox ? {
       status: summary.thresholdSandbox.status || "observe",
       scopeLabel: summary.thresholdSandbox.scopeLabel || null,
@@ -6374,6 +6387,33 @@ export class TradingBot {
       }
     }
     const recentProbeTrades = recentPaperTrades.filter((trade) => trade.learningLane === "probe");
+    const latestTimestamp = (values = []) => {
+      let bestValue = null;
+      let bestTime = Number.NEGATIVE_INFINITY;
+      for (const value of values) {
+        if (!value) {
+          continue;
+        }
+        const timestamp = new Date(value).getTime();
+        if (!Number.isFinite(timestamp) || timestamp <= bestTime) {
+          continue;
+        }
+        bestTime = timestamp;
+        bestValue = value;
+      }
+      return bestValue;
+    };
+    const ageHoursFrom = (value) => {
+      if (!value) {
+        return Number.POSITIVE_INFINITY;
+      }
+      const timestamp = new Date(value).getTime();
+      const nowTimestamp = new Date(referenceNow).getTime();
+      if (!Number.isFinite(timestamp) || !Number.isFinite(nowTimestamp)) {
+        return Number.POSITIVE_INFINITY;
+      }
+      return Math.max(0, (nowTimestamp - timestamp) / 3_600_000);
+    };
     const outcomeCounts = {};
     for (const trade of recentPaperTrades) {
       const outcome = resolvePaperOutcomeBucket(trade);
@@ -6406,6 +6446,9 @@ export class TradingBot {
       }, {})
     )
       .map(([id, items]) => {
+        const latestObservedAt = latestTimestamp(items.map((item) => options.evidenceOnly
+          ? item.resolvedAt || item.queuedAt || item.generatedAt || null
+          : item.exitAt || item.entryAt || null));
         if (options.evidenceOnly) {
           const avgLearning = average(items.map((item) => item.learningValueScore || 0), 0);
           const avgNovelty = average(items.map((item) => item.paperLearning?.noveltyScore || 0), 0);
@@ -6435,6 +6478,7 @@ export class TradingBot {
             goodRate: avgActive,
             weakRate: Math.max(0, 1 - avgLearning),
             freshness,
+            latestObservedAt,
             source: options.source || "shadow_learning"
           };
         }
@@ -6453,6 +6497,7 @@ export class TradingBot {
           goodRate,
           weakRate,
           freshness,
+          latestObservedAt,
           source: options.source || "probe_trades"
         };
       })
@@ -6502,6 +6547,16 @@ export class TradingBot {
       .sort((left, right) => shadowReviewSortTime(right) - shadowReviewSortTime(left))
       .filter((item, index, items) => item?.symbol && items.findIndex((entry) => entry?.symbol === item.symbol) === index)
       .slice(0, 6);
+    const latestProbeClosedAt = latestTimestamp(recentProbeTrades.map((trade) => trade.exitAt || trade.entryAt || null));
+    const latestLiveClosedAt = latestTimestamp(arr(this.journal?.trades || [])
+      .filter((trade) => (trade.brokerMode || "paper") === "live")
+      .map((trade) => trade.exitAt || trade.entryAt || null));
+    const latestShadowReviewAt = latestTimestamp([
+      ...counterfactuals.filter((item) => isShadowReviewCase(item)).map((item) => item.resolvedAt || item.reviewedAt || item.queuedAt || null),
+      ...arr(this.runtime?.counterfactualQueue || [])
+        .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
+        .map((item) => item.queuedAt || item.generatedAt || null)
+    ]);
     const shadowLearningEvidence = [
       ...counterfactuals
         .filter((item) => isShadowReviewCase(item))
@@ -6641,6 +6696,34 @@ export class TradingBot {
       : readinessScore >= 0.54
         ? "building"
         : "warmup";
+    const latestClosedLearningAt = latestTimestamp([latestProbeClosedAt, latestLiveClosedAt]);
+    const closedLearningAgeHours = ageHoursFrom(latestClosedLearningAt);
+    const shadowReviewAgeHours = ageHoursFrom(latestShadowReviewAt);
+    const staleClosedLearning = !latestClosedLearningAt || closedLearningAgeHours >= 72;
+    const freshestEvidenceScope = evidenceScopeReadiness[0] ||
+      scopeReadiness.find((item) => item.source && item.source !== "probe_trades") ||
+      null;
+    const displayPrimaryScope = staleClosedLearning && freshestEvidenceScope
+      ? freshestEvidenceScope
+      : scopeReadiness[0] || null;
+    const inputHealth = {
+      status: staleClosedLearning ? "stalled" : "fresh",
+      staleClosedLearning,
+      latestClosedLearningAt,
+      latestProbeClosedAt,
+      latestLiveClosedAt,
+      latestShadowReviewAt,
+      latestScopeSource: displayPrimaryScope?.source || null,
+      closedLearningAgeHours,
+      shadowReviewAgeHours,
+      note: staleClosedLearning
+        ? latestClosedLearningAt
+          ? `Geen nieuwe probe/live closed trades sinds ${latestClosedLearningAt}; gebruik daarom ${displayPrimaryScope?.source === "shadow_learning" ? "freshere shadow-learning" : "de laatst beschikbare evidence"} als huidige leerscope.`
+          : `Nog geen probe/live closed trades beschikbaar; gebruik daarom ${displayPrimaryScope?.source === "shadow_learning" ? "shadow-learning" : "active learning"} als tijdelijke leerscope.`
+        : latestClosedLearningAt
+          ? `Laatste probe/live closed trade op ${latestClosedLearningAt}.`
+          : "Learning input wordt ververst zodra nieuwe probe/live closes binnenkomen."
+    };
     const promotedScope = probeScopeReadiness[0] || scopeReadiness[0] || null;
     const paperToLiveReadiness = {
       status: promotedScope?.status || readinessStatus,
@@ -6788,13 +6871,13 @@ export class TradingBot {
       .sort((left, right) => right.score - left.score)
       .slice(0, 4);
     const scopeCoaching = {
-      strongest: scopeReadiness[0]
+      strongest: displayPrimaryScope
         ? {
-            id: scopeReadiness[0].id,
-            status: scopeReadiness[0].status,
-            score: scopeReadiness[0].readinessScore || 0,
-            action: scopeReadiness[0].status === "paper_ready" ? "probation" : "sandbox",
-            source: scopeReadiness[0].source || "probe_trades"
+            id: displayPrimaryScope.id,
+            status: displayPrimaryScope.status,
+            score: displayPrimaryScope.readinessScore || 0,
+            action: displayPrimaryScope.status === "paper_ready" ? "probation" : "sandbox",
+            source: displayPrimaryScope.source || "probe_trades"
           }
         : null,
       weakest: scopeReadiness.length
@@ -6806,10 +6889,12 @@ export class TradingBot {
             source: scopeReadiness[scopeReadiness.length - 1].source || "probe_trades"
           }
         : null,
-      note: scopeReadiness[0]
-        ? scopeReadiness[0].source === "shadow_learning"
-          ? `${scopeReadiness[0].id} springt nu uit de shadow-learning data; bevestig dit nog met extra probes.`
-          : `${scopeReadiness[0].id} is nu het sterkst; ${scopeReadiness[scopeReadiness.length - 1]?.id || "andere scopes"} hebben nog meer leerdata nodig.`
+      note: displayPrimaryScope
+        ? staleClosedLearning && displayPrimaryScope.source !== "probe_trades"
+          ? `${displayPrimaryScope.id} is nu de versere leerscope, omdat probe/live closed trades stilvallen sinds ${latestClosedLearningAt || "de laatste closed learning update"}.`
+          : displayPrimaryScope.source === "shadow_learning"
+            ? `${displayPrimaryScope.id} springt nu uit de shadow-learning data; bevestig dit nog met extra probes.`
+            : `${displayPrimaryScope.id} is nu het sterkst; ${scopeReadiness[scopeReadiness.length - 1]?.id || "andere scopes"} hebben nog meer leerdata nodig.`
         : "Nog geen duidelijke scope-coaching beschikbaar."
     };
     const activeLearning = {
@@ -7415,6 +7500,7 @@ export class TradingBot {
       recencyFreshnessScore,
       blockerGroups,
       scopeReadiness,
+      inputHealth,
       thresholdSandbox,
       reviewPacks,
       recentProbeReviews,
@@ -7439,13 +7525,13 @@ export class TradingBot {
       abExperiments,
       reviewQueue,
       counterfactualBranches,
-      primaryScope: scopeReadiness[0]
+      primaryScope: displayPrimaryScope
         ? {
-            id: scopeReadiness[0].id,
-            type: scopeReadiness[0].type,
-            status: scopeReadiness[0].status,
-            score: scopeReadiness[0].readinessScore || 0,
-            source: scopeReadiness[0].source || "probe_trades"
+            id: displayPrimaryScope.id,
+            type: displayPrimaryScope.type,
+            status: displayPrimaryScope.status,
+            score: displayPrimaryScope.readinessScore || 0,
+            source: displayPrimaryScope.source || "probe_trades"
           }
         : focusScopes[0]
           ? {
@@ -7485,10 +7571,13 @@ export class TradingBot {
         thresholdSandbox
           ? `Paper threshold sandbox ${thresholdSandbox.status} in ${thresholdSandbox.scopeLabel || "scope onbekend"} (${num(thresholdSandbox.thresholdShift * 100, 1)}% shift).`
           : "Geen actieve paper threshold sandbox.",
-        scopeReadiness[0]
-          ? scopeReadiness[0].source === "shadow_learning"
-            ? `Sterkste leerscope komt nu uit shadow-learning: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
-            : `Sterkste paper-scope: ${scopeReadiness[0].id} (${scopeReadiness[0].status}).`
+        inputHealth.status === "stalled"
+          ? `Geen nieuwe probe/live closed trades sinds ${latestClosedLearningAt || "nog geen closed trades"}; leerinput valt nu terug op ${displayPrimaryScope?.source === "shadow_learning" ? "shadow-learning" : "frissere evidence"}.`
+          : inputHealth.note,
+        displayPrimaryScope
+          ? displayPrimaryScope.source === "shadow_learning"
+            ? `Sterkste leerscope komt nu uit shadow-learning: ${displayPrimaryScope.id} (${displayPrimaryScope.status}).`
+            : `Sterkste paper-scope: ${displayPrimaryScope.id} (${displayPrimaryScope.status}).`
           : "Nog geen paper-scope readiness zichtbaar.",
         paperToLiveReadiness.topScope
           ? `Paper-to-live readiness focust nu op ${paperToLiveReadiness.topScope}.`

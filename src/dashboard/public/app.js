@@ -798,6 +798,7 @@ function learningFocusText(snapshot) {
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const retrainPlan = snapshot?.dashboard?.offlineTrainer?.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
+  const inputHealth = paperLearning.inputHealth || {};
   const topScope =
     paperLearning.primaryScope ||
     paperLearning.scopeReadiness?.[0] ||
@@ -819,6 +820,12 @@ function learningFocusText(snapshot) {
   const topBlocker = paperLearning.topBlockers?.[0];
   const latestOutcome = paperLearning.recentOutcomes?.[0];
 
+  if (inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt) {
+    const retrainScope = retrainPlan.selectedScopes?.[0]?.id;
+    return retrainScope
+      ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainScope)}, maar probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
+      : `Probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}; de bot leunt nu op ${titleize(topScope?.source || "shadow_learning")}.`;
+  }
   if (retrainPlan.selectedScopes?.[0]?.id) {
     return `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`;
   }
@@ -979,6 +986,7 @@ function renderLearning(snapshot) {
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
+  const inputHealth = paperLearning.inputHealth || {};
   const topScope =
     paperLearning.primaryScope ||
     paperLearning.scopeReadiness?.[0] ||
@@ -1001,7 +1009,7 @@ function renderLearning(snapshot) {
   const topOutcome = paperLearning.recentOutcomes?.[0];
   const latestTrade = latestTradeSummary(snapshot);
   const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
-  const learningScore = formatPct(paperLearning.readinessScore || 0, 0);
+  const learningScore = formatPct(paperLearning.readinessScore || 0, 1);
   const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
   const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
   const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
@@ -1018,10 +1026,25 @@ function renderLearning(snapshot) {
     ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
     : "Er is nog geen dominante rem in de huidige learning-data.";
   const scopeMeaning = topScope?.id
-    ? topScope.source === "shadow_learning"
-      ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-learning; bevestig dit nog met extra probes.`
-      : `${titleize(topScope.id)} is nu de sterkste leerscope.`
+    ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_trades"
+      ? `${titleize(topScope.id)} is nu de versere leerscope, omdat probe/live closes stilvallen sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
+      : topScope.source === "shadow_learning"
+        ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-learning; bevestig dit nog met extra probes.`
+        : `${titleize(topScope.id)} is nu de sterkste leerscope.`
     : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
+  const learningInputTag = inputHealth.status === "stalled"
+    ? makeTag(
+        inputHealth.latestClosedLearningAt
+          ? `Leerinput stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}`
+          : "Leerinput stil",
+        "tag negative"
+      )
+    : makeTag("Leerinput vers", "tag positive");
+  const learningInputNote = inputHealth.note || (
+    inputHealth.status === "stalled"
+      ? "Er zijn geen recente probe/live closes; de kaart valt terug op andere learning-evidence."
+      : `${titleize(topScope.id)} is nu de sterkste leerscope.`
+  );
   const nextStep =
     retrainPlan.operatorAction ||
     replayPlan.operatorGoal ||
@@ -1047,6 +1070,7 @@ function renderLearning(snapshot) {
   const stripGrid = makeTagList([
     makeTag(laneText),
     makeTag(`Snapshot: ${formatDate(paperLearning.generatedAt)}`),
+    learningInputTag,
     makeTag(`Top blocker: ${topBlockerText}`),
     makeTag(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)
   ]);
@@ -1063,9 +1087,9 @@ function renderLearning(snapshot) {
       "Leert nu",
       topScope?.id ? titleize(topScope.id) : "Warmup dataset",
       topScope?.status
-        ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 0)} · ${titleize(topScope.source || "probe_trades")}`
+        ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 1)} · ${titleize(topScope.source || "probe_trades")}`
         : "Nog geen sterke scope zichtbaar.",
-      scopeMeaning
+      [scopeMeaning, learningInputNote].filter(Boolean).join(" ")
     ),
     makeLearningDetailCard("Laatste trade", latestTrade.title, latestTrade.detail, latestTrade.lesson),
     makeLearningDetailCard(
