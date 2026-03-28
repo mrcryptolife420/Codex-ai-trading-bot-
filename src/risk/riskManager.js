@@ -1358,6 +1358,13 @@ export class RiskManager {
       reasons.push("relative_weakness_vs_market");
     }
     const trendAcceptanceFamily = strategySummary.family || "";
+    const activeStrategyId = strategySummary.activeStrategy || "";
+    const usesBreakoutAcceptanceGate =
+      trendAcceptanceFamily === "breakout" ||
+      activeStrategyId === "market_structure_break";
+    const usesTrendAcceptanceGate =
+      ["trend_following", "breakout"].includes(trendAcceptanceFamily) ||
+      activeStrategyId === "market_structure_break";
     const anchoredAcceptanceFailure =
       (marketSnapshot.market.anchoredVwapRejectionScore || 0) > 0.68 &&
       acceptanceQuality < 0.44 &&
@@ -1369,11 +1376,11 @@ export class RiskManager {
     const trendAcceptanceFailure =
       anchoredAcceptanceFailure ||
       (
-        ["breakout", "market_structure"].includes(trendAcceptanceFamily) &&
+        usesBreakoutAcceptanceGate &&
         breakoutAcceptanceFailure
       );
     if (
-      ["trend_following", "breakout", "market_structure"].includes(trendAcceptanceFamily) &&
+      usesTrendAcceptanceGate &&
       trendAcceptanceFailure &&
       score.probability < threshold + 0.045 &&
       !strongTrendGuardOverride

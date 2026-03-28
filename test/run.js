@@ -5270,6 +5270,62 @@ await runCheck("risk manager still blocks weak breakout acceptance for breakout 
   assert.ok(decision.reasons.includes("trend_acceptance_failed"));
 });
 
+await runCheck("risk manager does not apply breakout acceptance failure to liquidity sweep reclaim setups", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "XRPUSDT",
+    score: {
+      probability: 0.55,
+      calibrationConfidence: 0.46,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.54, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 1.4,
+        bookPressure: -0.04,
+        microPriceEdgeBps: 0.1,
+        depthConfidence: 0.82,
+        queueRefreshScore: 0,
+        resilienceScore: 0
+      },
+      market: {
+        realizedVolPct: 0.016,
+        atrPct: 0.009,
+        bullishPatternScore: 0.08,
+        bearishPatternScore: 0.02,
+        relativeStrengthVsBtc: 0.0004,
+        relativeStrengthVsEth: -0.0018,
+        clusterRelativeStrength: -0.0004,
+        sectorRelativeStrength: -0.0004,
+        liquiditySweepScore: 0.68,
+        closeLocation: 0.72,
+        anchoredVwapAcceptanceScore: 0.48,
+        anchoredVwapRejectionScore: 0.22,
+        closeLocationQuality: 0.44,
+        volumeAcceptanceScore: 0.34,
+        breakoutFollowThroughScore: 0.06
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.05, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.56, netScore: 0.05, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "liquidity_sweep", family: "market_structure", fitScore: 0.63, confidence: 0.5, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    regimeSummary: { regime: "range", confidence: 0.71 },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.ok(!decision.reasons.includes("trend_acceptance_failed"));
+});
+
 await runCheck("risk manager softens fallback rest-book sell pressure in paper mode", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
