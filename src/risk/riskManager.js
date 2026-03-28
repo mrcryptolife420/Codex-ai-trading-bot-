@@ -40,8 +40,12 @@ function isSoftPaperReason(reason) {
     "execution_cost_budget_exceeded",
     "strategy_cooldown",
     "strategy_budget_cooled",
+    "family_budget_cooled",
     "cluster_budget_cooled",
     "regime_budget_cooled",
+    "factor_budget_cooled",
+    "daily_risk_budget_cooled",
+    "regime_kill_switch_active",
     "capital_governor_blocked",
     "capital_governor_recovery",
     "trade_size_below_minimum",
@@ -295,8 +299,12 @@ function classifyPaperBlocker(reason) {
     "execution_cost_budget_exceeded",
     "strategy_cooldown",
     "strategy_budget_cooled",
+    "family_budget_cooled",
     "cluster_budget_cooled",
-    "regime_budget_cooled"
+    "regime_budget_cooled",
+    "factor_budget_cooled",
+    "daily_risk_budget_cooled",
+    "regime_kill_switch_active"
   ].includes(reason)) {
     return "governance";
   }

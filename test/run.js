@@ -5481,6 +5481,69 @@ await runCheck("risk manager keeps paper exploration available for governance pa
   assert.ok(decision.paperGuardrailRelief.includes("self_heal_pause_entries"));
 });
 
+await runCheck("risk manager treats regime kill switches and cooled portfolio budgets as paper-lenient governance", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "LINKUSDT",
+    score: {
+      probability: 0.498,
+      calibrationConfidence: 0.45,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      transformer: { probability: 0.505, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.6, bookPressure: -0.1, microPriceEdgeBps: 0.2 },
+      market: { realizedVolPct: 0.013, atrPct: 0.008, bearishPatternScore: 0.03, bullishPatternScore: 0.16, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.04, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.05, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.23, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.38, ivPremium: 3 },
+    calendarSummary: { riskScore: 0.07, bullishScore: 0, urgencyScore: 0.03 },
+    committeeSummary: {
+      agreement: 0.39,
+      probability: 0.49,
+      netScore: -0.03,
+      sizeMultiplier: 0.95,
+      vetoes: [{ id: "committee_guard" }]
+    },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.36, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.53,
+      confidence: 0.45,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 8, sampleConfidence: 0.62 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.08 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.64, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: {
+      sizeMultiplier: 0.22,
+      maxCorrelation: 0,
+      reasons: ["family_budget_cooled", "regime_budget_cooled", "factor_budget_cooled", "daily_risk_budget_cooled", "regime_kill_switch_active"]
+    },
+    regimeSummary: { regime: "trend", confidence: 0.69 },
+    qualityQuorumSummary: { status: "degraded", observeOnly: false, quorumScore: 0.74, blockerReasons: [] },
+    nowIso: "2026-03-28T03:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.suppressedReasons.includes("regime_kill_switch_active"));
+  assert.ok(decision.suppressedReasons.includes("family_budget_cooled"));
+  assert.ok(decision.suppressedReasons.includes("factor_budget_cooled"));
+  assert.ok(decision.suppressedReasons.includes("daily_risk_budget_cooled"));
+});
+
 await runCheck("risk manager uses paper recovery probe for capital governor recovery with sub-min trade sizing", async () => {
   const manager = new RiskManager(makeConfig({
     maxPositionFraction: 0.05,
@@ -9620,6 +9683,81 @@ await runCheck("dashboard decision view prefers more specific paper blockers ove
     confidenceBreakdown: { marketConfidence: 0.55, dataConfidence: 0.7, executionConfidence: 0.48, modelConfidence: 0.41, overallConfidence: 0.53 }
   });
   assert.ok(view.operatorAction.includes("Modelconfidence is te laag"));
+});
+
+await runCheck("dashboard decision view surfaces regime kill switches and committee veto detail in paper mode", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = { botMode: "paper" };
+  bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
+  bot.journal = { counterfactuals: [] };
+  const view = bot.buildDashboardDecisionView({
+    symbol: "DOGEUSDT",
+    allow: false,
+    blockerReasons: ["regime_kill_switch_active", "committee_veto"],
+    committeeSummary: {
+      probability: 0.47,
+      confidence: 0.58,
+      agreement: 0.31,
+      netScore: -0.12,
+      sizeMultiplier: 0.84,
+      vetoes: [{ id: "committee_guard", label: "Committee guard", reason: "late trend regime" }]
+    },
+    dataQuality: { status: "ready", overallScore: 0.72, freshnessScore: 0.7, trustScore: 0.68, coverageScore: 0.75, degradedButAllowed: false, sources: [] },
+    signalQuality: { overallScore: 0.58, setupFit: 0.61, structureQuality: 0.56, executionViability: 0.49, newsCleanliness: 0.64, quorumQuality: 0.71 },
+    confidenceBreakdown: { marketConfidence: 0.55, dataConfidence: 0.7, executionConfidence: 0.48, modelConfidence: 0.41, overallConfidence: 0.53 }
+  });
+  assert.ok(view.operatorAction.includes("regime kill switch"));
+  assert.equal(view.committee.agreement, 0.31);
+  assert.equal(view.committee.vetoes[0].id, "committee_guard");
+});
+
+await runCheck("risk manager keeps live entries blocked when regime kill switches are active", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "live" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.64,
+      calibrationConfidence: 0.52,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      transformer: { probability: 0.63, confidence: 0.11 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.12, microPriceEdgeBps: 0.24 },
+      market: { realizedVolPct: 0.014, atrPct: 0.008, bearishPatternScore: 0.02, bullishPatternScore: 0.14, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.05, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.08, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.1 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.62, probability: 0.63, netScore: 0.11, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.65,
+      confidence: 0.5,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 12, sampleConfidence: 0.7 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.67, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 0.22, maxCorrelation: 0, reasons: ["regime_kill_switch_active"] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-28T03:10:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("regime_kill_switch_active"));
 });
 
 await runCheck("dashboard decision view preserves readable operator fields and maps probe-only codes", async () => {

@@ -212,7 +212,7 @@ function classifySignalRejectionCategory(reason = "") {
   ) {
     return "governance";
   }
-  if (normalized.includes("timeframe")) {
+  if (normalized.includes("timeframe") || normalized.includes("higher_tf_conflict") || normalized.includes("lower_tf_conflict")) {
     return "timeframe";
   }
   if (normalized.startsWith("model_") || normalized.startsWith("committee_")) {
@@ -222,6 +222,8 @@ function classifySignalRejectionCategory(reason = "") {
     normalized.includes("spread") ||
     normalized.includes("volatility") ||
     normalized.includes("orderbook") ||
+    normalized.includes("local_book") ||
+    normalized.includes("book_quality") ||
     normalized.includes("pattern") ||
     normalized.includes("structure") ||
     normalized.includes("sentiment") ||
@@ -10473,6 +10475,7 @@ export class TradingBot {
           "higher_tf_conflict",
           "local_book_quality_too_low",
           "quality_quorum_degraded",
+          "regime_kill_switch_active",
           "model_confidence_too_low",
           "committee_veto",
           "execution_cost_budget_exceeded",
@@ -10489,6 +10492,8 @@ export class TradingBot {
           ? "De local book is nu te zwak. Wacht op betere depth of laat dit alleen als lichte paper-reviewcase meelopen."
         : prioritizedPaperBlocker === "quality_quorum_degraded"
           ? "De datasources zijn nu te zwak of onvolledig. Gebruik dit vooral als leergeval tot de kwaliteit herstelt."
+        : prioritizedPaperBlocker === "regime_kill_switch_active"
+          ? "De regime kill switch houdt paper nu in recovery. Laat alleen gecontroleerde probe-cases lopen tot nieuwe data de drawdown-context verbetert."
         : prioritizedPaperBlocker === "model_confidence_too_low"
           ? "Modelconfidence is te laag voor een normale entry. Vergelijk vergelijkbare probe- en shadow-cases voordat je versoepelt."
         : prioritizedPaperBlocker === "committee_veto"
@@ -10538,6 +10543,7 @@ export class TradingBot {
         familyLabel: strategy.familyLabel || strategy.family || null,
         fitScore: num(strategy.fitScore || 0, 4)
       },
+      committee: summarizeCommittee(decision.committee || decision.committeeSummary || {}),
       orderBook: {
         bookPressure: num(decision.orderBook?.bookPressure || 0, 3)
       },
