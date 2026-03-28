@@ -1573,10 +1573,12 @@ export class RiskManager {
     const highQualitySoftPaperProbeCandidate =
       softPaperOnlyReasons &&
       (committeeVetoIds.length === 0 || softPaperCommitteeDisagreement) &&
-      (committeeSummary.netScore || 0) >= 0 &&
-      safeValue(signalQualitySummary.overallScore, 0) >= 0.72 &&
+      (committeeSummary.netScore || 0) >= -0.08 &&
+      safeValue(signalQualitySummary.overallScore, 0) >= 0.68 &&
       safeValue(dataQualitySummary.overallScore, 0) >= 0.62 &&
-      safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.68 &&
+      safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.64 &&
+      safeValue(score.calibrationConfidence, 0) >= 0.68 &&
+      safeValue(score.disagreement, 1) <= Math.min(0.08, this.config.maxModelDisagreement * 0.35) &&
       (
         abstainReasons.length === 0 ||
         abstainReasons.every((reason) => reason === "probability_neutral_band")

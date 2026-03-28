@@ -429,8 +429,9 @@ export class AdaptiveTradingModel {
     const confidenceBase = hasCalibrationGate
       ? calibrationConfidence * 0.48 + transformerScore.confidence * 0.1 + sequenceScore.confidence * 0.12 + 0.24
       : calibrationConfidence * 0.44 + transformerScore.confidence * 0.08 + sequenceScore.confidence * 0.1 + 0.28;
+    const edgeStrength = clamp(Math.abs(blendedProbability - 0.5) * 2, 0, 1);
     const confidence = clamp(
-      Math.abs(blendedProbability - 0.5) * 2 * confidenceBase,
+      confidenceBase * (0.38 + edgeStrength * 0.62),
       0,
       1
     );
@@ -450,7 +451,11 @@ export class AdaptiveTradingModel {
     if (disagreement > disagreementLimit) {
       abstainReasons.push("model_disagreement_high");
     }
-    if (Math.abs(blendedProbability - 0.5) < abstainBand) {
+    const neutralBandStress =
+      calibrationConfidence < Math.max(this.config.minCalibrationConfidence + 0.18, 0.58) ||
+      regimeSummary.confidence < this.config.minRegimeConfidence + 0.08 ||
+      disagreement > disagreementLimit * 0.75;
+    if (Math.abs(blendedProbability - 0.5) < abstainBand && neutralBandStress) {
       abstainReasons.push("probability_neutral_band");
     }
     const shouldAbstain = abstainReasons.length > 0;
@@ -495,6 +500,7 @@ export class AdaptiveTradingModel {
       rawProbability,
       confidence,
       calibrationConfidence,
+      edgeStrength,
       disagreement,
       regime: regimeSummary.regime,
       regimeSummary,

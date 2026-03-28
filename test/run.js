@@ -6861,6 +6861,92 @@ await runCheck("risk manager extends paper probe threshold for strong soft-only 
   assert.ok(decision.suppressedReasons.includes("strategy_budget_cooled"));
 });
 
+await runCheck("risk manager gives paper near-miss relief to reliable neutral-band setups", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "BFUSDUSDT",
+    score: {
+      probability: 0.4991,
+      rawProbability: 0.5041,
+      confidence: 0.18,
+      calibrationConfidence: 0.7518,
+      disagreement: 0.021,
+      shouldAbstain: false,
+      abstainReasons: [],
+      calibrator: { warmupProgress: 1, globalConfidence: 0.75 },
+      transformer: { probability: 0.4797, confidence: 0.0233 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 1, bookPressure: -0.02, microPriceEdgeBps: 0.02, depthConfidence: 0.81 },
+      market: {
+        realizedVolPct: 0.0001,
+        atrPct: 0.0039,
+        bearishPatternScore: 0,
+        bullishPatternScore: 0.24,
+        dominantPattern: "inside_bar_bullish",
+        anchoredVwapAcceptanceScore: 0.64,
+        anchoredVwapRejectionScore: 0.18,
+        breakoutFollowThroughScore: 0.54,
+        closeLocationQuality: 0.89,
+        volumeAcceptanceScore: 0.66,
+        relativeStrengthVsBtc: 0.0006,
+        relativeStrengthVsEth: 0.0006,
+        clusterRelativeStrength: 0.0004,
+        sectorRelativeStrength: 0.0004
+      }
+    },
+    newsSummary: { riskScore: 0, sentimentScore: 0, eventBullishScore: 0, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0, signalScore: 0, crowdingBias: 0, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.22, contrarianScore: 0.14 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 3, confidence: 0.9 },
+    calendarSummary: { riskScore: 0.08, bullishScore: 0, urgencyScore: 0.04 },
+    committeeSummary: { agreement: 0.93, probability: 0.4316, confidence: 0.6952, netScore: -0.057, sizeMultiplier: 0.832, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0 },
+    strategySummary: {
+      activeStrategy: "bollinger_squeeze",
+      family: "breakout",
+      fitScore: 0.4915,
+      confidence: 0.4003,
+      blockers: [],
+      agreementGap: 0.0533,
+      optimizer: { sampleSize: 1, sampleConfidence: 0.2153 }
+    },
+    sessionSummary: { isWeekend: true, blockerReasons: [], lowLiquidity: false, riskScore: 0.16, sizeMultiplier: 0.82, thresholdPenalty: 0.012 },
+    driftSummary: { blockerReasons: [], severity: 0.12 },
+    selfHealState: { mode: "low_risk_only", active: true, sizeMultiplier: 0.42, thresholdPenalty: 0.06, lowRiskOnly: true, learningAllowed: true, issues: ["calibration_warning"] },
+    metaSummary: { action: "pass", score: 0.87, dailyTradeCount: 1, sizeMultiplier: 0.84, thresholdPenalty: 0.008, reasons: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: {
+      sizeMultiplier: 0.48,
+      maxCorrelation: 0,
+      reasons: [],
+      strategyBudgetFactor: 0.9461,
+      familyBudgetFactor: 0.9461,
+      regimeBudgetFactor: 0.9364,
+      clusterBudgetFactor: 0.8698,
+      dailyBudgetFactor: 0.9998,
+      allocatorScore: 0.8768
+    },
+    regimeSummary: { regime: "range", confidence: 0.55 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 1, blockerReasons: [] },
+    pairHealthSummary: { score: 0.46, quarantined: false },
+    timeframeSummary: { alignmentScore: 0.9946, blockerReasons: [] },
+    trendStateSummary: { dataConfidenceScore: 0.7325 },
+    signalQualitySummary: { overallScore: 0.7034, executionViability: 0.7058 },
+    dataQualitySummary: { overallScore: 0.6726 },
+    confidenceBreakdown: { overallConfidence: 0.69, executionConfidence: 0.7, modelConfidence: 0.72 },
+    nowIso: "2026-03-28T19:22:54.690Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.ok(decision.paperExploration.thresholdBuffer > makeConfig().paperExplorationThresholdBuffer);
+  assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
+});
+
 await runCheck("adaptive model exposes abstain reasons for neutral-band uncertainty", async () => {
   const model = new AdaptiveTradingModel({}, makeConfig());
   const score = model.score({
@@ -7452,6 +7538,48 @@ await runCheck("adaptive model keeps cold-start setups eligible when calibration
   );
   assert.ok(score.calibrationConfidence >= 0.22);
   assert.equal(score.shouldAbstain, false);
+});
+
+await runCheck("adaptive model keeps reliable near-neutral setups out of false abstain", async () => {
+  const model = new AdaptiveTradingModel(undefined, makeConfig());
+  for (let index = 0; index < 18; index += 1) {
+    model.updateFromTrade({
+      rawFeatures: {
+        trend_quality_composite: 0.12,
+        execution_quality_composite: 0.08,
+        strategy_fit: 0.56,
+        tf_alignment: 0.82
+      },
+      netPnlPct: index % 5 === 0 ? -0.002 : 0.009,
+      pnlQuote: index % 5 === 0 ? -2 : 9,
+      exitAt: `2026-03-${String(1 + index).padStart(2, "0")}T10:00:00.000Z`,
+      regimeSummary: { regime: "range", confidence: 0.68 },
+      regimeAtEntry: "range",
+      marketSnapshot: { market: {}, book: {} },
+      entryRationale: { expertMix: { weights: { range: 1 } } }
+    });
+  }
+  const score = model.score(
+    {
+      trend_quality_composite: 0.04,
+      execution_quality_composite: 0.03,
+      strategy_fit: 0.51,
+      tf_alignment: 0.9
+    },
+    {
+      regimeSummary: { regime: "range", confidence: 0.68 },
+      marketSnapshot: {
+        candles: Array.from({ length: 24 }, (_, index) => ({ open: 100, high: 101, low: 99, close: 100 + index * 0.01, volume: 20 + index })),
+        market: {},
+        book: {}
+      },
+      timeframeSummary: { alignmentScore: 0.9 }
+    }
+  );
+  assert.ok(score.calibrationConfidence >= 0.58);
+  assert.ok(score.confidence >= 0.16);
+  assert.equal(score.shouldAbstain, false);
+  assert.ok(!score.abstainReasons.includes("probability_neutral_band"));
 });
 
 
