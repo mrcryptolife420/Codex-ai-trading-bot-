@@ -111,6 +111,8 @@ const PRIOR_WEIGHTS = {
   depth_confidence: 0.06,
   execution_quality_composite: 0.18,
   bid_concentration_delta: 0.08,
+  data_confidence: 0.08,
+  feature_completeness: 0.1,
   news_sentiment: 0.3,
   news_confidence: 0.08,
   news_risk: -0.35,
@@ -209,6 +211,20 @@ const PRIOR_WEIGHTS = {
   hour_cos: 0.04
 };
 
+const MONOTONIC_WEIGHT_BOUNDS = {
+  trend_strength: { min: PRIOR_WEIGHTS.trend_strength * 0.25 },
+  data_confidence: { min: PRIOR_WEIGHTS.data_confidence * 0.25 },
+  feature_completeness: { min: PRIOR_WEIGHTS.feature_completeness * 0.25 },
+  acceptance_quality: { min: PRIOR_WEIGHTS.acceptance_quality * 0.25 },
+  anchored_vwap_acceptance: { min: PRIOR_WEIGHTS.anchored_vwap_acceptance * 0.25 },
+  close_location_quality: { min: PRIOR_WEIGHTS.close_location_quality * 0.25 },
+  volume_acceptance: { min: PRIOR_WEIGHTS.volume_acceptance * 0.25 },
+  execution_quality_composite: { min: PRIOR_WEIGHTS.execution_quality_composite * 0.25 },
+  pair_health_score: { min: PRIOR_WEIGHTS.pair_health_score * 0.25 },
+  spread_bps: { max: PRIOR_WEIGHTS.spread_bps * 0.25 },
+  venue_divergence: { max: PRIOR_WEIGHTS.venue_divergence * 0.25 }
+};
+
 function defaultSymbolStats() {
   return {
     trades: 0,
@@ -229,6 +245,21 @@ function copyState(state) {
     featureStats: { ...(state?.featureStats || {}) },
     symbolStats: { ...(state?.symbolStats || {}) }
   };
+}
+
+function enforceMonotonicWeights(weights = {}) {
+  for (const [name, bounds] of Object.entries(MONOTONIC_WEIGHT_BOUNDS)) {
+    const fallback = Number.isFinite(PRIOR_WEIGHTS[name]) ? PRIOR_WEIGHTS[name] : 0;
+    let value = Number.isFinite(weights[name]) ? weights[name] : fallback;
+    if (Number.isFinite(bounds.min)) {
+      value = Math.max(value, bounds.min);
+    }
+    if (Number.isFinite(bounds.max)) {
+      value = Math.min(value, bounds.max);
+    }
+    weights[name] = value;
+  }
+  return weights;
 }
 
 function prepareFeatureSet(rawFeatures = {}) {
@@ -254,6 +285,7 @@ export class OnlineTradingModel {
     this.state = copyState(state);
     this.config = config;
     this.seedPriors();
+    enforceMonotonicWeights(this.state.weights);
   }
 
   static bootstrapState(state) {
@@ -266,6 +298,7 @@ export class OnlineTradingModel {
     }
     this.state.bias = PRIOR_BIAS;
     this.state.weights = { ...PRIOR_WEIGHTS };
+    enforceMonotonicWeights(this.state.weights);
   }
 
   getState() {
@@ -396,6 +429,7 @@ export class OnlineTradingModel {
       this.state.weights[name] = previousWeight * (1 - learningRate * l2) + learningRate * error * normalized;
       this.updateFeatureStat(name, rawValue);
     }
+    enforceMonotonicWeights(this.state.weights);
 
     const stats = this.getSymbolStats(symbol);
     stats.trades += 1;

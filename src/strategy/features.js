@@ -147,7 +147,7 @@ export function buildFeatureVector({
     donchian_breakout: clamp((marketFeatures.donchianBreakoutPct || 0) * 55, -3, 3),
     donchian_position: clamp(((marketFeatures.donchianPosition || 0) - 0.5) * 6, -3, 3),
     donchian_width: clamp((marketFeatures.donchianWidthPct || 0) * 45, 0, 4),
-    trend_strength: clamp(-marketFeatures.trendStrength * 30, -3, 3),
+    trend_strength: clamp(marketFeatures.trendStrength * 30, -3, 3),
     vwap_gap: clamp(marketFeatures.vwapGapPct * 55, -3, 3),
     vwap_slope: clamp((marketFeatures.vwapSlopePct || 0) * 220, -3, 3),
     obv_slope: clamp(marketFeatures.obvSlope * 3, -4, 4),

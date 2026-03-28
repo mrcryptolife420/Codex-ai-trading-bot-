@@ -33,6 +33,7 @@ import { LiveBroker } from "../src/execution/liveBroker.js";
 import { buildPerformanceReport } from "../src/runtime/reportBuilder.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../src/strategy/indicators.js";
 import { classifyRegime } from "../src/ai/regimeModel.js";
+import { OnlineTradingModel } from "../src/ai/onlineModel.js";
 import { buildFeatureVector } from "../src/strategy/features.js";
 import { evaluateStrategySet } from "../src/strategy/strategyRouter.js";
 import { buildTrendStateSummary } from "../src/strategy/trendState.js";
@@ -4863,6 +4864,7 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
   assert.ok(rawFeatures.feature_completeness > 0);
   assert.ok(rawFeatures.relative_strength_btc > 0);
   assert.ok(rawFeatures.relative_strength_composite > 0);
+  assert.ok(rawFeatures.trend_strength > 0);
   assert.ok(rawFeatures.downside_vol_dominance < 0);
   assert.ok(rawFeatures.breakout_follow_through > 0);
   assert.ok(rawFeatures.acceptance_quality > 0);
@@ -4870,6 +4872,87 @@ await runCheck("feature vector includes venue confirmation and trend-state signa
   assert.ok(rawFeatures.breakout_quality_composite > 0);
   assert.ok(rawFeatures.execution_quality_composite > 0);
   assert.ok(rawFeatures.replenishment_quality > 0);
+});
+
+await runCheck("online model rewards positive trend strength for bullish trend setups", async () => {
+  const model = new OnlineTradingModel({}, makeConfig());
+  const baseFeatures = {
+    momentum_20: 0.6,
+    ema_gap: 0.5,
+    trend_quality_composite: 0.7,
+    strategy_fit: 0.8,
+    strategy_confidence: 0.7
+  };
+  const bearishScore = model.score({ ...baseFeatures, trend_strength: -0.6 });
+  const bullishScore = model.score({ ...baseFeatures, trend_strength: 0.6 });
+  assert.ok(bullishScore.probability > bearishScore.probability);
+  assert.ok(
+    bullishScore.contributions.find((item) => item.name === "trend_strength")?.contribution > 0,
+    "positive trend_strength should contribute positively to model probability"
+  );
+});
+
+await runCheck("online model repairs invariant quality and cost weight directions", async () => {
+  const model = new OnlineTradingModel({
+    bias: 0,
+    weights: {
+      feature_completeness: -0.2,
+      data_confidence: -0.12,
+      close_location_quality: -0.15,
+      acceptance_quality: -0.18,
+      spread_bps: 0.22,
+      venue_divergence: 0.11
+    }
+  }, makeConfig());
+  const repaired = model.getState().weights;
+  assert.ok(repaired.feature_completeness > 0);
+  assert.ok(repaired.data_confidence > 0);
+  assert.ok(repaired.close_location_quality > 0);
+  assert.ok(repaired.acceptance_quality > 0);
+  assert.ok(repaired.spread_bps < 0);
+  assert.ok(repaired.venue_divergence < 0);
+
+  const score = model.score({
+    feature_completeness: 3,
+    data_confidence: 2.5,
+    close_location_quality: 2.2,
+    acceptance_quality: 1.9,
+    spread_bps: 0.25,
+    venue_divergence: 0.35
+  });
+  const contributions = Object.fromEntries(score.contributions.map((item) => [item.name, item.contribution]));
+  assert.ok(contributions.feature_completeness > 0);
+  assert.ok(contributions.data_confidence > 0);
+  assert.ok(contributions.close_location_quality > 0);
+  assert.ok(contributions.acceptance_quality > 0);
+  assert.ok(contributions.spread_bps < 0);
+  assert.ok(contributions.venue_divergence < 0);
+});
+
+await runCheck("online model update cannot flip invariant quality and cost weights", async () => {
+  const model = new OnlineTradingModel({}, makeConfig());
+  model.updateFromTrade({
+    symbol: "BTCUSDT",
+    rawFeatures: {
+      feature_completeness: 3,
+      data_confidence: 2.4,
+      close_location_quality: 2.2,
+      acceptance_quality: 1.8,
+      spread_bps: 0.35,
+      venue_divergence: 0.28
+    },
+    netPnlPct: -0.03,
+    labelScore: 0,
+    exitAt: "2026-03-28T16:30:00.000Z",
+    executionQualityScore: 0.7
+  });
+  const updated = model.getState().weights;
+  assert.ok(updated.feature_completeness > 0);
+  assert.ok(updated.data_confidence > 0);
+  assert.ok(updated.close_location_quality > 0);
+  assert.ok(updated.acceptance_quality > 0);
+  assert.ok(updated.spread_bps < 0);
+  assert.ok(updated.venue_divergence < 0);
 });
 
 await runCheck("strategy router rewards relative strength and acceptance quality for trend setups", async () => {
