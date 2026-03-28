@@ -5307,6 +5307,54 @@ await runCheck("risk manager blocks retired strategies and hot execution cost sc
   assert.ok(decision.reasons.includes("execution_cost_budget_exceeded"));
 });
 
+await runCheck("risk manager keeps thin execution-cost samples in warmup instead of hard-blocking", async () => {
+  const manager = new RiskManager(makeConfig({ executionCostBudgetMinScopedTrades: 3 }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.64,
+      calibrationConfidence: 0.61,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 1, globalConfidence: 0.94 },
+      transformer: { probability: 0.63, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.22, microPriceEdgeBps: 0.4 },
+      market: { realizedVolPct: 0.012, atrPct: 0.006, bearishPatternScore: 0.03, bullishPatternScore: 0.1, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.05, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.3, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.68, probability: 0.65, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.03 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.66, confidence: 0.58, blockers: [], agreementGap: 0.03, optimizer: { sampleSize: 8, sampleConfidence: 0.62 } },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 5000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.7 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.86, blockerReasons: [] },
+    executionCostSummary: {
+      status: "blocked",
+      averageTotalCostBps: 16,
+      strategies: [{ id: "ema_trend", status: "blocked", tradeCount: 1, averageTotalCostBps: 16, averageSlippageDeltaBps: 5 }],
+      regimes: [{ id: "trend", status: "blocked", tradeCount: 1, averageTotalCostBps: 14, averageSlippageDeltaBps: 4.4 }]
+    },
+    nowIso: "2026-03-08T10:00:00.000Z"
+  });
+  assert.equal(decision.executionCostBudgetApplied.status, "warmup");
+  assert.ok(!decision.reasons.includes("execution_cost_budget_exceeded"));
+});
+
 await runCheck("risk manager respects capital governor recovery and blocking states", async () => {
   const manager = new RiskManager(makeConfig({ botMode: "live" }));
   const blocked = manager.evaluateEntry({
@@ -9276,6 +9324,81 @@ await runCheck("performance report exposes execution cost budgets and pnl decomp
   assert.ok(report.executionCostSummary.averageTotalCostBps > 0);
   assert.ok(Number.isFinite(report.pnlDecomposition.totalFees));
   assert.ok(Number.isFinite(report.pnlDecomposition.executionDragEstimate));
+});
+
+await runCheck("performance report keeps thin execution-cost samples in warmup", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        {
+          symbol: "BTCUSDT",
+          entryAt: "2026-03-08T08:00:00.000Z",
+          exitAt: "2026-03-08T10:00:00.000Z",
+          entryPrice: 70000,
+          exitPrice: 69940,
+          quantity: 0.01,
+          totalCost: 700.6,
+          proceeds: 699.2,
+          entryFee: 0.7,
+          pnlQuote: -1.4,
+          netPnlPct: -0.002,
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 6.6, slippageDeltaBps: 4.2, latencyBps: 0.8, queueDecayBps: 0.2 },
+          exitExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 6.1, slippageDeltaBps: 3.9, latencyBps: 0.6, queueDecayBps: 0.1 }
+        }
+      ]
+    },
+    runtime: { openPositions: [] },
+    config: {
+      reportLookbackTrades: 50,
+      executionCostBudgetWarnBps: 6,
+      executionCostBudgetBlockBps: 10,
+      executionCostBudgetMinScopedTrades: 3,
+      executionCostBudgetMinGlobalTrades: 3
+    }
+  });
+  assert.equal(report.executionCostSummary.status, "warmup");
+  assert.equal(report.executionCostSummary.tradeCount, 1);
+  assert.equal(report.executionCostSummary.strategies[0].status, "warmup");
+});
+
+await runCheck("performance report does not block paper execution costs on baseline round-trip fees alone", async () => {
+  const trades = Array.from({ length: 3 }, (_, index) => ({
+    symbol: "BTCUSDT",
+    brokerMode: "paper",
+    entryAt: `2026-03-08T0${index}:00:00.000Z`,
+    exitAt: `2026-03-08T0${index + 1}:00:00.000Z`,
+    entryPrice: 70000,
+    exitPrice: 70035,
+    quantity: 0.01,
+    totalCost: 700.7,
+    proceeds: 700.15,
+    entryFee: 0.7007,
+    pnlQuote: -0.55,
+    netPnlPct: -0.0008,
+    strategyAtEntry: "ema_trend",
+    regimeAtEntry: "trend",
+    entryExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 0, slippageDeltaBps: 0, latencyBps: 0, queueDecayBps: 0 },
+    exitExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 0, slippageDeltaBps: 0, latencyBps: 0, queueDecayBps: 0 }
+  }));
+  const report = buildPerformanceReport({
+    journal: { trades },
+    runtime: { openPositions: [] },
+    config: {
+      botMode: "paper",
+      paperFeeBps: 10,
+      reportLookbackTrades: 50,
+      executionCostBudgetWarnBps: 12,
+      executionCostBudgetBlockBps: 18,
+      executionCostBudgetMinScopedTrades: 3,
+      executionCostBudgetMinGlobalTrades: 3
+    }
+  });
+  assert.equal(report.executionCostSummary.status, "ready");
+  assert.ok(report.executionCostSummary.averageTotalCostBps >= 19.5);
+  assert.ok(report.executionCostSummary.averageBudgetCostBps <= 0.1);
+  assert.equal(report.executionCostSummary.strategies[0].status, "ready");
 });
 
 await runCheck("performance report downgrades stale execution-cost samples out of hard block mode", async () => {
@@ -13867,6 +13990,85 @@ await runCheck("timeframe consensus keeps higher timeframe conflict soft for non
   });
   assert.ok(!summary.blockerReasons.includes("higher_tf_conflict"));
   assert.ok(summary.reasons.includes("higher_tf_bias_against_entry"));
+});
+
+await runCheck("timeframe consensus keeps low alignment soft when breakout trigger timeframe is still neutral", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: { interval: "5m", market: { emaTrendScore: 0.03, momentum20: 0.0008, breakoutPct: 0.0002, supertrendDirection: 0, realizedVolPct: 0.017 } },
+        higher: { interval: "1h", market: { emaTrendScore: -0.76, momentum20: -0.018, breakoutPct: -0.011, supertrendDirection: -1, realizedVolPct: 0.022 } }
+      }
+    },
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "breakout" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.ok(summary.alignmentScore < 0.42);
+  assert.ok(!summary.blockerReasons.includes("cross_timeframe_misalignment"));
+  assert.ok(summary.reasons.includes("higher_tf_bias_without_lower_trigger"));
+});
+
+await runCheck("trading bot adaptation health shows when the online learner is active", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({
+    enableCrossTimeframeConsensus: true,
+    enableMarketSentimentContext: true,
+    enableOnChainLiteContext: true,
+    enableVolatilityContext: true,
+    enableLocalOrderBook: true,
+    calibrationMinObservations: 12
+  });
+  bot.journal = {
+    trades: [
+      {
+        symbol: "BTCUSDT",
+        entryAt: "2026-03-27T08:00:00.000Z",
+        exitAt: "2026-03-27T10:00:00.000Z",
+        rawFeatures: { momentum_20: 0.2, trend_quality_composite: 0.58 },
+        labelScore: 0.8
+      }
+    ]
+  };
+  bot.runtime = {
+    offlineTrainer: { readinessScore: 0.62 },
+    parameterGovernor: { status: "active" },
+    strategyAttribution: { status: "building" },
+    aiTelemetry: { strategyOptimizer: { status: "active" } }
+  };
+  bot.dataRecorder = {
+    getSummary() {
+      return { learningFrames: 7 };
+    }
+  };
+  bot.model = {
+    getCalibrationSummary() {
+      return {
+        observations: 14,
+        expectedCalibrationError: 0.09,
+        lastUpdatedAt: "2026-03-27T10:00:00.000Z"
+      };
+    },
+    getDeploymentSummary() {
+      return {
+        active: "champion",
+        lastPromotionAt: "2026-03-20T12:00:00.000Z"
+      };
+    }
+  };
+  bot.news = {};
+  bot.exchangeNotices = {};
+  bot.calendar = {};
+  bot.marketStructure = {};
+
+  const summary = TradingBot.prototype.buildAdaptationHealthSnapshot.call(bot, "2026-03-28T12:00:00.000Z");
+  assert.equal(summary.status, "active");
+  assert.equal(summary.learnableTradeCount, 1);
+  assert.equal(summary.learningFrames, 7);
+  assert.equal(summary.calibrationObservations, 14);
+  assert.equal(summary.deploymentActive, "champion");
+  assert.equal(summary.adaptiveInputs.enabledCount, 9);
+  assert.ok(summary.notes[0].includes("Gesloten trades met raw features"));
 });
 
 await runCheck("trading bot keeps healthy rest-book depth when local books are still warming", async () => {

@@ -3005,6 +3005,8 @@ function summarizeExecutionCost(summary = {}) {
     realizedPnl: num(item.realizedPnl || 0, 2),
     averageTotalCostBps: num(item.averageTotalCostBps || 0, 2),
     averageFeeBps: num(item.averageFeeBps || 0, 2),
+    averageBudgetCostBps: num(item.averageBudgetCostBps || 0, 2),
+    averageExcessFeeBps: num(item.averageExcessFeeBps || 0, 2),
     averageTouchSlippageBps: num(item.averageTouchSlippageBps || 0, 2),
     averageSlippageDeltaBps: num(item.averageSlippageDeltaBps || 0, 2),
     status: item.status || "ready"
@@ -3016,6 +3018,8 @@ function summarizeExecutionCost(summary = {}) {
     freshnessHours: summary.freshnessHours == null ? null : num(summary.freshnessHours, 1),
     averageTotalCostBps: num(summary.averageTotalCostBps || 0, 2),
     averageFeeBps: num(summary.averageFeeBps || 0, 2),
+    averageBudgetCostBps: num(summary.averageBudgetCostBps || 0, 2),
+    averageExcessFeeBps: num(summary.averageExcessFeeBps || 0, 2),
     averageTouchSlippageBps: num(summary.averageTouchSlippageBps || 0, 2),
     averageSlippageDeltaBps: num(summary.averageSlippageDeltaBps || 0, 2),
     worstStyle: summary.worstStyle || null,
@@ -3365,6 +3369,37 @@ function summarizeAlertDelivery(summary = {}) {
   };
 }
 
+function summarizeAdaptationHealth(summary = {}) {
+  return {
+    status: summary.status || "warmup",
+    learnsFromClosedTrades: summary.learnsFromClosedTrades !== false,
+    supportsMarketAdaptation: summary.supportsMarketAdaptation !== false,
+    learnableTradeCount: summary.learnableTradeCount || 0,
+    learningFrames: summary.learningFrames || 0,
+    offlineReadinessScore: num(summary.offlineReadinessScore || 0, 4),
+    lastLearningTradeAt: summary.lastLearningTradeAt || null,
+    learningAgeHours: summary.learningAgeHours == null ? null : num(summary.learningAgeHours, 1),
+    calibrationObservations: summary.calibrationObservations || 0,
+    calibrationEce: num(summary.calibrationEce || 0, 4),
+    lastCalibrationUpdateAt: summary.lastCalibrationUpdateAt || null,
+    calibrationAgeHours: summary.calibrationAgeHours == null ? null : num(summary.calibrationAgeHours, 1),
+    lastPromotionAt: summary.lastPromotionAt || null,
+    deploymentActive: summary.deploymentActive || null,
+    optimizerStatus: summary.optimizerStatus || "warmup",
+    attributionStatus: summary.attributionStatus || "warmup",
+    parameterGovernorStatus: summary.parameterGovernorStatus || "warmup",
+    adaptiveInputs: {
+      enabledCount: summary.adaptiveInputs?.enabledCount || 0,
+      totalCount: summary.adaptiveInputs?.totalCount || 0,
+      items: arr(summary.adaptiveInputs?.items || []).slice(0, 10).map((item) => ({
+        id: item.id || null,
+        enabled: Boolean(item.enabled)
+      }))
+    },
+    notes: [...(summary.notes || [])]
+  };
+}
+
 export function buildCandidateQualityQuorum({
   symbol,
   marketSnapshot,
@@ -3699,6 +3734,7 @@ export class TradingBot {
     const dataRecorderSummary = this.dataRecorder.getSummary();
     const marketHistoryFeed = serviceState.dashboardFeeds?.feeds?.find((item) => item.id === "market_history") || null;
     const signalFlow = summarizeSignalFlow(this.runtime.signalFlow || {});
+    const adaptation = summarizeAdaptationHealth(this.runtime.adaptation || this.buildAdaptationHealthSnapshot(now.toISOString()));
     const dataRecorderAgeMs = dataRecorderSummary?.lastRecordAt ? now.getTime() - new Date(dataRecorderSummary.lastRecordAt).getTime() : Number.POSITIVE_INFINITY;
     const recentClosedTrades = arr(this.journal.trades || []).slice(-12);
     const replayCoverage = recentClosedTrades.length
@@ -3804,6 +3840,14 @@ export class TradingBot {
         detail: (this.config.botMode || "paper") !== "paper"
           ? "Signal-flow stall check is alleen relevant in paper mode."
           : `${signalFlow.consecutiveCyclesWithSignalsNoPaperTrade || 0} opeenvolgende cycles met signalen maar zonder paper fill.`
+      },
+      {
+        id: "adaptive_learning_recent",
+        passed: adaptation.status !== "stalled",
+        severity: "medium",
+        detail: adaptation.lastLearningTradeAt
+          ? `Laatste leertrade ${num(adaptation.learningAgeHours || 0, 1)}u geleden; status ${adaptation.status}.`
+          : "Nog geen leerbare closed trades om online adaptatie te voeden."
       }
     ];
     const blockingFailures = checks.filter((item) => !item.passed && item.severity === "high");
@@ -6110,6 +6154,7 @@ export class TradingBot {
     const executionCost = this.runtime.executionCost || {};
     const replayChaos = this.runtime.replayChaos || {};
     const signalFlow = summarizeSignalFlow(this.runtime.signalFlow || {});
+    const adaptation = summarizeAdaptationHealth(this.runtime.adaptation || {});
 
     if (exchangeTruth.freezeEntries) {
       runbooks.push({
@@ -6251,6 +6296,15 @@ export class TradingBot {
         title: "Signalen lopen vast voor paper entries",
         reason: signalFlow.lastCycle.topRejectionReasons[0]?.id || "Signalen worden wel gegenereerd, maar bereiken de paper execution-pad niet.",
         action: `Controleer signal-flow metrics, top reject-categorie ${signalFlow.lastCycle.topRejectionCategories[0]?.id || "unknown"} en entry-flow events om de blokkade gericht te herstellen.`
+      });
+    }
+    if (adaptation.status === "stalled") {
+      runbooks.push({
+        id: "adaptive_learning_stalled",
+        severity: "neutral",
+        title: "Online learning staat stil",
+        reason: adaptation.notes?.find((note) => /stil|zonder nieuwe closes/i.test(note)) || adaptation.notes?.[1] || "Er kwamen recent geen leerbare closed trades meer binnen.",
+        action: "Controleer paper signal flow, closed-trade persist en learning-event frames zodat nieuwe closes de modellen weer kunnen bijwerken."
       });
     }
     if ((replayChaos.status || "") === "blocked") {
@@ -7907,6 +7961,95 @@ export class TradingBot {
     };
   }
 
+  buildAdaptationHealthSnapshot(referenceNow = nowIso()) {
+    const referenceMs = new Date(referenceNow).getTime();
+    const closedTrades = arr(this.journal?.trades || []).filter((trade) => trade?.exitAt);
+    const learnableTrades = closedTrades.filter((trade) => trade.rawFeatures && Object.keys(trade.rawFeatures).length > 0);
+    const latestLearningTradeAt = learnableTrades
+      .map((trade) => trade.exitAt || trade.entryAt || null)
+      .filter(Boolean)
+      .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] || null;
+    const learningAgeHours = latestLearningTradeAt
+      ? Math.max(0, (referenceMs - new Date(latestLearningTradeAt).getTime()) / 3_600_000)
+      : null;
+    const calibration = this.model?.getCalibrationSummary ? (this.model.getCalibrationSummary() || {}) : {};
+    const deployment = this.model?.getDeploymentSummary ? (this.model.getDeploymentSummary() || {}) : {};
+    const dataRecorderSummary = this.dataRecorder?.getSummary ? (this.dataRecorder.getSummary() || {}) : {};
+    const offlineTrainer = summarizeOfflineTrainer(this.runtime?.offlineTrainer || {});
+    const optimizerSummary = this.runtime?.aiTelemetry?.strategyOptimizer || {};
+    const parameterGovernor = this.runtime?.parameterGovernor || {};
+    const attribution = this.runtime?.strategyAttribution || {};
+    const lastCalibrationUpdateAt = calibration.lastUpdatedAt || null;
+    const calibrationAgeHours = lastCalibrationUpdateAt
+      ? Math.max(0, (referenceMs - new Date(lastCalibrationUpdateAt).getTime()) / 3_600_000)
+      : null;
+    const adaptiveInputs = [
+      { id: "cross_timeframe_consensus", enabled: Boolean(this.config.enableCrossTimeframeConsensus) },
+      { id: "market_sentiment", enabled: Boolean(this.config.enableMarketSentimentContext) },
+      { id: "on_chain_lite", enabled: Boolean(this.config.enableOnChainLiteContext) },
+      { id: "volatility", enabled: Boolean(this.config.enableVolatilityContext) },
+      { id: "local_order_book", enabled: Boolean(this.config.enableLocalOrderBook) },
+      { id: "news", enabled: Boolean(this.news) },
+      { id: "exchange_notices", enabled: Boolean(this.exchangeNotices) },
+      { id: "calendar", enabled: Boolean(this.calendar) },
+      { id: "market_structure", enabled: Boolean(this.marketStructure) }
+    ];
+    const enabledAdaptiveInputs = adaptiveInputs.filter((item) => item.enabled);
+    const calibrationMinObservations = Math.max(4, Math.round(safeNumber(this.config.calibrationMinObservations, 12)));
+    const hasLearningHistory = learnableTrades.length > 0;
+    const learningStalled = hasLearningHistory && Number.isFinite(learningAgeHours) && learningAgeHours >= 72;
+    const calibrationBuilding = (calibration.observations || 0) < calibrationMinObservations;
+    const status = !hasLearningHistory
+      ? "warmup"
+      : learningStalled
+        ? "stalled"
+        : calibrationBuilding
+          ? "building"
+          : "active";
+    const notes = [
+      "Gesloten trades met raw features updaten champion, challenger, transformer, sequence, meta, execution, exit, strategy-meta, calibrator en RL policy.",
+      !hasLearningHistory
+        ? "Nog geen gesloten trades met leerbare raw features; online adaptatie warmt nog op."
+        : latestLearningTradeAt
+          ? `Laatste leertrade op ${latestLearningTradeAt}.`
+          : null,
+      learningStalled
+        ? `De online leerlus staat stil sinds ${latestLearningTradeAt}; zonder nieuwe closes verschuift adaptatie vooral naar actuele marktfeatures en shadow evidence.`
+        : null,
+      calibrationBuilding
+        ? `Calibratie heeft ${calibration.observations || 0}/${calibrationMinObservations} observaties en blijft daarom nog in bouwfase.`
+        : null,
+      deployment.active
+        ? `Actieve deployment: ${deployment.active}.`
+        : null
+    ].filter(Boolean);
+    return {
+      status,
+      learnsFromClosedTrades: true,
+      supportsMarketAdaptation: enabledAdaptiveInputs.length > 0,
+      learnableTradeCount: learnableTrades.length,
+      learningFrames: dataRecorderSummary.learningFrames || 0,
+      offlineReadinessScore: offlineTrainer.readinessScore || 0,
+      lastLearningTradeAt: latestLearningTradeAt,
+      learningAgeHours,
+      calibrationObservations: calibration.observations || 0,
+      calibrationEce: calibration.expectedCalibrationError || 0,
+      lastCalibrationUpdateAt,
+      calibrationAgeHours,
+      lastPromotionAt: deployment.lastPromotionAt || null,
+      deploymentActive: deployment.active || null,
+      optimizerStatus: optimizerSummary.status || "warmup",
+      attributionStatus: attribution.status || "warmup",
+      parameterGovernorStatus: parameterGovernor.status || "warmup",
+      adaptiveInputs: {
+        enabledCount: enabledAdaptiveInputs.length,
+        totalCount: adaptiveInputs.length,
+        items: adaptiveInputs
+      },
+      notes
+    };
+  }
+
   refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
     const evaluation = report || this.getPerformanceReport();
     const existingOps = this.runtime.ops || {};
@@ -7935,6 +8078,7 @@ export class TradingBot {
     }
     this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
     this.runtime.paperLearning = this.buildPaperLearningSummary(arr(this.runtime.latestDecisions), referenceNow);
+    this.runtime.adaptation = summarizeAdaptationHealth(this.buildAdaptationHealthSnapshot(referenceNow));
     const promotionState = this.evaluatePromotionProbations(referenceNow);
     const readiness = this.buildOperationalReadiness(referenceNow);
     const alerts = summarizeOperatorAlerts(buildOperatorAlerts({
@@ -7965,6 +8109,7 @@ export class TradingBot {
       alertDelivery,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       paperLearning: summarizePaperLearning(this.runtime.paperLearning || {}),
+      adaptation: summarizeAdaptationHealth(this.runtime.adaptation || {}),
       signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {}),
       diagnosticsActions: existingOps.diagnosticsActions || { history: [] },
       promotionState
@@ -11164,6 +11309,7 @@ export class TradingBot {
     qualityQuorum = {},
     safety = {},
     paperLearning = {},
+    adaptation = {},
     diagnosticsActions = {},
     dashboardFeedHealth = {}
   } = {}) {
@@ -11240,6 +11386,13 @@ export class TradingBot {
             title: "Promotion",
             detail: paperLearning.promotionRoadmap.note,
             tone: paperLearning.promotionRoadmap.allowPromotion ? "positive" : "neutral"
+          }
+        : null,
+      adaptation.status && !["active", "warmup"].includes(adaptation.status)
+        ? {
+            title: "Adaptation",
+            detail: `${titleize(adaptation.status)} | ${adaptation.lastLearningTradeAt ? `laatste leertrade ${adaptation.lastLearningTradeAt}` : "nog geen leertrades"}`,
+            tone: adaptation.status === "stalled" ? "negative" : "neutral"
           }
         : null
     ].filter(Boolean).slice(0, 6);
@@ -11521,6 +11674,7 @@ export class TradingBot {
     const previewCandidates = await this.scanCandidatesReadOnly(balance);
     const checks = this.buildDoctorChecks({ report, balance, previewCandidates, now: new Date() });
     const marketHistorySummary = summarizeMarketHistory(this.runtime.marketHistory || {});
+    const adaptationSummary = summarizeAdaptationHealth(this.runtime.adaptation || this.buildAdaptationHealthSnapshot(referenceNow));
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -11531,6 +11685,7 @@ export class TradingBot {
       stream: this.stream.getStatus(),
       calibration: this.model.getCalibrationSummary(),
       deployment: this.model.getDeploymentSummary(),
+      adaptation: adaptationSummary,
       drift: summarizeDrift(this.runtime.drift || {}),
       selfHeal: summarizeSelfHeal(this.runtime.selfHeal || {}),
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
@@ -11592,6 +11747,7 @@ export class TradingBot {
     const orderLifecycleSummary = summarizeOrderLifecycle(this.runtime.orderLifecycle || {});
     const exchangeTruthSummary = summarizeExchangeTruth(this.runtime.exchangeTruth || {});
     const paperLearningSummary = summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {});
+    const adaptationSummary = summarizeAdaptationHealth(this.runtime.adaptation || this.buildAdaptationHealthSnapshot(referenceNow));
     const serviceSummary = summarizeServiceState(this.runtime.service || {}, this.config, referenceNow);
     const readinessSummary = this.buildOperationalReadiness(referenceNow);
     const alertsSummary = summarizeOperatorAlerts(buildOperatorAlerts({
@@ -11621,6 +11777,7 @@ export class TradingBot {
         exchangeTruth: exchangeTruthSummary
       },
       paperLearning: paperLearningSummary,
+      adaptation: adaptationSummary,
       diagnosticsActions: this.runtime.ops?.diagnosticsActions || {},
       dashboardFeedHealth: serviceSummary.dashboardFeeds || {}
     });
@@ -11671,7 +11828,8 @@ export class TradingBot {
         committee: topDecision.committee || leadPosition?.entryRationale?.committee || summarizeCommittee({}),
         strategy: topDecision.strategy || topDecision.strategySummary || leadPosition?.entryRationale?.strategy || summarizeStrategy({}),
         optimizer: this.runtime.aiTelemetry?.strategyOptimizer || summarizeOptimizer(this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: nowIso() })),
-        modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {})
+        modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
+        adaptation: adaptationSummary
       },
       safety: {
         session: topDecision.session || this.runtime.session || leadPosition?.entryRationale?.session || summarizeSession({}),
@@ -11717,6 +11875,7 @@ export class TradingBot {
         }),
         alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {}),
         paperLearning: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}),
+        adaptation: adaptationSummary,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },
       portfolio: this.buildPortfolioView(),

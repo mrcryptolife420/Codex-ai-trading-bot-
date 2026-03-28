@@ -355,13 +355,26 @@ function estimateExitFee(trade = {}) {
   return Math.max(0, grossExit - realizedProceeds);
 }
 
-function buildExecutionCostBreakdown(trade = {}) {
+function resolveExpectedRoundTripFeeBps(trade = {}, config = {}) {
+  if (Number.isFinite(config.executionCostBudgetIncludedFeeBps)) {
+    return Math.max(0, config.executionCostBudgetIncludedFeeBps);
+  }
+  const brokerMode = trade.brokerMode || config.botMode || "paper";
+  if (brokerMode === "paper") {
+    return Math.max(0, safeNumber(config.paperFeeBps, 0) * 2);
+  }
+  return 0;
+}
+
+function buildExecutionCostBreakdown(trade = {}, config = {}) {
   const entry = trade.entryExecutionAttribution || {};
   const exit = trade.exitExecutionAttribution || {};
   const notional = Math.max(trade.totalCost || trade.quantity * trade.entryPrice || 0, 1);
   const entryFee = estimateEntryFee(trade);
   const exitFee = estimateExitFee(trade);
   const feeBps = safeDivide(entryFee + exitFee, notional) * 10_000;
+  const feeBudgetBps = resolveExpectedRoundTripFeeBps(trade, config);
+  const excessFeeBps = Math.max(0, feeBps - feeBudgetBps);
   const touchSlippageBps = Math.max(0, entry.realizedTouchSlippageBps || 0) + Math.max(0, exit.realizedTouchSlippageBps || 0);
   const slippageDeltaBps = Math.max(0, entry.slippageDeltaBps || 0) + Math.max(0, exit.slippageDeltaBps || 0);
   const latencyBps = Math.max(0, entry.latencyBps || 0) + Math.max(0, exit.latencyBps || 0);
@@ -373,13 +386,16 @@ function buildExecutionCostBreakdown(trade = {}) {
     exitFee,
     totalFees: entryFee + exitFee,
     feeBps,
+    feeBudgetBps,
+    excessFeeBps,
     touchSlippageBps,
     slippageDeltaBps,
     latencyBps,
     queueBps,
     spreadShockBps,
     liquidityShockBps,
-    totalCostBps: feeBps + touchSlippageBps
+    totalCostBps: feeBps + touchSlippageBps,
+    budgetCostBps: excessFeeBps + touchSlippageBps
   };
 }
 
@@ -387,6 +403,7 @@ function buildExecutionCostBuckets(trades = [], keyFn, config = {}) {
   const buckets = new Map();
   const warnBps = config.executionCostBudgetWarnBps || 12;
   const blockBps = config.executionCostBudgetBlockBps || 18;
+  const minScopedTrades = Math.max(1, Math.round(safeNumber(config.executionCostBudgetMinScopedTrades, 3)));
   for (const trade of trades) {
     const id = keyFn(trade) || "unknown";
     if (!buckets.has(id)) {
@@ -396,16 +413,20 @@ function buildExecutionCostBuckets(trades = [], keyFn, config = {}) {
         realizedPnl: 0,
         totalCostBps: 0,
         totalFeeBps: 0,
+        totalBudgetCostBps: 0,
+        totalExcessFeeBps: 0,
         totalTouchSlippageBps: 0,
         totalSlippageDeltaBps: 0
       });
     }
     const bucket = buckets.get(id);
-    const cost = buildExecutionCostBreakdown(trade);
+    const cost = buildExecutionCostBreakdown(trade, config);
     bucket.tradeCount += 1;
     bucket.realizedPnl += trade.pnlQuote || 0;
     bucket.totalCostBps += cost.totalCostBps;
     bucket.totalFeeBps += cost.feeBps;
+    bucket.totalBudgetCostBps += cost.budgetCostBps;
+    bucket.totalExcessFeeBps += cost.excessFeeBps;
     bucket.totalTouchSlippageBps += cost.touchSlippageBps;
     bucket.totalSlippageDeltaBps += cost.slippageDeltaBps;
   }
@@ -413,21 +434,29 @@ function buildExecutionCostBuckets(trades = [], keyFn, config = {}) {
     .map((bucket) => {
       const averageTotalCostBps = safeDivide(bucket.totalCostBps, bucket.tradeCount);
       const averageFeeBps = safeDivide(bucket.totalFeeBps, bucket.tradeCount);
+      const averageBudgetCostBps = safeDivide(bucket.totalBudgetCostBps, bucket.tradeCount);
+      const averageExcessFeeBps = safeDivide(bucket.totalExcessFeeBps, bucket.tradeCount);
       const averageTouchSlippageBps = safeDivide(bucket.totalTouchSlippageBps, bucket.tradeCount);
       const averageSlippageDeltaBps = safeDivide(bucket.totalSlippageDeltaBps, bucket.tradeCount);
+      const sampleReady = bucket.tradeCount >= minScopedTrades;
       return {
         id: bucket.id,
         tradeCount: bucket.tradeCount,
         realizedPnl: bucket.realizedPnl,
         averageTotalCostBps,
         averageFeeBps,
+        averageBudgetCostBps,
+        averageExcessFeeBps,
         averageTouchSlippageBps,
         averageSlippageDeltaBps,
-        status: averageTotalCostBps >= blockBps
-          ? "blocked"
-          : averageTotalCostBps >= warnBps || averageSlippageDeltaBps >= warnBps * 0.35
-            ? "caution"
-            : "ready"
+        sampleReady,
+        status: !sampleReady
+          ? "warmup"
+          : averageBudgetCostBps >= blockBps
+            ? "blocked"
+            : averageBudgetCostBps >= warnBps || averageSlippageDeltaBps >= warnBps * 0.35
+              ? "caution"
+              : "ready"
       };
     })
     .sort((left, right) => (right.averageTotalCostBps || 0) - (left.averageTotalCostBps || 0))
@@ -435,23 +464,32 @@ function buildExecutionCostBuckets(trades = [], keyFn, config = {}) {
 }
 
 function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date().toISOString()) {
-  const costs = trades.map((trade) => buildExecutionCostBreakdown(trade));
+  const costs = trades.map((trade) => buildExecutionCostBreakdown(trade, config));
   const styles = buildExecutionCostBuckets(trades, (trade) => trade.entryExecutionAttribution?.entryStyle || "unknown", config);
   const strategies = buildExecutionCostBuckets(trades, (trade) => trade.strategyAtEntry || "unknown", config);
   const regimes = buildExecutionCostBuckets(trades, (trade) => trade.regimeAtEntry || "unknown", config);
+  const minScopedTrades = Math.max(1, Math.round(safeNumber(config.executionCostBudgetMinScopedTrades, 3)));
+  const minGlobalTrades = Math.max(minScopedTrades, Math.round(safeNumber(config.executionCostBudgetMinGlobalTrades, minScopedTrades)));
   const averageTotalCostBps = average(costs.map((item) => item.totalCostBps || 0));
   const averageFeeBps = average(costs.map((item) => item.feeBps || 0));
+  const averageBudgetCostBps = average(costs.map((item) => item.budgetCostBps || 0));
+  const averageExcessFeeBps = average(costs.map((item) => item.excessFeeBps || 0));
   const averageTouchSlippageBps = average(costs.map((item) => item.touchSlippageBps || 0));
   const averageSlippageDeltaBps = average(costs.map((item) => item.slippageDeltaBps || 0));
-  const worstStyle = styles[0] || null;
-  const worstStrategy = strategies[0] || null;
+  const matureStyles = styles.filter((item) => item.sampleReady);
+  const matureStrategies = strategies.filter((item) => item.sampleReady);
+  const worstStyle = matureStyles[0] || styles[0] || null;
+  const worstStrategy = matureStrategies[0] || strategies[0] || null;
   const latestTradeAt = resolveLatestTradeAt(trades);
   const freshnessHours = latestTradeAt
     ? (parseTimestampMs(nowIso) - parseTimestampMs(latestTradeAt)) / 3_600_000
     : Number.POSITIVE_INFINITY;
   const stale = trades.length > 0 && freshnessHours > safeNumber(config.executionCostBudgetFreshnessHours, 72);
+  const globalSampleReady = trades.length >= minGlobalTrades;
   const status = stale
     ? "warmup"
+    : !globalSampleReady
+      ? "warmup"
     : worstStyle?.status === "blocked" || worstStrategy?.status === "blocked"
       ? "blocked"
       : worstStyle?.status === "caution" || worstStrategy?.status === "caution"
@@ -462,10 +500,16 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
   return {
     status,
     stale,
+    tradeCount: trades.length,
+    recentTradeCount: trades.length,
+    minScopedTrades,
+    minGlobalTrades,
     latestTradeAt,
     freshnessHours: Number.isFinite(freshnessHours) ? freshnessHours : null,
     averageTotalCostBps,
     averageFeeBps,
+    averageBudgetCostBps,
+    averageExcessFeeBps,
     averageTouchSlippageBps,
     averageSlippageDeltaBps,
     worstStyle: worstStyle?.id || null,
@@ -476,6 +520,8 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
     notes: [
       stale
         ? `Execution-cost sample is stale; last trade was ${freshnessHours.toFixed(1)}h ago, so hard blocking is disabled until new fills arrive.`
+        : !globalSampleReady
+          ? `Execution-cost sample heeft nog maar ${trades.length} recente fill(s); blokken starten pas vanaf ${minGlobalTrades} fills.`
         : null,
       worstStyle
         ? `${worstStyle.id} heeft momenteel de duurste execution-cost profile.`
@@ -483,6 +529,9 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
       averageFeeBps
         ? `Gemiddelde fee-impact: ${averageFeeBps.toFixed(2)} bps.`
         : "Fee-impact is nog niet zichtbaar in de huidige sample.",
+      averageExcessFeeBps
+        ? `Fee-impact boven budget: ${averageExcessFeeBps.toFixed(2)} bps.`
+        : "Fee-impact valt binnen het verwachte budget.",
       averageTouchSlippageBps
         ? `Gemiddelde touch slippage: ${averageTouchSlippageBps.toFixed(2)} bps.`
         : "Touch slippage is nog niet zichtbaar in de huidige sample."

@@ -40,9 +40,12 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
   );
   const reasons = [];
   const blockers = [];
+  const family = strategySummary.family || "";
   const directionSensitiveFamilies = ["trend_following", "breakout", "market_structure", "derivatives"];
+  const triggerDrivenFamilies = ["trend_following", "breakout", "market_structure"];
   const lowerDirectional = Math.abs(lowerBias) >= 0.08;
   const higherDirectional = Math.abs(higherBias) >= 0.16;
+  const hardHigherTfConflict = lowerDirectional && higherDirectional && Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0) && directionSensitiveFamilies.includes(family);
   if (directionAgreement >= 1 && Math.abs(higherBias) >= 0.18) {
     reasons.push("higher_tf_confirms_direction");
   }
@@ -52,18 +55,19 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
   if (volatilityGap <= Math.max(config.crossTimeframeMaxVolGapPct || 0.03, 0.005) * 0.6) {
     reasons.push("volatility_regimes_aligned");
   }
-  const family = strategySummary.family || "";
-  if (alignmentScore < (config.crossTimeframeMinAlignmentScore || 0.42) && ["trend_following", "breakout", "market_structure"].includes(family)) {
-    blockers.push("cross_timeframe_misalignment");
-  }
-  if (lowerDirectional && higherDirectional && Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0)) {
-    if (directionSensitiveFamilies.includes(family)) {
-      blockers.push("higher_tf_conflict");
-    } else {
-      reasons.push("higher_tf_bias_against_entry");
-    }
+  if (hardHigherTfConflict) {
+    blockers.push("higher_tf_conflict");
+  } else if (lowerDirectional && higherDirectional && Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0)) {
+    reasons.push("higher_tf_bias_against_entry");
   } else if (!lowerDirectional && higherDirectional) {
     reasons.push("higher_tf_bias_without_lower_trigger");
+  }
+  if (alignmentScore < (config.crossTimeframeMinAlignmentScore || 0.42) && triggerDrivenFamilies.includes(family)) {
+    if (lowerDirectional) {
+      blockers.push("cross_timeframe_misalignment");
+    } else {
+      reasons.push(higherDirectional ? "higher_tf_bias_without_lower_trigger" : "timeframe_alignment_inconclusive");
+    }
   }
   if (regimeSummary.regime === "event_risk" && directionAgreement === 0 && volatilityGap > (config.crossTimeframeMaxVolGapPct || 0.03)) {
     blockers.push("event_regime_tf_noise");

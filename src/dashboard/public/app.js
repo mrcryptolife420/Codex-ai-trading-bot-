@@ -983,6 +983,7 @@ function renderLearning(snapshot) {
   }
 
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
@@ -1082,6 +1083,25 @@ function renderLearning(snapshot) {
   );
 
   const summaryGrid = makeNode("section", { className: "learning-summary-grid" });
+  const adaptationInputs = (adaptation.adaptiveInputs?.items || [])
+    .filter((item) => item.enabled)
+    .slice(0, 3)
+    .map((item) => titleize(item.id))
+    .join(", ");
+  const adaptationFoot = [
+    `${adaptation.learningFrames || 0} learning frames`,
+    `${adaptation.calibrationObservations || 0} calibration obs`,
+    adaptation.offlineReadinessScore != null ? `${formatPct(adaptation.offlineReadinessScore || 0, 1)} offline ready` : null
+  ].filter(Boolean).join(" · ");
+  const adaptationNote = adaptation.status === "stalled"
+    ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De bot ziet nu te weinig verse closed trades om de online leerlus actief te houden."
+    : adaptation.status === "warmup"
+      ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De online leerlus warmt nog op totdat de eerste leerbare closed trades binnenkomen."
+      : [
+          adaptation.notes?.[0],
+          adaptation.lastLearningTradeAt ? `Laatste leertrade: ${formatDate(adaptation.lastLearningTradeAt)}.` : null,
+          adaptationInputs ? `Actieve adaptieve inputs: ${adaptationInputs}.` : null
+        ].filter(Boolean).join(" ");
   summaryGrid.append(
     makeLearningDetailCard(
       "Leert nu",
@@ -1092,6 +1112,12 @@ function renderLearning(snapshot) {
       [scopeMeaning, learningInputNote].filter(Boolean).join(" ")
     ),
     makeLearningDetailCard("Laatste trade", latestTrade.title, latestTrade.detail, latestTrade.lesson),
+    makeLearningDetailCard(
+      "Model adaptie",
+      titleize(adaptation.status || "warmup"),
+      adaptationFoot || "Nog geen online adaptie zichtbaar.",
+      adaptationNote
+    ),
     makeLearningDetailCard(
       "Belangrijkste rem",
       titleize(topOutcome?.id || topBlocker?.id || "nog geen duidelijke les"),

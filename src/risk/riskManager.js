@@ -865,6 +865,7 @@ export class RiskManager {
   }
 
   resolveExecutionCostBudget(executionCostSummary = {}, strategySummary = {}, regimeSummary = {}) {
+    const minScopedTrades = Math.max(1, Math.round(safeValue(this.config.executionCostBudgetMinScopedTrades) || 3));
     if (executionCostSummary.stale) {
       return {
         active: false,
@@ -890,21 +891,46 @@ export class RiskManager {
         status: executionCostSummary.status || "warmup",
         blocked: false,
         sizeMultiplier: 1,
-        averageTotalCostBps: safeValue(executionCostSummary.averageTotalCostBps || 0)
+        averageTotalCostBps: safeValue(executionCostSummary.averageTotalCostBps || 0),
+        averageBudgetCostBps: safeValue(executionCostSummary.averageBudgetCostBps || 0),
+        averageExcessFeeBps: safeValue(executionCostSummary.averageExcessFeeBps || 0),
+        minTradeCount: minScopedTrades
       };
     }
-    const averageTotalCostBps = average(scopes.map((item) => safeValue(item.averageTotalCostBps || 0)), safeValue(executionCostSummary.averageTotalCostBps || 0));
-    const averageSlippageDeltaBps = average(scopes.map((item) => safeValue(item.averageSlippageDeltaBps || 0)), safeValue(executionCostSummary.averageSlippageDeltaBps || 0));
-    const blocked = scopes.some((item) => (item.status || "") === "blocked");
-    const caution = !blocked && scopes.some((item) => (item.status || "") === "caution");
+    const matureScopes = scopes.filter((item) => safeValue(item.tradeCount || 0) >= minScopedTrades && (item.status || "warmup") !== "warmup");
+    const averageTotalCostBps = average(matureScopes.map((item) => safeValue(item.averageTotalCostBps || 0)), safeValue(executionCostSummary.averageTotalCostBps || 0));
+    const averageBudgetCostBps = average(matureScopes.map((item) => safeValue(item.averageBudgetCostBps || 0)), safeValue(executionCostSummary.averageBudgetCostBps || 0));
+    const averageExcessFeeBps = average(matureScopes.map((item) => safeValue(item.averageExcessFeeBps || 0)), safeValue(executionCostSummary.averageExcessFeeBps || 0));
+    const averageSlippageDeltaBps = average(matureScopes.map((item) => safeValue(item.averageSlippageDeltaBps || 0)), safeValue(executionCostSummary.averageSlippageDeltaBps || 0));
+    if (!matureScopes.length) {
+      return {
+        active: false,
+        status: "warmup",
+        blocked: false,
+        sizeMultiplier: 1,
+        averageTotalCostBps: safeValue(executionCostSummary.averageTotalCostBps || 0),
+        averageBudgetCostBps: safeValue(executionCostSummary.averageBudgetCostBps || 0),
+        averageExcessFeeBps: safeValue(executionCostSummary.averageExcessFeeBps || 0),
+        averageSlippageDeltaBps: safeValue(executionCostSummary.averageSlippageDeltaBps || 0),
+        scopeTradeCount: scopes.reduce((total, item) => total + (item.tradeCount || 0), 0),
+        minTradeCount: minScopedTrades,
+        notes: ["execution_cost_scope_warmup"]
+      };
+    }
+    const blocked = matureScopes.some((item) => (item.status || "") === "blocked");
+    const caution = !blocked && matureScopes.some((item) => (item.status || "") === "caution");
     return {
       active: true,
       status: blocked ? "blocked" : caution ? "caution" : "ready",
       blocked,
       sizeMultiplier: blocked ? 0.58 : caution ? 0.82 : 1,
       averageTotalCostBps,
+      averageBudgetCostBps,
+      averageExcessFeeBps,
       averageSlippageDeltaBps,
-      notes: [...new Set(scopes.map((item) => item.id).filter(Boolean))]
+      scopeTradeCount: matureScopes.reduce((total, item) => total + (item.tradeCount || 0), 0),
+      minTradeCount: minScopedTrades,
+      notes: [...new Set(matureScopes.map((item) => item.id).filter(Boolean))]
     };
   }
 
