@@ -1185,7 +1185,16 @@ export class RiskManager {
     if (marketSnapshot.market.realizedVolPct > this.config.maxRealizedVolPct) {
       reasons.push("volatility_too_high");
     }
-    if ((marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry) {
+    const restBookFallbackPressureOnly = this.config.botMode === "paper" &&
+      (marketSnapshot.book.bookSource || "") === "rest_book" &&
+      marketSnapshot.book.bookFallbackReady === true &&
+      marketSnapshot.book.localBookSynced !== true;
+    const fallbackSellPressureConfirmed =
+      !restBookFallbackPressureOnly ||
+      (marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry - 0.12 ||
+      (marketSnapshot.book.microPriceEdgeBps || 0) < -0.35 ||
+      (marketSnapshot.book.weightedDepthImbalance || 0) < -0.18;
+    if ((marketSnapshot.book.bookPressure || 0) < this.config.minBookPressureForEntry && fallbackSellPressureConfirmed) {
       reasons.push("orderbook_sell_pressure");
     }
     if ((marketSnapshot.market.bearishPatternScore || 0) > 0.72 && (marketSnapshot.market.momentum5 || 0) <= 0) {
@@ -1312,12 +1321,24 @@ export class RiskManager {
     ) {
       reasons.push("relative_weakness_vs_market");
     }
-    if (
-      ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
+    const trendAcceptanceFamily = strategySummary.family || "";
+    const anchoredAcceptanceFailure =
+      (marketSnapshot.market.anchoredVwapRejectionScore || 0) > 0.68 &&
+      acceptanceQuality < 0.44 &&
+      replenishmentQuality < 0.54;
+    const breakoutAcceptanceFailure =
+      (marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.3 &&
+      acceptanceQuality < 0.44 &&
+      relativeStrengthComposite < 0.002;
+    const trendAcceptanceFailure =
+      anchoredAcceptanceFailure ||
       (
-        ((marketSnapshot.market.anchoredVwapRejectionScore || 0) > 0.68 && acceptanceQuality < 0.44 && replenishmentQuality < 0.54) ||
-        ((marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.3 && acceptanceQuality < 0.44 && relativeStrengthComposite < 0.002)
-      ) &&
+        ["breakout", "market_structure"].includes(trendAcceptanceFamily) &&
+        breakoutAcceptanceFailure
+      );
+    if (
+      ["trend_following", "breakout", "market_structure"].includes(trendAcceptanceFamily) &&
+      trendAcceptanceFailure &&
       score.probability < threshold + 0.045 &&
       !strongTrendGuardOverride
     ) {

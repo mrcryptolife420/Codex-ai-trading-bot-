@@ -5162,6 +5162,200 @@ await runCheck("risk manager keeps strong continuation setups despite mild relat
   assert.ok(!decision.reasons.includes("downside_vol_dominance"));
 });
 
+await runCheck("risk manager does not apply breakout acceptance failure to pure trend setups", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "XRPUSDT",
+    score: {
+      probability: 0.55,
+      calibrationConfidence: 0.46,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.54, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 1.2,
+        bookPressure: -0.08,
+        microPriceEdgeBps: 0.1,
+        depthConfidence: 0.82,
+        queueRefreshScore: 0,
+        resilienceScore: 0
+      },
+      market: {
+        realizedVolPct: 0.016,
+        atrPct: 0.009,
+        bullishPatternScore: 0.08,
+        bearishPatternScore: 0.02,
+        relativeStrengthVsBtc: 0.0004,
+        relativeStrengthVsEth: -0.0018,
+        clusterRelativeStrength: -0.0004,
+        sectorRelativeStrength: -0.0004,
+        anchoredVwapAcceptanceScore: 0.58,
+        anchoredVwapRejectionScore: 0.24,
+        closeLocationQuality: 0.6,
+        volumeAcceptanceScore: 0.39,
+        breakoutFollowThroughScore: 0.04
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.05, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.62, probability: 0.56, netScore: 0.05, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "trend_following", family: "trend_following", fitScore: 0.63, confidence: 0.5, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    regimeSummary: { regime: "trend", confidence: 0.71 },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.ok(!decision.reasons.includes("trend_acceptance_failed"));
+});
+
+await runCheck("risk manager still blocks weak breakout acceptance for breakout setups", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "SEIUSDT",
+    score: {
+      probability: 0.57,
+      calibrationConfidence: 0.46,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      transformer: { probability: 0.56, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 2.4,
+        bookPressure: 0.04,
+        microPriceEdgeBps: 0.12,
+        depthConfidence: 0.8,
+        queueRefreshScore: 0,
+        resilienceScore: 0
+      },
+      market: {
+        realizedVolPct: 0.018,
+        atrPct: 0.01,
+        bullishPatternScore: 0.06,
+        bearishPatternScore: 0.03,
+        relativeStrengthVsBtc: 0.0002,
+        relativeStrengthVsEth: -0.002,
+        clusterRelativeStrength: -0.0005,
+        sectorRelativeStrength: -0.0005,
+        anchoredVwapAcceptanceScore: 0.55,
+        anchoredVwapRejectionScore: 0.22,
+        closeLocationQuality: 0.38,
+        volumeAcceptanceScore: 0.3,
+        breakoutFollowThroughScore: 0.08
+      }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.05, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.64, probability: 0.58, netScore: 0.07, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "bollinger_squeeze", family: "breakout", fitScore: 0.64, confidence: 0.52, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    regimeSummary: { regime: "breakout", confidence: 0.74 },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.ok(decision.reasons.includes("trend_acceptance_failed"));
+});
+
+await runCheck("risk manager softens fallback rest-book sell pressure in paper mode", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.52,
+      calibrationConfidence: 0.48,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      transformer: { probability: 0.53, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 0.8,
+        bookPressure: -0.43,
+        microPriceEdgeBps: -0.04,
+        weightedDepthImbalance: -0.05,
+        depthConfidence: 0.82,
+        bookSource: "rest_book",
+        bookFallbackReady: true,
+        localBookSynced: false
+      },
+      market: { realizedVolPct: 0.015, atrPct: 0.009, bearishPatternScore: 0.02, bullishPatternScore: 0.08 }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.58, probability: 0.53, netScore: 0.02, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "trend_following", family: "trend_following", fitScore: 0.58, confidence: 0.5, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.7 },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.ok(!decision.reasons.includes("orderbook_sell_pressure"));
+});
+
+await runCheck("risk manager keeps synced local-book sell pressure as a blocker", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.52,
+      calibrationConfidence: 0.48,
+      disagreement: 0.05,
+      shouldAbstain: false,
+      transformer: { probability: 0.53, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: {
+        spreadBps: 0.8,
+        bookPressure: -0.43,
+        microPriceEdgeBps: -0.04,
+        weightedDepthImbalance: -0.05,
+        depthConfidence: 0.82,
+        bookSource: "local_book",
+        bookFallbackReady: false,
+        localBookSynced: true
+      },
+      market: { realizedVolPct: 0.015, atrPct: 0.009, bearishPatternScore: 0.02, bullishPatternScore: 0.08 }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.02, confidence: 0.5 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.04, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    calendarSummary: { riskScore: 0.02, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.58, probability: 0.53, netScore: 0.02, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: { activeStrategy: "trend_following", family: "trend_following", fitScore: 0.58, confidence: 0.5, blockers: [], agreementGap: 0.05 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.7 },
+    nowIso: "2026-03-12T10:00:00.000Z"
+  });
+
+  assert.ok(decision.reasons.includes("orderbook_sell_pressure"));
+});
+
 await runCheck("risk manager carries trend state summary into the decision and softens low-confidence size", async () => {
   const manager = new RiskManager(makeConfig());
   const decision = manager.evaluateEntry({
