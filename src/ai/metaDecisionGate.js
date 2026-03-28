@@ -206,12 +206,18 @@ export class MetaDecisionGate {
         : reasons.includes("meta_gate_caution") || reasons.includes("meta_neural_caution") || reasons.includes("trade_quality_caution")
           ? "caution"
           : "pass";
+    const hasDirectCautionGate = reasons.includes("meta_gate_caution") || reasons.includes("trade_quality_caution");
+    const hasNeuralOnlyCaution = !hasDirectCautionGate && reasons.includes("meta_neural_caution");
 
     const thresholdPenalty =
       action === "block"
         ? 0.055 + Math.max(0, this.config.tradeQualityMinScore - qualityScore) * 0.03
         : action === "caution"
-          ? 0.018 + Math.max(0, this.config.tradeQualityCautionScore - qualityScore) * 0.03
+          ? (
+            hasNeuralOnlyCaution
+              ? safeNumber(this.config.metaNeuralCautionThresholdPenalty, 0.008)
+              : 0.018 + Math.max(0, this.config.tradeQualityCautionScore - qualityScore) * 0.03
+          )
           : 0;
 
     return {

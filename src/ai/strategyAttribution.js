@@ -22,6 +22,15 @@ function expDecayWeight(at, nowMs) {
   return Math.exp(-ageDays / 40);
 }
 
+function hoursBetween(start, end) {
+  const startMs = new Date(start || 0).getTime();
+  const endMs = new Date(end || start || 0).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return 0;
+  }
+  return Math.max(0, (endMs - startMs) / 3_600_000);
+}
+
 function resolveStrategyId(trade) {
   return trade.strategyAtEntry || trade.strategyDecision?.activeStrategy || trade.entryRationale?.strategy?.activeStrategy || null;
 }
@@ -111,7 +120,11 @@ export class StrategyAttribution {
 
   buildSnapshot({ journal, nowIso = new Date().toISOString() } = {}) {
     const nowMs = new Date(nowIso).getTime();
-    const trades = [...(journal?.trades || [])].filter((trade) => trade.exitAt);
+    const allTrades = [...(journal?.trades || [])].filter((trade) => trade.exitAt);
+    const lookbackHours = safeNumber(this.config.strategyAttributionLookbackHours) || 24 * 7;
+    const latestTradeAt = [...allTrades].reverse().map((trade) => trade.exitAt || trade.entryAt || null).find(Boolean) || null;
+    const freshnessHours = latestTradeAt ? hoursBetween(latestTradeAt, nowIso) : null;
+    const trades = allTrades.filter((trade) => hoursBetween(trade.exitAt || trade.entryAt, nowIso) <= lookbackHours);
     const strategyBuckets = new Map();
     const familyBuckets = new Map();
     const regimeBuckets = new Map();
@@ -163,9 +176,37 @@ export class StrategyAttribution {
         : "Nog geen regime-attribution beschikbaar."
     ];
 
+    if (!trades.length) {
+      return {
+        generatedAt: nowIso,
+        status: allTrades.length ? "stale" : "warmup",
+        sampleSize: 0,
+        recentTradeCount: 0,
+        latestTradeAt,
+        freshnessHours: Number.isFinite(freshnessHours) ? num(freshnessHours, 1) : null,
+        topStrategies: [],
+        topFamilies: [],
+        topRegimes: [],
+        topSymbols: [],
+        strategyMap: {},
+        familyMap: {},
+        regimeMap: {},
+        symbolMap: {},
+        suggestions: [
+          allTrades.length
+            ? `Strategy-attribution is stale; laatste gesloten trade is ${num(freshnessHours, 1)}u oud, dus boosts staan neutraal.`
+            : "Nog te weinig gesloten trades voor strategy-attribution."
+        ]
+      };
+    }
+
     return {
       generatedAt: nowIso,
+      status: "active",
       sampleSize: trades.length,
+      recentTradeCount: trades.length,
+      latestTradeAt,
+      freshnessHours: Number.isFinite(freshnessHours) ? num(freshnessHours, 1) : null,
       topStrategies: topStrategies.slice(0, 6),
       topFamilies: topFamilies.slice(0, 5),
       topRegimes: topRegimes.slice(0, 5),

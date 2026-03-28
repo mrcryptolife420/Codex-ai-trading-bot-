@@ -4245,6 +4245,25 @@ await runCheck("strategy optimizer builds recency-weighted priors", async () => 
   assert.ok(snapshot.familyThresholdTilts.trend_following > 0);
 });
 
+await runCheck("strategy optimizer neutralizes stale history instead of carrying old threshold tilts", async () => {
+  const optimizer = new StrategyOptimizer(makeConfig({ strategyOptimizerLookbackHours: 24 * 7 }));
+  const snapshot = optimizer.buildSnapshot({
+    journal: {
+      trades: [
+        { exitAt: "2026-03-10T10:00:00.000Z", strategyAtEntry: "ema_trend", regimeAtEntry: "trend", netPnlPct: -0.021, pnlQuote: -18, labelScore: 0.1 },
+        { exitAt: "2026-03-09T10:00:00.000Z", strategyAtEntry: "ema_trend", regimeAtEntry: "trend", netPnlPct: -0.014, pnlQuote: -9, labelScore: 0.22 }
+      ]
+    },
+    nowIso: "2026-03-28T12:00:00.000Z"
+  });
+  assert.equal(snapshot.status, "stale");
+  assert.equal(snapshot.sampleSize, 0);
+  assert.equal(snapshot.recentTradeCount, 0);
+  assert.equal(snapshot.thresholdTilt, 0);
+  assert.deepEqual(snapshot.strategyThresholdTilts, {});
+  assert.ok((snapshot.suggestions || []).some((note) => note.includes("stale")));
+});
+
 await runCheck("reference venue service blocks large cross-venue divergence", async () => {
   const service = new ReferenceVenueService(makeConfig({ referenceVenueMinQuotes: 2, referenceVenueMaxDivergenceBps: 15 }));
   const summary = await service.getSymbolSummary("BTCUSDT", { book: { mid: 100 } }, {
@@ -4322,6 +4341,48 @@ await runCheck("parameter governor builds scoped adjustments from closed trades"
   const resolved = governor.resolve(snapshot, { strategyId: "ema_trend", regimeId: "trend" });
   assert.equal(resolved.active, true);
   assert.ok(resolved.maxHoldMinutesMultiplier > 0);
+});
+
+await runCheck("parameter governor marks stale closed-trade inputs instead of reusing old scopes", async () => {
+  const governor = new ParameterGovernor(makeConfig({
+    parameterGovernorMinTrades: 2,
+    parameterGovernorLookbackHours: 24 * 7
+  }));
+  const snapshot = governor.buildSnapshot({
+    journal: {
+      trades: [
+        {
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryAt: "2026-03-10T08:00:00.000Z",
+          exitAt: "2026-03-10T10:00:00.000Z",
+          pnlQuote: 16,
+          netPnlPct: 0.016,
+          mfePct: 0.025,
+          maePct: -0.007,
+          entryExecutionAttribution: { slippageDeltaBps: 1.1 }
+        },
+        {
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryAt: "2026-03-09T08:00:00.000Z",
+          exitAt: "2026-03-09T09:30:00.000Z",
+          pnlQuote: 9,
+          netPnlPct: 0.009,
+          mfePct: 0.02,
+          maePct: -0.006,
+          entryExecutionAttribution: { slippageDeltaBps: 0.8 }
+        }
+      ]
+    },
+    nowIso: "2026-03-28T10:00:00.000Z"
+  });
+  assert.equal(snapshot.status, "stale");
+  assert.equal(snapshot.recentTradeCount, 0);
+  assert.equal(snapshot.strategyScopes.length, 0);
+  assert.equal(snapshot.regimeScopes.length, 0);
+  assert.equal(snapshot.latestTradeAt, "2026-03-10T10:00:00.000Z");
+  assert.ok((snapshot.notes || []).some((note) => note.includes("stale")));
 });
 
 await runCheck("capital ladder enforces shadow gating before live promotion is ready", async () => {
@@ -5550,6 +5611,55 @@ await runCheck("risk manager only escalates explicit meta caution gates, not neu
     metaSummary: { action: "caution", reasons: ["meta_gate_caution"], score: 0.58, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0.018 }
   });
   assert.ok(explicitGate.reasons.includes("meta_gate_caution"));
+});
+
+await runCheck("meta decision gate applies lighter threshold penalty for neural-only caution", async () => {
+  const gate = new MetaDecisionGate(makeConfig({
+    metaMinConfidence: 0.5,
+    metaCautionScore: 0.62,
+    metaBlockScore: 0.52,
+    metaNeuralCautionThresholdPenalty: 0.008
+  }));
+  const basePayload = {
+    symbol: "BTCUSDT",
+    score: { probability: 0.57, confidence: 0.5, calibrationConfidence: 0.5 },
+    marketSnapshot: { book: { bookPressure: 0.12, depthConfidence: 0.72, entryEstimate: { touchSlippageBps: 0.7 }, spreadBps: 2.2 } },
+    newsSummary: { coverage: false, reliabilityScore: 0.3, riskScore: 0.05 },
+    announcementSummary: { riskScore: 0.02 },
+    marketStructureSummary: { signalScore: 0.18, longSqueezeScore: 0.04, crowdingBias: 0.03 },
+    marketSentimentSummary: { contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.21 },
+    calendarSummary: { riskScore: 0.05 },
+    committeeSummary: { netScore: 0.09, agreement: 0.62 },
+    strategySummary: { activeStrategy: "ema_trend", fitScore: 0.66 },
+    sessionSummary: { riskScore: 0.1 },
+    driftSummary: { severity: 0.04 },
+    selfHealState: { lowRiskOnly: false },
+    portfolioSummary: { maxCorrelation: 0.18 },
+    timeframeSummary: { enabled: true, alignmentScore: 0.72, blockerReasons: [] },
+    pairHealthSummary: { score: 0.71, quarantined: false },
+    onChainLiteSummary: { liquidityScore: 0.56, stressScore: 0.12 },
+    divergenceSummary: { averageScore: 0.08, leadBlocker: { status: "clear" } },
+    journal: { trades: [] },
+    nowIso: "2026-03-28T10:00:00.000Z"
+  };
+
+  const neuralOnly = gate.evaluate({
+    ...basePayload,
+    metaNeuralSummary: { probability: 0.58, confidence: 0.46, contributions: [] }
+  });
+  const explicitCaution = gate.evaluate({
+    ...basePayload,
+    metaNeuralSummary: { probability: 0.68, confidence: 0.6, contributions: [] },
+    timeframeSummary: { enabled: true, alignmentScore: 0.38, blockerReasons: [] }
+  });
+
+  assert.equal(neuralOnly.action, "caution");
+  assert.ok(neuralOnly.reasons.includes("meta_neural_caution"));
+  assert.ok(!neuralOnly.reasons.includes("meta_gate_caution"));
+  assert.equal(neuralOnly.thresholdPenalty, 0.008);
+  assert.ok(explicitCaution.reasons.includes("meta_gate_caution"));
+  assert.ok(explicitCaution.thresholdPenalty > neuralOnly.thresholdPenalty);
 });
 
 await runCheck("risk manager keeps paper exploration available for governance pauses and paper-only guardrails", async () => {
@@ -9052,6 +9162,33 @@ await runCheck("strategy attribution builds a positive adjustment for hot strate
   assert.ok(adjustment.rankBoost > 0);
 });
 
+await runCheck("strategy attribution drops stale history to neutral adjustments", async () => {
+  const attribution = new StrategyAttribution(makeConfig({
+    strategyAttributionMinTrades: 2,
+    strategyAttributionLookbackHours: 24 * 7
+  }));
+  const snapshot = attribution.buildSnapshot({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-10T10:00:00.000Z", pnlQuote: -22, netPnlPct: -0.019, labelScore: 0, strategyAtEntry: "ema_trend", regimeAtEntry: "trend" },
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -11, netPnlPct: -0.012, labelScore: 0, strategyAtEntry: "ema_trend", regimeAtEntry: "trend" }
+      ]
+    },
+    nowIso: "2026-03-28T12:00:00.000Z"
+  });
+  const adjustment = attribution.getAdjustment(snapshot, {
+    symbol: "BTCUSDT",
+    strategyId: "ema_trend",
+    familyId: "trend_following",
+    regime: "trend"
+  });
+  assert.equal(snapshot.status, "stale");
+  assert.equal(snapshot.sampleSize, 0);
+  assert.equal(adjustment.rankBoost, 0);
+  assert.equal(adjustment.sizeBias, 1);
+  assert.ok(adjustment.reasons.includes("attribution_sample_too_small"));
+});
+
 await runCheck("performance report builds pnl attribution buckets", async () => {
   const report = buildPerformanceReport({
     journal: {
@@ -11648,6 +11785,75 @@ await runCheck("trading bot threshold experiment snapshot respects combined stra
   assert.equal(snapshot.tradeCount, 1);
   assert.equal(snapshot.winRate, 1);
   assert.equal(snapshot.avgPnlPct, 0.01);
+});
+
+await runCheck("trading bot expires stale threshold tuning recommendations without recent scoped trades", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({
+    thresholdAutoApplyEnabled: true,
+    thresholdProbationMinTrades: 2,
+    thresholdTuningMaxIdleHours: 24 * 7
+  });
+  bot.journal = {
+    trades: [
+      {
+        exitAt: "2026-03-10T10:00:00.000Z",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        netPnlPct: 0.012,
+        pnlQuote: 14
+      },
+      {
+        exitAt: "2026-03-09T10:00:00.000Z",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        netPnlPct: -0.004,
+        pnlQuote: -3
+      }
+    ]
+  };
+  bot.runtime = {
+    thresholdTuning: {
+      status: "probation",
+      appliedRecommendation: {
+        id: "scope:ema_trend",
+        adjustment: 0.01,
+        status: "probation",
+        appliedAt: "2026-03-12T10:00:00.000Z",
+        affectedStrategies: ["ema_trend"],
+        affectedRegimes: ["trend"],
+        baseline: { tradeCount: 2, avgPnlPct: 0.004, winRate: 0.5 }
+      },
+      history: []
+    }
+  };
+  bot.recordEvent = () => {};
+
+  const next = TradingBot.prototype.updateThresholdTuningState.call(
+    bot,
+    {
+      thresholdPolicy: {
+        status: "adjust",
+        recommendations: [
+          {
+            id: "scope:ema_trend",
+            adjustment: 0.008,
+            confidence: 0.74,
+            affectedStrategies: ["ema_trend"],
+            affectedRegimes: ["trend"]
+          }
+        ],
+        notes: []
+      }
+    },
+    "2026-03-28T10:00:00.000Z"
+  );
+
+  assert.equal(next.appliedRecommendation, null);
+  assert.equal(next.activeThresholdShift, 0);
+  assert.equal(next.status, "adjust");
+  assert.equal(next.history[0]?.status, "stale");
+  assert.ok((next.notes || []).some((note) => note.includes("stale")));
 });
 
 await runCheck("trading bot paper learning summary surfaces probe probation candidates", async () => {

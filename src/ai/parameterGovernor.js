@@ -22,6 +22,10 @@ function minutesBetween(start, end) {
     : 0;
 }
 
+function hoursBetween(start, end) {
+  return minutesBetween(start, end) / 60;
+}
+
 function buildBucket(id, scopeType) {
   return {
     id,
@@ -117,6 +121,15 @@ export class ParameterGovernor {
 
   buildSnapshot({ journal = {}, nowIso = new Date().toISOString() } = {}) {
     const trades = (journal.trades || []).filter((trade) => trade.exitAt);
+    const lookbackHours = safeNumber(this.config.parameterGovernorLookbackHours, 24 * 7);
+    const latestTradeAt = [...trades].reverse().map((trade) => trade.exitAt || trade.entryAt || null).find(Boolean) || null;
+    const freshnessHours = latestTradeAt ? hoursBetween(latestTradeAt, nowIso) : null;
+    const recentTrades = trades.filter((trade) => {
+      if (!trade.exitAt) {
+        return false;
+      }
+      return hoursBetween(trade.exitAt, nowIso) <= lookbackHours;
+    });
     const minTrades = this.config.parameterGovernorMinTrades || 4;
     const buckets = new Map();
     const addTrade = (scopeType, id, trade) => {
@@ -140,9 +153,27 @@ export class ParameterGovernor {
       bucket.mae += Math.abs(safeNumber(trade.maePct, 0));
     };
 
-    for (const trade of trades) {
+    for (const trade of recentTrades) {
       addTrade("strategy", trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null, trade);
       addTrade("regime", trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || null, trade);
+    }
+
+    if (!recentTrades.length) {
+      return {
+        generatedAt: nowIso,
+        tradeCount: trades.length,
+        recentTradeCount: 0,
+        latestTradeAt,
+        freshnessHours: Number.isFinite(freshnessHours) ? num(freshnessHours, 1) : null,
+        status: trades.length ? "stale" : "warmup",
+        strategyScopes: [],
+        regimeScopes: [],
+        notes: [
+          trades.length
+            ? `Parameter governor is stale; laatste gesloten trade is ${num(freshnessHours, 1)}u oud.`
+            : "Nog te weinig gesloten trades voor parameter-governor scopes."
+        ]
+      };
     }
 
     const scopes = [...buckets.values()]
@@ -154,7 +185,10 @@ export class ParameterGovernor {
     const regimeScopes = scopes.filter((item) => item.scopeType === "regime").slice(0, 6);
     return {
       generatedAt: nowIso,
-      tradeCount: trades.length,
+      tradeCount: recentTrades.length,
+      recentTradeCount: recentTrades.length,
+      latestTradeAt,
+      freshnessHours: Number.isFinite(freshnessHours) ? num(freshnessHours, 1) : null,
       status: scopes.length ? "active" : "warmup",
       strategyScopes,
       regimeScopes,

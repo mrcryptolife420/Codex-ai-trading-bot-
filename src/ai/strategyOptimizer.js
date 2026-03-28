@@ -5,6 +5,10 @@ function safeValue(value) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function num(value, digits = 4) {
+  return Number(safeValue(value).toFixed(digits));
+}
+
 function expDecayWeight(at, nowMs) {
   const atMs = new Date(at || 0).getTime();
   if (!Number.isFinite(atMs) || atMs <= 0) {
@@ -20,6 +24,15 @@ function resolveStrategy(trade) {
 
 function resolveFamily(strategyId) {
   return STRATEGY_META[strategyId]?.family || null;
+}
+
+function hoursBetween(start, end) {
+  const startMs = new Date(start || 0).getTime();
+  const endMs = new Date(end || start || 0).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return 0;
+  }
+  return Math.max(0, (endMs - startMs) / 3_600_000);
 }
 
 function createBucket(id, label) {
@@ -132,7 +145,11 @@ export class StrategyOptimizer {
 
   buildSnapshot({ journal, nowIso = new Date().toISOString() } = {}) {
     const nowMs = new Date(nowIso).getTime();
-    const trades = [...(journal?.trades || [])].filter((trade) => trade.exitAt && resolveStrategy(trade));
+    const allTrades = [...(journal?.trades || [])].filter((trade) => trade.exitAt && resolveStrategy(trade));
+    const lookbackHours = safeValue(this.config.strategyOptimizerLookbackHours) || 24 * 7;
+    const latestTradeAt = [...allTrades].reverse().map((trade) => trade.exitAt || trade.entryAt || null).find(Boolean) || null;
+    const freshnessHours = latestTradeAt ? hoursBetween(latestTradeAt, nowIso) : null;
+    const trades = allTrades.filter((trade) => hoursBetween(trade.exitAt || trade.entryAt, nowIso) <= lookbackHours);
     const strategyBuckets = new Map();
     const familyBuckets = new Map();
     const regimeBuckets = new Map();
@@ -229,9 +246,50 @@ export class StrategyOptimizer {
         : "Wacht op meer gesloten trades voordat optimizer-tilts zwaar meewegen."
     ];
 
+    if (!trades.length) {
+      return {
+        generatedAt: nowIso,
+        status: allTrades.length ? "stale" : "warmup",
+        sampleSize: 0,
+        recentTradeCount: 0,
+        latestTradeAt,
+        freshnessHours: Number.isFinite(freshnessHours) ? num(freshnessHours, 1) : null,
+        sampleConfidence: 0,
+        strategyPriors: {},
+        familyPriors: {},
+        regimePriors: {},
+        topStrategies: [],
+        topFamilies: [],
+        topRegimes: [],
+        strategyScorecards: [],
+        familyScorecards: [],
+        regimeScorecards: [],
+        thresholdTilt: 0,
+        confidenceTilt: 0,
+        strategyThresholdTilts: {},
+        familyThresholdTilts: {},
+        regimeThresholdTilts: {},
+        strategyConfidenceTilts: {},
+        familyConfidenceTilts: {},
+        regimeConfidenceTilts: {},
+        strategySizeBiases: {},
+        familySizeBiases: {},
+        regimeSizeBiases: {},
+        suggestions: [
+          allTrades.length
+            ? `Optimizer-input is stale; laatste gesloten trade is ${num(freshnessHours, 1)}u oud, dus threshold-tilts staan tijdelijk neutraal.`
+            : "Nog te weinig gesloten trades voor optimizer-priors."
+        ]
+      };
+    }
+
     return {
       generatedAt: nowIso,
+      status: "active",
       sampleSize: trades.length,
+      recentTradeCount: trades.length,
+      latestTradeAt,
+      freshnessHours: Number.isFinite(freshnessHours) ? num(freshnessHours, 1) : null,
       sampleConfidence: Number(sampleConfidence.toFixed(4)),
       strategyPriors: Object.fromEntries(strategyStats.map((item) => [item.id, item])),
       familyPriors: Object.fromEntries(familyStats.map((item) => [item.id, item])),

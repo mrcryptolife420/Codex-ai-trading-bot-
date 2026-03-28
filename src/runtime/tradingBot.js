@@ -669,7 +669,11 @@ function summarizeAttributionSnapshot(snapshot = {}) {
   });
   return {
     generatedAt: snapshot.generatedAt || null,
+    status: snapshot.status || "warmup",
     sampleSize: snapshot.sampleSize || 0,
+    recentTradeCount: snapshot.recentTradeCount || 0,
+    latestTradeAt: snapshot.latestTradeAt || null,
+    freshnessHours: num(snapshot.freshnessHours || 0, 1),
     topStrategies: arr(snapshot.topStrategies || []).slice(0, 6).map(mapBucket),
     topFamilies: arr(snapshot.topFamilies || []).slice(0, 5).map(mapBucket),
     topRegimes: arr(snapshot.topRegimes || []).slice(0, 5).map(mapBucket),
@@ -892,7 +896,11 @@ function summarizeOptimizer(optimizer = {}) {
   });
   return {
     generatedAt: optimizer.generatedAt || null,
+    status: optimizer.status || "warmup",
     sampleSize: optimizer.sampleSize || 0,
+    recentTradeCount: optimizer.recentTradeCount || 0,
+    latestTradeAt: optimizer.latestTradeAt || null,
+    freshnessHours: num(optimizer.freshnessHours || 0, 1),
     sampleConfidence: num(optimizer.sampleConfidence || 0, 4),
     thresholdTilt: num(optimizer.thresholdTilt || 0, 4),
     confidenceTilt: num(optimizer.confidenceTilt || 0, 4),
@@ -2883,6 +2891,9 @@ function summarizeParameterGovernor(summary = {}) {
   return {
     generatedAt: summary.generatedAt || null,
     tradeCount: summary.tradeCount || 0,
+    recentTradeCount: summary.recentTradeCount || 0,
+    latestTradeAt: summary.latestTradeAt || null,
+    freshnessHours: num(summary.freshnessHours || 0, 1),
     status: summary.status || "warmup",
     strategyScopes: arr(summary.strategyScopes || []).slice(0, 6).map(mapScope),
     regimeScopes: arr(summary.regimeScopes || []).slice(0, 6).map(mapScope),
@@ -4970,9 +4981,33 @@ export class TradingBot {
       });
   }
 
+  buildThresholdScopeFreshness(scope = {}, referenceNow = nowIso()) {
+    const maxIdleHours = safeNumber(this.config?.thresholdTuningMaxIdleHours, 24 * 7);
+    const trades = this.collectScopedThresholdTrades(scope, { beforeAt: referenceNow });
+    const latestTradeAt = [...trades].reverse().map((trade) => trade.exitAt || trade.entryAt || null).find(Boolean) || null;
+    const latestTradeAgeHours = latestTradeAt ? Math.max(0, (new Date(referenceNow).getTime() - new Date(latestTradeAt).getTime()) / 3_600_000) : null;
+    return {
+      tradeCount: trades.length,
+      latestTradeAt,
+      latestTradeAgeHours: Number.isFinite(latestTradeAgeHours) ? num(latestTradeAgeHours, 1) : null,
+      stale: !latestTradeAt || latestTradeAgeHours > maxIdleHours
+    };
+  }
+
   buildThresholdExperimentSnapshot(scope = {}, options = {}) {
     const sampleSize = this.config?.thresholdProbationMinTrades || 6;
-    const trades = this.collectScopedThresholdTrades(scope, options).slice(-sampleSize);
+    const lookbackHours = safeNumber(this.config?.thresholdTuningMaxIdleHours, 24 * 7);
+    const trades = this.collectScopedThresholdTrades(scope, options)
+      .filter((trade) => {
+        const exitAt = trade.exitAt || trade.entryAt || null;
+        if (!exitAt) {
+          return false;
+        }
+        const referenceAt = options.beforeAt || options.afterAt || nowIso();
+        const ageHours = Math.max(0, (new Date(referenceAt).getTime() - new Date(exitAt).getTime()) / 3_600_000);
+        return ageHours <= lookbackHours;
+      })
+      .slice(-sampleSize);
     const tradeCount = trades.length;
     const winRate = tradeCount ? trades.filter((trade) => (trade.pnlQuote || 0) > 0).length / tradeCount : 0;
     const avgPnlPct = tradeCount ? trades.reduce((total, trade) => total + (trade.netPnlPct || 0), 0) / tradeCount : 0;
@@ -5004,6 +5039,17 @@ export class TradingBot {
     const active = next.appliedRecommendation;
 
     if (active?.status === "probation") {
+      const freshness = this.buildThresholdScopeFreshness(active, referenceNow);
+      if (freshness.stale) {
+        next.history.unshift({ ...active, status: "stale", reviewedAt: referenceNow, review: freshness });
+        next.appliedRecommendation = null;
+        next.activeThresholdShift = 0;
+        next.status = policy.status || "observe";
+        next.notes = [
+          `${active.id} werd losgelaten omdat de laatste relevante closed trade te oud is.`,
+          ...next.notes
+        ].slice(0, 8);
+      } else {
       const reviewed = this.buildThresholdExperimentSnapshot(active, { afterAt: active.appliedAt });
       const ageMs = Math.max(0, new Date(referenceNow).getTime() - new Date(active.appliedAt || referenceNow).getTime());
       if (reviewed.tradeCount >= probationTrades || ageMs >= probationWindowMs) {
@@ -5051,9 +5097,22 @@ export class TradingBot {
         next.activeThresholdShift = num(active.adjustment || 0, 4);
         next.status = "probation";
       }
+      }
     } else if (active?.status === "confirmed") {
-      next.activeThresholdShift = num(active.adjustment || 0, 4);
-      next.status = "confirmed";
+      const freshness = this.buildThresholdScopeFreshness(active, referenceNow);
+      if (freshness.stale) {
+        next.history.unshift({ ...active, status: "stale", reviewedAt: referenceNow, review: freshness });
+        next.appliedRecommendation = null;
+        next.activeThresholdShift = 0;
+        next.status = policy.status || "observe";
+        next.notes = [
+          `${active.id} bevestiging is vervallen door stale trade-input.`,
+          ...next.notes
+        ].slice(0, 8);
+      } else {
+        next.activeThresholdShift = num(active.adjustment || 0, 4);
+        next.status = "confirmed";
+      }
     } else {
       next.activeThresholdShift = 0;
     }
@@ -5065,7 +5124,8 @@ export class TradingBot {
         Math.abs(item.adjustment || 0) > 0 &&
         !recentHistoryIds.has(`${item.id}:rolled_back`)
       );
-      if (candidate) {
+      const candidateFreshness = candidate ? this.buildThresholdScopeFreshness(candidate, referenceNow) : null;
+      if (candidate && !candidateFreshness?.stale) {
         const baseline = this.buildThresholdExperimentSnapshot(candidate, { beforeAt: referenceNow });
         next.appliedRecommendation = {
           ...candidate,
@@ -5081,6 +5141,11 @@ export class TradingBot {
           adjustment: candidate.adjustment || 0,
           confidence: candidate.confidence || 0
         });
+      } else if (candidate && candidateFreshness?.stale) {
+        next.notes = [
+          `${candidate.id} werd niet auto-toegepast omdat de relevante closed trades stale zijn.`,
+          ...next.notes
+        ].slice(0, 8);
       }
     }
 
