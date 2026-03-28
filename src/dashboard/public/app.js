@@ -494,8 +494,8 @@ function topBlocker(snapshot) {
     return readinessReason;
   }
   const alert = unresolvedAlerts(snapshot).find((item) => !item.acknowledgedAt);
-  if (alert?.type) {
-    return alert.type;
+  if (alert?.id || alert?.type) {
+    return alert.id || alert.type;
   }
   const pending = pendingActions(snapshot).find((item) => ["manual_review", "reconcile_required"].includes(item.state));
   if (pending?.state) {
@@ -1195,6 +1195,8 @@ function buildOpsCards(snapshot) {
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
+  const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
   const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
   const externalFeeds = externalFeedHeadline(snapshot);
   return [
@@ -1237,6 +1239,14 @@ function buildOpsCards(snapshot) {
       tone: externalFeeds.tone
     },
     {
+      label: "Dashboard feed",
+      value: titleize(dashboardFeeds.status || "idle"),
+      foot: primaryDashboardFeed
+        ? `${titleize(primaryDashboardFeed.id)} | ${titleize(primaryDashboardFeed.status)}`
+        : "Geen feed issues zichtbaar",
+      tone: ["failed", "degraded"].includes(dashboardFeeds.status || "") ? "negative" : statusTone(dashboardFeeds.status || "idle")
+    },
+    {
       label: "Paper learning",
       value: titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"),
       foot: paperLearning.probation?.status ? titleize(paperLearning.probation.status) : "Nog geen probation",
@@ -1248,6 +1258,7 @@ function buildOpsCards(snapshot) {
 function buildOpsEvents(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
@@ -1274,6 +1285,13 @@ function buildOpsEvents(snapshot) {
           title: "Belangrijkste blokkade",
           detail: titleize(readiness.reasons[0]),
           tone: statusTone(readiness.status)
+        }
+      : null,
+    dashboardFeeds.degradedFeeds?.[0]
+      ? {
+          title: "Dashboard feed",
+          detail: `${titleize(dashboardFeeds.degradedFeeds[0].id)} | ${titleize(dashboardFeeds.degradedFeeds[0].status)}${dashboardFeeds.degradedFeeds[0].lastError ? ` | ${dashboardFeeds.degradedFeeds[0].lastError}` : ""}`,
+          tone: dashboardFeeds.degradedFeeds[0].status === "failed" ? "negative" : "neutral"
         }
       : null,
     ...alerts,

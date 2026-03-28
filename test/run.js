@@ -10118,6 +10118,230 @@ await runCheck("trading bot status preserves research recorder and explainabilit
   assert.equal(status.operatorDiagnostics.status, "degraded");
 });
 
+await runCheck("dashboard snapshot recomputes readiness instead of reusing stale ops readiness", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", tradingIntervalSeconds: 60 });
+  bot.runtime = {
+    lastCycleAt: "2026-03-19T09:59:00.000Z",
+    lastAnalysisAt: "2026-03-19T09:59:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:59:00.000Z",
+    lastKnownBalance: 1000,
+    lastKnownEquity: 1000,
+    openPositions: [],
+    latestDecisions: [],
+    latestBlockedSetups: [],
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    offlineTrainer: {},
+    strategyResearch: {},
+    researchRegistry: {},
+    modelRegistry: {},
+    executionCalibration: {},
+    thresholdTuning: {},
+    parameterGovernor: {},
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    venueConfirmation: {},
+    exchangeTruth: { unmatchedOrderSymbols: [], orphanedSymbols: [], manualInterferenceSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    marketHistory: { status: "ready", aggregate: { status: "ready", symbolCount: 0 }, symbols: {} },
+    sourceReliability: {},
+    watchlistSummary: null,
+    exchangeCapabilities: bot.config.exchangeCapabilities,
+    aiTelemetry: {},
+    stateBackups: {},
+    recovery: {},
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:55:00.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0,
+      initWarnings: [],
+      dashboardFeeds: {}
+    },
+    health: { circuitOpen: false },
+    ops: {
+      readiness: { status: "ready", reasons: [] },
+      alerts: { alerts: [] },
+      alertDelivery: {},
+      incidentTimeline: [],
+      diagnosticsActions: { history: [] },
+      promotionState: {}
+    }
+  };
+  bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
+  bot.health = { getStatus: () => ({ status: "ok" }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = { getCalibrationSummary: () => ({}), getDeploymentSummary: () => ({}), getTransformerSummary: () => ({}) };
+  bot.rlPolicy = { getSummary: () => ({}) };
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.backupManager = { getSummary: () => ({}) };
+  bot.buildPortfolioView = () => ({});
+  bot.buildPositionView = (position) => ({ ...position, unrealizedPnl: 0 });
+  bot.buildDashboardPositionView = (position) => position;
+  bot.buildDashboardDecisionView = (decision) => decision;
+  bot.buildTradeReplayView = (trade) => trade;
+  bot.buildDecisionExplanationView = (decision) => decision;
+  bot.buildTradeReplayDigest = (trade) => trade;
+  bot.buildPromotionPipelineSnapshot = () => ({});
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.buildResearchView = () => null;
+  bot.buildModelWeightsView = () => [];
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getDashboardSnapshot = TradingBot.prototype.getDashboardSnapshot;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+
+  const snapshot = await bot.getDashboardSnapshot();
+  assert.equal(snapshot.ops.readiness.status, "degraded");
+  assert.ok(snapshot.ops.readiness.reasons.includes("service_heartbeat_stale"));
+  assert.equal(snapshot.operatorDiagnostics.status, "degraded");
+});
+
+await runCheck("dashboard snapshot surfaces market history feed failures without crashing", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", tradingIntervalSeconds: 60, watchlist: ["BTCUSDT"] });
+  bot.runtime = {
+    lastCycleAt: "2026-03-19T09:59:00.000Z",
+    lastAnalysisAt: "2026-03-19T09:59:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:59:00.000Z",
+    lastKnownBalance: 1000,
+    lastKnownEquity: 1000,
+    openPositions: [],
+    latestDecisions: [],
+    latestBlockedSetups: [],
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    offlineTrainer: {},
+    strategyResearch: {},
+    researchRegistry: {},
+    modelRegistry: {},
+    executionCalibration: {},
+    thresholdTuning: {},
+    parameterGovernor: {},
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    venueConfirmation: {},
+    exchangeTruth: { unmatchedOrderSymbols: [], orphanedSymbols: [], manualInterferenceSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    marketHistory: { generatedAt: "2026-03-19T09:58:00.000Z", status: "ready", aggregate: { status: "ready", symbolCount: 1, coveredSymbolCount: 1 }, symbols: {} },
+    sourceReliability: {},
+    watchlistSummary: null,
+    exchangeCapabilities: bot.config.exchangeCapabilities,
+    aiTelemetry: {},
+    stateBackups: {},
+    recovery: {},
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:40.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0,
+      initWarnings: [],
+      dashboardFeeds: {}
+    },
+    health: { circuitOpen: false },
+    ops: {
+      readiness: { status: "ready", reasons: [] },
+      alerts: { alerts: [] },
+      alertDelivery: {},
+      incidentTimeline: [],
+      diagnosticsActions: { history: [] },
+      promotionState: {}
+    }
+  };
+  bot.historyStore = {
+    verifySeries: async () => {
+      throw new Error("verify failed");
+    }
+  };
+  bot.journal = { trades: [], scaleOuts: [], blockedSetups: [], cycles: [], equitySnapshots: [], events: [] };
+  bot.health = { getStatus: () => ({ status: "ok" }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = { getCalibrationSummary: () => ({}), getDeploymentSummary: () => ({}), getTransformerSummary: () => ({}) };
+  bot.rlPolicy = { getSummary: () => ({}) };
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.backupManager = { getSummary: () => ({}) };
+  bot.buildPortfolioView = () => ({});
+  bot.buildPositionView = (position) => ({ ...position, unrealizedPnl: 0 });
+  bot.buildDashboardPositionView = (position) => position;
+  bot.buildDashboardDecisionView = (decision) => decision;
+  bot.buildTradeReplayView = (trade) => trade;
+  bot.buildDecisionExplanationView = (decision) => decision;
+  bot.buildTradeReplayDigest = (trade) => trade;
+  bot.buildPromotionPipelineSnapshot = () => ({});
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.buildResearchView = () => null;
+  bot.buildModelWeightsView = () => [];
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getDashboardSnapshot = TradingBot.prototype.getDashboardSnapshot;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+
+  const snapshot = await bot.getDashboardSnapshot();
+  assert.equal(snapshot.ops.service.dashboardFeeds.status, "failed");
+  assert.equal(snapshot.ops.service.dashboardFeeds.degradedFeeds[0].id, "market_history");
+  assert.equal(snapshot.ops.service.dashboardFeeds.degradedFeeds[0].lastError, "verify failed");
+  assert.equal(snapshot.marketHistory.status, "ready");
+  assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Dashboard feed"));
+});
+
+await runCheck("doctor checks flag failed market history dashboard feed", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ tradingIntervalSeconds: 60 });
+  bot.runtime = {
+    lastAnalysisAt: "2026-03-19T09:59:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:59:00.000Z",
+    lastKnownBalance: 1000,
+    health: { circuitOpen: false },
+    exchangeTruth: { orphanedSymbols: [], manualInterferenceSymbols: [], unmatchedOrderSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [] },
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    signalFlow: { consecutiveCyclesWithSignalsNoPaperTrade: 0, lastCycle: {} },
+    marketHistory: { status: "ready", aggregate: { status: "ready", symbolCount: 1 } },
+    ops: { alerts: { alerts: [] } },
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:30.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0,
+      initWarnings: [],
+      dashboardFeeds: {
+        market_history: {
+          status: "failed",
+          lastAttemptAt: "2026-03-19T09:59:50.000Z",
+          lastError: "verify failed",
+          failureCount: 1
+        }
+      }
+    }
+  };
+  bot.dataRecorder = { getSummary: () => ({ lastRecordAt: "2026-03-19T09:59:00.000Z" }) };
+  const checks = bot.buildDoctorChecks({
+    report: { openExposure: 0, recentTrades: [] },
+    balance: { quoteFree: 1000 },
+    previewCandidates: [],
+    now: new Date("2026-03-19T10:00:00.000Z")
+  });
+  const marketHistoryCheck = checks.checks.find((item) => item.id === "dashboard_feed_market_history");
+  assert.equal(marketHistoryCheck?.passed, false);
+  assert.match(marketHistoryCheck?.detail || "", /verify failed/);
+});
+
 await runCheck("research view falls back to persisted journal runs after restart", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = { researchLab: { lastRunAt: null, latestSummary: null } };
