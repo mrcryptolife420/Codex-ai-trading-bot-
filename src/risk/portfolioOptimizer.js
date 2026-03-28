@@ -46,22 +46,73 @@ function sameUtcDay(left, right) {
   return `${left || ""}`.slice(0, 10) === `${right || ""}`.slice(0, 10);
 }
 
-function computeLossStreakMap(trades = [], keyFn, limit = 60) {
-  const streaks = {};
+function safeValue(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function num(value, digits = 4) {
+  return Number(safeValue(value).toFixed(digits));
+}
+
+function computeLossStreakStateMap(trades = [], keyFn, {
+  limit = 60,
+  nowIso = new Date().toISOString(),
+  maxIdleHours = 96
+} = {}) {
+  const states = {};
   const settled = trades.filter((trade) => trade.exitAt).slice(-limit).reverse();
   const cooled = new Set();
+  const nowMs = new Date(nowIso).getTime();
+  const maxIdleMs = Math.max(1, safeValue(maxIdleHours, 96)) * 3_600_000;
   for (const trade of settled) {
     const key = keyFn(trade) || "unknown";
     if (cooled.has(key)) {
       continue;
     }
-    if ((trade.netPnlPct || 0) < 0) {
-      streaks[key] = (streaks[key] || 0) + 1;
+    const tradeAt = trade.exitAt || trade.entryAt || null;
+    const tradeMs = new Date(tradeAt || 0).getTime();
+    const existing = states[key] || {
+      streak: 0,
+      latestTradeAt: null,
+      lastTradeAgeHours: null,
+      stale: false,
+      previousTradeMs: null,
+      gapBroken: false
+    };
+    if (!existing.latestTradeAt && Number.isFinite(tradeMs) && Number.isFinite(nowMs)) {
+      existing.latestTradeAt = tradeAt;
+      existing.lastTradeAgeHours = num((nowMs - tradeMs) / 3_600_000, 1);
+      existing.stale = nowMs - tradeMs > maxIdleMs;
+      states[key] = existing;
+      if (existing.stale) {
+        cooled.add(key);
+        continue;
+      }
+    }
+    if (Number.isFinite(tradeMs) && Number.isFinite(existing.previousTradeMs) && existing.previousTradeMs - tradeMs > maxIdleMs) {
+      existing.gapBroken = true;
+      states[key] = existing;
+      cooled.add(key);
       continue;
     }
+    existing.previousTradeMs = Number.isFinite(tradeMs) ? tradeMs : existing.previousTradeMs;
+    if ((trade.netPnlPct || 0) < 0) {
+      existing.streak += 1;
+      states[key] = existing;
+      continue;
+    }
+    states[key] = existing;
     cooled.add(key);
   }
-  return streaks;
+  return Object.fromEntries(
+    Object.entries(states).map(([key, state]) => [key, {
+      streak: state.streak || 0,
+      latestTradeAt: state.latestTradeAt || null,
+      lastTradeAgeHours: Number.isFinite(state.lastTradeAgeHours) ? state.lastTradeAgeHours : null,
+      stale: Boolean(state.stale),
+      gapBroken: Boolean(state.gapBroken)
+    }])
+  );
 }
 
 function computeDrawdownPct(equitySnapshots = []) {
@@ -184,7 +235,17 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
   const drawdownBudgetUsage = config.portfolioDrawdownBudgetPct
     ? clamp(drawdownPct / Math.max(config.portfolioDrawdownBudgetPct, 0.0001), 0, 3)
     : 0;
-  const regimeLossStreakMap = computeLossStreakMap(settledTrades, (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown");
+  const regimeLossStreakMetaMap = computeLossStreakStateMap(
+    settledTrades,
+    (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown",
+    {
+      nowIso,
+      maxIdleHours: config.portfolioRegimeKillSwitchMaxIdleHours || 96
+    }
+  );
+  const regimeLossStreakMap = Object.fromEntries(
+    Object.entries(regimeLossStreakMetaMap).map(([key, state]) => [key, state.streak || 0])
+  );
 
   return {
     strategyBudgetMap: scoreBucketMap(strategyBuckets),
@@ -198,7 +259,8 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
     portfolioCvarPct: Number(portfolioCvarPct.toFixed(4)),
     drawdownPct: Number(drawdownPct.toFixed(4)),
     drawdownBudgetUsage: Number(drawdownBudgetUsage.toFixed(4)),
-    regimeLossStreakMap
+    regimeLossStreakMap,
+    regimeLossStreakMetaMap
   };
 }
 
@@ -315,8 +377,10 @@ export class PortfolioOptimizer {
       0.48,
       1
     );
-    const regimeLossStreak = budgetState.regimeLossStreakMap?.[activeRegime] || 0;
-    const regimeKillSwitchActive = regimeLossStreak >= (this.config.portfolioRegimeKillSwitchLossStreak || 3);
+    const regimeLossStreakMeta = budgetState.regimeLossStreakMetaMap?.[activeRegime] || null;
+    const regimeLossStreak = regimeLossStreakMeta?.streak ?? budgetState.regimeLossStreakMap?.[activeRegime] ?? 0;
+    const regimeKillSwitchStale = Boolean(regimeLossStreakMeta?.stale);
+    const regimeKillSwitchActive = !regimeKillSwitchStale && regimeLossStreak >= (this.config.portfolioRegimeKillSwitchLossStreak || 3);
 
     const sizeMultiplier = clamp(
       volatilityTargetFraction *
@@ -366,23 +430,30 @@ export class PortfolioOptimizer {
     );
 
     const reasons = [];
+    const hardReasons = [];
     if (sameClusterPositions.length >= this.config.maxClusterPositions) {
       reasons.push("cluster_exposure_limit_hit");
+      hardReasons.push("cluster_exposure_limit_hit");
     }
     if (sameSectorPositions.length >= this.config.maxSectorPositions) {
       reasons.push("sector_exposure_limit_hit");
+      hardReasons.push("sector_exposure_limit_hit");
     }
     if (maxCorrelation > this.config.maxPairCorrelation) {
       reasons.push("pair_correlation_too_high");
+      hardReasons.push("pair_correlation_too_high");
     }
     if (sameFamilyPositions.length >= this.config.maxFamilyPositions) {
       reasons.push("family_exposure_limit_hit");
+      hardReasons.push("family_exposure_limit_hit");
     }
     if (sameRegimePositions.length >= this.config.maxRegimePositions) {
       reasons.push("regime_exposure_limit_hit");
+      hardReasons.push("regime_exposure_limit_hit");
     }
     if (sameStrategyPositions.length >= Math.max(1, Math.min(2, this.config.maxFamilyPositions || 2))) {
       reasons.push("strategy_exposure_limit_hit");
+      hardReasons.push("strategy_exposure_limit_hit");
     }
     if (familyBudgetFactor < 0.9) {
       reasons.push("family_budget_cooled");
@@ -404,12 +475,15 @@ export class PortfolioOptimizer {
     }
     if ((budgetState.portfolioCvarPct || 0) >= (this.config.portfolioMaxCvarPct || 0.028)) {
       reasons.push("portfolio_cvar_budget_hit");
+      hardReasons.push("portfolio_cvar_budget_hit");
     }
     if ((budgetState.drawdownBudgetUsage || 0) >= 1) {
       reasons.push("portfolio_drawdown_budget_hit");
+      hardReasons.push("portfolio_drawdown_budget_hit");
     }
     if (regimeKillSwitchActive) {
       reasons.push("regime_kill_switch_active");
+      hardReasons.push("regime_kill_switch_active");
     }
     if (clusterHeat >= 0.24) {
       reasons.push("cluster_heat_elevated");
@@ -452,7 +526,10 @@ export class PortfolioOptimizer {
       drawdownPct: budgetState.drawdownPct,
       drawdownBudgetUsage: budgetState.drawdownBudgetUsage,
       regimeLossStreak,
+      regimeLatestTradeAt: regimeLossStreakMeta?.latestTradeAt || null,
+      regimeLastTradeAgeHours: Number.isFinite(regimeLossStreakMeta?.lastTradeAgeHours) ? regimeLossStreakMeta.lastTradeAgeHours : null,
       regimeKillSwitchActive,
+      regimeKillSwitchStale,
       cvarPenalty,
       drawdownBudgetPenalty,
       candidateFactors,
@@ -460,6 +537,7 @@ export class PortfolioOptimizer {
       allocatorScore,
       sizeMultiplier,
       reasons,
+      hardReasons: [...new Set(hardReasons)],
       correlations
     };
   }

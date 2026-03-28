@@ -32,6 +32,20 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function isHardPortfolioReason(reason = "") {
+  return [
+    "cluster_exposure_limit_hit",
+    "sector_exposure_limit_hit",
+    "pair_correlation_too_high",
+    "family_exposure_limit_hit",
+    "regime_exposure_limit_hit",
+    "strategy_exposure_limit_hit",
+    "portfolio_cvar_budget_hit",
+    "portfolio_drawdown_budget_hit",
+    "regime_kill_switch_active"
+  ].includes(reason);
+}
+
 export class MultiAgentCommittee {
   constructor(config) {
     this.config = config;
@@ -219,6 +233,7 @@ export class MultiAgentCommittee {
       )
     );
 
+    const portfolioHardReasons = (portfolioSummary.hardReasons || portfolioSummary.reasons || []).filter((reason) => isHardPortfolioReason(reason));
     const portfolioEdge = -safeValue(portfolioSummary.maxCorrelation) * 0.8 - (portfolioSummary.sameClusterCount || 0) * 0.16 - (portfolioSummary.sameSectorCount || 0) * 0.08 + (safeValue(portfolioSummary.sizeMultiplier) - 1) * 0.8;
     agents.push(
       buildAgent(
@@ -229,10 +244,11 @@ export class MultiAgentCommittee {
         [
           `corr ${safeValue(portfolioSummary.maxCorrelation).toFixed(2)}`,
           `cluster ${portfolioSummary.sameClusterCount || 0}`,
-          `sector ${portfolioSummary.sameSectorCount || 0}`
+          `sector ${portfolioSummary.sameSectorCount || 0}`,
+          portfolioHardReasons[0] || null
         ],
         0.7,
-        (portfolioSummary.reasons || []).length ? "portfolio_overlap" : null
+        portfolioHardReasons.length ? "portfolio_overlap" : null
       )
     );
 

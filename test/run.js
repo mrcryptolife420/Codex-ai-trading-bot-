@@ -21,7 +21,7 @@ import { VolatilityService, summarizeVolatilityContext } from "../src/market/vol
 import { LocalOrderBookEngine } from "../src/market/localOrderBook.js";
 import { CalendarService, parseIcsEvents, summarizeCalendarEvents } from "../src/events/calendarService.js";
 import { normalizeStrategyDsl } from "../src/research/strategyDsl.js";
-import { PortfolioOptimizer } from "../src/risk/portfolioOptimizer.js";
+import { PortfolioOptimizer, buildBudgetState } from "../src/risk/portfolioOptimizer.js";
 import { RiskManager } from "../src/risk/riskManager.js";
 import { loadConfig } from "../src/config/index.js";
 import { updateEnvFile } from "../src/config/envFile.js";
@@ -78,6 +78,7 @@ import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/runtime/operatorAlertDispatcher.js";
 import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
+import { MultiAgentCommittee } from "../src/ai/multiAgentCommittee.js";
 import { backfillHistoricalCandles, fetchLatestCandlesPaginated, runHistoryCommand } from "../src/runtime/marketHistory.js";
 import { runBacktest } from "../src/runtime/backtestRunner.js";
 import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
@@ -14009,6 +14010,102 @@ await runCheck("portfolio optimizer enforces cvar budgets and regime kill switch
   assert.equal(summary.regimeKillSwitchActive, true);
   assert.ok(summary.reasons.includes("portfolio_cvar_budget_hit"));
   assert.ok(summary.reasons.includes("regime_kill_switch_active"));
+});
+
+await runCheck("portfolio budget state expires stale regime kill switches after long inactivity", async () => {
+  const state = buildBudgetState({
+    trades: [
+      { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "breakout", netPnlPct: -0.015, exitAt: "2026-03-10T10:00:00.000Z", pnlQuote: -12 },
+      { symbol: "ETHUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "breakout", netPnlPct: -0.011, exitAt: "2026-03-11T10:00:00.000Z", pnlQuote: -9 },
+      { symbol: "SOLUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "breakout", netPnlPct: -0.01, exitAt: "2026-03-12T10:00:00.000Z", pnlQuote: -8 }
+    ],
+    scaleOuts: []
+  }, makeConfig({ portfolioRegimeKillSwitchLossStreak: 2 }), "2026-03-28T10:00:00.000Z");
+  assert.equal(state.regimeLossStreakMap.breakout, 0);
+  assert.equal(state.regimeLossStreakMetaMap.breakout.stale, true);
+  assert.equal(state.regimeLossStreakMetaMap.breakout.latestTradeAt, "2026-03-12T10:00:00.000Z");
+});
+
+await runCheck("portfolio optimizer does not keep stale regime kill switches active", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({ portfolioRegimeKillSwitchLossStreak: 2 }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "ETHUSDT",
+    runtime: { lastKnownEquity: 9800 },
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.02, exitAt: "2026-03-10T10:00:00.000Z", pnlQuote: -20 },
+        { symbol: "SOLUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.018, exitAt: "2026-03-11T10:00:00.000Z", pnlQuote: -18 },
+        { symbol: "ADAUSDT", strategyAtEntry: "ema_trend", strategyDecision: { family: "trend_following" }, regimeAtEntry: "trend", netPnlPct: -0.017, exitAt: "2026-03-12T10:00:00.000Z", pnlQuote: -16 }
+      ],
+      scaleOuts: []
+    },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.02 } },
+    candidateProfile: { cluster: "layer1", sector: "layer1" },
+    openPositionContexts: [],
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" }
+  });
+  assert.equal(summary.regimeKillSwitchActive, false);
+  assert.equal(summary.regimeKillSwitchStale, true);
+  assert.ok(!summary.reasons.includes("regime_kill_switch_active"));
+});
+
+await runCheck("committee ignores soft portfolio cooling without hard overlap veto", async () => {
+  const committee = new MultiAgentCommittee(makeConfig());
+  const summary = committee.evaluate({
+    symbol: "ETHUSDT",
+    score: { probability: 0.57, confidence: 0.56, calibrationConfidence: 0.54, disagreement: 0.03 },
+    transformerScore: { probability: 0.56, confidence: 0.08, horizons: [], dominantHead: "trend" },
+    marketSnapshot: { book: { spreadBps: 2.2, bookPressure: 0.14, microPriceEdgeBps: 0.5 }, market: {} },
+    newsSummary: { coverage: 0, socialCoverage: 0, sentimentScore: 0, socialSentiment: 0, riskScore: 0.04, socialRisk: 0, confidence: 0, dominantEventType: "general" },
+    announcementSummary: { riskScore: 0.04 },
+    marketStructureSummary: { signalScore: 0.18, riskScore: 0.08, fundingRate: 0.00001, openInterestChangePct: 0.01 },
+    marketSentimentSummary: { contrarianScore: 0.05 },
+    volatilitySummary: { riskScore: 0.22 },
+    calendarSummary: { riskScore: 0.05, nextEventType: null, proximityHours: 48, confidence: 0.6 },
+    portfolioSummary: {
+      sizeMultiplier: 0.74,
+      maxCorrelation: 0.18,
+      sameClusterCount: 0,
+      sameSectorCount: 0,
+      reasons: ["family_budget_cooled", "cluster_budget_cooled"],
+      hardReasons: []
+    },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.59 },
+    executionPlan: { preferMaker: true, queueScore: 0.12, tradeFlow: 0.05, entryStyle: "pegged_limit_maker", makerPatienceMs: 2000 },
+    rlAdvice: { expectedReward: 0.01, sizeMultiplier: 1, confidence: 0.4 }
+  });
+  assert.equal(summary.vetoes.some((item) => item.id === "portfolio_overlap"), false);
+});
+
+await runCheck("committee still vetoes hard portfolio overlap risks", async () => {
+  const committee = new MultiAgentCommittee(makeConfig());
+  const summary = committee.evaluate({
+    symbol: "ETHUSDT",
+    score: { probability: 0.57, confidence: 0.56, calibrationConfidence: 0.54, disagreement: 0.03 },
+    transformerScore: { probability: 0.56, confidence: 0.08, horizons: [], dominantHead: "trend" },
+    marketSnapshot: { book: { spreadBps: 2.2, bookPressure: 0.14, microPriceEdgeBps: 0.5 }, market: {} },
+    newsSummary: { coverage: 0, socialCoverage: 0, sentimentScore: 0, socialSentiment: 0, riskScore: 0.04, socialRisk: 0, confidence: 0, dominantEventType: "general" },
+    announcementSummary: { riskScore: 0.04 },
+    marketStructureSummary: { signalScore: 0.18, riskScore: 0.08, fundingRate: 0.00001, openInterestChangePct: 0.01 },
+    marketSentimentSummary: { contrarianScore: 0.05 },
+    volatilitySummary: { riskScore: 0.22 },
+    calendarSummary: { riskScore: 0.05, nextEventType: null, proximityHours: 48, confidence: 0.6 },
+    portfolioSummary: {
+      sizeMultiplier: 0.54,
+      maxCorrelation: 0.82,
+      sameClusterCount: 1,
+      sameSectorCount: 1,
+      reasons: ["pair_correlation_too_high", "family_budget_cooled"],
+      hardReasons: ["pair_correlation_too_high"]
+    },
+    regimeSummary: { regime: "trend" },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.59 },
+    executionPlan: { preferMaker: true, queueScore: 0.12, tradeFlow: 0.05, entryStyle: "pegged_limit_maker", makerPatienceMs: 2000 },
+    rlAdvice: { expectedReward: 0.01, sizeMultiplier: 1, confidence: 0.4 }
+  });
+  assert.equal(summary.vetoes.some((item) => item.id === "portfolio_overlap"), true);
 });
 
 await runCheck("on-chain lite v2 summary captures majors and trending proxies", async () => {

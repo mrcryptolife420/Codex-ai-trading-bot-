@@ -1114,10 +1114,14 @@ function summarizePortfolio(portfolioSummary = {}) {
     drawdownPct: num(portfolioSummary.drawdownPct || 0, 4),
     drawdownBudgetUsage: num(portfolioSummary.drawdownBudgetUsage || 0, 4),
     regimeLossStreak: portfolioSummary.regimeLossStreak || 0,
+    regimeLatestTradeAt: portfolioSummary.regimeLatestTradeAt || null,
+    regimeLastTradeAgeHours: Number.isFinite(portfolioSummary.regimeLastTradeAgeHours) ? num(portfolioSummary.regimeLastTradeAgeHours || 0, 1) : null,
     regimeKillSwitchActive: Boolean(portfolioSummary.regimeKillSwitchActive),
+    regimeKillSwitchStale: Boolean(portfolioSummary.regimeKillSwitchStale),
     sameFactorCount: portfolioSummary.sameFactorCount || 0,
     candidateFactors: [...(portfolioSummary.candidateFactors || [])],
     reasons: [...(portfolioSummary.reasons || [])],
+    hardReasons: [...(portfolioSummary.hardReasons || [])],
     correlations: (portfolioSummary.correlations || []).map((item) => ({
       symbol: item.symbol,
       correlation: num(item.correlation || 0, 3)
