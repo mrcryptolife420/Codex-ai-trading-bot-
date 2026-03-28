@@ -284,29 +284,31 @@ export class PortfolioOptimizer {
   }
 
   evaluateCandidate({ symbol, runtime, journal = {}, marketSnapshot, candidateProfile, openPositionContexts, regimeSummary, strategySummary = {}, marketStructureSummary = {}, calendarSummary = {} }) {
-    const sameClusterPositions = openPositionContexts.filter(
+    const allOpenPositionContexts = openPositionContexts || [];
+    const comparableOpenPositionContexts = allOpenPositionContexts.filter((context) => context?.symbol && context.symbol !== symbol);
+    const sameClusterPositions = comparableOpenPositionContexts.filter(
       (context) => context.profile.cluster === candidateProfile.cluster
     );
-    const sameSectorPositions = openPositionContexts.filter(
+    const sameSectorPositions = comparableOpenPositionContexts.filter(
       (context) => context.profile.sector === candidateProfile.sector
     );
     const activeFamily = strategySummary.family || "unknown";
     const activeRegime = regimeSummary.regime || "unknown";
     const activeStrategy = strategySummary.activeStrategy || "unknown";
-    const sameFamilyPositions = openPositionContexts.filter((context) => {
+    const sameFamilyPositions = comparableOpenPositionContexts.filter((context) => {
       const family = context.position?.strategyDecision?.family || context.position?.entryRationale?.strategy?.family || "unknown";
       return family === activeFamily;
     });
-    const sameRegimePositions = openPositionContexts.filter((context) => {
+    const sameRegimePositions = comparableOpenPositionContexts.filter((context) => {
       const regime = context.position?.regimeAtEntry || context.position?.entryRationale?.regimeSummary?.regime || "unknown";
       return regime === activeRegime;
     });
-    const sameStrategyPositions = openPositionContexts.filter((context) => {
+    const sameStrategyPositions = comparableOpenPositionContexts.filter((context) => {
       const strategy = context.position?.strategyAtEntry || context.position?.entryRationale?.strategy?.activeStrategy || "unknown";
       return strategy === activeStrategy;
     });
     const candidateFactors = resolveFactorSet({ family: activeFamily, regime: activeRegime, marketStructureSummary, calendarSummary });
-    const sameFactorPositions = openPositionContexts.filter((context) => {
+    const sameFactorPositions = comparableOpenPositionContexts.filter((context) => {
       const factors = resolveFactorSet({
         family: context.position?.strategyDecision?.family || context.position?.entryRationale?.strategy?.family || "unknown",
         regime: context.position?.regimeAtEntry || context.position?.entryRationale?.regimeSummary?.regime || "unknown",
@@ -318,7 +320,7 @@ export class PortfolioOptimizer {
 
     const candidateReturns = toReturns(marketSnapshot.candles || []);
     const budgetState = buildBudgetState(journal, this.config, new Date().toISOString());
-    const correlations = openPositionContexts.map((context) => ({
+    const correlations = comparableOpenPositionContexts.map((context) => ({
       symbol: context.symbol,
       correlation: rollingCorrelation(candidateReturns, toReturns(context.marketSnapshot.candles || []))
     }));
@@ -329,11 +331,11 @@ export class PortfolioOptimizer {
 
     const totalEquityProxy = Math.max(
       runtime?.lastKnownEquity ||
-        ((runtime?.lastKnownBalance || 0) + openPositionContexts.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0)) ||
+        ((runtime?.lastKnownBalance || 0) + allOpenPositionContexts.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0)) ||
         this.config.startingCash,
       1
     );
-    const openExposure = openPositionContexts.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
+    const openExposure = allOpenPositionContexts.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
     const clusterExposure = sameClusterPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
     const sectorExposure = sameSectorPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
     const familyExposure = sameFamilyPositions.reduce((total, context) => total + (context.position?.notional || context.position?.quantity * context.position?.entryPrice || 0), 0);
@@ -573,6 +575,7 @@ export class PortfolioOptimizer {
       drawdownBudgetPenalty,
       candidateFactors,
       sameFactorCount: sameFactorPositions.length,
+      selfPositionExcluded: allOpenPositionContexts.some((context) => context?.symbol === symbol),
       allocatorScore,
       sizeMultiplier,
       reasons,

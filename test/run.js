@@ -15495,6 +15495,47 @@ await runCheck("portfolio optimizer does not keep stale regime kill switches act
   assert.ok(!summary.reasons.includes("regime_kill_switch_active"));
 });
 
+await runCheck("portfolio optimizer excludes the same open symbol from self-overlap blockers", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    symbolProfiles: {
+      BFUSDUSDT: { cluster: "stables", sector: "stables" }
+    }
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "BFUSDUSDT",
+    runtime: { lastKnownEquity: 10000, lastKnownBalance: 9500 },
+    journal: { trades: [], scaleOuts: [] },
+    marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })), market: { realizedVolPct: 0.01 } },
+    candidateProfile: { cluster: "stables", sector: "stables" },
+    openPositionContexts: [
+      {
+        symbol: "BFUSDUSDT",
+        profile: { cluster: "stables", sector: "stables" },
+        marketSnapshot: { candles: Array.from({ length: 20 }, (_, index) => ({ close: 100 + index, high: 101 + index, low: 99 + index })) },
+        position: {
+          notional: 500,
+          entryPrice: 100,
+          quantity: 5,
+          strategyDecision: { family: "breakout" },
+          strategyAtEntry: "bollinger_squeeze",
+          regimeAtEntry: "range",
+          entryRationale: { strategy: { family: "breakout", activeStrategy: "bollinger_squeeze" }, regimeSummary: { regime: "range" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "breakout", activeStrategy: "bollinger_squeeze" }
+  });
+  assert.equal(summary.selfPositionExcluded, true);
+  assert.equal(summary.sameClusterCount, 0);
+  assert.equal(summary.sameFamilyCount, 0);
+  assert.equal(summary.sameStrategyCount, 0);
+  assert.equal(summary.maxCorrelation, 0);
+  assert.ok(!summary.reasons.includes("cluster_exposure_limit_hit"));
+  assert.ok(!summary.reasons.includes("pair_correlation_too_high"));
+  assert.ok(!summary.reasons.includes("cluster_budget_cooled"));
+});
+
 await runCheck("portfolio optimizer ignores mild stale budget cooling without active exposure", async () => {
   const optimizer = new PortfolioOptimizer(makeConfig({
     symbolProfiles: {
