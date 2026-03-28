@@ -2849,6 +2849,117 @@ await runCheck("openBestCandidate skips symbols with unmatched exchange orders a
   assert.deepEqual(attempt.symbolBlockers, [{ symbol: "BTCUSDT", reason: "unmatched_open_orders" }]);
 });
 
+await runCheck("paper signal flow can execute and persist a deterministic paper trade", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const persisted = { runtime: null, journal: null };
+  bot.config = makeConfig({ botMode: "paper", minTradeUsdt: 25, startingCash: 1000, paperLatencyMs: 0, paperFeeBps: 0, paperSlippageBps: 0 });
+  bot.runtime = {
+    mode: "paper",
+    openPositions: [],
+    paperPortfolio: { quoteFree: 1000, feesPaid: 0, realizedPnl: 0 },
+    ops: {}
+  };
+  bot.journal = {
+    trades: [],
+    scaleOuts: [],
+    blockedSetups: [],
+    counterfactuals: [],
+    universeRuns: [],
+    researchRuns: [],
+    equitySnapshots: [],
+    cycles: [],
+    events: []
+  };
+  bot.store = {
+    async saveRuntime(runtime) {
+      persisted.runtime = runtime;
+    },
+    async saveJournal(journal) {
+      persisted.journal = journal;
+    },
+    async saveModel() {},
+    async saveModelBackups() {}
+  };
+  bot.stream = { getStatus: () => ({ connected: true }) };
+  bot.rlPolicy = { getState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.backupManager = { getSummary: () => ({}) };
+  bot.model = { getState: () => ({ version: 1 }) };
+  bot.modelBackups = [];
+  bot.health = { canEnterNewPositions: () => true };
+  bot.logger = { info() {}, warn() {} };
+  bot.recordEvent = TradingBot.prototype.recordEvent;
+  bot.markReportDirty = TradingBot.prototype.markReportDirty;
+  bot.persist = TradingBot.prototype.persist;
+  bot.broker = new PaperBroker(bot.config, bot.logger);
+  bot.symbolRules = {
+    BTCUSDT: {
+      symbol: "BTCUSDT",
+      minQty: 0.00001,
+      maxQty: 1000,
+      stepSize: 0.00001,
+      marketMinQty: 0.00001,
+      marketMaxQty: 1000,
+      marketStepSize: 0.00001,
+      minNotional: 5,
+      maxNotional: 1_000_000
+    }
+  };
+  bot.buildEntryRationale = () => ({ summary: "deterministic paper trade", strategy: { activeStrategy: "ema_trend", family: "trend_following" } });
+
+  const candidates = [
+    {
+      symbol: "BTCUSDT",
+      decision: {
+        allow: true,
+        quoteAmount: 100,
+        stopLossPct: 0.02,
+        takeProfitPct: 0.03,
+        scaleOutPlan: { fraction: 0.4, triggerPct: 0.014, minNotionalUsd: 35, trailOffsetPct: 0.003 },
+        executionPlan: { entryStyle: "market", fallbackStyle: "none", preferMaker: false, usePeggedOrder: false },
+        entryMode: "standard",
+        threshold: 0.55,
+        regime: "trend"
+      },
+      marketSnapshot: {
+        book: { bid: 70000, ask: 70010, mid: 70005, spreadBps: 1.43, depthConfidence: 1, bookPressure: 0.2 },
+        market: { realizedVolPct: 0.01, atrPct: 0.01 }
+      },
+      score: { probability: 0.71, transformer: null },
+      rawFeatures: { momentum_5: 0.02, ema_trend: 0.8 },
+      strategySummary: { activeStrategy: "ema_trend", family: "trend_following" },
+      newsSummary: {},
+      regimeSummary: { regime: "trend" },
+      metaSummary: {}
+    }
+  ];
+
+  bot.noteCandidateSignalFlow(candidates, "2026-03-28T12:00:00.000Z");
+  const attempt = await bot.openBestCandidate(candidates);
+  bot.finalizeSignalFlowCycle({
+    at: "2026-03-28T12:00:05.000Z",
+    entryAttempt: attempt,
+    openedPosition: attempt.openedPosition
+  });
+  bot.notePaperTradePersisted({
+    position: attempt.openedPosition,
+    at: "2026-03-28T12:00:06.000Z"
+  });
+  await bot.persist();
+
+  assert.equal(attempt.status, "opened");
+  assert.equal(bot.runtime.openPositions.length, 1);
+  assert.equal(bot.runtime.signalFlow.generatedSignals, 1);
+  assert.equal(bot.runtime.signalFlow.rejectedSignals, 0);
+  assert.equal(bot.runtime.signalFlow.paperTradesAttempted, 1);
+  assert.equal(bot.runtime.signalFlow.paperTradesExecuted, 1);
+  assert.equal(bot.runtime.signalFlow.paperTradesPersisted, 1);
+  assert.equal(persisted.runtime.openPositions.length, 1);
+  assert.equal(persisted.runtime.signalFlow.paperTradesPersisted, 1);
+  assert.ok(persisted.journal.events.some((event) => event.type === "paper_trade_executed"));
+  assert.ok(persisted.journal.events.some((event) => event.type === "paper_trade_persisted"));
+});
+
 await runCheck("syncOrderLifecycleState surfaces manual exchange interference as manual review", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = {
@@ -8764,6 +8875,38 @@ await runCheck("performance report exposes execution cost budgets and pnl decomp
   assert.ok(Number.isFinite(report.pnlDecomposition.executionDragEstimate));
 });
 
+await runCheck("performance report downgrades stale execution-cost samples out of hard block mode", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        {
+          symbol: "BTCUSDT",
+          entryAt: "2026-03-10T10:00:00.000Z",
+          exitAt: "2026-03-10T12:00:00.000Z",
+          entryPrice: 70000,
+          exitPrice: 69900,
+          quantity: 0.01,
+          totalCost: 700,
+          proceeds: 698,
+          entryFee: 0.7,
+          pnlQuote: -2,
+          netPnlPct: -0.0029,
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 8.2, slippageDeltaBps: 5.1, latencyBps: 0.7, queueDecayBps: 0.3 },
+          exitExecutionAttribution: { entryStyle: "market", realizedTouchSlippageBps: 7.8, slippageDeltaBps: 4.6, latencyBps: 0.6, queueDecayBps: 0.2 }
+        }
+      ]
+    },
+    runtime: { openPositions: [] },
+    config: { reportLookbackTrades: 50, executionCostBudgetWarnBps: 6, executionCostBudgetBlockBps: 10, executionCostBudgetFreshnessHours: 48 },
+    now: new Date("2026-03-28T12:00:00.000Z")
+  });
+  assert.equal(report.executionCostSummary.status, "warmup");
+  assert.equal(report.executionCostSummary.stale, true);
+  assert.equal(report.executionCostSummary.latestTradeAt, "2026-03-10T12:00:00.000Z");
+});
+
 await runCheck("strategy retirement engine retires weak strategies", async () => {
   const summary = buildStrategyRetirementSnapshot({
     report: {
@@ -8947,6 +9090,33 @@ await runCheck("capital governor ignores live history when evaluating paper mode
   assert.equal(summary.allowEntries, true);
   assert.equal(summary.dailyLossFraction, 0);
   assert.equal(summary.weeklyLossFraction, 0);
+});
+
+await runCheck("capital governor resets stale losing streaks after an idle gap", async () => {
+  const summary = buildCapitalGovernor({
+    journal: {
+      trades: [
+        { brokerMode: "paper", exitAt: "2026-03-10T10:00:00.000Z", pnlQuote: -180 },
+        { brokerMode: "paper", exitAt: "2026-03-11T10:00:00.000Z", pnlQuote: -220 },
+        { brokerMode: "paper", exitAt: "2026-03-12T10:00:00.000Z", pnlQuote: -190 },
+        { brokerMode: "paper", exitAt: "2026-03-13T10:00:00.000Z", pnlQuote: -140 }
+      ],
+      scaleOuts: [],
+      equitySnapshots: [
+        { brokerMode: "paper", at: "2026-03-10T00:00:00.000Z", equity: 10000 },
+        { brokerMode: "paper", at: "2026-03-13T00:00:00.000Z", equity: 9270 },
+        { brokerMode: "paper", at: "2026-03-28T00:00:00.000Z", equity: 9270 }
+      ]
+    },
+    runtime: {},
+    config: makeConfig({ botMode: "paper", capitalGovernorWeeklyDrawdownPct: 0.05 }),
+    nowIso: "2026-03-28T12:00:00.000Z"
+  });
+  assert.equal(summary.status, "ready");
+  assert.equal(summary.allowEntries, true);
+  assert.equal(summary.redDayStreak, 0);
+  assert.equal(summary.weeklyLossFraction, 0);
+  assert.equal(summary.latestTradeAt, "2026-03-13T10:00:00.000Z");
 });
 
 await runCheck("operator alert dispatcher builds and dispatches webhook plans safely", async () => {
@@ -9593,6 +9763,42 @@ await runCheck("trading bot readiness flags manual interference and stale servic
   assert.ok(readiness.reasons.includes("service_watchdog_degraded"));
   assert.ok(readiness.reasons.includes("service_heartbeat_stale"));
   assert.ok(readiness.reasons.includes("service_restart_backoff_active"));
+});
+
+await runCheck("trading bot readiness flags stalled paper signal flow", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperSilentFailureCycleThreshold: 3 });
+  bot.runtime = {
+    health: { circuitOpen: false },
+    exchangeTruth: { orphanedSymbols: [], manualInterferenceSymbols: [], unmatchedOrderSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [] },
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    signalFlow: {
+      consecutiveCyclesWithSignalsNoPaperTrade: 4,
+      lastCycle: {
+        rejectionReasons: { capital_governor_blocked: 3 },
+        rejectionCategories: { governance: 3 }
+      }
+    },
+    ops: { alerts: { alerts: [] } },
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:30.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0
+    }
+  };
+  const readiness = bot.buildOperationalReadiness("2026-03-19T10:00:00.000Z");
+  const checks = bot.buildDoctorChecks({
+    report: { openExposure: 0, recentTrades: [] },
+    balance: { quoteFree: 1000 },
+    previewCandidates: [{}],
+    now: new Date("2026-03-19T10:00:00.000Z")
+  });
+  assert.equal(readiness.status, "degraded");
+  assert.ok(readiness.reasons.includes("paper_signal_flow_stalled"));
+  assert.equal(checks.checks.find((item) => item.id === "paper_signal_flow")?.passed, false);
 });
 
 await runCheck("doctor surfaces stale service heartbeat checks", async () => {

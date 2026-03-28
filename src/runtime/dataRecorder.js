@@ -786,7 +786,7 @@ export class DataRecorder {
     await this.rebuildFileTruthState({ maxCoverageRecords: 800, preserveLastRecordAt: false });
   }
 
-  async recordCycle({ at, mode, candidates = [], openedPosition = null, overview = {}, safety = {}, marketSentiment = {}, volatility = {} }) {
+  async recordCycle({ at, mode, candidates = [], openedPosition = null, overview = {}, safety = {}, marketSentiment = {}, volatility = {}, signalFlow = {} }) {
     if (!this.config.dataRecorderEnabled) {
       return null;
     }
@@ -805,6 +805,16 @@ export class DataRecorder {
         selfHealMode: safety.selfHeal?.mode || null,
         driftStatus: safety.drift?.status || null,
         session: safety.session?.session || null
+      },
+      signalFlow: {
+        generatedSignals: signalFlow.lastCycle?.generatedSignals || signalFlow.generatedSignals || 0,
+        rejectedSignals: signalFlow.lastCycle?.rejectedSignals || signalFlow.rejectedSignals || 0,
+        allowedSignals: signalFlow.lastCycle?.allowedSignals || signalFlow.allowedSignals || 0,
+        paperTradesAttempted: signalFlow.lastCycle?.paperTradesAttempted || 0,
+        paperTradesExecuted: signalFlow.lastCycle?.paperTradesExecuted || 0,
+        paperTradesPersisted: signalFlow.lastCycle?.paperTradesPersisted || 0,
+        topRejectionCategory: signalFlow.lastCycle?.topRejectionCategories?.[0]?.id || signalFlow.rejectionCategories?.[0]?.id || null,
+        topRejectionReason: signalFlow.lastCycle?.topRejectionReasons?.[0]?.id || signalFlow.rejectionReasons?.[0]?.id || null
       },
       market: {
         fearGreedValue: marketSentiment.fearGreedValue ?? null,
@@ -1024,6 +1034,7 @@ export class DataRecorder {
       alertStatus: ops.alerts?.status || null,
       exchangeSafety: ops.exchangeSafety?.status || null,
       capitalGovernor: ops.capitalGovernor?.status || null,
+      signalFlowStatus: (ops.signalFlow?.consecutiveCyclesWithSignalsNoPaperTrade || 0) >= 3 ? "stalled" : "normal",
       executionCost: report.executionCostSummary?.status || null,
       dataRecorder: {
         lineageCoverage: num(this.state.lineageCoverage || 0, 4),

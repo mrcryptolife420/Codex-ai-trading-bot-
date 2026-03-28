@@ -6,6 +6,16 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function topCountKey(counter = {}) {
+  return Object.entries(counter || {})
+    .sort((left, right) => {
+      if (right[1] !== left[1]) {
+        return right[1] - left[1];
+      }
+      return left[0].localeCompare(right[0]);
+    })[0]?.[0] || null;
+}
+
 function makeAlert(id, severity, title, reason, action, extra = {}) {
   return {
     id,
@@ -22,7 +32,8 @@ function isPaperGovernanceAlert(id) {
     "execution_cost_budget_blocked",
     "capital_governor_blocked",
     "capital_governor_recovery",
-    "readiness_degraded"
+    "readiness_degraded",
+    "paper_signal_flow_stalled"
   ].includes(id);
 }
 
@@ -63,6 +74,7 @@ export function buildOperatorAlerts({
   const health = runtime.health || {};
   const selfHeal = runtime.selfHeal || {};
   const thresholdTuning = runtime.thresholdTuning || {};
+  const signalFlow = runtime.signalFlow || {};
   const alertState = runtime.ops?.alertState || {};
   const botMode = `${config.botMode || runtime.botMode || "paper"}`.toLowerCase();
   const paperMode = botMode === "paper";
@@ -136,6 +148,15 @@ export function buildOperatorAlerts({
       "Self-heal houdt entries tegen",
       selfHeal.reason || "Runtime draait in defensieve modus.",
       "Bevestig drift, calibration en health voordat entries weer open gaan."
+    ));
+  }
+  if (paperMode && safeNumber(signalFlow.consecutiveCyclesWithSignalsNoPaperTrade, 0) >= safeNumber(config.paperSilentFailureCycleThreshold, 3)) {
+    rawAlerts.push(makeAlert(
+      "paper_signal_flow_stalled",
+      "high",
+      "Paper signal flow stalled",
+      topCountKey(signalFlow.lastCycle?.rejectionReasons || {}) || "Er komen wel signalen door de scan, maar ze eindigen meerdere cycles achter elkaar zonder paper trade.",
+      "Gebruik status/doctor signalFlow, reject-categorieen en entry_flow_blocked events om de blokkade gericht te herstellen."
     ));
   }
   if ((readiness.status || "") === "degraded" && (readiness.reasons || []).length) {

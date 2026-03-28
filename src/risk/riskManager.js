@@ -851,6 +851,20 @@ export class RiskManager {
   }
 
   resolveExecutionCostBudget(executionCostSummary = {}, strategySummary = {}, regimeSummary = {}) {
+    if (executionCostSummary.stale) {
+      return {
+        active: false,
+        status: executionCostSummary.status || "warmup",
+        stale: true,
+        blocked: false,
+        sizeMultiplier: 1,
+        averageTotalCostBps: safeValue(executionCostSummary.averageTotalCostBps || 0),
+        averageSlippageDeltaBps: safeValue(executionCostSummary.averageSlippageDeltaBps || 0),
+        latestTradeAt: executionCostSummary.latestTradeAt || null,
+        freshnessHours: safeValue(executionCostSummary.freshnessHours, 0),
+        notes: ["stale_execution_cost_sample"]
+      };
+    }
     const strategyId = strategySummary.activeStrategy || null;
     const regimeId = regimeSummary.regime || null;
     const strategyScope = (executionCostSummary.strategies || []).find((item) => item.id === strategyId) || null;
@@ -882,12 +896,17 @@ export class RiskManager {
 
   resolveCapitalGovernor(capitalGovernorSummary = {}) {
     return {
+      generatedAt: capitalGovernorSummary.generatedAt || null,
       active: Boolean(capitalGovernorSummary.status),
       status: capitalGovernorSummary.status || "warmup",
+      allowEntries: capitalGovernorSummary.allowEntries !== false,
       blocked: capitalGovernorSummary.allowEntries === false,
       allowProbeEntries: Boolean(capitalGovernorSummary.allowProbeEntries),
       recoveryMode: Boolean(capitalGovernorSummary.recoveryMode),
       sizeMultiplier: clamp(safeValue(capitalGovernorSummary.sizeMultiplier ?? 1), 0, 1),
+      latestTradeAt: capitalGovernorSummary.latestTradeAt || null,
+      lastClosedTradeAgeHours: safeValue(capitalGovernorSummary.lastClosedTradeAgeHours, 0),
+      blockerReasons: [...(capitalGovernorSummary.blockerReasons || [])],
       notes: [...(capitalGovernorSummary.notes || [])]
     };
   }
@@ -996,15 +1015,6 @@ export class RiskManager {
     const downsideVolDominance = buildDownsideVolDominance(marketSnapshot.market || {});
     const acceptanceQuality = buildAcceptanceQuality(marketSnapshot.market || {});
     const replenishmentQuality = buildReplenishmentQuality(marketSnapshot.book || {});
-    const strongTrendGuardOverride =
-      ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
-      relativeStrengthComposite > 0.004 &&
-      acceptanceQuality >= 0.62 &&
-      replenishmentQuality >= 0.54 &&
-      (timeframeSummary.alignmentScore || 0) >= 0.58 &&
-      (signalQualitySummary.overallScore || 0) >= 0.58 &&
-      (preliminaryConfidenceBreakdown.executionConfidence || 0) >= 0.5 &&
-      score.probability >= threshold + 0.03;
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
     const driftThresholdPenalty = safeValue(driftSummary.severity || 0) >= 0.82 ? 0.05 : safeValue(driftSummary.severity || 0) >= 0.45 ? 0.02 : 0;
     const rawSelfHealThresholdPenalty = safeValue(selfHealState.thresholdPenalty || 0);
@@ -1028,6 +1038,15 @@ export class RiskManager {
       thresholdFloor,
       0.99
     );
+    const strongTrendGuardOverride =
+      ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
+      relativeStrengthComposite > 0.004 &&
+      acceptanceQuality >= 0.62 &&
+      replenishmentQuality >= 0.54 &&
+      (timeframeSummary.alignmentScore || 0) >= 0.58 &&
+      (signalQualitySummary.overallScore || 0) >= 0.58 &&
+      (preliminaryConfidenceBreakdown.executionConfidence || 0) >= 0.5 &&
+      score.probability >= threshold + 0.03;
     const strategyConfidenceFloor = clamp(this.config.strategyMinConfidence - optimizerAdjustments.strategyConfidenceAdjustment + selfHealThresholdPenalty * 0.35, 0.1, 0.95);
     const dailyPnl = this.getDailyRealizedPnl(journal, nowIso);
     const dailyLossFraction = dailyPnl < 0 ? Math.abs(dailyPnl) / this.config.startingCash : 0;

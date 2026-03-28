@@ -186,6 +186,14 @@ function parseTimestampMs(value) {
   return Number.isFinite(timestamp) ? timestamp : Number.NaN;
 }
 
+function resolveLatestTradeAt(trades = []) {
+  const latestMs = trades
+    .map((trade) => parseTimestampMs(trade.exitAt || trade.entryAt))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left)[0];
+  return Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null;
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -426,7 +434,7 @@ function buildExecutionCostBuckets(trades = [], keyFn, config = {}) {
     .slice(0, 8);
 }
 
-function buildExecutionCostSummary(trades = [], config = {}) {
+function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date().toISOString()) {
   const costs = trades.map((trade) => buildExecutionCostBreakdown(trade));
   const styles = buildExecutionCostBuckets(trades, (trade) => trade.entryExecutionAttribution?.entryStyle || "unknown", config);
   const strategies = buildExecutionCostBuckets(trades, (trade) => trade.strategyAtEntry || "unknown", config);
@@ -437,15 +445,25 @@ function buildExecutionCostSummary(trades = [], config = {}) {
   const averageSlippageDeltaBps = average(costs.map((item) => item.slippageDeltaBps || 0));
   const worstStyle = styles[0] || null;
   const worstStrategy = strategies[0] || null;
-  const status = worstStyle?.status === "blocked" || worstStrategy?.status === "blocked"
-    ? "blocked"
-    : worstStyle?.status === "caution" || worstStrategy?.status === "caution"
-      ? "caution"
-      : trades.length
-        ? "ready"
-        : "warmup";
+  const latestTradeAt = resolveLatestTradeAt(trades);
+  const freshnessHours = latestTradeAt
+    ? (parseTimestampMs(nowIso) - parseTimestampMs(latestTradeAt)) / 3_600_000
+    : Number.POSITIVE_INFINITY;
+  const stale = trades.length > 0 && freshnessHours > safeNumber(config.executionCostBudgetFreshnessHours, 72);
+  const status = stale
+    ? "warmup"
+    : worstStyle?.status === "blocked" || worstStrategy?.status === "blocked"
+      ? "blocked"
+      : worstStyle?.status === "caution" || worstStrategy?.status === "caution"
+        ? "caution"
+        : trades.length
+          ? "ready"
+          : "warmup";
   return {
     status,
+    stale,
+    latestTradeAt,
+    freshnessHours: Number.isFinite(freshnessHours) ? freshnessHours : null,
     averageTotalCostBps,
     averageFeeBps,
     averageTouchSlippageBps,
@@ -456,6 +474,9 @@ function buildExecutionCostSummary(trades = [], config = {}) {
     strategies,
     regimes,
     notes: [
+      stale
+        ? `Execution-cost sample is stale; last trade was ${freshnessHours.toFixed(1)}h ago, so hard blocking is disabled until new fills arrive.`
+        : null,
       worstStyle
         ? `${worstStyle.id} heeft momenteel de duurste execution-cost profile.`
         : "Nog geen execution-cost budget data beschikbaar.",
@@ -465,7 +486,7 @@ function buildExecutionCostSummary(trades = [], config = {}) {
       averageTouchSlippageBps
         ? `Gemiddelde touch slippage: ${averageTouchSlippageBps.toFixed(2)} bps.`
         : "Touch slippage is nog niet zichtbaar in de huidige sample."
-    ]
+    ].filter(Boolean)
   };
 }
 
@@ -744,7 +765,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   const lookbackScaleOuts = buildRecentScaleOuts(scaleOuts, lookbackTrades, config.reportLookbackTrades || 0);
   const lookbackScaleOutPnl = lookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
   const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
-  const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config);
+  const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config, now.toISOString());
   const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
   const openExposureReview = buildOpenExposureReview(runtime.openPositions || []);
   const windowSummaries = buildWindowSummaries(trades, {

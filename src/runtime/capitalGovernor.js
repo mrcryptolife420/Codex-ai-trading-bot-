@@ -12,6 +12,19 @@ function sameUtcDay(left, right) {
   return `${left || ""}`.slice(0, 10) === `${right || ""}`.slice(0, 10);
 }
 
+function dayKey(value) {
+  return `${value || ""}`.slice(0, 10);
+}
+
+function shiftUtcDay(referenceDay, deltaDays = 0) {
+  const base = new Date(`${referenceDay}T00:00:00.000Z`);
+  if (!Number.isFinite(base.getTime())) {
+    return "";
+  }
+  base.setUTCDate(base.getUTCDate() + deltaDays);
+  return base.toISOString().slice(0, 10);
+}
+
 function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
@@ -43,7 +56,7 @@ function computeDrawdownPct(equitySnapshots = [], botMode = "paper") {
 function buildDailyLedger(journal = {}, botMode = "paper") {
   const ledger = new Map();
   const add = (at, amount) => {
-    const key = `${at || ""}`.slice(0, 10);
+    const key = dayKey(at);
     if (!key) {
       return;
     }
@@ -68,16 +81,60 @@ function buildDailyLedger(journal = {}, botMode = "paper") {
     .sort((left, right) => left.day.localeCompare(right.day));
 }
 
-function computeRedDayStreak(dailyLedger = []) {
+function buildRecentDayWindow(dailyLedger = [], nowIso = new Date().toISOString(), lookbackDays = 7) {
+  const today = dayKey(nowIso);
+  if (!today) {
+    return [];
+  }
+  const ledgerMap = new Map(dailyLedger.map((item) => [item.day, safeNumber(item.pnlQuote, 0)]));
+  const totalDays = Math.max(1, Math.round(safeNumber(lookbackDays, 7)));
+  const window = [];
+  for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
+    const day = shiftUtcDay(today, -offset);
+    const traded = ledgerMap.has(day);
+    window.push({
+      day,
+      pnlQuote: num(ledgerMap.get(day), 2),
+      traded
+    });
+  }
+  return window;
+}
+
+function computeRedDayStreak(dailyLedger = [], nowIso = new Date().toISOString()) {
   let streak = 0;
   for (let index = dailyLedger.length - 1; index >= 0; index -= 1) {
-    if ((dailyLedger[index].pnlQuote || 0) < 0) {
+    const item = dailyLedger[index] || {};
+    if (!item.traded) {
+      if (sameUtcDay(item.day, nowIso)) {
+        continue;
+      }
+      break;
+    }
+    if ((item.pnlQuote || 0) < 0) {
       streak += 1;
       continue;
     }
     break;
   }
   return streak;
+}
+
+function resolveLatestClosedTradeAt(journal = {}, botMode = "paper") {
+  const timestamps = [
+    ...(journal.trades || [])
+      .filter((trade) => matchesBrokerMode(trade, botMode))
+      .map((trade) => trade.exitAt || trade.entryAt)
+      .filter(Boolean),
+    ...(journal.scaleOuts || [])
+      .filter((event) => matchesBrokerMode(event, botMode))
+      .map((event) => event.at)
+      .filter(Boolean)
+  ]
+    .map((value) => new Date(value).getTime())
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left);
+  return timestamps.length ? new Date(timestamps[0]).toISOString() : null;
 }
 
 export function buildCapitalGovernor({
@@ -88,14 +145,18 @@ export function buildCapitalGovernor({
 } = {}) {
   const botMode = config.botMode || "paper";
   const dailyLedger = buildDailyLedger(journal, botMode);
-  const todayPnl = dailyLedger.find((item) => sameUtcDay(item.day, nowIso))?.pnlQuote || 0;
-  const recentDays = dailyLedger.slice(-7);
+  const recentDays = buildRecentDayWindow(dailyLedger, nowIso, config.capitalGovernorLookbackDays || 7);
+  const todayPnl = recentDays.find((item) => sameUtcDay(item.day, nowIso))?.pnlQuote || 0;
   const weeklyPnl = recentDays.reduce((total, item) => total + safeNumber(item.pnlQuote, 0), 0);
   const startingCash = Math.max(config.startingCash || 1, 1);
   const dailyLossFraction = todayPnl < 0 ? Math.abs(todayPnl) / startingCash : 0;
   const weeklyLossFraction = weeklyPnl < 0 ? Math.abs(weeklyPnl) / startingCash : 0;
   const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240), botMode);
-  const redDayStreak = computeRedDayStreak(dailyLedger);
+  const redDayStreak = computeRedDayStreak(recentDays, nowIso);
+  const latestTradeAt = resolveLatestClosedTradeAt(journal, botMode);
+  const lastClosedTradeAgeHours = latestTradeAt
+    ? (new Date(nowIso).getTime() - new Date(latestTradeAt).getTime()) / 3_600_000
+    : Number.POSITIVE_INFINITY;
   const recoveryTrades = (journal.trades || [])
     .filter((trade) => matchesBrokerMode(trade, botMode))
     .filter((trade) => trade.exitAt)
@@ -142,7 +203,9 @@ export function buildCapitalGovernor({
     weeklyLossFraction: num(weeklyLossFraction),
     drawdownPct: num(drawdownPct),
     redDayStreak,
-    recentDayCount: recentDays.length,
+    recentDayCount: recentDays.filter((item) => item.traded).length,
+    latestTradeAt,
+    lastClosedTradeAgeHours: Number.isFinite(lastClosedTradeAgeHours) ? num(lastClosedTradeAgeHours, 1) : null,
     recoveryTradeCount: recoveryTrades.length,
     recoveryWinRate: num(recoveryWinRate),
     recoveryAveragePnl: num(recoveryAveragePnl),
@@ -163,6 +226,9 @@ export function buildCapitalGovernor({
       redDayStreak
         ? `${redDayStreak} opeenvolgende rode dag(en) sturen de recovery-logica aan.`
         : "Geen actuele rode-dagen-streak zichtbaar.",
+      latestTradeAt
+        ? `Laatste gesloten trade ${num(lastClosedTradeAgeHours, 1)} uur geleden (${latestTradeAt}).`
+        : "Nog geen gesloten trades beschikbaar voor capital-governor context.",
       recoveryTrades.length
         ? `Recovery window: ${recoveryTrades.length} trades, winrate ${num(recoveryWinRate * 100, 1)}%, avg ${num(recoveryAveragePnl * 100, 2)}%.`
         : "Nog geen recovery trades beschikbaar.",
