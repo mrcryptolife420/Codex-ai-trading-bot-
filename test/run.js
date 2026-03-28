@@ -14009,6 +14009,121 @@ await runCheck("timeframe consensus keeps low alignment soft when breakout trigg
   assert.ok(summary.reasons.includes("higher_tf_bias_without_lower_trigger"));
 });
 
+await runCheck("timeframe consensus keeps bollinger squeeze conflicts soft until the lower timeframe release is confirmed", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: {
+          interval: "5m",
+          market: {
+            emaTrendScore: 0.24,
+            momentum20: 0.0045,
+            breakoutPct: 0.0014,
+            donchianBreakoutPct: 0.0012,
+            squeezeReleaseScore: 0.47,
+            supertrendDirection: 0,
+            realizedVolPct: 0.017
+          }
+        },
+        higher: {
+          interval: "1h",
+          market: {
+            emaTrendScore: -0.84,
+            momentum20: -0.022,
+            breakoutPct: -0.013,
+            supertrendDirection: -1,
+            realizedVolPct: 0.022
+          }
+        }
+      }
+    },
+    regimeSummary: { regime: "high_vol" },
+    strategySummary: { family: "breakout", activeStrategy: "bollinger_squeeze" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.equal(summary.strategyProfile, "pre_breakout_probe");
+  assert.equal(summary.triggerConfirmed, false);
+  assert.ok(!summary.blockerReasons.includes("higher_tf_conflict"));
+  assert.ok(!summary.blockerReasons.includes("cross_timeframe_misalignment"));
+  assert.ok(summary.reasons.includes("breakout_release_pending_against_higher_tf"));
+});
+
+await runCheck("timeframe consensus keeps liquidity sweep conflicts soft until the reclaim is confirmed", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: {
+          interval: "5m",
+          market: {
+            emaTrendScore: 0.22,
+            momentum20: 0.007,
+            breakoutPct: 0.001,
+            liquiditySweepScore: 0.54,
+            closeLocation: 0.59,
+            supertrendDirection: 0,
+            realizedVolPct: 0.016
+          }
+        },
+        higher: {
+          interval: "1h",
+          market: {
+            emaTrendScore: -0.78,
+            momentum20: -0.021,
+            breakoutPct: -0.011,
+            supertrendDirection: -1,
+            realizedVolPct: 0.021
+          }
+        }
+      }
+    },
+    regimeSummary: { regime: "range" },
+    strategySummary: { family: "market_structure", activeStrategy: "liquidity_sweep" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.equal(summary.strategyProfile, "reclaim_probe");
+  assert.equal(summary.triggerConfirmed, false);
+  assert.ok(!summary.blockerReasons.includes("higher_tf_conflict"));
+  assert.ok(!summary.blockerReasons.includes("cross_timeframe_misalignment"));
+  assert.ok(summary.reasons.includes("reclaim_pending_against_higher_tf"));
+});
+
+await runCheck("timeframe consensus still blocks a confirmed squeeze release that fights the higher timeframe", async () => {
+  const summary = buildTimeframeConsensus({
+    marketSnapshot: {
+      timeframes: {
+        lower: {
+          interval: "5m",
+          market: {
+            emaTrendScore: 0.38,
+            momentum20: 0.011,
+            breakoutPct: 0.0042,
+            donchianBreakoutPct: 0.004,
+            squeezeReleaseScore: 0.72,
+            supertrendDirection: 1,
+            realizedVolPct: 0.019
+          }
+        },
+        higher: {
+          interval: "1h",
+          market: {
+            emaTrendScore: -0.86,
+            momentum20: -0.024,
+            breakoutPct: -0.014,
+            supertrendDirection: -1,
+            realizedVolPct: 0.022
+          }
+        }
+      }
+    },
+    regimeSummary: { regime: "breakout" },
+    strategySummary: { family: "breakout", activeStrategy: "bollinger_squeeze" },
+    config: makeConfig({ enableCrossTimeframeConsensus: true, crossTimeframeMinAlignmentScore: 0.42, crossTimeframeMaxVolGapPct: 0.03 })
+  });
+  assert.equal(summary.triggerConfirmed, true);
+  assert.ok(summary.blockerReasons.includes("higher_tf_conflict"));
+  assert.ok(summary.blockerReasons.includes("cross_timeframe_misalignment"));
+});
+
 await runCheck("trading bot adaptation health shows when the online learner is active", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({

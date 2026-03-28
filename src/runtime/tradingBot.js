@@ -1431,6 +1431,9 @@ function summarizeTimeframeConsensus(summary = {}) {
     alignmentScore: num(summary.alignmentScore || 0, 4),
     directionAgreement: summary.directionAgreement ?? 0.5,
     volatilityGapPct: num(summary.volatilityGapPct || 0, 4),
+    strategyProfile: summary.strategyProfile || null,
+    triggerConfirmed: Boolean(summary.triggerConfirmed),
+    lowerDirectionalThreshold: num(summary.lowerDirectionalThreshold || 0, 4),
     reasons: [...(summary.reasons || [])],
     blockerReasons: [...(summary.blockerReasons || [])],
     summary: summary.summary || null
