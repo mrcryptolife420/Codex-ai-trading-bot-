@@ -247,6 +247,9 @@ export async function startDashboardServer({
     server.once("error", reject);
     server.listen(listenPort, "127.0.0.1", resolve);
   });
+  const waitUntilClosed = new Promise((resolve) => {
+    server.once("close", resolve);
+  });
 
   const dashboardUrl = `http://127.0.0.1:${listenPort}`;
   logger?.info?.("Dashboard server started", {
@@ -269,6 +272,8 @@ export async function startDashboardServer({
     server,
     manager,
     port: listenPort,
-    url: dashboardUrl
+    url: dashboardUrl,
+    shutdown,
+    waitUntilClosed
   };
 }

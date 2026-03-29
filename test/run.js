@@ -8974,6 +8974,41 @@ await runCheck("run cli closes the bot after SIGINT and removes signal handlers"
   assert.equal(signalSource.listenerCount("SIGTERM"), 0);
 });
 
+await runCheck("run cli keeps dashboard command alive until server closes", async () => {
+  let released = false;
+  let started = false;
+  let resolved = false;
+  const waitUntilClosed = new Promise((resolve) => {
+    setTimeout(() => {
+      released = true;
+      resolve();
+    }, 25);
+  });
+  const runPromise = runCli({
+    command: "dashboard",
+    args: [],
+    config: makeConfig({ projectRoot: process.cwd(), dashboardPort: 3011 }),
+    logger: { info() {}, error() {}, warn() {} },
+    dashboardFactory: async () => {
+      started = true;
+      return {
+        url: "http://127.0.0.1:3011",
+        port: 3011,
+        waitUntilClosed
+      };
+    }
+  }).then(() => {
+    resolved = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(started, true);
+  assert.equal(released, false);
+  assert.equal(resolved, false);
+  await runPromise;
+  assert.equal(released, true);
+  assert.equal(resolved, true);
+});
+
 await runCheck("bot manager stops instead of switching live positions to paper", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-manager-"));
   try {

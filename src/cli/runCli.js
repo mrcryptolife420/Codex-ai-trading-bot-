@@ -69,10 +69,21 @@ async function runContinuousBot({ bot, config, logger, sleepFn = sleep, signalSo
   }
 }
 
-export default async function runCli({ command, args, config, logger, botFactory = ({ config: cfg, logger: log }) => new TradingBot({ config: cfg, logger: log }), sleepFn = sleep, signalSource = process }) {
-  if (command === "dashboard") {
+export default async function runCli({
+  command,
+  args,
+  config,
+  logger,
+  botFactory = ({ config: cfg, logger: log }) => new TradingBot({ config: cfg, logger: log }),
+  dashboardFactory = async ({ projectRoot, logger: log, port }) => {
     const { startDashboardServer } = await import("../dashboard/server.js");
-    const dashboard = await startDashboardServer({
+    return startDashboardServer({ projectRoot, logger: log, port });
+  },
+  sleepFn = sleep,
+  signalSource = process
+}) {
+  if (command === "dashboard") {
+    const dashboard = await dashboardFactory({
       projectRoot: config.projectRoot,
       logger,
       port: config.dashboardPort
@@ -88,6 +99,7 @@ export default async function runCli({ command, args, config, logger, botFactory
         2
       )
     );
+    await (dashboard.waitUntilClosed || new Promise(() => {}));
     return;
   }
 

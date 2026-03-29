@@ -1918,7 +1918,11 @@ async function refreshSnapshot() {
         const pill = makeNode("span", { className: "hero-pill negative" });
         pill.append(
           makeNode("strong", { text: "Dashboard" }),
-          makeNode("span", { text: "Controleer of de dashboardserver nog draait." })
+          makeNode("span", {
+            text: error?.message
+              ? `Snapshot mislukt: ${truncate(error.message, 140)}`
+              : "Controleer of de dashboardserver nog draait."
+          })
         );
         return pill;
       })()
