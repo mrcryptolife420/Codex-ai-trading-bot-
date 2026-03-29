@@ -38,6 +38,14 @@ function canUsePaperLossStreakFallback({ botMode, criticalIssues = [], health = 
   return botMode === "paper" && !health.circuitOpen && criticalIssues.length === 1 && criticalIssues[0] === "loss_streak_limit";
 }
 
+function canUsePaperRecoverableCriticalFallback({ botMode, criticalIssues = [], health = {} }) {
+  if (botMode !== "paper" || health.circuitOpen || !criticalIssues.length) {
+    return false;
+  }
+  const recoverableIssues = new Set(["loss_streak_limit", "calibration_break"]);
+  return criticalIssues.every((issue) => recoverableIssues.has(issue));
+}
+
 export class SelfHealManager {
   constructor(config, logger) {
     this.config = config;
@@ -145,6 +153,35 @@ export class SelfHealManager {
         state.managerAction = null;
         state.sizeMultiplier = this.config.selfHealPaperCalibrationProbeSizeMultiplier;
         state.thresholdPenalty = this.config.selfHealPaperCalibrationProbeThresholdPenalty;
+        state.lowRiskOnly = true;
+        state.learningAllowed = true;
+        state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
+        state.lastTriggeredAt = nowIso();
+        return state;
+      }
+      if (canUsePaperRecoverableCriticalFallback({ botMode, criticalIssues, health })) {
+        const includesCalibrationBreak = criticalIssues.includes("calibration_break");
+        state.mode = "low_risk_only";
+        state.active = true;
+        state.reason = criticalIssues.includes("loss_streak_limit") ? "loss_streak_limit" : criticalIssues[0];
+        state.issues = criticalIssues;
+        state.actions = ["limit_entries"];
+        if (includesCalibrationBreak) {
+          state.actions.push("paper_probe_entries");
+          if (this.config.selfHealResetRlOnTrigger) {
+            state.actions.push("reset_rl_policy");
+          }
+          if (this.config.selfHealRestoreStableModel && hasStableModel) {
+            state.actions.push("restore_stable_model");
+          }
+        }
+        state.managerAction = null;
+        state.sizeMultiplier = includesCalibrationBreak
+          ? Math.min(0.32, this.config.selfHealPaperCalibrationProbeSizeMultiplier || 0.32)
+          : 0.32;
+        state.thresholdPenalty = includesCalibrationBreak
+          ? Math.max(0.08, this.config.selfHealPaperCalibrationProbeThresholdPenalty || 0)
+          : 0.08;
         state.lowRiskOnly = true;
         state.learningAllowed = true;
         state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();

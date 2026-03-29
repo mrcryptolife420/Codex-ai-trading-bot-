@@ -11,8 +11,13 @@
 }
 
 export class Logger {
-  constructor(level = "info") {
+  constructor(level = "info", { writer } = {}) {
     this.level = level;
+    this.writer = typeof writer === "function"
+      ? writer
+      : (line) => {
+          console.log(line);
+        };
     this.order = {
       debug: 10,
       info: 20,
@@ -31,7 +36,7 @@ export class Logger {
     }
     const timestamp = new Date().toISOString();
     const line = `[${timestamp}] ${level.toUpperCase()} ${message}${formatContext(context)}`;
-    console.log(line);
+    this.writer(line);
   }
 
   debug(message, context) {
@@ -51,6 +56,6 @@ export class Logger {
   }
 }
 
-export function createLogger(level) {
-  return new Logger(level);
+export function createLogger(level, options) {
+  return new Logger(level, options);
 }

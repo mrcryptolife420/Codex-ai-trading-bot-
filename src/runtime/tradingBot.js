@@ -6717,6 +6717,7 @@ export class TradingBot {
   buildOperationalReadiness(referenceNow = nowIso()) {
     const reasons = [];
     const serviceState = summarizeServiceState(this.runtime.service || {}, this.config, referenceNow);
+    const selfHeal = summarizeSelfHeal(this.runtime.selfHeal || {});
     if (!this.runtime.lastAnalysisAt) {
       reasons.push("analysis_not_ready");
     }
@@ -6753,6 +6754,9 @@ export class TradingBot {
     if (serviceState.bootstrapDegraded) {
       reasons.push("service_bootstrap_degraded");
     }
+    if (["paused", "paper_fallback"].includes(selfHeal.mode || "")) {
+      reasons.push("self_heal_paused");
+    }
     const signalFlow = summarizeSignalFlow(this.runtime.signalFlow || {});
     if (
       this.config.botMode === "paper" &&
@@ -6772,7 +6776,7 @@ export class TradingBot {
     return {
       checkedAt: referenceNow,
       ready: reasons.length === 0,
-      status: reasons.includes("exchange_truth_freeze") || reasons.includes("health_circuit_open") || reasons.includes("exchange_safety_blocked") || reasons.includes("capital_governor_blocked")
+      status: reasons.includes("exchange_truth_freeze") || reasons.includes("health_circuit_open") || reasons.includes("exchange_safety_blocked") || reasons.includes("capital_governor_blocked") || reasons.includes("self_heal_paused")
         ? "blocked"
       : reasons.length
           ? "degraded"

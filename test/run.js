@@ -90,6 +90,7 @@ import { TradingBot, buildCandidateQualityQuorum } from "../src/runtime/tradingB
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
 import { normalizeSymbolList, readRequestBody } from "../src/dashboard/server.js";
+import { createLogger } from "../src/utils/logger.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -4491,6 +4492,39 @@ await runCheck("self heal uses paper calibration probe instead of full pause on 
   assert.ok(state.actions.includes("paper_probe_entries"));
   assert.ok(state.actions.includes("reset_rl_policy"));
   assert.ok(state.actions.includes("restore_stable_model"));
+});
+
+await runCheck("self heal keeps paper learning active on combined recoverable paper issues", async () => {
+  const manager = new SelfHealManager(makeConfig({
+    selfHealPaperCalibrationProbeSizeMultiplier: 0.24,
+    selfHealPaperCalibrationProbeThresholdPenalty: 0.035
+  }), { warn() {} });
+  const state = manager.evaluate({
+    previousState: manager.buildDefaultState(),
+    report: {
+      recentTrades: [
+        { exitAt: "2026-03-08T03:30:00.000Z", pnlQuote: -10 },
+        { exitAt: "2026-03-08T03:10:00.000Z", pnlQuote: -8 },
+        { exitAt: "2026-03-08T02:50:00.000Z", pnlQuote: -6 }
+      ],
+      windows: { today: { realizedPnl: -30 } }
+    },
+    driftSummary: { severity: 0.1 },
+    health: { circuitOpen: false },
+    calibration: { observations: 18, expectedCalibrationError: 0.31 },
+    botMode: "paper",
+    hasStableModel: true,
+    now: new Date("2026-03-08T04:00:00.000Z")
+  });
+  assert.equal(state.mode, "low_risk_only");
+  assert.equal(state.learningAllowed, true);
+  assert.deepEqual(state.issues, ["loss_streak_limit", "calibration_break"]);
+  assert.ok(state.actions.includes("limit_entries"));
+  assert.ok(state.actions.includes("paper_probe_entries"));
+  assert.ok(state.actions.includes("reset_rl_policy"));
+  assert.ok(state.actions.includes("restore_stable_model"));
+  assert.equal(state.sizeMultiplier, 0.24);
+  assert.equal(state.thresholdPenalty, 0.08);
 });
 
 await runCheck("self heal keeps live calibration break on hard fallback behavior", async () => {
@@ -8930,6 +8964,20 @@ await runCheck("self heal manager keeps paper mode in low-risk learning on pure 
   assert.ok(!state.actions.includes("pause_entries"));
 });
 
+await runCheck("logger supports stderr-safe custom writers", async () => {
+  const lines = [];
+  const logger = createLogger("info", {
+    writer(line) {
+      lines.push(line);
+    }
+  });
+  logger.info("Machine readable status", { mode: "paper" });
+  logger.debug("ignored");
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].includes("INFO Machine readable status"));
+  assert.ok(lines[0].includes("mode=paper"));
+});
+
 await runCheck("run cli closes the bot after SIGINT and removes signal handlers", async () => {
   const signalSource = new EventEmitter();
   let cycleCount = 0;
@@ -12349,6 +12397,88 @@ await runCheck("trading bot readiness flags stalled paper signal flow", async ()
   assert.equal(readiness.status, "degraded");
   assert.ok(readiness.reasons.includes("paper_signal_flow_stalled"));
   assert.equal(checks.checks.find((item) => item.id === "paper_signal_flow")?.passed, false);
+});
+
+await runCheck("trading bot readiness flags paused self-heal states", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    lastAnalysisAt: "2026-03-19T10:00:00.000Z",
+    health: { circuitOpen: false },
+    exchangeTruth: { orphanedSymbols: [], manualInterferenceSymbols: [], unmatchedOrderSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [] },
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    selfHeal: {
+      mode: "paused",
+      active: true,
+      reason: "calibration_break",
+      learningAllowed: false
+    },
+    ops: { alerts: { alerts: [] } },
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:30.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0
+    }
+  };
+  const readiness = bot.buildOperationalReadiness("2026-03-19T10:00:00.000Z");
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.status, "blocked");
+  assert.ok(readiness.reasons.includes("self_heal_paused"));
+});
+
+await runCheck("bot manager readiness inherits paused self-heal blockers from dashboard safety", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  manager.config = makeConfig({ botMode: "paper" });
+  manager.runState = "running";
+  const readiness = manager.buildOperationalReadiness({
+    manager: { currentMode: "paper", runState: "running" },
+    dashboard: {
+      overview: { lastAnalysisAt: "2026-03-19T10:00:00.000Z" },
+      ops: {
+        readiness: { status: "ready", reasons: [] },
+        alerts: { alerts: [] },
+        service: { watchdogStatus: "running", heartbeatStale: false, recoveryActive: false }
+      },
+      health: { circuitOpen: false },
+      safety: {
+        selfHeal: { mode: "paused" },
+        exchangeTruth: { freezeEntries: false },
+        exchangeSafety: { status: "ready" },
+        orderLifecycle: { pendingActions: [] }
+      }
+    }
+  });
+  assert.equal(readiness.ok, false);
+  assert.equal(readiness.status, "blocked");
+  assert.ok(readiness.reasons.includes("self_heal_paused"));
+});
+
+await runCheck("stream coordinator close force-shuts sockets without restart races", async () => {
+  const coordinator = new StreamCoordinator({
+    client: {
+      closeUserDataListenKey: async () => {}
+    },
+    config: makeConfig(),
+    logger: { warn() {}, info() {} }
+  });
+  let publicTerminated = 0;
+  let futuresTerminated = 0;
+  let userTerminated = 0;
+  coordinator.publicSocket = { terminate() { publicTerminated += 1; } };
+  coordinator.futuresSocket = { terminate() { futuresTerminated += 1; } };
+  coordinator.userSocket = { terminate() { userTerminated += 1; } };
+  coordinator.state.listenKey = "abc";
+  await coordinator.close();
+  assert.equal(publicTerminated, 1);
+  assert.equal(futuresTerminated, 1);
+  assert.equal(userTerminated, 1);
+  assert.equal(coordinator.publicSocket, null);
+  assert.equal(coordinator.futuresSocket, null);
+  assert.equal(coordinator.userSocket, null);
+  assert.equal(coordinator.state.listenKey, null);
 });
 
 await runCheck("doctor surfaces stale service heartbeat checks", async () => {

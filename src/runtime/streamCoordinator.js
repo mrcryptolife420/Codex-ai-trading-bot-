@@ -110,6 +110,23 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function shutdownSocket(socket) {
+  if (!socket) {
+    return;
+  }
+  try {
+    if (typeof socket.terminate === "function") {
+      socket.terminate();
+      return;
+    }
+    if (typeof socket.close === "function") {
+      socket.close();
+    }
+  } catch {
+    // ignore local websocket shutdown failures
+  }
+}
+
 function toEventTimeMs(value) {
   if (value == null) {
     return Number.NaN;
@@ -756,18 +773,15 @@ export class StreamCoordinator {
       clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = null;
     }
-    if (this.publicSocket) {
-      this.publicSocket.close();
-      this.publicSocket = null;
-    }
-    if (this.futuresSocket) {
-      this.futuresSocket.close();
-      this.futuresSocket = null;
-    }
-    if (this.userSocket) {
-      this.userSocket.close();
-      this.userSocket = null;
-    }
+    const publicSocket = this.publicSocket;
+    const futuresSocket = this.futuresSocket;
+    const userSocket = this.userSocket;
+    this.publicSocket = null;
+    this.futuresSocket = null;
+    this.userSocket = null;
+    shutdownSocket(publicSocket);
+    shutdownSocket(futuresSocket);
+    shutdownSocket(userSocket);
     this.state.publicStreamConnected = false;
     this.state.futuresStreamConnected = false;
     this.state.userStreamConnected = false;
@@ -782,7 +796,6 @@ export class StreamCoordinator {
     }
   }
 }
-
 
 
 

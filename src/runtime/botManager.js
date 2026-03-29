@@ -364,6 +364,9 @@ export class BotManager {
     if ((snapshot?.dashboard?.ops?.capitalGovernor?.status || "") === "blocked") {
       addReason("capital_governor_blocked", "blocked");
     }
+    if (["paused", "paper_fallback"].includes(snapshot?.dashboard?.safety?.selfHeal?.mode || "")) {
+      addReason("self_heal_paused", "blocked");
+    }
     const service = snapshot?.dashboard?.ops?.service || {};
     if (service.watchdogStatus === "degraded") {
       addReason("service_watchdog_degraded", "degraded");
@@ -590,4 +593,3 @@ export class BotManager {
     return this.buildSnapshotFromDashboard(dashboard);
   }
 }
-
