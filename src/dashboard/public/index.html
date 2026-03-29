@@ -10,30 +10,32 @@
     <div class="shell">
       <main class="main">
         <header class="topbar">
-          <div class="brand-block">
-            <p class="eyebrow">Codex AI Crypto Trading Bot</p>
-            <h1>Trading Desk</h1>
-            <p id="controlHint" class="topbar-copy">Status wordt geladen...</p>
-          </div>
-
-          <div class="topbar-side">
-            <div class="status-strip" aria-label="Botstatus">
-              <span class="status-chip" id="modeBadge">MODE</span>
-              <span class="status-chip muted" id="runStateBadge">STATUS</span>
-              <span class="status-chip muted" id="healthBadge">HEALTH</span>
-              <span class="status-chip muted refresh-chip" id="refreshBadge">Laatste update: -</span>
+          <div class="topbar-head">
+            <div class="brand-block">
+              <p class="eyebrow">Codex AI Crypto Trading Bot</p>
+              <h1>Trading Desk</h1>
+              <p id="controlHint" class="topbar-copy">Status wordt geladen...</p>
             </div>
 
-            <div class="topbar-actions">
-              <button id="paperBtn" class="ghost" type="button">Paper</button>
-              <button id="liveBtn" class="ghost warn" type="button">Live</button>
-              <button id="refreshBtn" class="ghost" type="button">Refresh</button>
-              <button id="startBtn" type="button">Start</button>
-              <button id="stopBtn" class="danger" type="button">Stop</button>
+            <div class="topbar-side">
+              <div class="status-strip" aria-label="Botstatus">
+                <span class="status-chip" id="modeBadge">MODE</span>
+                <span class="status-chip muted" id="runStateBadge">STATUS</span>
+                <span class="status-chip muted" id="healthBadge">HEALTH</span>
+                <span class="status-chip muted refresh-chip" id="refreshBadge">Laatste update: -</span>
+              </div>
+
+              <div class="topbar-actions">
+                <button id="paperBtn" class="ghost" type="button">Paper</button>
+                <button id="liveBtn" class="ghost warn" type="button">Live</button>
+                <button id="refreshBtn" class="ghost" type="button">Refresh</button>
+                <button id="startBtn" type="button">Start</button>
+                <button id="stopBtn" class="danger" type="button">Stop</button>
+              </div>
             </div>
           </div>
 
-          <div id="operatorSummary" class="status-strip status-summary" aria-label="Belangrijkste samenvatting"></div>
+          <div id="operatorSummary" class="status-summary" aria-label="Belangrijkste samenvatting"></div>
         </header>
 
         <section class="main-grid">

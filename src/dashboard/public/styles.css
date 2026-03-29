@@ -58,13 +58,13 @@ h3 {
 }
 
 .shell {
-  width: min(1500px, calc(100vw - 24px));
-  margin: 12px auto 18px;
+  width: min(1520px, calc(100vw - 20px));
+  margin: 10px auto 16px;
 }
 
 .main {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .topbar,
@@ -77,37 +77,33 @@ h3 {
 
 .topbar {
   position: sticky;
-  top: 12px;
+  top: 10px;
   z-index: 5;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "brand side"
-    "summary summary";
-  gap: 12px 18px;
-  align-items: start;
-  padding: 14px 16px;
+  gap: 10px;
+  padding: 12px 14px;
 }
 
+.topbar-head,
 .brand-block,
 .panel-head {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
-.brand-block {
-  grid-area: brand;
-  align-content: start;
+.topbar-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 16px;
+  align-items: start;
 }
 
 .brand-block h1 {
-  font-size: clamp(1.4rem, 1.9vw, 1.8rem);
+  font-size: clamp(1.35rem, 1.8vw, 1.72rem);
 }
 
 .topbar-side {
-  grid-area: side;
   display: grid;
-  gap: 10px;
+  gap: 8px;
   justify-items: end;
 }
 
@@ -129,13 +125,14 @@ th,
 }
 
 .topbar-copy {
-  max-width: 72ch;
-  line-height: 1.4;
+  max-width: 64ch;
+  line-height: 1.35;
+  font-size: 0.95rem;
 }
 
 .panel-body {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .collapsible-panel.is-collapsed .panel-body {
@@ -148,13 +145,14 @@ th,
 .tag-list {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .status-summary {
-  grid-area: summary;
-  margin-top: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
 }
 
 .status-chip,
@@ -167,12 +165,12 @@ th,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 32px;
+  padding: 0 11px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.04);
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 700;
 }
 
@@ -183,27 +181,40 @@ th,
 
 .refresh-chip {
   justify-content: flex-start;
-  min-width: 230px;
+  min-width: 220px;
 }
 
 .hero-pill {
-  justify-content: flex-start;
-  gap: 8px;
-  min-height: 36px;
-  padding: 0 11px;
+  display: grid;
+  align-content: start;
+  justify-content: start;
+  gap: 3px;
+  min-height: 0;
+  padding: 10px 12px;
+  border-radius: 16px;
   max-width: 100%;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .hero-pill strong {
   color: var(--text);
   flex-shrink: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hero-pill span {
+  color: var(--text-soft);
+  font-size: 0.88rem;
+  line-height: 1.3;
 }
 
 button {
   appearance: none;
   border: 0;
-  min-height: 40px;
-  padding: 0 14px;
+  min-height: 38px;
+  padding: 0 13px;
   border-radius: 14px;
   cursor: pointer;
   color: var(--text);
@@ -228,8 +239,8 @@ button:disabled {
 }
 
 .ghost-small {
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 32px;
+  padding: 0 10px;
   border-radius: 12px;
   font-size: 0.76rem;
 }
@@ -246,6 +257,7 @@ button:disabled {
 .bottom-grid {
   display: grid;
   gap: 12px;
+  align-items: start;
 }
 
 .main-grid {
@@ -257,34 +269,37 @@ button:disabled {
 }
 
 .panel {
-  padding: 14px;
+  padding: 12px;
 }
 
 #signalsSection {
-  grid-column: span 8;
+  grid-column: span 7;
 }
 
 #positionsSection {
-  grid-column: span 4;
+  grid-column: span 5;
 }
 
 #learningSection {
-  grid-column: span 8;
+  grid-column: span 7;
 }
 
 #riskSection {
-  grid-column: span 4;
+  grid-column: span 5;
 }
 
 #missedTradesSection,
-#historySection,
-#diagnosticsSection,
-#explainabilitySection {
+#historySection {
   grid-column: span 6;
 }
 
+#diagnosticsSection,
+#explainabilitySection {
+  grid-column: span 4;
+}
+
 #promotionSection {
-  grid-column: span 12;
+  grid-column: span 4;
 }
 
 .panel-head,
@@ -292,18 +307,18 @@ button:disabled {
   display: flex;
   align-items: end;
   justify-content: space-between;
-  gap: 10px 14px;
-  margin-bottom: 10px;
+  gap: 8px 12px;
+  margin-bottom: 8px;
 }
 
 .panel-head h3 {
-  font-size: 1.08rem;
+  font-size: 1rem;
 }
 
 .list-stack,
 .risk-grid {
   display: grid;
-  gap: 8px;
+  gap: 7px;
 }
 
 .risk-grid {
@@ -326,8 +341,8 @@ button:disabled {
 
 .card-summary {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px;
 }
 
 .card-copy {
@@ -344,7 +359,7 @@ button:disabled {
 
 .signal-overview {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -428,11 +443,11 @@ button:disabled {
 .subgrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .stat {
-  padding: 10px 12px;
+  padding: 9px 11px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.02);
@@ -484,8 +499,8 @@ th {
 }
 
 input[type="search"] {
-  width: min(260px, 100%);
-  min-height: 38px;
+  width: min(230px, 100%);
+  min-height: 36px;
   padding: 0 12px;
   border-radius: 12px;
   border: 1px solid var(--line);
@@ -508,8 +523,8 @@ input[type="search"] {
 
 .event-row {
   display: grid;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 9px 11px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
@@ -640,15 +655,11 @@ input[type="search"] {
 }
 
 @media (max-width: 1180px) {
-  .topbar,
+  .topbar-head,
   .main-grid,
   .bottom-grid,
   .learning-review-grid {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      "brand"
-      "side"
-      "summary";
   }
 
   .topbar-side {
@@ -690,5 +701,9 @@ input[type="search"] {
   .ghost,
   input[type="search"] {
     width: 100%;
+  }
+
+  .status-summary {
+    grid-template-columns: 1fr;
   }
 }

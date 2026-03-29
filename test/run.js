@@ -13143,7 +13143,14 @@ await runCheck("dashboard header removes duplicate blocker and action hero pills
   assert.doesNotMatch(appSource, /label:\s*"Blokkade"/);
   assert.doesNotMatch(appSource, /label:\s*"Actie"/);
   assert.match(appSource, /label:\s*"Focus"/);
+  assert.match(htmlSource, /class="topbar-head"/);
   assert.match(htmlSource, /class="topbar-side"/);
+});
+
+await runCheck("dashboard layout keeps compact non-stretch grid structure", async () => {
+  const cssSource = await fs.readFile(new URL("../src/dashboard/public/styles.css", import.meta.url), "utf8");
+  assert.match(cssSource, /\.main-grid,\s*\.bottom-grid\s*\{[\s\S]*align-items:\s*start;/);
+  assert.match(cssSource, /\.status-summary\s*\{[\s\S]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(180px,\s*1fr\)\)/);
 });
 
 await runCheck("dashboard frontend smoke renders snapshot without browser DOM", async () => {
