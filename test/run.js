@@ -13150,7 +13150,9 @@ await runCheck("dashboard header removes duplicate blocker and action hero pills
 await runCheck("dashboard layout keeps compact non-stretch grid structure", async () => {
   const cssSource = await fs.readFile(new URL("../src/dashboard/public/styles.css", import.meta.url), "utf8");
   assert.match(cssSource, /\.main-grid,\s*\.bottom-grid\s*\{[\s\S]*align-items:\s*start;/);
-  assert.match(cssSource, /\.status-summary\s*\{[\s\S]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(180px,\s*1fr\)\)/);
+  assert.match(cssSource, /\.status-summary\s*\{[\s\S]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(cssSource, /\.overview-stage\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1\.58fr\)\s+minmax\(340px,\s*0\.82fr\)/);
+  assert.match(cssSource, /\.analytics-grid\s*\{[\s\S]*grid-template-areas:/);
 });
 
 await runCheck("dashboard markup keeps operator-first panel order", async () => {
