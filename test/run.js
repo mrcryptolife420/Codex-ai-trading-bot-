@@ -13153,6 +13153,18 @@ await runCheck("dashboard layout keeps compact non-stretch grid structure", asyn
   assert.match(cssSource, /\.status-summary\s*\{[\s\S]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(180px,\s*1fr\)\)/);
 });
 
+await runCheck("dashboard markup keeps operator-first panel order", async () => {
+  const htmlSource = await fs.readFile(new URL("../src/dashboard/public/index.html", import.meta.url), "utf8");
+  const riskIndex = htmlSource.indexOf('id="riskSection"');
+  const learningIndex = htmlSource.indexOf('id="learningSection"');
+  const historyIndex = htmlSource.indexOf('id="historySection"');
+  const diagnosticsIndex = htmlSource.indexOf('id="diagnosticsSection"');
+  const missedIndex = htmlSource.indexOf('id="missedTradesSection"');
+  assert.ok(riskIndex >= 0 && learningIndex >= 0 && historyIndex >= 0 && diagnosticsIndex >= 0 && missedIndex >= 0);
+  assert.ok(riskIndex < learningIndex);
+  assert.ok(historyIndex < missedIndex);
+});
+
 await runCheck("dashboard frontend smoke renders snapshot without browser DOM", async () => {
   const result = __dashboardSmokeRender({
     manager: {

@@ -290,25 +290,31 @@ button:disabled {
 }
 
 #learningSection {
-  grid-column: span 7;
+  grid-column: span 8;
 }
 
 #riskSection {
+  grid-column: span 4;
+}
+
+#historySection {
+  grid-column: span 7;
+}
+
+#diagnosticsSection {
   grid-column: span 5;
 }
 
-#missedTradesSection,
-#historySection {
-  grid-column: span 6;
+#missedTradesSection {
+  grid-column: span 7;
 }
 
-#diagnosticsSection,
 #explainabilitySection {
-  grid-column: span 4;
+  grid-column: span 5;
 }
 
 #promotionSection {
-  grid-column: span 4;
+  grid-column: span 12;
 }
 
 .panel-head,
