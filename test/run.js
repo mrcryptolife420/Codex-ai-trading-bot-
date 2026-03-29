@@ -10048,7 +10048,7 @@ await runCheck("data recorder stores rich learning events for paper retraining",
     });
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "learning", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
-    assert.equal(payload.schemaVersion, 6);
+    assert.equal(payload.schemaVersion, 7);
     assert.equal(payload.frameType, "learning");
     assert.equal(payload.symbol, "BTCUSDT");
     assert.equal(payload.model.calibrationObservations, 18);
@@ -10078,9 +10078,18 @@ await runCheck("data recorder stores decision quality through the shared recorde
       candidates: [{
         symbol: "BTCUSDT",
         score: { probability: 0.62, confidence: 0.58, calibrationConfidence: 0.54 },
-        decision: { allow: true, threshold: 0.55, rankScore: 0.13, reasons: [] },
+        decision: {
+          allow: true,
+          threshold: 0.55,
+          rankScore: 0.13,
+          opportunityScore: 0.68,
+          reasons: [],
+          missedTradeTuningApplied: { blocker: "model_confidence_too_low", action: "soften_blocker", thresholdShift: -0.01 }
+        },
         regimeSummary: { regime: "trend" },
         strategySummary: { activeStrategy: "ema_trend", family: "trend_following" },
+        marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.77, conditionRisk: 0.18, conditionTransitionState: "stable" },
+        strategyAllocationSummary: { posture: "offense", confidence: 0.71, preferredFamily: "trend_following", convictionScore: 0.66 },
         marketSnapshot: { book: { bookPressure: 0.18, spreadBps: 2.2 }, market: { adx14: 25 } },
         dataQualitySummary: { status: "ready", overallScore: 0.74, freshnessScore: 0.71, trustScore: 0.78, coverageScore: 0.81, sources: [{ label: "news", status: "ready", coverage: 1, freshnessScore: 0.7, trustScore: 0.8 }] },
         confidenceBreakdown: { marketConfidence: 0.7, dataConfidence: 0.78, executionConfidence: 0.69, modelConfidence: 0.66, overallConfidence: 0.71 },
@@ -10093,8 +10102,59 @@ await runCheck("data recorder stores decision quality through the shared recorde
     const stored = await fs.readFile(path.join(tempDir, "feature-store", "decisions", "2026-03-10.jsonl"), "utf8");
     const payload = JSON.parse(stored.trim());
     assert.equal(payload.recordQuality.kind, "decision");
+    assert.equal(payload.marketCondition.conditionId, "trend_continuation");
+    assert.equal(payload.opportunityScore, 0.68);
+    assert.equal(payload.missedTradeTuning.action, "soften_blocker");
     assert.equal(recorder.getSummary().decisionFrames, 1);
     assert.equal(recorder.getSummary().qualityByKind[0].kind, "decision");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder stores adaptive trade context for learning truth", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-trade-context-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 21 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordTrade({
+      symbol: "BTCUSDT",
+      brokerMode: "paper",
+      exitAt: "2026-03-10T12:00:00.000Z",
+      pnlQuote: 18.2,
+      netPnlPct: 0.013,
+      labelScore: 0.69,
+      strategyAtEntry: "ema_trend",
+      strategyFamily: "trend_following",
+      regimeAtEntry: "trend",
+      sessionAtEntry: "london",
+      marketConditionAtEntry: "trend_continuation",
+      allocatorPostureAtEntry: "offense",
+      opportunityScoreAtEntry: 0.71,
+      executionQualityScore: 0.74,
+      captureEfficiency: 0.67,
+      rawFeatures: { momentum_5: 1.1, adx_strength: 0.9 },
+      entryRationale: {
+        strategy: { family: "trend_following", activeStrategy: "ema_trend" },
+        marketCondition: { conditionId: "trend_continuation" },
+        adaptivePolicy: { favoredFamily: "trend_following", favoredStrategy: "ema_trend", posture: "offense", confidence: 0.72 },
+        missedTradeTuning: { topBlocker: "model_confidence_too_low", action: "soften_blocker", confidence: 0.74, thresholdShift: -0.01 },
+        exitPolicy: { preferredExitStyle: "trail", trailBias: 0.08, trimBias: -0.03, holdTolerance: 0.07 },
+        opportunityScore: 0.71
+      }
+    });
+    const stored = await fs.readFile(path.join(tempDir, "feature-store", "trades", "2026-03-10.jsonl"), "utf8");
+    const payload = JSON.parse(stored.trim());
+    assert.equal(payload.marketConditionAtEntry, "trend_continuation");
+    assert.equal(payload.allocatorPosture, "offense");
+    assert.equal(payload.opportunityScore, 0.71);
+    assert.equal(payload.adaptivePolicy.favoredStrategy, "ema_trend");
+    assert.equal(payload.missedTradeTuningApplied.action, "soften_blocker");
+    assert.equal(payload.exitPolicyApplied.preferredExitStyle, "trail");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -13656,9 +13716,28 @@ await runCheck("dashboard snapshot surfaces missed-trade and exit learning diges
   assert.equal(snapshot.ops.adaptivePolicy.posture, "offense");
   assert.equal(snapshot.ops.missedTradeTuning.topBlocker, "model_confidence_too_low");
   assert.equal(snapshot.ops.exitPolicy.preferredExitStyle, "trail");
+  assert.equal(snapshot.ops.promotionByCondition.action, "promote_candidate");
+  assert.equal(snapshot.ops.promotionByCondition.id, "ema_trend");
   assert.ok(snapshot.ops.opportunityRanking.note);
   assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Missed-trade learning"));
   assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Exit AI"));
+});
+
+await runCheck("trading bot rebalances top paper candidates across families when scores are close", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", dashboardDecisionLimit: 6 });
+  bot.recordEvent = () => {};
+  const ranked = TradingBot.prototype.applyFamilyOpportunityBudget.call(bot, [
+    { symbol: "BTCUSDT", strategySummary: { family: "trend_following" }, decision: { opportunityScore: 0.82, rankScore: 0.82 } },
+    { symbol: "ETHUSDT", strategySummary: { family: "trend_following" }, decision: { opportunityScore: 0.8, rankScore: 0.8 } },
+    { symbol: "SOLUSDT", strategySummary: { family: "breakout" }, decision: { opportunityScore: 0.78, rankScore: 0.78 } },
+    { symbol: "XRPUSDT", strategySummary: { family: "mean_reversion" }, decision: { opportunityScore: 0.75, rankScore: 0.75 } }
+  ], { readOnly: true });
+  assert.equal(ranked[0].symbol, "BTCUSDT");
+  assert.equal(ranked[1].symbol, "SOLUSDT");
+  assert.equal(ranked[2].symbol, "ETHUSDT");
+  assert.equal(ranked[1].decision.familyOpportunityBudget.applied, true);
+  assert.equal(ranked[1].decision.familyOpportunityBudget.softCap, 1);
 });
 
 await runCheck("dashboard frontend defines number formatting helper and section render guard", async () => {

@@ -487,6 +487,7 @@ function buildLearningDigest(snapshot) {
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
   const exitPolicy = snapshot?.dashboard?.ops?.exitPolicy || {};
+  const promotionByCondition = snapshot?.dashboard?.ops?.promotionByCondition || {};
   const opportunityRanking = snapshot?.dashboard?.ops?.opportunityRanking || {};
   const missedTradeDigest = learningInsights.missedTrades || {};
   const exitDigest = learningInsights.exits || {};
@@ -606,6 +607,9 @@ function buildLearningDigest(snapshot) {
   const opportunityText = opportunityRanking.leader?.symbol
     ? `${opportunityRanking.leader.symbol} leidt met ${formatPct(opportunityRanking.leader.opportunityScore || 0, 1)}`
     : "Nog geen dominante opportunity leader.";
+  const promotionByConditionText = promotionByCondition.id
+    ? `${titleize(promotionByCondition.action || "observe")} · ${titleize(promotionByCondition.id)}${promotionByCondition.conditionId ? ` · ${titleize(promotionByCondition.conditionId)}` : ""}`
+    : "Nog geen condition-aware policykandidaat.";
 
   return {
     paperLearning,
@@ -617,6 +621,7 @@ function buildLearningDigest(snapshot) {
     adaptivePolicy,
     missedTradeTuning,
     exitPolicy,
+    promotionByCondition,
     opportunityRanking,
     strategyAllocation,
     offlineTrainer,
@@ -649,6 +654,7 @@ function buildLearningDigest(snapshot) {
     marketConditionText,
     adaptivePolicyText,
     exitPolicyText,
+    promotionByConditionText,
     opportunityText
   };
 }
@@ -1288,8 +1294,10 @@ function renderLearning(snapshot) {
     marketConditionText,
     adaptivePolicyText,
     exitPolicyText,
+    promotionByConditionText,
     opportunityText,
-    missedTradeTuning
+    missedTradeTuning,
+    promotionByCondition
   } = buildLearningDigest(snapshot);
   const learningBoard = makeNode("article", { className: "learning-board" });
   const hero = makeNode("section", { className: "learning-hero" });
@@ -1370,7 +1378,7 @@ function renderLearning(snapshot) {
       "Volgende stap",
       titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"),
       nextStep,
-      [reviewText, opportunityText].filter(Boolean).join(" ")
+      [reviewText, opportunityText, promotionByConditionText].filter(Boolean).join(" ")
     )
   );
 
@@ -1422,7 +1430,12 @@ function renderLearning(snapshot) {
     ),
     makeLearningListItem(
       "Policy en operatoracties",
-      [paperLearning.policyTransitions?.note || paperLearning.operatorActions?.note || "Nog geen policy-wijziging of override die operator-ingreep vraagt."],
+      [
+        paperLearning.policyTransitions?.note ||
+          promotionByCondition.note ||
+          paperLearning.operatorActions?.note ||
+          "Nog geen policy-wijziging of override die operator-ingreep vraagt."
+      ],
       [
         makeTagList(policyTags),
         makeTagList(overrideTags),
@@ -1559,6 +1572,7 @@ function buildOpsEvents(snapshot) {
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
   const exitPolicy = snapshot?.dashboard?.ops?.exitPolicy || {};
+  const promotionByCondition = snapshot?.dashboard?.ops?.promotionByCondition || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
@@ -1654,6 +1668,17 @@ function buildOpsEvents(snapshot) {
           title: "Tuning scope",
           detail: `${titleize(missedTradeTuning.topBlocker)} · ${titleize(missedTradeTuning.action || "observe")} · ${formatPct(missedTradeTuning.confidence || 0, 1)}`,
           tone: missedTradeTuning.action === "soften_blocker" ? "positive" : missedTradeTuning.action === "harden_blocker" ? "negative" : "neutral"
+        }
+      : null,
+    promotionByCondition.id
+      ? {
+          title: "Promotion by condition",
+          detail: compactJoin([
+            titleize(promotionByCondition.action || "observe"),
+            titleize(promotionByCondition.id),
+            promotionByCondition.conditionId ? titleize(promotionByCondition.conditionId) : null
+          ], " · "),
+          tone: promotionByCondition.status === "positive" ? "positive" : promotionByCondition.status === "negative" ? "negative" : "neutral"
         }
       : null,
     ["urgent", "watch"].includes(learningInsights.exits?.status)

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
-const FEATURE_STORE_SCHEMA_VERSION = 6;
+const FEATURE_STORE_SCHEMA_VERSION = 7;
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -41,6 +41,38 @@ function average(values = [], fallback = 0) {
   return filtered.length ? filtered.reduce((total, value) => total + value, 0) / filtered.length : fallback;
 }
 
+function classifyBlockerCategory(reason = "") {
+  const normalized = `${reason || ""}`.toLowerCase();
+  if (!normalized) {
+    return "other";
+  }
+  if (normalized.startsWith("model_")) {
+    return "model";
+  }
+  if (normalized.startsWith("committee_")) {
+    return "committee";
+  }
+  if (normalized.includes("timeframe") || normalized.includes("higher_tf_conflict")) {
+    return "timeframe";
+  }
+  if (normalized.includes("cooldown") || normalized.includes("weekend") || normalized.includes("session")) {
+    return "session";
+  }
+  if (normalized.includes("spread") || normalized.includes("execution") || normalized.includes("book")) {
+    return "execution";
+  }
+  if (normalized.includes("exposure") || normalized.includes("portfolio") || normalized.includes("correlation")) {
+    return "portfolio";
+  }
+  if (normalized.includes("trade_size") || normalized.includes("minimum")) {
+    return "sizing";
+  }
+  if (normalized.includes("capital") || normalized.includes("meta_") || normalized.includes("retire") || normalized.includes("quality_quorum")) {
+    return "governance";
+  }
+  return "market";
+}
+
 function makeIndicatorFrame(source = {}) {
   return {
     adx14: num(source.adx14 || 0, 2),
@@ -58,14 +90,25 @@ function makeIndicatorFrame(source = {}) {
 }
 
 function summarizeCandidateSnapshot(candidate = {}) {
+  const dominantBlocker = candidate.decision?.reasons?.[0] || null;
   return {
     symbol: candidate.symbol || null,
     allow: Boolean(candidate.decision?.allow),
     probability: num(candidate.score?.probability || 0, 4),
     threshold: num(candidate.decision?.threshold || 0, 4),
     rankScore: num(candidate.decision?.rankScore || 0, 4),
+    opportunityScore: num(candidate.decision?.opportunityScore || 0, 4),
+    edgeToThreshold: num((candidate.score?.probability || 0) - (candidate.decision?.threshold || 0), 4),
     regime: candidate.regimeSummary?.regime || null,
     strategy: candidate.strategySummary?.activeStrategy || null,
+    family: candidate.strategySummary?.family || null,
+    marketCondition: {
+      conditionId: candidate.marketConditionSummary?.conditionId || null,
+      confidence: num(candidate.marketConditionSummary?.conditionConfidence || 0, 4),
+      risk: num(candidate.marketConditionSummary?.conditionRisk || 0, 4)
+    },
+    dominantBlocker,
+    blockerCategory: classifyBlockerCategory(dominantBlocker),
     entryStyle: candidate.decision?.executionPlan?.entryStyle || null,
     quoteAmount: num(candidate.decision?.quoteAmount || 0, 2),
     market: {
@@ -82,8 +125,16 @@ function summarizeCandidateSnapshot(candidate = {}) {
     governance: {
       metaScore: num(candidate.metaSummary?.score || 0, 4),
       quorumStatus: candidate.qualityQuorumSummary?.status || null,
-      capitalGovernor: candidate.decision?.capitalGovernorApplied?.status || null
+      capitalGovernor: candidate.decision?.capitalGovernorApplied?.status || null,
+      allocatorPosture: candidate.decision?.adaptivePolicy?.posture || candidate.strategyAllocationSummary?.posture || null
     },
+    missedTradeTuning: candidate.decision?.missedTradeTuningApplied
+      ? {
+          blocker: candidate.decision.missedTradeTuningApplied.blocker || null,
+          action: candidate.decision.missedTradeTuningApplied.action || "observe",
+          thresholdShift: num(candidate.decision.missedTradeTuningApplied.thresholdShift || 0, 4)
+        }
+      : null,
     dataQuality: summarizeDataQualitySnapshot(candidate.dataQualitySummary || {}),
     confidenceBreakdown: summarizeConfidenceBreakdown(candidate.confidenceBreakdown || {}),
     topRawFeatures: pickTopNumericMap(candidate.rawFeatures || {}, 8, 4)
@@ -469,6 +520,7 @@ function buildContextHistoryPayload({
 }
 
 function makeDecisionFrame(candidate = {}) {
+  const dominantBlocker = (candidate.blockerReasons || candidate.decision?.reasons || [])[0] || null;
   return {
     symbol: candidate.symbol,
     allow: Boolean(candidate.decision?.allow),
@@ -477,11 +529,34 @@ function makeDecisionFrame(candidate = {}) {
     calibrationConfidence: num(candidate.score?.calibrationConfidence || 0, 4),
     threshold: num(candidate.decision?.threshold || 0, 4),
     rankScore: num(candidate.decision?.rankScore || 0, 4),
+    opportunityScore: num(candidate.decision?.opportunityScore || 0, 4),
+    thresholdEdge: num((candidate.score?.probability || 0) - (candidate.decision?.threshold || 0), 4),
     regime: candidate.regimeSummary?.regime || null,
     strategy: candidate.strategySummary?.activeStrategy || null,
     family: candidate.strategySummary?.family || null,
+    dominantBlocker,
+    blockerCategory: classifyBlockerCategory(dominantBlocker),
     reasons: [...(candidate.decision?.reasons || [])].slice(0, 8),
     blockers: [...(candidate.blockerReasons || candidate.decision?.reasons || [])].slice(0, 8),
+    marketCondition: candidate.marketConditionSummary ? {
+      conditionId: candidate.marketConditionSummary.conditionId || null,
+      confidence: num(candidate.marketConditionSummary.conditionConfidence || 0, 4),
+      risk: num(candidate.marketConditionSummary.conditionRisk || 0, 4),
+      transitionState: candidate.marketConditionSummary.conditionTransitionState || "stable"
+    } : null,
+    strategyAllocation: candidate.strategyAllocationSummary ? {
+      posture: candidate.strategyAllocationSummary.posture || null,
+      confidence: num(candidate.strategyAllocationSummary.confidence || 0, 4),
+      preferredFamily: candidate.strategyAllocationSummary.preferredFamily || null,
+      preferredStrategy: candidate.strategyAllocationSummary.preferredStrategy || null,
+      convictionScore: num(candidate.strategyAllocationSummary.convictionScore || 0, 4)
+    } : null,
+    missedTradeTuning: candidate.decision?.missedTradeTuningApplied ? {
+      blocker: candidate.decision.missedTradeTuningApplied.blocker || null,
+      action: candidate.decision.missedTradeTuningApplied.action || "observe",
+      confidence: num(candidate.decision.missedTradeTuningApplied.confidence || 0, 4),
+      thresholdShift: num(candidate.decision.missedTradeTuningApplied.thresholdShift || 0, 4)
+    } : null,
     providerDiversity: candidate.newsSummary?.providerDiversity || 0,
     reliabilityScore: num(candidate.newsSummary?.reliabilityScore || 0, 4),
     fundingRate: num(candidate.marketStructureSummary?.fundingRate || 0, 6),
@@ -510,14 +585,14 @@ function makeDecisionFrame(candidate = {}) {
       featureCompleteness: num(candidate.marketStateSummary?.featureCompleteness || 0, 4)
     },
     dataQuality: summarizeDataQualitySnapshot(candidate.dataQualitySummary || {}),
-    signalQuality: {
-      overallScore: num(candidate.signalQualitySummary?.overallScore || 0, 4),
-      setupFit: num(candidate.signalQualitySummary?.setupFit || 0, 4),
-      structureQuality: num(candidate.signalQualitySummary?.structureQuality || 0, 4),
-      executionViability: num(candidate.signalQualitySummary?.executionViability || 0, 4),
-      newsCleanliness: num(candidate.signalQualitySummary?.newsCleanliness || 0, 4),
-      quorumQuality: num(candidate.signalQualitySummary?.quorumQuality || 0, 4)
-    },
+      signalQuality: {
+        overallScore: num(candidate.signalQualitySummary?.overallScore || 0, 4),
+        setupFit: num(candidate.signalQualitySummary?.setupFit || 0, 4),
+        structureQuality: num(candidate.signalQualitySummary?.structureQuality || 0, 4),
+        executionViability: num(candidate.signalQualitySummary?.executionViability || 0, 4),
+        newsCleanliness: num(candidate.signalQualitySummary?.newsCleanliness || 0, 4),
+        quorumQuality: num(candidate.signalQualitySummary?.quorumQuality || 0, 4)
+      },
     confidenceBreakdown: summarizeConfidenceBreakdown(candidate.confidenceBreakdown || {}),
     dataLineage: buildDataLineageSnapshot({
       dataQualitySummary: candidate.dataQualitySummary,
@@ -810,11 +885,15 @@ export class DataRecorder {
         generatedSignals: signalFlow.lastCycle?.generatedSignals || signalFlow.generatedSignals || 0,
         rejectedSignals: signalFlow.lastCycle?.rejectedSignals || signalFlow.rejectedSignals || 0,
         allowedSignals: signalFlow.lastCycle?.allowedSignals || signalFlow.allowedSignals || 0,
+        entriesAttempted: signalFlow.lastCycle?.entriesAttempted || signalFlow.entriesAttempted || 0,
+        entriesExecuted: signalFlow.lastCycle?.entriesExecuted || signalFlow.entriesExecuted || 0,
+        entriesPersisted: signalFlow.lastCycle?.entriesPersisted || signalFlow.entriesPersisted || 0,
         paperTradesAttempted: signalFlow.lastCycle?.paperTradesAttempted || 0,
         paperTradesExecuted: signalFlow.lastCycle?.paperTradesExecuted || 0,
         paperTradesPersisted: signalFlow.lastCycle?.paperTradesPersisted || 0,
         topRejectionCategory: signalFlow.lastCycle?.topRejectionCategories?.[0]?.id || signalFlow.rejectionCategories?.[0]?.id || null,
-        topRejectionReason: signalFlow.lastCycle?.topRejectionReasons?.[0]?.id || signalFlow.rejectionReasons?.[0]?.id || null
+        topRejectionReason: signalFlow.lastCycle?.topRejectionReasons?.[0]?.id || signalFlow.rejectionReasons?.[0]?.id || null,
+        dominantBlocker: signalFlow.tradingFlowHealth?.dominantBlocker || signalFlow.lastCycle?.topRejectionReasons?.[0]?.id || null
       },
       market: {
         fearGreedValue: marketSentiment.fearGreedValue ?? null,
@@ -868,7 +947,9 @@ export class DataRecorder {
       netPnlPct: num(trade.netPnlPct || 0, 4),
       labelScore: num(trade.labelScore || 0, 4),
       strategy: trade.strategyAtEntry || null,
+      family: trade.strategyFamily || entryRationale.strategy?.family || null,
       regime: trade.regimeAtEntry || null,
+      marketConditionAtEntry: trade.marketConditionAtEntry || entryRationale.marketCondition?.conditionId || null,
       reason: trade.reason || null,
       brokerMode: trade.brokerMode || null,
       entryStyle: trade.entryExecutionAttribution?.entryStyle || null,
@@ -876,6 +957,27 @@ export class DataRecorder {
       executionQualityScore: num(trade.executionQualityScore || 0, 4),
       captureEfficiency: num(trade.captureEfficiency || 0, 4),
       sessionAtEntry: trade.sessionAtEntry || null,
+      allocatorPosture: trade.allocatorPostureAtEntry || entryRationale.adaptivePolicy?.posture || entryRationale.strategyAllocation?.posture || null,
+      opportunityScore: num(trade.opportunityScoreAtEntry ?? entryRationale.opportunityScore ?? 0, 4),
+      adaptivePolicy: entryRationale.adaptivePolicy ? {
+        favoredFamily: entryRationale.adaptivePolicy.favoredFamily || null,
+        favoredStrategy: entryRationale.adaptivePolicy.favoredStrategy || null,
+        cooledStrategy: entryRationale.adaptivePolicy.cooledStrategy || null,
+        posture: entryRationale.adaptivePolicy.posture || null,
+        confidence: num(entryRationale.adaptivePolicy.confidence || 0, 4)
+      } : null,
+      missedTradeTuningApplied: entryRationale.missedTradeTuning ? {
+        blocker: entryRationale.missedTradeTuning.topBlocker || entryRationale.missedTradeTuning.blocker || null,
+        action: entryRationale.missedTradeTuning.action || "observe",
+        confidence: num(entryRationale.missedTradeTuning.confidence || 0, 4),
+        thresholdShift: num(entryRationale.missedTradeTuning.thresholdShift || 0, 4)
+      } : null,
+      exitPolicyApplied: entryRationale.exitPolicy ? {
+        preferredExitStyle: entryRationale.exitPolicy.preferredExitStyle || "balanced",
+        trailBias: num(entryRationale.exitPolicy.trailBias || entryRationale.exitPolicy.trailTightnessBias || 0, 4),
+        trimBias: num(entryRationale.exitPolicy.trimBias || 0, 4),
+        holdTolerance: num(entryRationale.exitPolicy.holdTolerance || 0, 4)
+      } : null,
       rawFeatureCount: Object.keys(trade.rawFeatures || {}).length,
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 12, 4),
       indicators: makeIndicatorFrame(entryRationale.indicators || {}),
@@ -920,6 +1022,7 @@ export class DataRecorder {
       strategy: trade.strategyAtEntry || rationale.strategy?.activeStrategy || null,
       family: rationale.strategy?.family || null,
       regime: trade.regimeAtEntry || learning.regime || null,
+      marketConditionAtEntry: trade.marketConditionAtEntry || rationale.marketCondition?.conditionId || null,
       pnlQuote: num(trade.pnlQuote || 0, 2),
       netPnlPct: num(trade.netPnlPct || 0, 4),
       mfePct: num(trade.mfePct || 0, 4),
@@ -932,8 +1035,26 @@ export class DataRecorder {
         confidence: num(rationale.confidence || 0, 4),
         calibrationConfidence: num(rationale.calibrationConfidence || 0, 4),
         threshold: num(rationale.threshold || 0, 4),
-        rankScore: num(rationale.rankScore || 0, 4)
+        rankScore: num(rationale.rankScore || 0, 4),
+        opportunityScore: num(rationale.opportunityScore || 0, 4)
       },
+      adaptivePolicy: rationale.adaptivePolicy ? {
+        posture: rationale.adaptivePolicy.posture || null,
+        favoredFamily: rationale.adaptivePolicy.favoredFamily || null,
+        favoredStrategy: rationale.adaptivePolicy.favoredStrategy || null,
+        confidence: num(rationale.adaptivePolicy.confidence || 0, 4)
+      } : null,
+      missedTradeTuningApplied: rationale.missedTradeTuning ? {
+        blocker: rationale.missedTradeTuning.topBlocker || rationale.missedTradeTuning.blocker || null,
+        action: rationale.missedTradeTuning.action || "observe",
+        confidence: num(rationale.missedTradeTuning.confidence || 0, 4)
+      } : null,
+      exitPolicyApplied: rationale.exitPolicy ? {
+        preferredExitStyle: rationale.exitPolicy.preferredExitStyle || "balanced",
+        trailBias: num(rationale.exitPolicy.trailBias || rationale.exitPolicy.trailTightnessBias || 0, 4),
+        trimBias: num(rationale.exitPolicy.trimBias || 0, 4),
+        holdTolerance: num(rationale.exitPolicy.holdTolerance || 0, 4)
+      } : null,
       model: {
         championBefore: num(learning.championLearning?.predictionBeforeUpdate || 0, 4),
         challengerBefore: num(learning.challengerLearning?.predictionBeforeUpdate || 0, 4),
@@ -1061,7 +1182,9 @@ export class DataRecorder {
       symbol: trade.symbol,
       brokerMode: trade.brokerMode || null,
       strategy: trade.strategyAtEntry || rationale.strategy?.activeStrategy || null,
+      family: trade.strategyFamily || rationale.strategy?.family || null,
       regime: trade.regimeAtEntry || rationale.regimeSummary?.regime || null,
+      marketConditionAtEntry: trade.marketConditionAtEntry || rationale.marketCondition?.conditionId || null,
       pnlQuote: num(trade.pnlQuote || 0, 2),
       netPnlPct: num(trade.netPnlPct || 0, 4),
       entryPrice: num(trade.entryPrice || 0, 6),
@@ -1076,8 +1199,19 @@ export class DataRecorder {
       gate: {
         probability: num(rationale.probability || trade.probabilityAtEntry || 0, 4),
         threshold: num(rationale.threshold || 0, 4),
-        confidence: num(rationale.confidence || 0, 4)
+        confidence: num(rationale.confidence || 0, 4),
+        opportunityScore: num(rationale.opportunityScore || 0, 4)
       },
+      adaptivePolicy: rationale.adaptivePolicy ? {
+        posture: rationale.adaptivePolicy.posture || null,
+        favoredFamily: rationale.adaptivePolicy.favoredFamily || null,
+        favoredStrategy: rationale.adaptivePolicy.favoredStrategy || null
+      } : null,
+      exitPolicyApplied: rationale.exitPolicy ? {
+        preferredExitStyle: rationale.exitPolicy.preferredExitStyle || "balanced",
+        trailBias: num(rationale.exitPolicy.trailBias || rationale.exitPolicy.trailTightnessBias || 0, 4),
+        trimBias: num(rationale.exitPolicy.trimBias || 0, 4)
+      } : null,
       dataLineage: buildDataLineageSnapshot({
         dataQualitySummary: rationale.dataQuality,
         confidenceBreakdown: rationale.confidenceBreakdown,

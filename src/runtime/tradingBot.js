@@ -3220,6 +3220,51 @@ function summarizeOpportunityRanking(decisions = []) {
   };
 }
 
+function summarizePromotionByConditionDigest({
+  policyTransitions = [],
+  paperLearningTransitions = []
+} = {}) {
+  const priority = new Map([
+    ["live_ready", 6],
+    ["guarded_live_candidate", 5],
+    ["promote_candidate", 4],
+    ["paper_ready", 3],
+    ["priority_probe", 3],
+    ["probe_only", 2],
+    ["shadow_only", 2],
+    ["cooldown_candidate", 1],
+    ["retire_candidate", 0]
+  ]);
+  const top = [...arr(policyTransitions), ...arr(paperLearningTransitions)]
+    .filter((item) => item?.id || item?.strategyId)
+    .sort((left, right) => {
+      const priorityDelta = (priority.get(right.action) || 0) - (priority.get(left.action) || 0);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+      return (right.confidence || 0) - (left.confidence || 0);
+    })[0] || null;
+  const action = top?.action || "observe";
+  const status = ["live_ready", "guarded_live_candidate", "promote_candidate", "paper_ready"].includes(action)
+    ? "positive"
+    : ["cooldown_candidate", "retire_candidate"].includes(action)
+      ? "negative"
+      : top
+        ? "neutral"
+        : "warmup";
+  return {
+    status,
+    action,
+    id: top?.id || top?.strategyId || null,
+    conditionId: top?.conditionId || null,
+    confidence: num(top?.confidence || 0, 4),
+    reason: top?.reason || null,
+    note: top?.id || top?.strategyId
+      ? `${titleize(top.id || top.strategyId)} staat nu op ${titleize(action)}${top.conditionId ? ` binnen ${titleize(top.conditionId)}` : ""}.`
+      : "Nog geen condition-aware policy transition klaar."
+  };
+}
+
 function summarizeStrategyResearch(summary = {}) {
   const mapCandidate = (item) => ({
     ...summarizeStrategyDsl(item),
@@ -9612,7 +9657,129 @@ export class TradingBot {
     return `${candidate.symbol} werd geblokkeerd door ${candidate.decision.reasons.join(", ")}. Setup ${setupStyle} via ${strategyText}, regime ${candidate.regimeSummary.regime}, score ${num(candidate.score.probability * 100, 1)}%, ${socialText}, ${noticeText}, ${structureText}, ${macroText}, ${volatilityText}, ${orderbookText}, ${patternText}, ${calendarText}, ${providerText}, ${sessionText}, ${driftText}, ${selfHealText}, ${metaText}, ${universeText}, ${attributionText}, ${quorumText}, ${downtrendText} en ${optimizerText}.`;
   }
 
+  resolveEntryExitPolicyPreview({ marketConditionSummary = {}, strategySummary = {} } = {}) {
+    const exitLearning = this.runtime?.offlineTrainer?.exitLearning || {};
+    const conditionPolicies = arr(exitLearning.conditionPolicies || []);
+    const strategyPolicies = arr(exitLearning.strategyPolicies || []);
+    const conditionId = marketConditionSummary.conditionId || null;
+    const familyId = strategySummary.family || null;
+    const strategyId = strategySummary.activeStrategy || null;
+    const conditionMatch = conditionPolicies.find((item) =>
+      item?.conditionId === conditionId &&
+      (!item.familyId || !familyId || item.familyId === familyId) &&
+      (item.tradeCount || 0) >= 3
+    );
+    const strategyMatch = strategyPolicies.find((item) =>
+      item?.id === strategyId &&
+      (item.tradeCount || 0) >= 3
+    );
+    const summary = conditionMatch || strategyMatch || {};
+    return {
+      ...summarizeExitPolicyDigest(summary),
+      active: Boolean(conditionMatch || strategyMatch),
+      source: conditionMatch ? "condition_policy" : strategyMatch ? "strategy_policy" : null,
+      conditionId: conditionMatch?.conditionId || null,
+      familyId: conditionMatch?.familyId || familyId || null,
+      confidence: num(
+        conditionMatch
+          ? clamp((conditionMatch.tradeCount || 0) / 12, 0, 1)
+          : strategyMatch
+            ? clamp((strategyMatch.tradeCount || 0) / 16, 0, 1)
+            : 0,
+        4
+      )
+    };
+  }
+
+  buildAdaptiveDecisionContext(candidate) {
+    const marketCondition = summarizeMarketCondition(candidate.marketConditionSummary || {});
+    const strategyAllocation = summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score?.strategyAllocation || {});
+    const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
+    const policyTransitions = arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || []);
+    const adaptivePolicy = summarizeAdaptivePolicy({
+      strategyAllocation,
+      paperLearning,
+      marketCondition,
+      policyTransitions
+    });
+    const missedTradeTuning = summarizeMissedTradeTuning(candidate.decision?.missedTradeTuningApplied || {});
+    const exitPolicy = candidate.decision?.exitPolicy || this.resolveEntryExitPolicyPreview({
+      marketConditionSummary: candidate.marketConditionSummary || {},
+      strategySummary: candidate.strategySummary || {}
+    });
+    return {
+      marketCondition,
+      strategyAllocation,
+      adaptivePolicy,
+      missedTradeTuning,
+      exitPolicy,
+      opportunityScore: num(candidate.decision?.opportunityScore || 0, 4)
+    };
+  }
+
+  applyFamilyOpportunityBudget(candidates = [], { readOnly = false } = {}) {
+    const ranked = arr(candidates);
+    if (ranked.length < 3 || (this.config?.botMode || "paper") !== "paper") {
+      return ranked;
+    }
+    const leadingWindow = Math.min(ranked.length, Math.max(4, Math.min(this.config?.dashboardDecisionLimit || 6, 6)));
+    const softCap = 1;
+    const gapAllowance = 0.05;
+    const pool = ranked.slice(0, leadingWindow);
+    const reordered = [];
+    const deferred = [];
+    const familyCounts = new Map();
+
+    while (pool.length) {
+      const lead = pool[0];
+      const leadFamily = lead?.strategySummary?.family || "unknown_family";
+      const leadCount = familyCounts.get(leadFamily) || 0;
+      if (leadCount >= softCap) {
+        const alternateIndex = pool.findIndex((candidate, index) => {
+          if (index === 0) {
+            return false;
+          }
+          const family = candidate?.strategySummary?.family || "unknown_family";
+          const familyCount = familyCounts.get(family) || 0;
+          const scoreGap = (lead.decision?.opportunityScore ?? lead.decision?.rankScore ?? 0) -
+            (candidate.decision?.opportunityScore ?? candidate.decision?.rankScore ?? 0);
+          return familyCount < softCap && scoreGap <= gapAllowance;
+        });
+        if (alternateIndex > 0) {
+          const [alternate] = pool.splice(alternateIndex, 1);
+          reordered.push(alternate);
+          deferred.push(lead.symbol);
+          familyCounts.set(alternate.strategySummary?.family || "unknown_family", (familyCounts.get(alternate.strategySummary?.family || "unknown_family") || 0) + 1);
+          continue;
+        }
+      }
+      reordered.push(pool.shift());
+      familyCounts.set(leadFamily, leadCount + 1);
+    }
+
+    const finalOrder = [...reordered, ...ranked.slice(leadingWindow)];
+    finalOrder.forEach((candidate, index) => {
+      candidate.decision.familyOpportunityBudget = {
+        applied: deferred.length > 0,
+        leadingWindow,
+        softCap,
+        reordered: deferred.includes(candidate.symbol),
+        family: candidate.strategySummary?.family || null,
+        slot: index
+      };
+    });
+    if (!readOnly && deferred.length) {
+      this.recordEvent("family_opportunity_budget_applied", {
+        leadingWindow,
+        softCap,
+        deferredSymbols: [...new Set(deferred)]
+      });
+    }
+    return finalOrder;
+  }
+
   buildEntryRationale(candidate) {
+    const adaptiveContext = candidate.decision.adaptiveContext || this.buildAdaptiveDecisionContext(candidate);
     return {
       summary: this.buildCandidateSummary(candidate),
       setupStyle: buildSetupStyle(candidate),
@@ -9686,8 +9853,11 @@ export class TradingBot {
       executionNeural: summarizeExecutionNeural(candidate.score.executionNeural),
       strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
       strategyAllocation: summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score.strategyAllocation || {}),
+      adaptivePolicy: candidate.decision.adaptivePolicy || adaptiveContext.adaptivePolicy,
       marketCondition: candidate.marketConditionSummary || null,
       missedTradeTuning: candidate.decision.missedTradeTuningApplied || null,
+      exitPolicy: candidate.decision.exitPolicy || adaptiveContext.exitPolicy,
+      adaptiveContext,
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
       parameterGovernor: candidate.decision.parameterGovernorApplied || null,
@@ -10259,6 +10429,26 @@ export class TradingBot {
     decision.dataQualitySummary = decision.dataQualitySummary || dataQualitySummary;
     decision.signalQualitySummary = decision.signalQualitySummary || signalQualitySummary;
     decision.confidenceBreakdown = confidenceBreakdown;
+    decision.exitPolicy = this.resolveEntryExitPolicyPreview({
+      marketConditionSummary,
+      strategySummary
+    });
+    decision.adaptivePolicy = summarizeAdaptivePolicy({
+      strategyAllocation: summarizeStrategyAllocation(score.strategyAllocation || conditionAwareStrategyAllocationSummary || {}),
+      paperLearning: summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {}),
+      marketCondition: summarizeMarketCondition(marketConditionSummary),
+      policyTransitions: arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || [])
+    });
+    decision.adaptiveContext = this.buildAdaptiveDecisionContext({
+      ...{
+        symbol,
+        score,
+        decision,
+        strategySummary,
+        strategyAllocationSummary: score.strategyAllocation || conditionAwareStrategyAllocationSummary,
+        marketConditionSummary
+      }
+    });
     return {
       symbol,
       marketSnapshot,
@@ -10660,11 +10850,12 @@ export class TradingBot {
     }
 
     candidates.sort((left, right) => (right.decision.opportunityScore ?? right.decision.rankScore) - (left.decision.opportunityScore ?? left.decision.rankScore));
+    const rankedCandidates = this.applyFamilyOpportunityBudget(candidates, { readOnly });
     if (!readOnly) {
-      this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
-      this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(candidates, now.toISOString()));
-      this.runtime.venueConfirmation = summarizeVenueConfirmation(this.referenceVenue.summarizeRuntime(candidates, now.toISOString()));
-      this.runtime.latestDecisions = candidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
+      this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: rankedCandidates[0]?.symbol || null, leadScore: rankedCandidates[0]?.pairHealthSummary?.score ?? null });
+      this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(rankedCandidates, now.toISOString()));
+      this.runtime.venueConfirmation = summarizeVenueConfirmation(this.referenceVenue.summarizeRuntime(rankedCandidates, now.toISOString()));
+      this.runtime.latestDecisions = rankedCandidates.slice(0, this.config.dashboardDecisionLimit).map((candidate) => ({
       symbol: candidate.symbol,
       summary: this.buildCandidateSummary(candidate),
       setupStyle: buildSetupStyle(candidate),
@@ -10874,7 +11065,11 @@ export class TradingBot {
       entryStatus: candidate.decision.allow ? "eligible" : "blocked",
       entryOpened: false,
       entryAttempted: false,
-      executionBlockers: []
+      executionBlockers: [],
+      adaptivePolicy: candidate.decision.adaptivePolicy || null,
+      exitPolicy: candidate.decision.exitPolicy || null,
+      adaptiveContext: candidate.decision.adaptiveContext || null,
+      familyOpportunityBudget: candidate.decision.familyOpportunityBudget || null
     }));
       const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
@@ -10885,20 +11080,20 @@ export class TradingBot {
       if (blockedCandidates.length) {
         this.markReportDirty();
       }
-      this.runtime.marketSentiment = candidates[0]
-        ? summarizeMarketSentiment(candidates[0].marketSentimentSummary)
+      this.runtime.marketSentiment = rankedCandidates[0]
+        ? summarizeMarketSentiment(rankedCandidates[0].marketSentimentSummary)
         : this.runtime.marketSentiment || summarizeMarketSentiment(EMPTY_MARKET_SENTIMENT);
-      this.runtime.volatilityContext = candidates[0]
-        ? summarizeVolatility(candidates[0].volatilitySummary)
+      this.runtime.volatilityContext = rankedCandidates[0]
+        ? summarizeVolatility(rankedCandidates[0].volatilitySummary)
         : this.runtime.volatilityContext || summarizeVolatility(EMPTY_VOLATILITY_CONTEXT);
-      this.runtime.onChainLite = candidates[0]
-        ? summarizeOnChainLite(candidates[0].onChainLiteSummary)
+      this.runtime.onChainLite = rankedCandidates[0]
+        ? summarizeOnChainLite(rankedCandidates[0].onChainLiteSummary)
         : this.runtime.onChainLite || summarizeOnChainLite(EMPTY_ONCHAIN);
-      this.runtime.session = candidates[0]
-        ? summarizeSession(candidates[0].sessionSummary)
+      this.runtime.session = rankedCandidates[0]
+        ? summarizeSession(rankedCandidates[0].sessionSummary)
         : this.runtime.session || summarizeSession({});
     }
-    return candidates;
+    return rankedCandidates;
   }
 
   async scanCandidatesReadOnly(balance) {
@@ -11032,6 +11227,13 @@ export class TradingBot {
           entryRationale,
           runtime: this.runtime
         });
+        position.marketConditionAtEntry = position.marketConditionAtEntry || entryRationale.marketCondition?.conditionId || null;
+        position.allocatorPostureAtEntry = position.allocatorPostureAtEntry || entryRationale.adaptivePolicy?.posture || entryRationale.strategyAllocation?.posture || null;
+        position.opportunityScoreAtEntry = position.opportunityScoreAtEntry ?? entryRationale.opportunityScore ?? null;
+        position.missedTradeTuningApplied = position.missedTradeTuningApplied || entryRationale.missedTradeTuning || null;
+        position.exitPolicyApplied = position.exitPolicyApplied || entryRationale.exitPolicy || null;
+        position.adaptivePolicyAtEntry = position.adaptivePolicyAtEntry || entryRationale.adaptivePolicy || null;
+        position.adaptiveContext = position.adaptiveContext || entryRationale.adaptiveContext || null;
         this.noteEntryExecuted({ candidate, position });
         if (botMode === "paper") {
           this.notePaperTradeExecuted({ candidate, position });
@@ -11836,8 +12038,11 @@ export class TradingBot {
         fitScore: num(strategy.fitScore || 0, 4)
       },
       strategyAllocation: summarizeStrategyAllocation(decision.strategyAllocation || decision.strategyAllocationSummary || {}),
+      adaptivePolicy: decision.adaptivePolicy || decision.adaptiveContext?.adaptivePolicy || null,
       marketCondition: decision.marketCondition || decision.marketConditionSummary || null,
       missedTradeTuning: decision.missedTradeTuning || decision.missedTradeTuningApplied || null,
+      exitPolicy: decision.exitPolicy || decision.adaptiveContext?.exitPolicy || null,
+      adaptiveContext: decision.adaptiveContext || null,
       committee: summarizeCommittee(decision.committee || decision.committeeSummary || {}),
       orderBook: {
         bookPressure: num(decision.orderBook?.bookPressure || 0, 3)
@@ -12019,6 +12224,9 @@ export class TradingBot {
       entryExecutionAttribution: summarizeExecutionAttribution(trade.entryExecutionAttribution || {}),
       exitExecutionAttribution: summarizeExecutionAttribution(trade.exitExecutionAttribution || {}),
       regimeAtEntry: trade.regimeAtEntry || null,
+      marketConditionAtEntry: trade.marketConditionAtEntry || trade.entryRationale?.marketCondition?.conditionId || null,
+      allocatorPostureAtEntry: trade.allocatorPostureAtEntry || trade.entryRationale?.adaptivePolicy?.posture || trade.entryRationale?.strategyAllocation?.posture || null,
+      opportunityScoreAtEntry: num(trade.opportunityScoreAtEntry ?? trade.entryRationale?.opportunityScore ?? 0, 4),
       strategyAtEntry: trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null,
       strategyDecision: trade.strategyDecision || trade.entryRationale?.strategy || null,
       entrySpreadBps: num(trade.entrySpreadBps || 0, 2),
@@ -12705,6 +12913,10 @@ export class TradingBot {
     const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
     const exitPolicyDigest = summarizeExitPolicyDigest(leadManagedPosition?.latestExitPolicy || {});
     const opportunityRankingDigest = summarizeOpportunityRanking(previewTopCandidates);
+    const promotionByConditionDigest = summarizePromotionByConditionDigest({
+      policyTransitions: offlineTrainerSummary.policyTransitionCandidatesByCondition || [],
+      paperLearningTransitions: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}).policyTransitions?.candidates || []
+    });
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -12727,6 +12939,7 @@ export class TradingBot {
       missedTradeTuning: missedTradeTuningDigest,
       exitPolicy: exitPolicyDigest,
       opportunityRanking: opportunityRankingDigest,
+      promotionByCondition: promotionByConditionDigest,
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       sourceReliability: this.buildSourceReliabilitySnapshot(),
@@ -12847,6 +13060,10 @@ export class TradingBot {
     const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
     const exitPolicyDigest = summarizeExitPolicyDigest(leadPosition?.latestExitPolicy || {});
     const opportunityRankingDigest = summarizeOpportunityRanking(dashboardTopDecisions);
+    const promotionByConditionDigest = summarizePromotionByConditionDigest({
+      policyTransitions: offlineTrainerSummary.policyTransitionCandidatesByCondition || [],
+      paperLearningTransitions: paperLearningSummary.policyTransitions?.candidates || []
+    });
     const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
       topDecisions: dashboardTopDecisions,
       blockedSetups: dashboardBlockedSetups,
@@ -12963,6 +13180,7 @@ export class TradingBot {
         missedTradeTuning: missedTradeTuningDigest,
         exitPolicy: exitPolicyDigest,
         opportunityRanking: opportunityRankingDigest,
+        promotionByCondition: promotionByConditionDigest,
         learningInsights,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },
