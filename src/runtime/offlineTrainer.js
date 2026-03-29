@@ -1005,6 +1005,7 @@ function buildPolicyTransitionCandidatesByCondition(
           (item.governanceScore || 0) * 0.52 +
           Math.min(0.24, (item.tradeCount || 0) / 14) +
           Math.max(0, safeNumber(blocker?.confidence, 0) - 0.5) * 0.18 +
+          Math.max(0, safeNumber(exitScope?.averageCapture, 0) - 0.5) * 0.12 +
           Math.min(0.16, safeNumber(aggregate.stableConditionCount, 0) * 0.06),
           0,
           1
@@ -1013,8 +1014,9 @@ function buildPolicyTransitionCandidatesByCondition(
         conditionCount: aggregate.conditionCount || 1,
         stableConditionCount: aggregate.stableConditionCount || 0,
         weakConditionCount: aggregate.weakConditionCount || 0,
+        preferredExitStyle: exitScope?.preferredExitStyle || "balanced",
         reason: action === "guarded_live_candidate"
-          ? `${item.strategyId} blijft sterk over meerdere condities en lijkt rijp voor guarded live bewijs.`
+          ? `${item.strategyId} blijft sterk over meerdere condities en heeft ${exitScope?.preferredExitStyle || "balanced"} exit-evidence voor guarded live bewijs.`
           : action === "paper_ready"
             ? `${item.strategyId} oogt stabiel genoeg om paper-first breder te draaien binnen ${item.conditionId}.`
           : action === "promote_candidate"

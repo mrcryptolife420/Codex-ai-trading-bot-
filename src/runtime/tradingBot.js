@@ -12742,7 +12742,9 @@ export class TradingBot {
     modelRegistry = {},
     researchRegistry = {},
     promotionState = {},
-    offlineTrainer = {}
+    offlineTrainer = {},
+    tradingFlowHealth = {},
+    executionSummary = {}
   } = {}) {
     const roadmap = paperLearning.promotionRoadmap || {};
     const transitions = [
@@ -12809,16 +12811,39 @@ export class TradingBot {
       })),
       rolloutCandidates: transitions
         .filter((item) => item.scope || item.id)
-        .map((item) => ({
-          id: item.id || null,
-          scope: item.scope || item.id || null,
-          type: item.type || "scope",
-          action: item.action || "observe",
-          confidence: num(item.confidence || 0, 4),
-          reason: item.reason || null,
-          blocker: item.blocker || null,
-          approved: activePromotions.some((promotion) => promotion.scope === (item.scope || item.id))
-        }))
+        .map((item) => {
+          const rawAction = item.action || "observe";
+          const guardedLiveBlockers = [];
+          if (["guarded_live_candidate", "live_ready"].includes(rawAction)) {
+            if ((executionSummary.avgExecutionQualityScore || 0) < 0.55) {
+              guardedLiveBlockers.push("execution_quality_not_ready");
+            }
+            if ((executionSummary.avgSlippageDeltaBps || 0) > 2.2) {
+              guardedLiveBlockers.push("execution_slippage_not_ready");
+            }
+            if ((tradingFlowHealth.counters?.executed || 0) > (tradingFlowHealth.counters?.persisted || 0)) {
+              guardedLiveBlockers.push("persistence_truth_not_ready");
+            }
+          }
+          const effectiveAction =
+            guardedLiveBlockers.length && rawAction === "live_ready"
+              ? "guarded_live_candidate"
+              : guardedLiveBlockers.length && rawAction === "guarded_live_candidate"
+                ? "paper_ready"
+                : rawAction;
+          return {
+            id: item.id || null,
+            scope: item.scope || item.id || null,
+            type: item.type || "scope",
+            action: effectiveAction,
+            confidence: num(item.confidence || 0, 4),
+            reason: item.reason || null,
+            blocker: item.blocker || null,
+            approved: activePromotions.some((promotion) => promotion.scope === (item.scope || item.id)),
+            guardedLiveReady: guardedLiveBlockers.length === 0,
+            guardedLiveBlockers
+          };
+        })
         .slice(0, 6),
       activePromotions,
       readinessScorecards: activePromotions.map((item) => ({
@@ -13136,7 +13161,9 @@ export class TradingBot {
       modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
       promotionState: this.runtime.ops?.promotionState || {},
-      offlineTrainer: offlineTrainerSummary
+      offlineTrainer: offlineTrainerSummary,
+      tradingFlowHealth: signalFlowSummary.tradingFlowHealth || {},
+      executionSummary: report.executionSummary || {}
     });
 
     return {

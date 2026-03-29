@@ -17675,6 +17675,47 @@ await runCheck("promotion pipeline includes offline trainer condition transition
   assert.ok(summary.rolloutCandidates.some((item) => item.id === "ema_trend" && item.action === "guarded_live_candidate"));
 });
 
+await runCheck("promotion pipeline downgrades guarded live candidates when execution or persistence truth is weak", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summary = bot.buildPromotionPipelineSnapshot({
+    paperLearning: {
+      promotionRoadmap: { status: "observe", allowPromotion: false, note: "collect more proof" },
+      policyTransitions: { candidates: [] }
+    },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: [] } },
+    researchRegistry: { governance: { promotionCandidates: [] } },
+    promotionState: {},
+    offlineTrainer: {
+      policyTransitionCandidatesByCondition: [
+        {
+          id: "ema_trend",
+          strategyId: "ema_trend",
+          familyId: "trend_following",
+          conditionId: "trend_continuation",
+          action: "guarded_live_candidate",
+          confidence: 0.82,
+          scope: "trend_continuation | ema_trend",
+          reason: "multi-condition proof is stable"
+        }
+      ]
+    },
+    tradingFlowHealth: {
+      counters: { executed: 2, persisted: 1 }
+    },
+    executionSummary: {
+      avgExecutionQualityScore: 0.49,
+      avgSlippageDeltaBps: 2.6
+    }
+  });
+  const candidate = summary.rolloutCandidates.find((item) => item.id === "ema_trend");
+  assert.ok(candidate);
+  assert.equal(candidate.action, "paper_ready");
+  assert.equal(candidate.guardedLiveReady, false);
+  assert.ok(candidate.guardedLiveBlockers.includes("execution_quality_not_ready"));
+  assert.ok(candidate.guardedLiveBlockers.includes("execution_slippage_not_ready"));
+  assert.ok(candidate.guardedLiveBlockers.includes("persistence_truth_not_ready"));
+});
+
 await runCheck("offline trainer builds feature governance attribution parity and pruning plans", async () => {
   const trainer = new OfflineTrainer(makeConfig());
   const summary = trainer.buildSummary({

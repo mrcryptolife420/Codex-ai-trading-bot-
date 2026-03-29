@@ -2279,6 +2279,17 @@ export class RiskManager {
         focusReason: activeLearningState.focusReason || "condition_missed_trade_tuning"
       };
     }
+    const paperPriorityOpportunityBoost =
+      this.config.botMode === "paper"
+        ? clamp(
+            (strategyAllocationGovernance.mode === "priority_probe" ? 0.08 : 0) +
+            (learningLane === "probe" && entryMode === "paper_exploration" ? 0.04 : 0) +
+            (missedTradeTuningApplied.paperProbeEligible ? 0.03 : 0) +
+            (missedTradeTuningApplied.shadowPriority && !allow ? 0.02 : 0),
+            0,
+            0.12
+          )
+        : 0;
     const opportunityScore = num(clamp(
       0.34 +
       clamp(score.probability - threshold, -0.12, 0.12) * 2.4 +
@@ -2291,7 +2302,8 @@ export class RiskManager {
       Math.max(0, safeValue(portfolioSummary.diversificationScore, 0.5) - 0.5) * 0.08 +
       (missedTradeTuningApplied.paperProbeEligible ? 0.05 : 0) +
       (missedTradeTuningApplied.shadowPriority ? 0.03 : 0) +
-      safeValue(strategyMetaSummary.holdMultiplier, 1) * 0.02,
+      safeValue(strategyMetaSummary.holdMultiplier, 1) * 0.02 +
+      paperPriorityOpportunityBoost,
       0,
       1.4
     ), 4);
@@ -2319,6 +2331,7 @@ export class RiskManager {
         return acc;
       }, {}),
       paperExploration,
+      paperPriorityOpportunityBoost,
       paperGuardrailRelief,
       baseThreshold,
       threshold,
