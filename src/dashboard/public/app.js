@@ -6,51 +6,57 @@ const STORAGE_KEYS = {
   showAllDecisions: "dashboard.showAllDecisions"
 };
 
-const elements = {
-  modeBadge: document.querySelector("#modeBadge"),
-  runStateBadge: document.querySelector("#runStateBadge"),
-  healthBadge: document.querySelector("#healthBadge"),
-  refreshBadge: document.querySelector("#refreshBadge"),
-  controlHint: document.querySelector("#controlHint"),
-  operatorSummary: document.querySelector("#operatorSummary"),
-  startBtn: document.querySelector("#startBtn"),
-  stopBtn: document.querySelector("#stopBtn"),
-  paperBtn: document.querySelector("#paperBtn"),
-  liveBtn: document.querySelector("#liveBtn"),
-  refreshBtn: document.querySelector("#refreshBtn"),
-  decisionSearch: document.querySelector("#decisionSearch"),
-  decisionAllowedOnly: document.querySelector("#decisionAllowedOnly"),
-  decisionMeta: document.querySelector("#decisionMeta"),
-  decisionShowMoreBtn: document.querySelector("#decisionShowMoreBtn"),
-  decisionsList: document.querySelector("#decisionsList"),
-  positionsList: document.querySelector("#positionsList"),
-  learningList: document.querySelector("#learningList"),
-  opsSummary: document.querySelector("#opsSummary"),
-  opsList: document.querySelector("#opsList"),
-  missedTradesList: document.querySelector("#missedTradesList"),
-  tradesBody: document.querySelector("#tradesBody"),
-  diagnosticsList: document.querySelector("#diagnosticsList"),
-  explainabilityList: document.querySelector("#explainabilityList"),
-  promotionList: document.querySelector("#promotionList"),
-  signalsSection: document.querySelector("#signalsSection"),
-  positionsSection: document.querySelector("#positionsSection"),
-  learningSection: document.querySelector("#learningSection"),
-  missedTradesSection: document.querySelector("#missedTradesSection"),
-  riskSection: document.querySelector("#riskSection"),
-  historySection: document.querySelector("#historySection"),
-  diagnosticsSection: document.querySelector("#diagnosticsSection"),
-  explainabilitySection: document.querySelector("#explainabilitySection"),
-  promotionSection: document.querySelector("#promotionSection"),
-  signalsToggleBtn: document.querySelector("#signalsToggleBtn"),
-  positionsToggleBtn: document.querySelector("#positionsToggleBtn"),
-  learningToggleBtn: document.querySelector("#learningToggleBtn"),
-  missedTradesToggleBtn: document.querySelector("#missedTradesToggleBtn"),
-  riskToggleBtn: document.querySelector("#riskToggleBtn"),
-  historyToggleBtn: document.querySelector("#historyToggleBtn"),
-  diagnosticsToggleBtn: document.querySelector("#diagnosticsToggleBtn"),
-  explainabilityToggleBtn: document.querySelector("#explainabilityToggleBtn"),
-  promotionToggleBtn: document.querySelector("#promotionToggleBtn")
-};
+function createElements(doc) {
+  const query = (selector) => doc?.querySelector?.(selector) || null;
+  return {
+    modeBadge: query("#modeBadge"),
+    runStateBadge: query("#runStateBadge"),
+    healthBadge: query("#healthBadge"),
+    refreshBadge: query("#refreshBadge"),
+    controlHint: query("#controlHint"),
+    operatorSummary: query("#operatorSummary"),
+    startBtn: query("#startBtn"),
+    stopBtn: query("#stopBtn"),
+    paperBtn: query("#paperBtn"),
+    liveBtn: query("#liveBtn"),
+    refreshBtn: query("#refreshBtn"),
+    decisionSearch: query("#decisionSearch"),
+    decisionAllowedOnly: query("#decisionAllowedOnly"),
+    decisionMeta: query("#decisionMeta"),
+    decisionShowMoreBtn: query("#decisionShowMoreBtn"),
+    decisionsList: query("#decisionsList"),
+    positionsList: query("#positionsList"),
+    learningList: query("#learningList"),
+    opsSummary: query("#opsSummary"),
+    opsList: query("#opsList"),
+    missedTradesList: query("#missedTradesList"),
+    tradesBody: query("#tradesBody"),
+    diagnosticsList: query("#diagnosticsList"),
+    explainabilityList: query("#explainabilityList"),
+    promotionList: query("#promotionList"),
+    signalsSection: query("#signalsSection"),
+    positionsSection: query("#positionsSection"),
+    learningSection: query("#learningSection"),
+    missedTradesSection: query("#missedTradesSection"),
+    riskSection: query("#riskSection"),
+    historySection: query("#historySection"),
+    diagnosticsSection: query("#diagnosticsSection"),
+    explainabilitySection: query("#explainabilitySection"),
+    promotionSection: query("#promotionSection"),
+    signalsToggleBtn: query("#signalsToggleBtn"),
+    positionsToggleBtn: query("#positionsToggleBtn"),
+    learningToggleBtn: query("#learningToggleBtn"),
+    missedTradesToggleBtn: query("#missedTradesToggleBtn"),
+    riskToggleBtn: query("#riskToggleBtn"),
+    historyToggleBtn: query("#historyToggleBtn"),
+    diagnosticsToggleBtn: query("#diagnosticsToggleBtn"),
+    explainabilityToggleBtn: query("#explainabilityToggleBtn"),
+    promotionToggleBtn: query("#promotionToggleBtn")
+  };
+}
+
+let activeDocument = typeof document !== "undefined" ? document : null;
+let elements = createElements(activeDocument);
 
 let latestSnapshot = null;
 let busy = false;
@@ -130,7 +136,10 @@ function makeProbationDecisionButton({ action, key = "", label, tone = "" }) {
 }
 
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
-  const node = document.createElement(tag);
+  if (!activeDocument?.createElement) {
+    throw new Error("dashboard_document_unavailable");
+  }
+  const node = activeDocument.createElement(tag);
   if (className) {
     node.className = className;
   }
@@ -2228,11 +2237,112 @@ function syncPanels() {
   syncPanel(elements.promotionSection, elements.promotionToggleBtn, panelState.promotion);
 }
 
+function createFakeDashboardDocument() {
+  class FakeClassList {
+    constructor(node) {
+      this.node = node;
+      this.tokens = new Set();
+    }
+    toggle(token, force) {
+      if (force === undefined) {
+        if (this.tokens.has(token)) {
+          this.tokens.delete(token);
+        } else {
+          this.tokens.add(token);
+        }
+      } else if (force) {
+        this.tokens.add(token);
+      } else {
+        this.tokens.delete(token);
+      }
+      this.node.className = [...this.tokens].join(" ");
+    }
+  }
+
+  class FakeNode {
+    constructor(tagName = "div") {
+      this.tagName = tagName.toUpperCase();
+      this.children = [];
+      this.attributes = {};
+      this.className = "";
+      this.textContent = "";
+      this.hidden = false;
+      this.disabled = false;
+      this.checked = false;
+      this.value = "";
+      this.classList = new FakeClassList(this);
+    }
+    append(...children) {
+      this.children.push(...children.filter(Boolean));
+    }
+    replaceChildren(...children) {
+      this.children = children.filter(Boolean);
+    }
+    setAttribute(name, value) {
+      this.attributes[name] = `${value}`;
+    }
+    getAttribute(name) {
+      return this.attributes[name] ?? null;
+    }
+    addEventListener() {}
+    remove() {
+      this.removed = true;
+    }
+    closest() {
+      return null;
+    }
+    querySelectorAll(selector) {
+      if (selector === "[data-render-issue='1']") {
+        return this.children.filter((child) => child?.attributes?.["data-render-issue"] === "1");
+      }
+      return [];
+    }
+  }
+
+  const selectorMap = new Map();
+  const documentStub = {
+    createElement(tag) {
+      return new FakeNode(tag);
+    },
+    querySelector(selector) {
+      if (!selectorMap.has(selector)) {
+        selectorMap.set(selector, new FakeNode("div"));
+      }
+      return selectorMap.get(selector);
+    }
+  };
+  return {
+    document: documentStub,
+    selectors: selectorMap
+  };
+}
+
+export function __dashboardSmokeRender(snapshot) {
+  const previousDocument = activeDocument;
+  const previousElements = elements;
+  const fake = createFakeDashboardDocument();
+  try {
+    activeDocument = fake.document;
+    elements = createElements(activeDocument);
+    render(snapshot);
+    return {
+      controlHint: elements.controlHint?.textContent || "",
+      operatorSummaryChildren: elements.operatorSummary?.children?.length || 0,
+      renderIssueCount: elements.operatorSummary?.querySelectorAll?.("[data-render-issue='1']")?.length || 0
+    };
+  } finally {
+    activeDocument = previousDocument;
+    elements = previousElements;
+  }
+}
+
 async function init() {
   bindEvents();
   await refreshSnapshot();
   pollTimer = window.setInterval(refreshSnapshot, POLL_MS);
 }
 
-init();
+if (activeDocument) {
+  init();
+}
 

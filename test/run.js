@@ -78,6 +78,7 @@ import { OnChainLiteService } from "../src/market/onChainLiteService.js";
 import { buildExchangeSafetyAudit } from "../src/runtime/exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/runtime/operatorAlertDispatcher.js";
+import { __dashboardSmokeRender } from "../src/dashboard/public/app.js";
 import { buildStrategyRetirementSnapshot } from "../src/runtime/strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "../src/runtime/replayChaosLab.js";
 import { MultiAgentCommittee } from "../src/ai/multiAgentCommittee.js";
@@ -13127,6 +13128,106 @@ await runCheck("dashboard frontend defines number formatting helper and section 
   assert.match(source, /function formatNumber\s*\(/);
   assert.match(source, /function safeRenderSection\s*\(/);
   assert.match(source, /function showDashboardRenderIssue\s*\(/);
+});
+
+await runCheck("dashboard frontend smoke renders snapshot without browser DOM", async () => {
+  const result = __dashboardSmokeRender({
+    manager: {
+      runState: "running",
+      currentMode: "paper",
+      readiness: { status: "ready", reasons: [] }
+    },
+    dashboard: {
+      overview: {
+        mode: "paper",
+        equity: 1000,
+        effectiveBudget: {
+          deployableBudget: 180
+        }
+      },
+      ops: {
+        readiness: { status: "ready", reasons: [] },
+        paperLearning: {
+          status: "active",
+          readinessStatus: "building",
+          readinessScore: 0.58,
+          safeCount: 1,
+          probeCount: 1,
+          shadowCount: 1,
+          generatedAt: "2026-03-29T10:00:00.000Z",
+          reviewQueue: [],
+          recentProbeReviews: [],
+          recentShadowReviews: []
+        },
+        adaptation: {
+          status: "active",
+          learningFrames: 12,
+          calibrationObservations: 8,
+          adaptiveInputs: { items: [] }
+        },
+        learningInsights: {
+          missedTrades: {
+            status: "watch",
+            totalCounterfactuals: 4,
+            missedWinners: 1,
+            averageMissedMovePct: 0.013,
+            note: "Counterfactual learning ziet nu een lichte missed-trade cluster."
+          },
+          exits: {
+            status: "watch",
+            openPositionCount: 1,
+            exitCount: 0,
+            trimCount: 0,
+            trailCount: 1,
+            tightenCount: 1,
+            averageConfidence: 0.61,
+            note: "BTCUSDT vraagt nu exit focus via Trail."
+          }
+        },
+        service: { dashboardFeeds: { status: "ready", feeds: [] } },
+        signalFlow: {},
+        capitalPolicy: {
+          effectiveBudget: {
+            deployableBudget: 180,
+            policyBudget: 350,
+            quoteFree: 180,
+            sizeMultiplier: 0.35
+          }
+        },
+        sizingGuide: {
+          targetQuote: 27,
+          paperProbeQuote: 25,
+          idealConcurrentPositions: 2,
+          minTradeDominates: false
+        },
+        alerts: { alerts: [] }
+      },
+      ai: {
+        adaptation: {
+          status: "active",
+          learningFrames: 12,
+          calibrationObservations: 8,
+          adaptiveInputs: { items: [] }
+        },
+        strategyAllocation: {
+          budgetLane: "standard",
+          budgetMultiplier: 1
+        }
+      },
+      topDecisions: [],
+      blockedSetups: [],
+      positions: [],
+      report: { recentTrades: [], openExposureReview: {} },
+      safety: { orderLifecycle: { pendingActions: [] }, exchangeTruth: {} },
+      sourceReliability: { externalFeeds: { providerCount: 0, averageScore: 0, degradedCount: 0, coolingDownCount: 0, providers: [] } },
+      offlineTrainer: {},
+      explainability: {},
+      promotionPipeline: {}
+    }
+  });
+
+  assert.equal(result.renderIssueCount, 0);
+  assert.ok(result.operatorSummaryChildren > 0);
 });
 
 await runCheck("doctor checks flag failed market history dashboard feed", async () => {
