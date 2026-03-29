@@ -516,6 +516,21 @@ button:disabled {
   opacity: 0.72;
 }
 
+.signal-card::after {
+  content: "";
+  position: absolute;
+  inset: auto 10px 10px auto;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(89, 216, 186, 0.14), transparent 62%),
+    conic-gradient(from 180deg, rgba(89, 216, 186, 0.2) 0 var(--signal-prob, 0%), rgba(255, 255, 255, 0.02) 0 100%);
+  opacity: 0.22;
+  filter: blur(0.2px);
+  pointer-events: none;
+}
+
 .card-summary {
   display: grid;
   gap: 6px;
@@ -616,6 +631,57 @@ button:disabled {
   align-items: start;
 }
 
+.signal-mini-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.signal-mini-chart {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-items: end;
+  gap: 5px;
+  width: 112px;
+  height: 42px;
+  padding: 6px 7px;
+  border: 1px solid rgba(147, 166, 193, 0.08);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
+    repeating-linear-gradient(
+      to top,
+      rgba(147, 166, 193, 0.04) 0,
+      rgba(147, 166, 193, 0.04) 1px,
+      transparent 1px,
+      transparent 10px
+    );
+}
+
+.signal-mini-bar {
+  display: block;
+  min-height: 6px;
+  height: var(--bar-height, 40%);
+  border-radius: 999px 999px 4px 4px;
+  background: linear-gradient(180deg, rgba(89, 216, 186, 0.95), rgba(89, 216, 186, 0.28));
+  box-shadow: 0 0 10px rgba(89, 216, 186, 0.14);
+  animation: signalPulse 1.4s ease var(--bar-delay, 0ms) 1 both;
+}
+
+@keyframes signalPulse {
+  from {
+    opacity: 0.45;
+    transform: scaleY(0.72);
+    transform-origin: bottom;
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+    transform-origin: bottom;
+  }
+}
+
 .quick-grid,
 .subgrid {
   display: grid;
@@ -666,6 +732,78 @@ button:disabled {
 .event-row,
 .stat {
   backdrop-filter: blur(6px);
+}
+
+.position-card {
+  position: relative;
+}
+
+.position-card::after {
+  content: "";
+  position: absolute;
+  inset: auto -8px -10px auto;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(114, 144, 255, 0.12), transparent 64%);
+  pointer-events: none;
+}
+
+.position-overview-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.position-gauge {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at center, rgba(9, 16, 26, 0.96) 54%, transparent 55%),
+    conic-gradient(
+      from 180deg,
+      rgba(255, 255, 255, 0.08) 0 12%,
+      rgba(89, 216, 186, 0.84) 12% var(--gauge-fill, 50%),
+      rgba(255, 255, 255, 0.06) var(--gauge-fill, 50%) 100%
+    );
+  border: 1px solid rgba(147, 166, 193, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.position-gauge.negative {
+  background:
+    radial-gradient(circle at center, rgba(9, 16, 26, 0.96) 54%, transparent 55%),
+    conic-gradient(
+      from 180deg,
+      rgba(255, 255, 255, 0.08) 0 12%,
+      rgba(255, 123, 149, 0.84) 12% var(--gauge-fill, 50%),
+      rgba(255, 255, 255, 0.06) var(--gauge-fill, 50%) 100%
+    );
+}
+
+.position-gauge-value,
+.position-gauge-label {
+  position: relative;
+  z-index: 1;
+}
+
+.position-gauge-value {
+  font-weight: 700;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.position-gauge-label {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 table {
@@ -923,5 +1061,14 @@ input[type="search"] {
 
   .hero-pill {
     min-height: 0;
+  }
+
+  .signal-mini-row,
+  .position-overview-row {
+    grid-template-columns: 1fr;
+  }
+
+  .position-overview-row {
+    justify-items: start;
   }
 }

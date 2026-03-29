@@ -13155,6 +13155,15 @@ await runCheck("dashboard layout keeps compact non-stretch grid structure", asyn
   assert.match(cssSource, /\.analytics-grid\s*\{[\s\S]*grid-template-areas:/);
 });
 
+await runCheck("dashboard premium terminal visuals keep signal chart and position gauge helpers", async () => {
+  const appSource = await fs.readFile(new URL("../src/dashboard/public/app.js", import.meta.url), "utf8");
+  const cssSource = await fs.readFile(new URL("../src/dashboard/public/styles.css", import.meta.url), "utf8");
+  assert.match(appSource, /function makeSignalMiniChart\s*\(/);
+  assert.match(appSource, /function makePositionGauge\s*\(/);
+  assert.match(cssSource, /\.signal-mini-chart\s*\{/);
+  assert.match(cssSource, /\.position-gauge\s*\{/);
+});
+
 await runCheck("dashboard markup keeps operator-first panel order", async () => {
   const htmlSource = await fs.readFile(new URL("../src/dashboard/public/index.html", import.meta.url), "utf8");
   const riskIndex = htmlSource.indexOf('id="riskSection"');

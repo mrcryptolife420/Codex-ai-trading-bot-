@@ -185,6 +185,14 @@ function compactJoin(parts = [], separator = " · ") {
   return parts.filter(Boolean).join(separator);
 }
 
+function clamp(value, min = 0, max = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, numeric));
+}
+
 function makeEmptyState(text, tag = "div") {
   return makeNode(tag, { className: "empty", text });
 }
@@ -196,6 +204,37 @@ function makeMetricStat(label, value, tone = "") {
     makeNode("strong", { className: tone, text: value })
   );
   return stat;
+}
+
+function makeSignalMiniChart(decision) {
+  const threshold = Math.max(Number(decision.threshold) || 0, 0.0001);
+  const probability = clamp(decision.probability || 0);
+  const confidence = clamp(decision.confidenceBreakdown?.overallConfidence || 0);
+  const edgeRatio = clamp((decision.probability || 0) / threshold);
+  const setupBias = clamp(decision.allow ? 0.88 : probability * 0.82 + confidence * 0.18);
+  const bars = [probability * 0.72, confidence * 0.58, edgeRatio * 0.9, setupBias, edgeRatio * 0.62, probability * 0.9];
+  const chart = makeNode("div", { className: "signal-mini-chart" });
+  chart.append(...bars.map((value, index) => {
+    const bar = makeNode("span", { className: "signal-mini-bar" });
+    bar.style.setProperty("--bar-height", `${Math.round(clamp(value, 0.12, 1) * 100)}%`);
+    bar.style.setProperty("--bar-delay", `${index * 24}ms`);
+    return bar;
+  }));
+  return chart;
+}
+
+function makePositionGauge(position) {
+  const pnlPct = Number(position.unrealizedPnlPct) || 0;
+  const normalized = clamp((pnlPct + 0.05) / 0.1);
+  const gauge = makeNode("div", {
+    className: `position-gauge ${pnlPct >= 0 ? "positive" : "negative"}`
+  });
+  gauge.style.setProperty("--gauge-fill", `${Math.round(normalized * 100)}%`);
+  gauge.append(
+    makeNode("span", { className: "position-gauge-value", text: formatSignedPct(pnlPct, 1) }),
+    makeNode("span", { className: "position-gauge-label", text: "Open P/L" })
+  );
+  return gauge;
 }
 
 function makeCardHeader({ eyebrow = "", title = "-", pillText = "", pillClassName = "" } = {}) {
@@ -909,6 +948,8 @@ function makeMissedTradeAnalysisNode(decision) {
 
 function buildSignalCard(decision) {
   const article = makeNode("article", { className: "signal-card" });
+  article.style.setProperty("--signal-prob", `${Math.round(clamp(decision.probability || 0) * 100)}%`);
+  article.style.setProperty("--signal-conf", `${Math.round(clamp(decision.confidenceBreakdown?.overallConfidence || 0) * 100)}%`);
   const summary = makeNode("div", { className: "card-summary" });
   const header = makeNode("div", { className: "card-header" });
   const left = makeNode("div");
@@ -926,6 +967,12 @@ function buildSignalCard(decision) {
       className: `pill ${decision.allow ? "positive" : "negative"}`,
       text: decision.allow ? "Tradebaar" : "Geblokkeerd"
     })
+  );
+
+  const miniRow = makeNode("div", { className: "signal-mini-row" });
+  miniRow.append(
+    makeNode("span", { className: "metric-foot", text: `Gate ${formatPct(decision.threshold || 0, 1)}` }),
+    makeSignalMiniChart(decision)
   );
 
   const quickGrid = makeNode("div", { className: "quick-grid" });
@@ -952,6 +999,7 @@ function buildSignalCard(decision) {
 
   summary.append(
     header,
+    miniRow,
     quickGrid,
     overview,
     reasons
@@ -993,6 +1041,7 @@ function renderPositions(snapshot) {
       pillText: formatMoney(position.unrealizedPnl),
       pillClassName: ["pill", toneClass(position.unrealizedPnl)].filter(Boolean).join(" ")
     });
+    const overviewRow = makeNode("div", { className: "position-overview-row" });
     const subgrid = makeNode("div", { className: "subgrid" });
     const stats = [
       ["Entry", number(position.entryPrice, 4), ""],
@@ -1000,6 +1049,7 @@ function renderPositions(snapshot) {
       ["Rendement", formatSignedPct(position.unrealizedPnlPct), toneClass(position.unrealizedPnlPct)]
     ];
     subgrid.append(...stats.map(([label, value, tone]) => makeMetricStat(label, value, tone)));
+    overviewRow.append(makePositionGauge(position), subgrid);
     const tags = makeNode("div", { className: "tag-list" });
     const tagNodes = [
       position.regimeAtEntry ? makeTag(titleize(position.regimeAtEntry)) : null,
@@ -1008,7 +1058,7 @@ function renderPositions(snapshot) {
       position.lifecycle?.reconcileRequired ? makeTag("Reconcile", "tag negative") : null
     ].filter(Boolean);
     tags.append(...tagNodes);
-    summary.append(header, subgrid, tags);
+    summary.append(header, overviewRow, tags);
     article.append(summary);
     return article;
   }));
