@@ -1067,9 +1067,11 @@ export class RiskManager {
     const scope = missedTradeTuningSummary?.scope || {};
     const conditionId = marketConditionSummary?.conditionId || null;
     const familyId = strategySummary?.family || null;
+    const strategyId = strategySummary?.activeStrategy || null;
     const inScope =
       (!scope.conditionId || scope.conditionId === conditionId) &&
-      (!scope.familyId || scope.familyId === familyId);
+      (!scope.familyId || scope.familyId === familyId) &&
+      (!scope.strategyId || scope.strategyId === strategyId);
     if (!inScope || !["priority", "guarded", "observe"].includes(missedTradeTuningSummary?.status || "")) {
       return {
         active: false,
@@ -1095,7 +1097,8 @@ export class RiskManager {
       note: missedTradeTuningSummary.note || null,
       scope: {
         conditionId: scope.conditionId || null,
-        familyId: scope.familyId || null
+        familyId: scope.familyId || null,
+        strategyId: scope.strategyId || null
       }
     };
   }

@@ -17582,6 +17582,99 @@ await runCheck("offline trainer builds blocker and regime veto scorecards", asyn
   assert.ok(summary.regimeDeployment.readyRegimes.includes("trend"));
 });
 
+await runCheck("offline trainer builds strategy-scoped condition tuning and progression states", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    journal: {
+      trades: [
+        { symbol: "BTCUSDT", exitAt: "2026-03-09T08:00:00.000Z", pnlQuote: 16, netPnlPct: 0.013, executionQualityScore: 0.7, labelScore: 0.78, captureEfficiency: 0.58, mfePct: 0.02, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", sessionAtEntry: "asia", regimeAtEntry: "trend", marketConditionAtEntry: "trend_continuation", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "ETHUSDT", exitAt: "2026-03-09T09:00:00.000Z", pnlQuote: 12, netPnlPct: 0.011, executionQualityScore: 0.69, labelScore: 0.76, captureEfficiency: 0.56, mfePct: 0.018, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", sessionAtEntry: "asia", regimeAtEntry: "trend", marketConditionAtEntry: "trend_continuation", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "SOLUSDT", exitAt: "2026-03-09T10:00:00.000Z", pnlQuote: 11, netPnlPct: 0.01, executionQualityScore: 0.67, labelScore: 0.74, captureEfficiency: 0.55, mfePct: 0.017, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", sessionAtEntry: "asia", regimeAtEntry: "trend", marketConditionAtEntry: "trend_continuation", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "BNBUSDT", exitAt: "2026-03-09T11:00:00.000Z", pnlQuote: 14, netPnlPct: 0.012, executionQualityScore: 0.71, labelScore: 0.8, captureEfficiency: 0.6, mfePct: 0.021, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", sessionAtEntry: "us", regimeAtEntry: "breakout", marketConditionAtEntry: "breakout_release", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "XRPUSDT", exitAt: "2026-03-09T12:00:00.000Z", pnlQuote: 10, netPnlPct: 0.009, executionQualityScore: 0.66, labelScore: 0.73, captureEfficiency: 0.54, mfePct: 0.017, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", sessionAtEntry: "us", regimeAtEntry: "breakout", marketConditionAtEntry: "breakout_release", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "DOGEUSDT", exitAt: "2026-03-09T13:00:00.000Z", pnlQuote: 9, netPnlPct: 0.008, executionQualityScore: 0.65, labelScore: 0.72, captureEfficiency: 0.52, mfePct: 0.016, rawFeatures: { a: 1 }, strategyAtEntry: "ema_trend", strategyFamily: "trend_following", sessionAtEntry: "us", regimeAtEntry: "breakout", marketConditionAtEntry: "breakout_release", brokerMode: "paper", reason: "take_profit" },
+        { symbol: "ADAUSDT", exitAt: "2026-03-09T14:00:00.000Z", pnlQuote: -11, netPnlPct: -0.011, executionQualityScore: 0.42, labelScore: 0.34, captureEfficiency: 0.11, mfePct: 0.015, rawFeatures: { a: 1 }, strategyAtEntry: "mean_reversion", strategyFamily: "mean_reversion", sessionAtEntry: "europe", regimeAtEntry: "range", marketConditionAtEntry: "range_acceptance", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "AVAXUSDT", exitAt: "2026-03-09T15:00:00.000Z", pnlQuote: -9, netPnlPct: -0.009, executionQualityScore: 0.44, labelScore: 0.36, captureEfficiency: 0.14, mfePct: 0.014, rawFeatures: { a: 1 }, strategyAtEntry: "mean_reversion", strategyFamily: "mean_reversion", sessionAtEntry: "europe", regimeAtEntry: "range", marketConditionAtEntry: "range_acceptance", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "LINKUSDT", exitAt: "2026-03-09T16:00:00.000Z", pnlQuote: -8, netPnlPct: -0.008, executionQualityScore: 0.45, labelScore: 0.37, captureEfficiency: 0.16, mfePct: 0.013, rawFeatures: { a: 1 }, strategyAtEntry: "mean_reversion", strategyFamily: "mean_reversion", sessionAtEntry: "europe", regimeAtEntry: "range", marketConditionAtEntry: "range_acceptance", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "MATICUSDT", exitAt: "2026-03-09T17:00:00.000Z", pnlQuote: -12, netPnlPct: -0.012, executionQualityScore: 0.41, labelScore: 0.33, captureEfficiency: 0.09, mfePct: 0.016, rawFeatures: { a: 1 }, strategyAtEntry: "mean_reversion", strategyFamily: "mean_reversion", sessionAtEntry: "europe", regimeAtEntry: "high_vol", marketConditionAtEntry: "failed_breakout", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "ATOMUSDT", exitAt: "2026-03-09T18:00:00.000Z", pnlQuote: -10, netPnlPct: -0.01, executionQualityScore: 0.43, labelScore: 0.35, captureEfficiency: 0.12, mfePct: 0.014, rawFeatures: { a: 1 }, strategyAtEntry: "mean_reversion", strategyFamily: "mean_reversion", sessionAtEntry: "europe", regimeAtEntry: "high_vol", marketConditionAtEntry: "failed_breakout", brokerMode: "paper", reason: "time_stop" },
+        { symbol: "NEARUSDT", exitAt: "2026-03-09T19:00:00.000Z", pnlQuote: -9, netPnlPct: -0.009, executionQualityScore: 0.44, labelScore: 0.34, captureEfficiency: 0.1, mfePct: 0.013, rawFeatures: { a: 1 }, strategyAtEntry: "mean_reversion", strategyFamily: "mean_reversion", sessionAtEntry: "europe", regimeAtEntry: "high_vol", marketConditionAtEntry: "failed_breakout", brokerMode: "paper", reason: "time_stop" }
+      ]
+    },
+    dataRecorder: { learningFrames: 16, decisionFrames: 24 },
+    counterfactuals: [
+      { outcome: "bad_veto", realizedMovePct: 0.024, blockerReasons: ["model_confidence_too_low"], strategyFamily: "trend_following", strategy: "ema_trend", sessionAtEntry: "asia", marketConditionId: "trend_continuation" },
+      { outcome: "bad_veto", realizedMovePct: 0.021, blockerReasons: ["model_confidence_too_low"], strategyFamily: "trend_following", strategy: "ema_trend", sessionAtEntry: "asia", marketConditionId: "trend_continuation" },
+      { outcome: "missed_winner", realizedMovePct: 0.022, blockerReasons: ["model_confidence_too_low"], strategyFamily: "trend_following", strategy: "ema_trend", sessionAtEntry: "asia", marketConditionId: "trend_continuation" },
+      { outcome: "good_veto", realizedMovePct: -0.012, blockerReasons: ["model_confidence_too_low"], strategyFamily: "mean_reversion", strategy: "mean_reversion", sessionAtEntry: "europe", marketConditionId: "failed_breakout" },
+      { outcome: "good_veto", realizedMovePct: -0.01, blockerReasons: ["model_confidence_too_low"], strategyFamily: "mean_reversion", strategy: "mean_reversion", sessionAtEntry: "europe", marketConditionId: "failed_breakout" },
+      { outcome: "good_veto", realizedMovePct: -0.011, blockerReasons: ["model_confidence_too_low"], strategyFamily: "mean_reversion", strategy: "mean_reversion", sessionAtEntry: "europe", marketConditionId: "failed_breakout" }
+    ],
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.ok(summary.conditionFamilyScorecards.some((item) => item.conditionId === "trend_continuation" && item.familyId === "trend_following"));
+  assert.ok(summary.conditionSessionFamilyScorecards.some((item) => item.conditionId === "trend_continuation" && item.sessionId === "asia" && item.familyId === "trend_following"));
+  assert.equal(summary.missedTradeTuning.scope.strategyId, "ema_trend");
+  assert.equal(summary.missedTradeTuning.topBlocker, "model_confidence_too_low");
+  assert.ok(summary.policyTransitionCandidatesByCondition.some((item) => item.strategyId === "ema_trend" && ["guarded_live_candidate", "paper_ready"].includes(item.action)));
+  assert.ok(summary.policyTransitionCandidatesByCondition.some((item) => item.strategyId === "mean_reversion" && ["cooldown_candidate", "retire_candidate"].includes(item.action)));
+});
+
+await runCheck("risk manager keeps missed trade tuning scoped to matching strategy", async () => {
+  const risk = new RiskManager(makeConfig());
+  const inactive = risk.resolveMissedTradeTuning(
+    {
+      status: "priority",
+      scope: { conditionId: "trend_continuation", familyId: "trend_following", strategyId: "ema_trend" },
+      thresholdShift: -0.01,
+      paperProbeEligible: true
+    },
+    { family: "trend_following", activeStrategy: "vwap_trend" },
+    { conditionId: "trend_continuation" }
+  );
+  const active = risk.resolveMissedTradeTuning(
+    {
+      status: "priority",
+      scope: { conditionId: "trend_continuation", familyId: "trend_following", strategyId: "ema_trend" },
+      thresholdShift: -0.01,
+      paperProbeEligible: true
+    },
+    { family: "trend_following", activeStrategy: "ema_trend" },
+    { conditionId: "trend_continuation" }
+  );
+  assert.equal(inactive.active, false);
+  assert.equal(active.active, true);
+  assert.equal(active.scope.strategyId, "ema_trend");
+});
+
+await runCheck("promotion pipeline includes offline trainer condition transitions", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summary = bot.buildPromotionPipelineSnapshot({
+    paperLearning: {
+      promotionRoadmap: { status: "observe", allowPromotion: false, note: "collect more proof" },
+      policyTransitions: { candidates: [] }
+    },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: ["sample_size_low"] } },
+    researchRegistry: { governance: { promotionCandidates: [] } },
+    promotionState: {},
+    offlineTrainer: {
+      policyTransitionCandidatesByCondition: [
+        {
+          id: "ema_trend",
+          strategyId: "ema_trend",
+          familyId: "trend_following",
+          conditionId: "trend_continuation",
+          action: "guarded_live_candidate",
+          confidence: 0.78,
+          scope: "trend_continuation | ema_trend",
+          reason: "multi-condition proof is stable"
+        }
+      ]
+    }
+  });
+  assert.ok(summary.rolloutCandidates.some((item) => item.id === "ema_trend" && item.action === "guarded_live_candidate"));
+});
+
 await runCheck("offline trainer builds feature governance attribution parity and pruning plans", async () => {
   const trainer = new OfflineTrainer(makeConfig());
   const summary = trainer.buildSummary({

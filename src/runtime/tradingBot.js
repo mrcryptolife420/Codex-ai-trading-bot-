@@ -1818,10 +1818,30 @@ function summarizeOfflineTrainer(summary = {}) {
       id: item.id || null,
       conditionId: item.conditionId || null,
       strategyId: item.strategyId || null,
+      familyId: item.familyId || null,
       tradeCount: item.tradeCount || 0,
       governanceScore: num(item.governanceScore || 0, 4),
       falseNegativeRate: num(item.falseNegativeRate || 0, 4),
       falsePositiveRate: num(item.falsePositiveRate || 0, 4),
+      status: item.status || "warmup"
+    })),
+    conditionFamilyScorecards: arr(summary.conditionFamilyScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      conditionId: item.conditionId || null,
+      familyId: item.familyId || null,
+      tradeCount: item.tradeCount || 0,
+      governanceScore: num(item.governanceScore || 0, 4),
+      falseNegativeRate: num(item.falseNegativeRate || 0, 4),
+      falsePositiveRate: num(item.falsePositiveRate || 0, 4),
+      status: item.status || "warmup"
+    })),
+    conditionSessionFamilyScorecards: arr(summary.conditionSessionFamilyScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      conditionId: item.conditionId || null,
+      sessionId: item.sessionId || null,
+      familyId: item.familyId || null,
+      tradeCount: item.tradeCount || 0,
+      governanceScore: num(item.governanceScore || 0, 4),
       status: item.status || "warmup"
     })),
     blockerScorecards: arr(summary.blockerScorecards || []).slice(0, 6).map((item) => ({
@@ -1841,6 +1861,7 @@ function summarizeOfflineTrainer(summary = {}) {
       id: item.id || null,
       conditionId: item.conditionId || null,
       familyId: item.familyId || null,
+      strategyId: item.strategyId || null,
       count: item.count || 0,
       action: item.action || "observe",
       confidence: num(item.confidence || 0, 4),
@@ -2150,8 +2171,12 @@ function summarizeOfflineTrainer(summary = {}) {
       id: item.id || null,
       conditionId: item.conditionId || null,
       strategyId: item.strategyId || null,
+      familyId: item.familyId || null,
       action: item.action || "observe",
       confidence: num(item.confidence || 0, 4),
+      conditionCount: item.conditionCount || 0,
+      stableConditionCount: item.stableConditionCount || 0,
+      weakConditionCount: item.weakConditionCount || 0,
       scope: item.scope || null,
       reason: item.reason || null
     })),
@@ -3151,7 +3176,8 @@ function summarizeMissedTradeTuning(summary = {}) {
     blockerHardeningRecommendation: summary.blockerHardeningRecommendation || null,
     scope: {
       conditionId: summary.scope?.conditionId || null,
-      familyId: summary.scope?.familyId || null
+      familyId: summary.scope?.familyId || null,
+      strategyId: summary.scope?.strategyId || null
     },
     note: summary.note || null
   };
@@ -3597,7 +3623,17 @@ function summarizeStrategyRetirement(summary = {}) {
 
 function normalizePolicyTransitionAction(action = "") {
   const normalized = `${action || ""}`.trim().toLowerCase();
-  if (["promote_candidate", "cooldown_candidate", "retire_candidate"].includes(normalized)) {
+  if ([
+    "promote_candidate",
+    "cooldown_candidate",
+    "retire_candidate",
+    "priority_probe",
+    "probe_only",
+    "shadow_only",
+    "paper_ready",
+    "guarded_live_candidate",
+    "live_ready"
+  ].includes(normalized)) {
     return normalized;
   }
   return "observe";
@@ -12705,10 +12741,14 @@ export class TradingBot {
     paperLearning = {},
     modelRegistry = {},
     researchRegistry = {},
-    promotionState = {}
+    promotionState = {},
+    offlineTrainer = {}
   } = {}) {
     const roadmap = paperLearning.promotionRoadmap || {};
-    const transitions = arr(paperLearning.policyTransitions?.candidates || []).slice(0, 6);
+    const transitions = [
+      ...arr(paperLearning.policyTransitions?.candidates || []),
+      ...arr(offlineTrainer.policyTransitionCandidatesByCondition || [])
+    ].slice(0, 8);
     const guardrails = arr(paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 4);
     const activeOverrides = arr(paperLearning.operatorActions?.activeOverrides || []).slice(0, 4);
     const researchCandidates = arr(researchRegistry.governance?.promotionCandidates || []).slice(0, 4);
@@ -13095,7 +13135,8 @@ export class TradingBot {
       paperLearning: paperLearningSummary,
       modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
-      promotionState: this.runtime.ops?.promotionState || {}
+      promotionState: this.runtime.ops?.promotionState || {},
+      offlineTrainer: offlineTrainerSummary
     });
 
     return {
