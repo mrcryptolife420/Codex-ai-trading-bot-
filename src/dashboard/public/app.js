@@ -1236,6 +1236,7 @@ function buildOpsCards(snapshot) {
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
   const effectiveBudget = capitalPolicy.effectiveBudget || snapshot?.dashboard?.overview?.effectiveBudget || {};
+  const sizingGuide = snapshot?.dashboard?.ops?.sizingGuide || snapshot?.dashboard?.overview?.sizingGuide || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
@@ -1279,6 +1280,12 @@ function buildOpsCards(snapshot) {
       value: formatMoney(effectiveBudget.deployableBudget || 0),
       foot: `${formatMoney(effectiveBudget.policyBudget || 0)} policy · ${formatMoney(effectiveBudget.quoteFree || 0)} vrij · x${formatNumber(effectiveBudget.sizeMultiplier || 0, 2)}`,
       tone: (effectiveBudget.deployableBudget || 0) > 0 ? (effectiveBudget.cashCapped ? "neutral" : "positive") : "negative"
+    },
+    {
+      label: "Per trade target",
+      value: formatMoney(sizingGuide.targetQuote || 0),
+      foot: `Probe ${formatMoney(sizingGuide.paperProbeQuote || 0)} · ${sizingGuide.idealConcurrentPositions || 0} tegelijk`,
+      tone: (sizingGuide.minTradeDominates || false) ? "neutral" : "positive"
     },
     {
       label: "External feeds",

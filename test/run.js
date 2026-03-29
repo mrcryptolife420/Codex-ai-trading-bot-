@@ -12898,6 +12898,10 @@ await runCheck("dashboard snapshot surfaces effective capital budget", async () 
   assert.equal(snapshot.overview.effectiveBudget.deployableBudget, 180);
   assert.equal(snapshot.overview.effectiveBudget.cashCapped, true);
   assert.equal(snapshot.ops.capitalPolicy.effectiveBudget.sizeMultiplier, 0.35);
+  assert.equal(snapshot.overview.sizingGuide.targetQuote, 27);
+  assert.equal(snapshot.ops.sizingGuide.paperProbeQuote, 25);
+  assert.equal(snapshot.ops.sizingGuide.idealConcurrentPositions, 2);
+  assert.equal(snapshot.ops.sizingGuide.minTradeDominates, false);
 });
 
 await runCheck("doctor checks flag failed market history dashboard feed", async () => {

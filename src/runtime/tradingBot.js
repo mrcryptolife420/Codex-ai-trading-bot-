@@ -3331,6 +3331,49 @@ function summarizeEffectiveBudget({ equity = 0, quoteFree = 0, capitalPolicy = {
   };
 }
 
+function summarizeSizingGuide({ config = {}, effectiveBudget = {}, mode = "paper" } = {}) {
+  const deployableBudget = Math.max(0, safeNumber(effectiveBudget.deployableBudget, 0));
+  const stopLossPct = Math.max(0.0001, safeNumber(config.stopLossPct, 0.018));
+  const maxPositionFraction = Math.max(0, safeNumber(config.maxPositionFraction, 0.15));
+  const maxTotalExposureFraction = Math.max(0, safeNumber(config.maxTotalExposureFraction, 0.6));
+  const riskPerTrade = Math.max(0, safeNumber(config.riskPerTrade, 0.01));
+  const minTradeUsdt = Math.max(0, safeNumber(config.minTradeUsdt, 25));
+  const perTradeCapByPosition = deployableBudget * maxPositionFraction;
+  const perTradeCapByRisk = stopLossPct > 0 ? (deployableBudget * riskPerTrade) / stopLossPct : perTradeCapByPosition;
+  const targetQuote = Math.max(minTradeUsdt, Math.min(perTradeCapByPosition, perTradeCapByRisk));
+  const exposureCap = deployableBudget * maxTotalExposureFraction;
+  const paperProbeMultiplier = Math.max(0, safeNumber(config.paperExplorationSizeMultiplier, 0.45));
+  const paperRecoveryMultiplier = Math.max(0, safeNumber(config.paperRecoveryProbeSizeMultiplier, 0.22));
+  const paperProbeQuote = Math.max(minTradeUsdt, targetQuote * paperProbeMultiplier);
+  const paperRecoveryQuote = Math.max(5, minTradeUsdt * paperRecoveryMultiplier);
+  const idealConcurrentPositions = targetQuote > 0
+    ? Math.max(1, Math.min(safeNumber(config.maxOpenPositions, 1), Math.floor(exposureCap / targetQuote) || 1))
+    : 0;
+  const minTradeDominates = targetQuote === minTradeUsdt && Math.min(perTradeCapByPosition, perTradeCapByRisk) < minTradeUsdt;
+  return {
+    mode,
+    deployableBudget: num(deployableBudget, 2),
+    targetQuote: num(targetQuote, 2),
+    perTradeCapByPosition: num(perTradeCapByPosition, 2),
+    perTradeCapByRisk: num(perTradeCapByRisk, 2),
+    exposureCap: num(exposureCap, 2),
+    paperProbeQuote: num(paperProbeQuote, 2),
+    paperRecoveryQuote: num(paperRecoveryQuote, 2),
+    idealConcurrentPositions,
+    minTradeUsdt: num(minTradeUsdt, 2),
+    minTradeDominates,
+    notes: [
+      `Normale trade mikt op ongeveer ${num(targetQuote, 2)} ${config.baseQuoteAsset || "USDT"}.`,
+      mode === "paper"
+        ? `Paper probe gebruikt ongeveer ${num(paperProbeQuote, 2)} ${config.baseQuoteAsset || "USDT"}, recovery probe ongeveer ${num(paperRecoveryQuote, 2)}.`
+        : `Live sizing blijft begrensd door ongeveer ${num(perTradeCapByRisk, 2)} risk-cap en ${num(perTradeCapByPosition, 2)} position-cap.`,
+      minTradeDominates
+        ? `Minimum trade van ${num(minTradeUsdt, 2)} domineert; kleinere sizing kan niet door de exchange-floor heen.`
+        : `Exposure-cap laat ongeveer ${idealConcurrentPositions} gelijktijdige positie(s) van deze grootte toe.`
+    ].filter(Boolean)
+  };
+}
+
 function summarizeTradeReasonView(trade = {}, pnl = {}) {
   const rawReason = trade.reason || null;
   if (rawReason === "stop_loss" && safeNumber(trade.exitPrice, 0) > safeNumber(trade.entryPrice, 0)) {
@@ -12050,6 +12093,11 @@ export class TradingBot {
       capitalPolicy: capitalPolicySummary
     });
     capitalPolicySummary.effectiveBudget = effectiveBudget;
+    const sizingGuide = summarizeSizingGuide({
+      config: this.config,
+      effectiveBudget,
+      mode: this.config.botMode
+    });
     const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
       topDecisions: dashboardTopDecisions,
       blockedSetups: dashboardBlockedSetups,
@@ -12096,6 +12144,7 @@ export class TradingBot {
         quoteFree: num(this.runtime.lastKnownBalance || 0, 2),
         equity: num(this.runtime.lastKnownEquity || 0, 2),
         effectiveBudget,
+        sizingGuide,
         openPositionCount: positions.length,
         totalUnrealizedPnl: num(totalUnrealizedPnl, 2),
         openExposure: num(report.openExposure || 0, 2),
@@ -12149,6 +12198,7 @@ export class TradingBot {
         capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {}),
         capitalGovernor: summarizeCapitalGovernor(this.runtime.capitalGovernor || {}),
         capitalPolicy: capitalPolicySummary,
+        sizingGuide,
         tuningGovernance: summarizeTuningGovernance({
           thresholdTuning: this.runtime.thresholdTuning || {},
           parameterGovernor: this.runtime.parameterGovernor || {},
