@@ -247,6 +247,32 @@ export class StrategyAllocationBandit {
     const confidenceBoost = clamp(weightedSignal * 0.04, -0.03, 0.04);
     const thresholdShift = clamp(weightedSignal * -0.024, -0.028, 0.028);
     const sizeMultiplier = clamp(1 + weightedSignal * 0.11 - explorationWeight * 0.025, 0.82, 1.14);
+    const marketRisk = clamp(
+      (inputs.newsRisk * 0.46) +
+      clamp(inputs.realizedVolPct / Math.max(0.01, safeNumber(this.config.strategyAllocationBudgetVolScalePct, 0.032)), 0, 1) * 0.34 +
+      Math.max(0, -inputs.alignment) * 0.2,
+      0,
+      1
+    );
+    const convictionScore = clamp(
+      weightedSignal * 0.42 +
+      (weightedConfidence - 0.5) * 0.18 +
+      (inputs.fitScore - 0.5) * 0.24 +
+      (inputs.probability - 0.5) * 0.26 -
+      marketRisk * 0.22,
+      -1,
+      1
+    );
+    const budgetMultiplier = clamp(
+      1 + convictionScore * 0.18 - explorationWeight * 0.035,
+      0.78,
+      1.22
+    );
+    const budgetLane = budgetMultiplier >= 1.06
+      ? "conviction"
+      : budgetMultiplier <= 0.94
+        ? "reduced"
+        : "standard";
     const posture = weightedSignal >= 0.08 ? "favor"
       : weightedSignal <= -0.08 ? "cool"
         : "neutral";
@@ -264,6 +290,10 @@ export class StrategyAllocationBandit {
       confidenceBoost: num(confidenceBoost, 4),
       thresholdShift: num(thresholdShift, 4),
       sizeMultiplier: num(sizeMultiplier, 4),
+      budgetMultiplier: num(budgetMultiplier, 4),
+      budgetLane,
+      convictionScore: num(convictionScore, 4),
+      marketRisk: num(marketRisk, 4),
       explorationWeight: num(explorationWeight, 4),
       confidence: num(weightedConfidence, 4),
       activeBias: num(weightedSignal, 4),
@@ -278,6 +308,11 @@ export class StrategyAllocationBandit {
           : weightedSignal <= -0.08
             ? `Allocator koelt ${inputs.strategy} binnen ${inputs.regime} voorlopig af.`
             : `Allocator houdt ${inputs.strategy} in ${inputs.regime} neutraal.`,
+        budgetLane === "conviction"
+          ? "Budget lane staat op conviction; deze context verdient iets meer sizing."
+          : budgetLane === "reduced"
+            ? "Budget lane staat op reduced; deze context krijgt bewust minder sizing."
+            : "Budget lane blijft standaard; sizing blijft dicht bij de basis.",
         explorationWeight >= 0.3
           ? "Exploratiegewicht blijft verhoogd omdat de sample-diepte nog beperkt of oud is."
           : "Allocator leunt hier vooral op recente gesloten trades."

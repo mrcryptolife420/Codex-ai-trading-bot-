@@ -1237,6 +1237,7 @@ function buildOpsCards(snapshot) {
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
   const effectiveBudget = capitalPolicy.effectiveBudget || snapshot?.dashboard?.overview?.effectiveBudget || {};
   const sizingGuide = snapshot?.dashboard?.ops?.sizingGuide || snapshot?.dashboard?.overview?.sizingGuide || {};
+  const strategyAllocation = snapshot?.dashboard?.ai?.strategyAllocation || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
@@ -1284,7 +1285,7 @@ function buildOpsCards(snapshot) {
     {
       label: "Per trade target",
       value: formatMoney(sizingGuide.targetQuote || 0),
-      foot: `Probe ${formatMoney(sizingGuide.paperProbeQuote || 0)} · ${sizingGuide.idealConcurrentPositions || 0} tegelijk`,
+      foot: `${titleize(strategyAllocation.budgetLane || "standard")} x${formatNumber(strategyAllocation.budgetMultiplier || 1, 2)} · Probe ${formatMoney(sizingGuide.paperProbeQuote || 0)} · ${sizingGuide.idealConcurrentPositions || 0} tegelijk`,
       tone: (sizingGuide.minTradeDominates || false) ? "neutral" : "positive"
     },
     {

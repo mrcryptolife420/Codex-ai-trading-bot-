@@ -643,6 +643,8 @@ await runCheck("strategy allocation bandit learns regime and strategy bias from 
   assert.ok(after.fitBoost > before.fitBoost);
   assert.ok(after.thresholdShift < 0);
   assert.ok(after.sizeMultiplier >= 1);
+  assert.ok(after.budgetMultiplier >= 1);
+  assert.equal(after.budgetLane, "conviction");
   assert.equal(summary.topStrategies[0]?.id, "ema_trend");
   assert.equal(summary.topFamilies[0]?.id, "trend_following");
 });
@@ -696,9 +698,28 @@ await runCheck("adaptive model exposes and persists strategy allocation guidance
   assert.ok(score.strategyAllocation);
   assert.ok(score.strategyAllocation.fitBoost > 0);
   assert.ok(score.strategyAllocation.thresholdShift < 0);
+  assert.ok(score.strategyAllocation.budgetMultiplier >= 1);
+  assert.equal(score.strategyAllocation.budgetLane, "conviction");
   assert.equal(modelState.version, 6);
   assert.equal(modelState.strategyAllocation.version, 1);
   assert.equal(allocationSummary.topStrategies[0]?.id, "ema_trend");
+});
+
+await runCheck("adaptive allocator reduces budget on risky weak contexts", async () => {
+  const allocator = new StrategyAllocationBandit(undefined, makeConfig());
+  const context = {
+    score: { probability: 0.46, confidence: 0.34 },
+    strategySummary: { family: "breakout", activeStrategy: "bollinger_squeeze", fitScore: 0.49, confidence: 0.38 },
+    regimeSummary: { regime: "high_vol", confidence: 0.52 },
+    sessionSummary: { session: "weekend" },
+    timeframeSummary: { alignmentScore: -0.18 },
+    pairHealthSummary: { score: 0.48 },
+    newsSummary: { riskScore: 0.42 },
+    marketSnapshot: { market: { realizedVolPct: 0.052 } }
+  };
+  const scored = allocator.score(context);
+  assert.ok(scored.budgetMultiplier < 1);
+  assert.equal(scored.budgetLane, "reduced");
 });
 
 await runCheck("strategy DSL blocks unsafe imports and keeps safe research candidates scorable", async () => {

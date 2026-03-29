@@ -2857,6 +2857,10 @@ function summarizeStrategyAllocation(summary = {}) {
     confidenceBoost: num(summary.confidenceBoost || 0, 4),
     thresholdShift: num(summary.thresholdShift || 0, 4),
     sizeMultiplier: num(summary.sizeMultiplier ?? 1, 4),
+    budgetMultiplier: num(summary.budgetMultiplier ?? 1, 4),
+    budgetLane: summary.budgetLane || "standard",
+    convictionScore: num(summary.convictionScore || 0, 4),
+    marketRisk: num(summary.marketRisk || 0, 4),
     explorationWeight: num(summary.explorationWeight || 0, 4),
     confidence: num(summary.confidence || 0, 4),
     activeBias: num(summary.activeBias || 0, 4),
@@ -9321,7 +9325,13 @@ export class TradingBot {
       ...strategyMetaSummary,
       fitBoost: clamp((strategyMetaSummary.fitBoost || 0) + (strategyAllocationSummary.fitBoost || 0), -0.12, 0.12),
       thresholdShift: clamp((strategyMetaSummary.thresholdShift || 0) + (strategyAllocationSummary.thresholdShift || 0), -0.05, 0.05),
-      sizeMultiplier: clamp((strategyMetaSummary.sizeMultiplier || 1) * (strategyAllocationSummary.sizeMultiplier || 1), 0.72, 1.18),
+      sizeMultiplier: clamp(
+        (strategyMetaSummary.sizeMultiplier || 1) *
+        (strategyAllocationSummary.sizeMultiplier || 1) *
+        (strategyAllocationSummary.budgetMultiplier || 1),
+        0.68,
+        1.24
+      ),
       confidence: clamp(((strategyMetaSummary.confidence || 0) * 0.6) + ((strategyAllocationSummary.confidence || 0) * 0.4), 0, 1),
       strategyAllocation: summarizeStrategyAllocation(strategyAllocationSummary)
     };
