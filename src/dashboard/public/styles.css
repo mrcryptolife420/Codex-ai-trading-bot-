@@ -58,13 +58,13 @@ h3 {
 }
 
 .shell {
-  width: min(1460px, calc(100vw - 28px));
-  margin: 14px auto 22px;
+  width: min(1500px, calc(100vw - 24px));
+  margin: 12px auto 18px;
 }
 
 .main {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .topbar,
@@ -77,24 +77,38 @@ h3 {
 
 .topbar {
   position: sticky;
-  top: 14px;
+  top: 12px;
   z-index: 5;
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) auto;
-  gap: 16px;
-  align-items: center;
-  padding: 18px 20px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "brand side"
+    "summary summary";
+  gap: 12px 18px;
+  align-items: start;
+  padding: 14px 16px;
 }
 
-.topbar-main,
 .brand-block,
 .panel-head {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+}
+
+.brand-block {
+  grid-area: brand;
+  align-content: start;
 }
 
 .brand-block h1 {
-  font-size: clamp(1.45rem, 2vw, 1.85rem);
+  font-size: clamp(1.4rem, 1.9vw, 1.8rem);
+}
+
+.topbar-side {
+  grid-area: side;
+  display: grid;
+  gap: 10px;
+  justify-items: end;
 }
 
 .eyebrow {
@@ -112,6 +126,11 @@ h3 {
 th,
 .toggle {
   color: var(--text-soft);
+}
+
+.topbar-copy {
+  max-width: 72ch;
+  line-height: 1.4;
 }
 
 .panel-body {
@@ -134,7 +153,8 @@ th,
 }
 
 .status-summary {
-  margin-top: 2px;
+  grid-area: summary;
+  margin-top: 0;
 }
 
 .status-chip,
@@ -163,16 +183,20 @@ th,
 
 .refresh-chip {
   justify-content: flex-start;
-  min-width: 210px;
+  min-width: 230px;
 }
 
 .hero-pill {
   justify-content: flex-start;
   gap: 8px;
+  min-height: 36px;
+  padding: 0 11px;
+  max-width: 100%;
 }
 
 .hero-pill strong {
   color: var(--text);
+  flex-shrink: 0;
 }
 
 button {
@@ -221,19 +245,46 @@ button:disabled {
 .main-grid,
 .bottom-grid {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .main-grid {
-  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.95fr);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
 }
 
 .bottom-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
 }
 
 .panel {
-  padding: 18px;
+  padding: 14px;
+}
+
+#signalsSection {
+  grid-column: span 8;
+}
+
+#positionsSection {
+  grid-column: span 4;
+}
+
+#learningSection {
+  grid-column: span 8;
+}
+
+#riskSection {
+  grid-column: span 4;
+}
+
+#missedTradesSection,
+#historySection,
+#diagnosticsSection,
+#explainabilitySection {
+  grid-column: span 6;
+}
+
+#promotionSection {
+  grid-column: span 12;
 }
 
 .panel-head,
@@ -241,8 +292,8 @@ button:disabled {
   display: flex;
   align-items: end;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 12px;
+  gap: 10px 14px;
+  margin-bottom: 10px;
 }
 
 .panel-head h3 {
@@ -252,7 +303,7 @@ button:disabled {
 .list-stack,
 .risk-grid {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .risk-grid {
@@ -594,6 +645,26 @@ input[type="search"] {
   .bottom-grid,
   .learning-review-grid {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "brand"
+      "side"
+      "summary";
+  }
+
+  .topbar-side {
+    justify-items: stretch;
+  }
+
+  #signalsSection,
+  #positionsSection,
+  #learningSection,
+  #riskSection,
+  #missedTradesSection,
+  #historySection,
+  #diagnosticsSection,
+  #explainabilitySection,
+  #promotionSection {
+    grid-column: auto;
   }
 }
 
@@ -604,6 +675,7 @@ input[type="search"] {
   }
 
   .topbar-actions,
+  .status-strip,
   .toolbar,
   .risk-grid,
   .learning-summary-grid,

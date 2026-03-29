@@ -13137,6 +13137,15 @@ await runCheck("dashboard frontend consolidates learning helpers and removes dup
   assert.doesNotMatch(source, /label:\s*"Paper learning"/);
 });
 
+await runCheck("dashboard header removes duplicate blocker and action hero pills", async () => {
+  const appSource = await fs.readFile(new URL("../src/dashboard/public/app.js", import.meta.url), "utf8");
+  const htmlSource = await fs.readFile(new URL("../src/dashboard/public/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(appSource, /label:\s*"Blokkade"/);
+  assert.doesNotMatch(appSource, /label:\s*"Actie"/);
+  assert.match(appSource, /label:\s*"Focus"/);
+  assert.match(htmlSource, /class="topbar-side"/);
+});
+
 await runCheck("dashboard frontend smoke renders snapshot without browser DOM", async () => {
   const result = __dashboardSmokeRender({
     manager: {

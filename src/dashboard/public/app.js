@@ -750,6 +750,10 @@ function buildHeroSummary(snapshot) {
   const probeOnly = Boolean(dashboard.safety?.orderLifecycle?.probeOnly?.enabled || dashboard.ops?.readiness?.reasons?.includes("probe_only"));
   const overview = dashboard.overview || {};
   const effectiveBudget = overview.effectiveBudget || {};
+  const focusText = leadDecision?.allow
+    ? actionText(leadDecision)
+    : humanizeReason(leadDecision?.operatorAction || topReason, "Geen directe focus");
+  const recoveryText = leadDecision?.autoRecovery || (unresolvedCritical.length ? "Na ack of resolve van kritieke alerts" : "Geen automatische recovery actief");
 
   const subline = leadDecision?.allow
     ? `${leadDecision.symbol} is momenteel de beste tradebare setup.`
@@ -774,21 +778,31 @@ function buildHeroSummary(snapshot) {
       tone: leadDecision?.allow ? "positive" : "neutral"
     },
     {
-      label: "Blokkade",
-      value: topReason ? humanizeReason(topReason) : "Geen directe blocker",
-      tone: topReason ? "negative" : "positive"
+      label: "Focus",
+      value: focusText,
+      tone: leadDecision?.allow ? "neutral" : topReason ? "negative" : "positive"
     },
-    {
-      label: "Actie",
-      value: leadDecision?.operatorAction || (freezeEntries ? "Reconcile controleren" : probeOnly ? "Alleen probes toelaten" : "Geen directe actie"),
-      tone: (Boolean(leadDecision?.operatorAction) || freezeEntries) ? "negative" : "neutral"
-    },
-    {
-      label: "Herstelt vanzelf",
-      value: leadDecision?.autoRecovery || (unresolvedCritical.length ? "Na ack of resolve van kritieke alerts" : "Geen automatische recovery actief"),
-      tone: leadDecision?.autoRecovery ? "positive" : "neutral"
-    }
-  ];
+    recoveryText && recoveryText !== focusText
+      ? {
+          label: "Herstel",
+          value: recoveryText,
+          tone: leadDecision?.autoRecovery ? "positive" : "neutral"
+        }
+      : null,
+    freezeEntries
+      ? {
+          label: "Guardrail",
+          value: "Entries bevroren tot reconcile klaar is.",
+          tone: "negative"
+        }
+      : probeOnly
+        ? {
+            label: "Guardrail",
+            value: "Alleen probes zijn nu toegestaan.",
+            tone: "neutral"
+          }
+        : null
+  ].filter(Boolean);
 
   return {
     subline,
