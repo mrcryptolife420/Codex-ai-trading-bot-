@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, listFiles, loadJson, removeFile, saveJson } from "../utils/fs.js";
 
@@ -271,6 +272,28 @@ export class StateStore {
 
   async saveModelBackups(backups) {
     await saveJson(this.modelBackupsPath, backups);
+  }
+
+  async quarantineCorruptFile(filePath, atIso = new Date().toISOString()) {
+    if (!filePath) {
+      return null;
+    }
+    const resolvedRuntimeDir = path.resolve(this.runtimeDir);
+    const resolvedFilePath = path.resolve(filePath);
+    if (!resolvedFilePath.startsWith(resolvedRuntimeDir)) {
+      return null;
+    }
+    const stamp = atIso.replaceAll(":", "-");
+    const quarantinePath = `${resolvedFilePath}.corrupt-${stamp}`;
+    try {
+      await fs.rename(resolvedFilePath, quarantinePath);
+      return quarantinePath;
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
   }
 }
 

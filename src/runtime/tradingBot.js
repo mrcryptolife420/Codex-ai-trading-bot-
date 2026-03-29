@@ -4664,7 +4664,7 @@ export class TradingBot {
     }
   }
 
-  buildRecoveredStateBundle(backup = null, sourceError = null) {
+  buildRecoveredStateBundle(backup = null, sourceError = null, recoveryMeta = {}) {
     const restoredAt = backup?.at || nowIso();
     const payload = backup?.payload || {};
     const hasRecoverableState = payload && typeof payload === "object" && (payload.runtime || payload.journal || payload.modelState);
@@ -4683,18 +4683,37 @@ export class TradingBot {
       ...(runtime.recovery || {}),
       uncleanShutdownDetected: true,
       restoredFromBackupAt: restoredAt,
-      latestBackupAt: restoredAt
+      latestBackupAt: restoredAt,
+      corruptPrimaryState: recoveryMeta.corruptFilePath || sourceError?.filePath
+        ? {
+            filePath: recoveryMeta.corruptFilePath || sourceError?.filePath || null,
+            kind: recoveryMeta.corruptionKind || sourceError?.corruptionKind || "invalid_json",
+            quarantinedTo: recoveryMeta.quarantinePath || null,
+            recoveredAt: restoredAt
+          }
+        : null
     };
     runtime.stateBackups = {
       ...(runtime.stateBackups || {}),
       restoredFromBackupAt: restoredAt,
       lastBackupAt: restoredAt
     };
+    runtime.service = runtime.service && typeof runtime.service === "object" ? runtime.service : {};
+    runtime.service.initWarnings = arr(runtime.service.initWarnings || []);
+    if (recoveryMeta.corruptFilePath || sourceError?.filePath) {
+      runtime.service.initWarnings.unshift(
+        `Corrupt primary state recovered from backup: ${(recoveryMeta.corruptFilePath || sourceError?.filePath || "unknown").split(/[\\\\/]/).at(-1)}`
+      );
+      runtime.service.initWarnings = runtime.service.initWarnings.slice(0, 8);
+    }
     journal.events = arr(journal.events);
     journal.events.push({
       at: restoredAt,
       type: "state_restored_from_backup",
-      reason: sourceError?.message || "corrupt_primary_state"
+      reason: sourceError?.message || "corrupt_primary_state",
+      filePath: recoveryMeta.corruptFilePath || sourceError?.filePath || null,
+      corruptionKind: recoveryMeta.corruptionKind || sourceError?.corruptionKind || null,
+      quarantinedTo: recoveryMeta.quarantinePath || null
     });
     return {
       runtime,
@@ -4759,11 +4778,37 @@ export class TradingBot {
       if (!isCorruptStateLoadError(error)) {
         throw error;
       }
+      const corruptFilePath = error?.filePath || null;
+      const corruptionKind = error?.corruptionKind || "invalid_json";
       this.logger?.warn?.("Primary state load failed, attempting backup restore", {
-        error: error.message
+        error: error.message,
+        filePath: corruptFilePath,
+        corruptionKind
       });
+      let quarantinePath = null;
+      if (corruptFilePath) {
+        try {
+          quarantinePath = await this.store.quarantineCorruptFile(corruptFilePath);
+          if (quarantinePath) {
+            this.logger?.warn?.("Corrupt primary state file quarantined", {
+              filePath: corruptFilePath,
+              quarantinedTo: quarantinePath,
+              corruptionKind
+            });
+          }
+        } catch (quarantineError) {
+          this.logger?.warn?.("Corrupt primary state file could not be quarantined", {
+            filePath: corruptFilePath,
+            error: quarantineError.message
+          });
+        }
+      }
       const backup = await this.backupManager.loadLatestBackup();
-      const recovered = this.buildRecoveredStateBundle(backup, error);
+      const recovered = this.buildRecoveredStateBundle(backup, error, {
+        corruptFilePath,
+        corruptionKind,
+        quarantinePath
+      });
       try {
         await this.store.saveRuntime(recovered.runtime);
         await this.store.saveJournal(recovered.journal);

@@ -9868,12 +9868,32 @@ await runCheck("state store migrates runtime and journal schemas forward", async
   }
 });
 
+await runCheck("state store surfaces null-byte corruption with file context", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-state-store-corrupt-"));
+  try {
+    await fs.writeFile(path.join(tempDir, "runtime.json"), "\u0000\u0000\u0000");
+    const store = new StateStore(tempDir);
+    await assert.rejects(
+      () => store.loadRuntime(),
+      (error) => error instanceof SyntaxError &&
+        error.filePath?.endsWith("runtime.json") &&
+        error.corruptionKind === "null_bytes"
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 await runCheck("trading bot restores corrupted primary state from backup", async () => {
   const saved = [];
+  const quarantined = [];
   const bot = Object.create(TradingBot.prototype);
   bot.store = {
     async loadRuntime() {
-      throw new SyntaxError("Unexpected token");
+      const error = new SyntaxError("Unexpected token");
+      error.filePath = "/tmp/runtime.json";
+      error.corruptionKind = "invalid_json";
+      throw error;
     },
     async loadModelBackups() {
       return [];
@@ -9895,6 +9915,10 @@ await runCheck("trading bot restores corrupted primary state from backup", async
     },
     async saveModelBackups(backups) {
       saved.push(["modelBackups", backups]);
+    },
+    async quarantineCorruptFile(filePath) {
+      quarantined.push(filePath);
+      return `${filePath}.corrupt-2026-03-10T08-11-49.918Z`;
     }
   };
   bot.backupManager = {
@@ -9914,9 +9938,14 @@ await runCheck("trading bot restores corrupted primary state from backup", async
   const recovered = await bot.loadPersistedStateWithBackupFallback();
   assert.equal(recovered.runtime.lastCycleAt, "2026-03-10T08:00:00.000Z");
   assert.equal(recovered.runtime.recovery.restoredFromBackupAt, "2026-03-10T08:11:49.918Z");
+  assert.equal(recovered.runtime.recovery.corruptPrimaryState.filePath, "/tmp/runtime.json");
+  assert.equal(recovered.runtime.recovery.corruptPrimaryState.quarantinedTo, "/tmp/runtime.json.corrupt-2026-03-10T08-11-49.918Z");
+  assert.ok(recovered.runtime.service.initWarnings[0].includes("Corrupt primary state recovered from backup"));
   assert.equal(recovered.modelState.bias, 1);
   assert.equal(recovered.modelBackups.length, 1);
   assert.equal(recovered.journal.events.at(-1).type, "state_restored_from_backup");
+  assert.equal(recovered.journal.events.at(-1).filePath, "/tmp/runtime.json");
+  assert.deepEqual(quarantined, ["/tmp/runtime.json"]);
   assert.deepEqual(saved.map(([kind]) => kind), ["runtime", "journal", "model", "modelBackups"]);
 });
 

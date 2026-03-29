@@ -6,10 +6,29 @@ export async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
+function annotateJsonLoadError(error, filePath, corruptionKind) {
+  if (error && typeof error === "object") {
+    error.filePath = filePath;
+    error.corruptionKind = corruptionKind;
+  }
+  return error;
+}
+
 export async function loadJson(filePath, fallback) {
   try {
     const content = await fs.readFile(filePath, "utf8");
-    return JSON.parse(content);
+    const normalized = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+    if (!normalized.trim()) {
+      throw annotateJsonLoadError(new SyntaxError(`Empty JSON file at ${filePath}`), filePath, "empty_file");
+    }
+    if (normalized.includes("\u0000")) {
+      throw annotateJsonLoadError(new SyntaxError(`Null bytes detected in JSON file at ${filePath}`), filePath, "null_bytes");
+    }
+    try {
+      return JSON.parse(normalized);
+    } catch (error) {
+      throw annotateJsonLoadError(error, filePath, "invalid_json");
+    }
   } catch (error) {
     if (error.code === "ENOENT") {
       return fallback;
