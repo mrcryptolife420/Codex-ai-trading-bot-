@@ -1676,7 +1676,8 @@ function buildOpsEvents(snapshot) {
           detail: compactJoin([
             titleize(promotionByCondition.action || "observe"),
             titleize(promotionByCondition.id),
-            promotionByCondition.conditionId ? titleize(promotionByCondition.conditionId) : null
+            promotionByCondition.conditionId ? titleize(promotionByCondition.conditionId) : null,
+            promotionByCondition.blockers?.[0] ? `Wacht op ${titleize(promotionByCondition.blockers[0])}` : null
           ], " · "),
           tone: promotionByCondition.status === "positive" ? "positive" : promotionByCondition.status === "negative" ? "negative" : "neutral"
         }

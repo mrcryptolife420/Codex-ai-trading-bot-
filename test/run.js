@@ -17716,6 +17716,46 @@ await runCheck("promotion pipeline downgrades guarded live candidates when execu
   assert.ok(candidate.guardedLiveBlockers.includes("persistence_truth_not_ready"));
 });
 
+await runCheck("promotion pipeline keeps live-ready candidates in guarded live when confidence is not mature enough", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summary = bot.buildPromotionPipelineSnapshot({
+    paperLearning: {
+      promotionRoadmap: { status: "observe", allowPromotion: false, note: "collect more proof" },
+      policyTransitions: { candidates: [] }
+    },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: [] } },
+    researchRegistry: { governance: { promotionCandidates: [] } },
+    promotionState: {},
+    offlineTrainer: {
+      policyTransitionCandidatesByCondition: [
+        {
+          id: "ema_trend",
+          strategyId: "ema_trend",
+          familyId: "trend_following",
+          conditionId: "breakout_release",
+          action: "live_ready",
+          confidence: 0.8,
+          scope: "breakout_release | ema_trend",
+          reason: "paper proof is strong but still maturing"
+        }
+      ]
+    },
+    tradingFlowHealth: {
+      counters: { executed: 3, persisted: 3 }
+    },
+    executionSummary: {
+      avgExecutionQualityScore: 0.7,
+      avgSlippageDeltaBps: 1.2
+    }
+  });
+  const candidate = summary.rolloutCandidates.find((item) => item.id === "ema_trend");
+  assert.ok(candidate);
+  assert.equal(candidate.action, "guarded_live_candidate");
+  assert.equal(candidate.guardedLiveReady, false);
+  assert.ok(candidate.guardedLiveBlockers.includes("condition_confidence_not_ready"));
+  assert.equal(candidate.conditionId, "breakout_release");
+});
+
 await runCheck("offline trainer builds feature governance attribution parity and pruning plans", async () => {
   const trainer = new OfflineTrainer(makeConfig());
   const summary = trainer.buildSummary({

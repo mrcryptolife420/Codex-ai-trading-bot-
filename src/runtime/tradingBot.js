@@ -3248,7 +3248,8 @@ function summarizeOpportunityRanking(decisions = []) {
 
 function summarizePromotionByConditionDigest({
   policyTransitions = [],
-  paperLearningTransitions = []
+  paperLearningTransitions = [],
+  rolloutCandidates = []
 } = {}) {
   const priority = new Map([
     ["live_ready", 6],
@@ -3261,7 +3262,7 @@ function summarizePromotionByConditionDigest({
     ["cooldown_candidate", 1],
     ["retire_candidate", 0]
   ]);
-  const top = [...arr(policyTransitions), ...arr(paperLearningTransitions)]
+  const rankedTransitions = [...arr(policyTransitions), ...arr(paperLearningTransitions)]
     .filter((item) => item?.id || item?.strategyId)
     .sort((left, right) => {
       const priorityDelta = (priority.get(right.action) || 0) - (priority.get(left.action) || 0);
@@ -3269,7 +3270,8 @@ function summarizePromotionByConditionDigest({
         return priorityDelta;
       }
       return (right.confidence || 0) - (left.confidence || 0);
-    })[0] || null;
+    });
+  const top = arr(rolloutCandidates)[0] || rankedTransitions[0] || null;
   const action = top?.action || "observe";
   const status = ["live_ready", "guarded_live_candidate", "promote_candidate", "paper_ready"].includes(action)
     ? "positive"
@@ -3278,15 +3280,21 @@ function summarizePromotionByConditionDigest({
       : top
         ? "neutral"
         : "warmup";
+  const blockers = arr(top?.guardedLiveBlockers || []);
+  const headlineId = top?.id || top?.strategyId || null;
+  const headlineCondition = top?.conditionId || null;
   return {
     status,
     action,
-    id: top?.id || top?.strategyId || null,
-    conditionId: top?.conditionId || null,
+    id: headlineId,
+    conditionId: headlineCondition,
     confidence: num(top?.confidence || 0, 4),
     reason: top?.reason || null,
-    note: top?.id || top?.strategyId
-      ? `${titleize(top.id || top.strategyId)} staat nu op ${titleize(action)}${top.conditionId ? ` binnen ${titleize(top.conditionId)}` : ""}.`
+    blockers,
+    note: headlineId
+      ? blockers.length
+        ? `${titleize(headlineId)} blijft nu op ${titleize(action)}${headlineCondition ? ` binnen ${titleize(headlineCondition)}` : ""} en wacht op ${humanizeReason(blockers[0])}.`
+        : `${titleize(headlineId)} staat nu op ${titleize(action)}${headlineCondition ? ` binnen ${titleize(headlineCondition)}` : ""}.`
       : "Nog geen condition-aware policy transition klaar."
   };
 }
@@ -12815,6 +12823,10 @@ export class TradingBot {
           const rawAction = item.action || "observe";
           const guardedLiveBlockers = [];
           if (["guarded_live_candidate", "live_ready"].includes(rawAction)) {
+            const confidenceFloor = rawAction === "live_ready" ? 0.84 : 0.72;
+            if ((item.confidence || 0) < confidenceFloor) {
+              guardedLiveBlockers.push("condition_confidence_not_ready");
+            }
             if ((executionSummary.avgExecutionQualityScore || 0) < 0.55) {
               guardedLiveBlockers.push("execution_quality_not_ready");
             }
@@ -12835,13 +12847,18 @@ export class TradingBot {
             id: item.id || null,
             scope: item.scope || item.id || null,
             type: item.type || "scope",
+            rawAction,
             action: effectiveAction,
+            conditionId: item.conditionId || null,
             confidence: num(item.confidence || 0, 4),
             reason: item.reason || null,
             blocker: item.blocker || null,
             approved: activePromotions.some((promotion) => promotion.scope === (item.scope || item.id)),
             guardedLiveReady: guardedLiveBlockers.length === 0,
-            guardedLiveBlockers
+            guardedLiveBlockers,
+            note: guardedLiveBlockers.length
+              ? `${titleize(item.id || item.scope || "scope")} wacht op ${humanizeReason(guardedLiveBlockers[0])}.`
+              : item.reason || null
           };
         })
         .slice(0, 6),
@@ -12978,9 +12995,19 @@ export class TradingBot {
     const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
     const exitPolicyDigest = summarizeExitPolicyDigest(leadManagedPosition?.latestExitPolicy || {});
     const opportunityRankingDigest = summarizeOpportunityRanking(previewTopCandidates);
+    const promotionPipeline = this.buildPromotionPipelineSnapshot({
+      paperLearning: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}),
+      modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
+      researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
+      promotionState: this.runtime.ops?.promotionState || {},
+      offlineTrainer: offlineTrainerSummary,
+      tradingFlowHealth: summarizeSignalFlow(this.runtime.signalFlow || {}).tradingFlowHealth || {},
+      executionSummary: report.executionSummary || {}
+    });
     const promotionByConditionDigest = summarizePromotionByConditionDigest({
       policyTransitions: offlineTrainerSummary.policyTransitionCandidatesByCondition || [],
-      paperLearningTransitions: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}).policyTransitions?.candidates || []
+      paperLearningTransitions: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}).policyTransitions?.candidates || [],
+      rolloutCandidates: promotionPipeline.rolloutCandidates || []
     });
     return {
       mode: this.config.botMode,
@@ -13005,6 +13032,7 @@ export class TradingBot {
       exitPolicy: exitPolicyDigest,
       opportunityRanking: opportunityRankingDigest,
       promotionByCondition: promotionByConditionDigest,
+      promotionPipeline,
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       sourceReliability: this.buildSourceReliabilitySnapshot(),
@@ -13096,6 +13124,7 @@ export class TradingBot {
       effectiveBudget,
       mode: this.config.botMode
     });
+    const signalFlowSummary = summarizeSignalFlow(this.runtime.signalFlow || {});
     const learningInsights = {
       missedTrades: summarizeMissedTradeLearning({
         ...paperLearningSummary,
@@ -13125,9 +13154,19 @@ export class TradingBot {
     const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
     const exitPolicyDigest = summarizeExitPolicyDigest(leadPosition?.latestExitPolicy || {});
     const opportunityRankingDigest = summarizeOpportunityRanking(dashboardTopDecisions);
+    const promotionPipeline = this.buildPromotionPipelineSnapshot({
+      paperLearning: paperLearningSummary,
+      modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
+      researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
+      promotionState: this.runtime.ops?.promotionState || {},
+      offlineTrainer: offlineTrainerSummary,
+      tradingFlowHealth: signalFlowSummary.tradingFlowHealth || {},
+      executionSummary: report.executionSummary || {}
+    });
     const promotionByConditionDigest = summarizePromotionByConditionDigest({
       policyTransitions: offlineTrainerSummary.policyTransitionCandidatesByCondition || [],
-      paperLearningTransitions: paperLearningSummary.policyTransitions?.candidates || []
+      paperLearningTransitions: paperLearningSummary.policyTransitions?.candidates || [],
+      rolloutCandidates: promotionPipeline.rolloutCandidates || []
     });
     const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
       topDecisions: dashboardTopDecisions,
@@ -13156,16 +13195,6 @@ export class TradingBot {
         ? "Trade replays en decision explainers laten nu dezelfde beslisketen zien."
         : "Explainability volgt zodra er recente trades of beslissingen zijn."
     };
-    const promotionPipeline = this.buildPromotionPipelineSnapshot({
-      paperLearning: paperLearningSummary,
-      modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
-      researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
-      promotionState: this.runtime.ops?.promotionState || {},
-      offlineTrainer: offlineTrainerSummary,
-      tradingFlowHealth: signalFlowSummary.tradingFlowHealth || {},
-      executionSummary: report.executionSummary || {}
-    });
-
     return {
       generatedAt: nowIso(),
       analysis: {
