@@ -12960,6 +12960,168 @@ await runCheck("dashboard snapshot surfaces effective capital budget", async () 
   assert.equal(snapshot.ops.sizingGuide.minTradeDominates, false);
 });
 
+await runCheck("dashboard snapshot surfaces missed-trade and exit learning digests", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", tradingIntervalSeconds: 60, watchlist: ["BTCUSDT"] });
+  bot.runtime = {
+    lastCycleAt: "2026-03-19T09:59:00.000Z",
+    lastAnalysisAt: "2026-03-19T09:59:00.000Z",
+    lastPortfolioUpdateAt: "2026-03-19T09:59:00.000Z",
+    lastKnownBalance: 500,
+    lastKnownEquity: 1000,
+    openPositions: [
+      {
+        symbol: "BTCUSDT",
+        unrealizedPnl: 18,
+        latestExitIntelligence: {
+          action: "trail",
+          confidence: 0.74,
+          reason: "winner_giving_back",
+          riskReasons: ["winner_giving_back"],
+          shouldTightenStop: true
+        }
+      }
+    ],
+    latestDecisions: [],
+    latestBlockedSetups: [],
+    marketSentiment: {},
+    volatilityContext: {},
+    onChainLite: {},
+    pairHealth: {},
+    qualityQuorum: {},
+    divergence: {},
+    strategyResearch: {},
+    researchRegistry: {},
+    modelRegistry: {},
+    executionCalibration: {},
+    thresholdTuning: {},
+    parameterGovernor: {},
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    capitalPolicy: { status: "ready", budgets: {}, notes: [] },
+    venueConfirmation: {},
+    exchangeTruth: { unmatchedOrderSymbols: [], orphanedSymbols: [], manualInterferenceSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    marketHistory: { status: "ready", aggregate: { status: "ready", symbolCount: 1, coveredSymbolCount: 1 }, symbols: {} },
+    sourceReliability: {},
+    watchlistSummary: null,
+    exchangeCapabilities: bot.config.exchangeCapabilities,
+    aiTelemetry: {},
+    stateBackups: {},
+    recovery: {},
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:40.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0,
+      initWarnings: [],
+      dashboardFeeds: {}
+    },
+    offlineTrainer: {
+      counterfactuals: {
+        total: 12,
+        missedWinners: 5,
+        blockedCorrectly: 4,
+        averageMissedMovePct: 0.024
+      },
+      exitLearning: {
+        status: "watch",
+        topReason: "winner_giving_back",
+        prematureExitCount: 2,
+        lateExitCount: 1,
+        averageExitScore: 0.61
+      }
+    },
+    paperLearning: {
+      generatedAt: "2026-03-19T09:59:00.000Z",
+      status: "active",
+      readinessStatus: "building",
+      reviewPacks: { topMissedSetup: "BTCUSDT" },
+      counterfactualTuning: {
+        blocker: "model_confidence_too_low",
+        action: "relax",
+        confidence: 0.73
+      },
+      blockerAttribution: {
+        strictestBlocker: {
+          id: "model_confidence_too_low",
+          badVetoRate: 0.48,
+          governanceScore: 0.41
+        }
+      },
+      failureLibrary: [{ id: "bad_veto", count: 3, status: "priority" }]
+    },
+    health: { circuitOpen: false },
+    ops: {
+      readiness: { status: "ready", reasons: [] },
+      alerts: { alerts: [] },
+      alertDelivery: {},
+      incidentTimeline: [],
+      diagnosticsActions: { history: [] },
+      promotionState: {}
+    }
+  };
+  bot.historyStore = null;
+  bot.journal = {
+    trades: [
+      {
+        symbol: "ETHUSDT",
+        exitIntelligenceSummary: { action: "exit", confidence: 0.68, reason: "spread_shock_risk" }
+      }
+    ],
+    scaleOuts: [],
+    blockedSetups: [],
+    cycles: [],
+    equitySnapshots: [],
+    events: []
+  };
+  bot.health = { getStatus: () => ({ status: "ok" }) };
+  bot.stream = { getStatus: () => ({ publicStreamConnected: true }) };
+  bot.model = {
+    getCalibrationSummary: () => ({}),
+    getDeploymentSummary: () => ({}),
+    getTransformerSummary: () => ({}),
+    getStrategyAllocationSummary: () => ({})
+  };
+  bot.rlPolicy = { getSummary: () => ({}) };
+  bot.strategyOptimizer = { buildSnapshot: () => ({}) };
+  bot.backupManager = { getSummary: () => ({}) };
+  bot.buildPortfolioView = () => ({});
+  bot.buildPositionView = (position) => position;
+  bot.buildDashboardPositionView = (position) => position;
+  bot.buildDashboardDecisionView = (decision) => decision;
+  bot.buildTradeReplayView = (trade) => trade;
+  bot.buildDecisionExplanationView = (decision) => decision;
+  bot.buildTradeReplayDigest = (trade) => trade;
+  bot.buildPromotionPipelineSnapshot = () => ({});
+  bot.buildSourceReliabilitySnapshot = () => ({});
+  bot.buildResearchView = () => null;
+  bot.buildModelWeightsView = () => [];
+  bot.getPerformanceReport = TradingBot.prototype.getPerformanceReport;
+  bot.buildPublicReportView = TradingBot.prototype.buildPublicReportView;
+  bot.getDashboardSnapshot = TradingBot.prototype.getDashboardSnapshot;
+  bot.maybeRunExchangeTruthLoop = async () => null;
+  bot.safeRefreshMarketHistorySnapshot = async () => null;
+  bot.updatePortfolioSnapshot = async () => null;
+  bot.client = { getClockOffsetMs: () => 0, getClockSyncState: () => ({}) };
+  bot.dataRecorder = { getSummary: () => ({}) };
+  bot.buildOperationalReadiness = () => ({ status: "ready", reasons: [], ready: true });
+  bot.buildPerformanceChangeView = () => ({});
+  bot.buildOperatorRunbooks = () => [];
+  bot.buildAdaptationHealthSnapshot = () => ({ status: "warmup" });
+
+  const snapshot = await bot.getDashboardSnapshot();
+
+  assert.equal(snapshot.ops.learningInsights.missedTrades.status, "priority");
+  assert.equal(snapshot.ops.learningInsights.missedTrades.topBlocker.id, "model_confidence_too_low");
+  assert.equal(snapshot.ops.learningInsights.missedTrades.topMissedSetup, "BTCUSDT");
+  assert.equal(snapshot.ops.learningInsights.exits.status, "watch");
+  assert.equal(snapshot.ops.learningInsights.exits.leadSignal.symbol, "BTCUSDT");
+  assert.equal(snapshot.ops.learningInsights.exits.tightenCount, 1);
+  assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Missed-trade learning"));
+  assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Exit AI"));
+});
+
 await runCheck("doctor checks flag failed market history dashboard feed", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ tradingIntervalSeconds: 60 });

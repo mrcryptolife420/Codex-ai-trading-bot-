@@ -712,6 +712,132 @@ function summarizeExitIntelligence(summary = {}) {
   };
 }
 
+function summarizeMissedTradeLearning(summary = {}) {
+  const strictestBlocker = summary.blockerAttribution?.strictestBlocker || null;
+  const topFailure = arr(summary.failureLibrary || [])[0] || null;
+  const topMissedSetup = summary.reviewPacks?.topMissedSetup || null;
+  const counterfactualTuning = summary.counterfactualTuning || {};
+  const totalCounterfactuals = summary.counterfactuals?.total || 0;
+  const missedWinners = summary.counterfactuals?.missedWinners || 0;
+  const badVetoShare = totalCounterfactuals ? missedWinners / totalCounterfactuals : 0;
+  const status = strictestBlocker?.badVetoRate >= 0.42 || badVetoShare >= 0.34
+    ? "priority"
+    : totalCounterfactuals >= 6 || strictestBlocker || topFailure
+      ? "watch"
+      : totalCounterfactuals > 0
+        ? "observe"
+        : "warmup";
+  return {
+    status,
+    totalCounterfactuals,
+    missedWinners,
+    blockedCorrectly: summary.counterfactuals?.blockedCorrectly || 0,
+    averageMissedMovePct: num(summary.counterfactuals?.averageMissedMovePct || strictestBlocker?.averageMovePct || 0, 4),
+    topBlocker: strictestBlocker
+      ? {
+          id: strictestBlocker.id || null,
+          badVetoRate: num(strictestBlocker.badVetoRate || 0, 4),
+          governanceScore: num(strictestBlocker.governanceScore || 0, 4)
+        }
+      : null,
+    tuning: {
+      blocker: counterfactualTuning.blocker || null,
+      action: counterfactualTuning.action || "observe",
+      confidence: num(counterfactualTuning.confidence || 0, 4)
+    },
+    topMissedSetup,
+    topFailure: topFailure
+      ? {
+          id: topFailure.id || null,
+          count: topFailure.count || 0,
+          status: topFailure.status || "observe"
+        }
+      : null,
+    note: topMissedSetup
+      ? `${topMissedSetup} is nu de duidelijkste gemiste setup om review op te doen.`
+      : strictestBlocker?.id
+        ? `${titleize(strictestBlocker.id)} lijkt nu de strengste gemiste-trade blocker.`
+        : totalCounterfactuals
+          ? "Counterfactual learning bouwt genoeg cases op om blokkades te vergelijken."
+          : "Nog te weinig counterfactual cases voor een sterke missed-trade les."
+  };
+}
+
+function summarizeExitIntelligenceDigest({
+  positions = [],
+  recentTrades = [],
+  exitLearning = {}
+} = {}) {
+  const openSignals = positions
+    .map((position) => ({
+      symbol: position.symbol || null,
+      action: position.latestExitIntelligence?.action || "hold",
+      confidence: num(position.latestExitIntelligence?.confidence || 0, 4),
+      reason: position.latestExitIntelligence?.reason || null,
+      riskReasons: arr(position.latestExitIntelligence?.riskReasons || []).slice(0, 3),
+      shouldTightenStop: Boolean(position.latestExitIntelligence?.shouldTightenStop)
+    }))
+    .filter((item) => item.symbol);
+  const actionPriority = new Map([
+    ["exit", 4],
+    ["trim", 3],
+    ["trail", 2],
+    ["hold", 1]
+  ]);
+  const leadSignal = [...openSignals]
+    .sort((left, right) => {
+      const actionDelta = (actionPriority.get(right.action) || 0) - (actionPriority.get(left.action) || 0);
+      return actionDelta !== 0 ? actionDelta : (right.confidence || 0) - (left.confidence || 0);
+    })[0] || null;
+  const exitCount = openSignals.filter((item) => item.action === "exit").length;
+  const trimCount = openSignals.filter((item) => item.action === "trim").length;
+  const trailCount = openSignals.filter((item) => item.action === "trail").length;
+  const tightenCount = openSignals.filter((item) => item.shouldTightenStop).length;
+  const recentExitActions = recentTrades
+    .map((trade) => trade.exitIntelligenceSummary?.action || null)
+    .filter(Boolean);
+  const status = exitCount > 0
+    ? "urgent"
+    : trimCount > 0 || trailCount > 0 || (exitLearning.status === "watch" || exitLearning.status === "repair")
+      ? "watch"
+      : openSignals.length || recentExitActions.length || exitLearning.status === "stable"
+        ? "stable"
+        : "warmup";
+  return {
+    status,
+    openPositionCount: openSignals.length,
+    exitCount,
+    trimCount,
+    trailCount,
+    tightenCount,
+    recentExitCount: recentExitActions.filter((item) => item === "exit").length,
+    averageConfidence: num(average(openSignals.map((item) => item.confidence || 0), 0), 4),
+    leadSignal: leadSignal
+      ? {
+          symbol: leadSignal.symbol,
+          action: leadSignal.action,
+          confidence: num(leadSignal.confidence || 0, 4),
+          reason: leadSignal.reason || null,
+          riskReasons: arr(leadSignal.riskReasons || []).slice(0, 3)
+        }
+      : null,
+    learning: {
+      status: exitLearning.status || "warmup",
+      topReason: exitLearning.topReason || null,
+      prematureExitCount: exitLearning.prematureExitCount || 0,
+      lateExitCount: exitLearning.lateExitCount || 0,
+      averageExitScore: num(exitLearning.averageExitScore || 0, 4)
+    },
+    note: leadSignal?.symbol
+      ? `${leadSignal.symbol} vraagt nu exit focus via ${titleize(leadSignal.action)}.`
+      : exitLearning.topReason
+        ? `${titleize(exitLearning.topReason)} is nu het sterkste exit-learning patroon.`
+        : openSignals.length
+          ? "Open posities worden nu actief door exit-AI bewaakt."
+          : "Nog geen open positie of duidelijke exit-learning focus zichtbaar."
+  };
+}
+
 function summarizeResearchRegistry(registry = {}) {
   const mapLeader = (item) => ({
     symbol: item.symbol,
@@ -11637,7 +11763,8 @@ export class TradingBot {
     paperLearning = {},
     adaptation = {},
     diagnosticsActions = {},
-    dashboardFeedHealth = {}
+    dashboardFeedHealth = {},
+    learningInsights = {}
   } = {}) {
     const openAlerts = arr(alerts.alerts || []).filter((item) => !item.resolvedAt);
     const unackedAlerts = openAlerts.filter((item) => !item.acknowledgedAt);
@@ -11719,6 +11846,20 @@ export class TradingBot {
             title: "Adaptation",
             detail: `${titleize(adaptation.status)} | ${adaptation.lastLearningTradeAt ? `laatste leertrade ${adaptation.lastLearningTradeAt}` : "nog geen leertrades"}`,
             tone: adaptation.status === "stalled" ? "negative" : "neutral"
+          }
+        : null,
+      learningInsights.missedTrades?.status === "priority"
+        ? {
+            title: "Missed-trade learning",
+            detail: learningInsights.missedTrades.note || "Counterfactual learning ziet nu een te strenge blocker.",
+            tone: "negative"
+          }
+        : null,
+      ["urgent", "watch"].includes(learningInsights.exits?.status)
+        ? {
+            title: "Exit AI",
+            detail: learningInsights.exits.note || "Exit intelligence vraagt nu extra aandacht.",
+            tone: learningInsights.exits.status === "urgent" ? "negative" : "neutral"
           }
         : null
     ].filter(Boolean).slice(0, 6);
@@ -12074,6 +12215,7 @@ export class TradingBot {
     const exchangeTruthSummary = summarizeExchangeTruth(this.runtime.exchangeTruth || {});
     const paperLearningSummary = summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {});
     const adaptationSummary = summarizeAdaptationHealth(this.runtime.adaptation || this.buildAdaptationHealthSnapshot(referenceNow));
+    const offlineTrainerSummary = summarizeOfflineTrainer(this.runtime.offlineTrainer || {});
     const serviceSummary = summarizeServiceState(this.runtime.service || {}, this.config, referenceNow);
     const readinessSummary = this.buildOperationalReadiness(referenceNow);
     const alertsSummary = summarizeOperatorAlerts(buildOperatorAlerts({
@@ -12108,6 +12250,17 @@ export class TradingBot {
       effectiveBudget,
       mode: this.config.botMode
     });
+    const learningInsights = {
+      missedTrades: summarizeMissedTradeLearning({
+        ...paperLearningSummary,
+        counterfactuals: offlineTrainerSummary.counterfactuals || {}
+      }),
+      exits: summarizeExitIntelligenceDigest({
+        positions: fullPositions,
+        recentTrades: arr(report.recentTrades || []).slice(0, 12),
+        exitLearning: offlineTrainerSummary.exitLearning || {}
+      })
+    };
     const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
       topDecisions: dashboardTopDecisions,
       blockedSetups: dashboardBlockedSetups,
@@ -12123,7 +12276,8 @@ export class TradingBot {
       paperLearning: paperLearningSummary,
       adaptation: adaptationSummary,
       diagnosticsActions: this.runtime.ops?.diagnosticsActions || {},
-      dashboardFeedHealth: serviceSummary.dashboardFeeds || {}
+      dashboardFeedHealth: serviceSummary.dashboardFeeds || {},
+      learningInsights
     });
     const explainability = {
       decisions: [...dashboardTopDecisions, ...dashboardBlockedSetups]
@@ -12216,8 +12370,9 @@ export class TradingBot {
           offlineTrainer: this.runtime.offlineTrainer || {}
         }),
         alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {}),
-        paperLearning: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}),
+        paperLearning: paperLearningSummary,
         adaptation: adaptationSummary,
+        learningInsights,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },
       portfolio: this.buildPortfolioView(),
@@ -12231,7 +12386,7 @@ export class TradingBot {
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
-      offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
+      offlineTrainer: offlineTrainerSummary,
       marketHistory: marketHistorySummary,
       upcomingEvents: arr(topDecision.calendarEvents || leadPosition?.entryRationale?.calendarEvents || []).slice(0, 4),
       officialNotices: arr(topDecision.officialNotices || leadPosition?.entryRationale?.officialNotices || []).slice(0, 4),

@@ -757,11 +757,14 @@ function renderPositions(snapshot) {
 }
 
 function renderMissedTrades(snapshot) {
+  const missedTradeDigest = snapshot?.dashboard?.ops?.learningInsights?.missedTrades || {};
   const blocked = (snapshot?.dashboard?.blockedSetups || [])
     .filter((item) => item?.missedTradeAnalysis?.available)
     .slice(0, 4);
   if (!blocked.length) {
-    replaceChildren(elements.missedTradesList, [makeEmptyState("Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades.")]);
+    replaceChildren(elements.missedTradesList, [makeEmptyState(
+      missedTradeDigest.note || "Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades."
+    )]);
     return;
   }
   replaceChildren(elements.missedTradesList, blocked.map((decision) => {
@@ -989,6 +992,9 @@ function renderLearning(snapshot) {
   }
 
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
+  const missedTradeDigest = learningInsights.missedTrades || {};
+  const exitDigest = learningInsights.exits || {};
   const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
   const strategyAllocation = adaptation.strategyAllocation || snapshot?.dashboard?.ai?.strategyAllocation || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
@@ -1144,6 +1150,26 @@ function renderLearning(snapshot) {
       blockerMeaning
     ),
     makeLearningDetailCard(
+      "Gemiste trades",
+      titleize(missedTradeDigest.topBlocker?.id || missedTradeDigest.topMissedSetup || missedTradeDigest.tuning?.blocker || "warmup"),
+      missedTradeDigest.totalCounterfactuals
+        ? `${missedTradeDigest.totalCounterfactuals} counterfactuals · ${missedTradeDigest.missedWinners || 0} gemiste winnaars · move ${formatPct(missedTradeDigest.averageMissedMovePct || 0, 1)}`
+        : "Nog geen sterke gemiste-trade historie.",
+      missedTradeDigest.note || "Gemiste-trade learning warmt nog op."
+    ),
+    makeLearningDetailCard(
+      "Exit AI",
+      exitDigest.leadSignal?.symbol
+        ? `${titleize(exitDigest.leadSignal.action || "hold")} · ${exitDigest.leadSignal.symbol}`
+        : titleize(exitDigest.learning?.status || exitDigest.status || "warmup"),
+      exitDigest.openPositionCount
+        ? `${exitDigest.exitCount || 0} exit · ${exitDigest.trimCount || 0} trim · ${exitDigest.trailCount || 0} trail · conf ${formatPct(exitDigest.averageConfidence || 0, 1)}`
+        : exitDigest.learning?.topReason
+          ? `Top patroon: ${titleize(exitDigest.learning.topReason)}`
+          : "Nog geen open exit-focus zichtbaar.",
+      exitDigest.note || "Exit intelligence warmt nog op."
+    ),
+    makeLearningDetailCard(
       "Volgende stap",
       titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"),
       nextStep,
@@ -1176,6 +1202,34 @@ function renderLearning(snapshot) {
         : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar."
     ]),
     makeLearningListItem("Review queue", [reviewText], [makeTagList(reviewTags)]),
+    makeLearningListItem(
+      "Missed-trade tuning",
+      [
+        missedTradeDigest.note || "Counterfactual learning heeft nog geen dominante tuningrichting.",
+        missedTradeDigest.tuning?.blocker
+          ? `Tuning kijkt nu vooral naar ${titleize(missedTradeDigest.tuning.blocker)} via ${titleize(missedTradeDigest.tuning.action || "observe")}.`
+          : null
+      ]
+    ),
+    makeLearningListItem(
+      "Exit focus",
+      [
+        exitDigest.note || "Exit intelligence heeft nog geen duidelijke focus.",
+        exitDigest.leadSignal?.reason
+          ? `${exitDigest.leadSignal.symbol} wordt nu vooral gestuurd door ${titleize(exitDigest.leadSignal.reason)}.`
+          : exitDigest.learning?.topReason
+            ? `Offline exit learning ziet nu vooral ${titleize(exitDigest.learning.topReason)} terugkomen.`
+            : null
+      ],
+      [
+        makeTagList([
+          makeTag(`${exitDigest.exitCount || 0} exit`),
+          makeTag(`${exitDigest.trimCount || 0} trim`),
+          makeTag(`${exitDigest.trailCount || 0} trail`),
+          makeTag(`${exitDigest.tightenCount || 0} tighten`)
+        ])
+      ]
+    ),
     makeLearningListItem(
       "Policy en operatoracties",
       [paperLearning.policyTransitions?.note || paperLearning.operatorActions?.note || "Nog geen policy-wijziging of override die operator-ingreep vraagt."],
@@ -1314,6 +1368,7 @@ function buildOpsCards(snapshot) {
 function buildOpsEvents(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
@@ -1363,6 +1418,20 @@ function buildOpsEvents(snapshot) {
           title: "Replay prioriteit",
           detail: replayPlan.operatorGoal,
           tone: replayPlan.status === "priority" ? "negative" : "neutral"
+        }
+      : null,
+    learningInsights.missedTrades?.status === "priority"
+      ? {
+          title: "Missed-trade learning",
+          detail: learningInsights.missedTrades.note || "Counterfactual learning ziet nu een te strenge blocker.",
+          tone: "negative"
+        }
+      : null,
+    ["urgent", "watch"].includes(learningInsights.exits?.status)
+      ? {
+          title: "Exit AI",
+          detail: learningInsights.exits.note || "Exit intelligence vraagt nu extra aandacht.",
+          tone: learningInsights.exits.status === "urgent" ? "negative" : "neutral"
         }
       : null,
     (externalFeeds.coolingDownCount || externalFeeds.degradedCount)
