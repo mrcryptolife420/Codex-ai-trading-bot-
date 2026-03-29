@@ -214,6 +214,181 @@ function buildRegimeScorecards(trades = [], falsePositives = [], falseNegatives 
   });
 }
 
+function resolveTradeConditionId(trade = {}) {
+  return (
+    trade.marketConditionAtEntry ||
+    trade.entryRationale?.marketCondition?.conditionId ||
+    trade.entryRationale?.marketConditionSummary?.conditionId ||
+    trade.entryRationale?.marketCondition?.id ||
+    trade.entryRationale?.regimeSummary?.regime ||
+    trade.regimeAtEntry ||
+    "unknown_condition"
+  );
+}
+
+function resolveTradeStrategyFamily(trade = {}) {
+  return (
+    trade.strategyFamily ||
+    trade.entryRationale?.strategy?.family ||
+    trade.strategyDecision?.family ||
+    "unknown_family"
+  );
+}
+
+function resolveTradeStrategyId(trade = {}) {
+  return (
+    trade.strategyAtEntry ||
+    trade.entryRationale?.strategy?.activeStrategy ||
+    trade.strategyDecision?.activeStrategy ||
+    "unknown_strategy"
+  );
+}
+
+function resolveCounterfactualConditionId(item = {}) {
+  return (
+    item.marketConditionId ||
+    item.marketCondition?.conditionId ||
+    item.entryRationale?.marketCondition?.conditionId ||
+    item.regime ||
+    "unknown_condition"
+  );
+}
+
+function resolveCounterfactualStrategyFamily(item = {}) {
+  return item.strategyFamily || item.paperLearning?.scope?.family || "unknown_family";
+}
+
+function buildConditionScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+  return buildDecisionScorecards({
+    trades,
+    falsePositives,
+    falseNegatives,
+    keyFn: (trade) => resolveTradeConditionId(trade),
+    falseNegativeKeyFn: (item) => resolveCounterfactualConditionId(item),
+    fallbackId: "unknown_condition"
+  });
+}
+
+function buildConditionStrategyScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+  return buildDecisionScorecards({
+    trades,
+    falsePositives,
+    falseNegatives,
+    keyFn: (trade) => `${resolveTradeConditionId(trade)}::${resolveTradeStrategyId(trade)}`,
+    falseNegativeKeyFn: (item) => `${resolveCounterfactualConditionId(item)}::${item.strategy || item.strategyAtEntry || "blocked_setup"}`,
+    fallbackId: "unknown_condition::unknown_strategy"
+  }).map((item) => {
+    const [conditionId, strategyId] = String(item.id || "").split("::");
+    return {
+      ...item,
+      conditionId: conditionId || null,
+      strategyId: strategyId || null
+    };
+  });
+}
+
+const HARD_TUNING_BLOCKERS = new Set([
+  "exchange_notice_risk",
+  "high_impact_event_imminent",
+  "daily_drawdown_limit_hit",
+  "max_total_exposure_reached",
+  "spread_too_wide",
+  "volatility_too_high",
+  "pair_health_quarantine",
+  "live_paper_divergence_guard",
+  "manual_review_required",
+  "reconcile_required",
+  "exchange_truth_freeze"
+]);
+
+function buildBlockerConditionScorecards(counterfactuals = []) {
+  const buckets = new Map();
+  for (const item of counterfactuals || []) {
+    const reasons = Array.isArray(item.blockerReasons) && item.blockerReasons.length
+      ? item.blockerReasons.slice(0, 4)
+      : [item.reason || "no_explicit_blocker"];
+    const conditionId = resolveCounterfactualConditionId(item);
+    const familyId = resolveCounterfactualStrategyFamily(item);
+    for (const blockerId of reasons) {
+      const key = `${blockerId}::${conditionId}::${familyId}`;
+      if (!buckets.has(key)) {
+        buckets.set(key, {
+          id: blockerId,
+          conditionId,
+          familyId,
+          count: 0,
+          missedWinnerCount: 0,
+          goodVetoCount: 0,
+          lateVetoCount: 0,
+          averageMovePctSum: 0
+        });
+      }
+      const bucket = buckets.get(key);
+      bucket.count += 1;
+      bucket.averageMovePctSum += item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0;
+      if (["missed_winner", "bad_veto", "right_direction_wrong_timing"].includes(item.outcome)) {
+        bucket.missedWinnerCount += 1;
+      }
+      if (["good_veto", "blocked_correctly"].includes(item.outcome)) {
+        bucket.goodVetoCount += 1;
+      }
+      if (item.outcome === "late_veto") {
+        bucket.lateVetoCount += 1;
+      }
+    }
+  }
+  return [...buckets.values()]
+    .map((bucket) => {
+      const missedWinnerRate = bucket.count ? bucket.missedWinnerCount / bucket.count : 0;
+      const goodVetoRate = bucket.count ? bucket.goodVetoCount / bucket.count : 0;
+      const lateVetoRate = bucket.count ? bucket.lateVetoCount / bucket.count : 0;
+      const averageMovePct = bucket.count ? bucket.averageMovePctSum / bucket.count : 0;
+      const confidence = clamp(
+        Math.min(0.68, bucket.count / 10) +
+        Math.abs(missedWinnerRate - goodVetoRate) * 0.26 +
+        lateVetoRate * 0.06,
+        0,
+        1
+      );
+      const soften = !HARD_TUNING_BLOCKERS.has(bucket.id) && bucket.count >= 4 && missedWinnerRate >= 0.5 && goodVetoRate <= 0.35;
+      const harden = bucket.count >= 4 && goodVetoRate >= 0.62 && missedWinnerRate <= 0.2;
+      const action = soften ? "soften" : harden ? "harden" : "observe";
+      return {
+        id: bucket.id,
+        conditionId: bucket.conditionId,
+        familyId: bucket.familyId,
+        count: bucket.count,
+        missedWinnerCount: bucket.missedWinnerCount,
+        goodVetoCount: bucket.goodVetoCount,
+        lateVetoCount: bucket.lateVetoCount,
+        missedWinnerRate: num(missedWinnerRate),
+        goodVetoRate: num(goodVetoRate),
+        lateVetoRate: num(lateVetoRate),
+        averageMovePct: num(averageMovePct),
+        confidence: num(confidence),
+        action,
+        thresholdShift: soften
+          ? num(clamp(-0.004 - (missedWinnerRate - 0.5) * 0.018, -0.016, -0.004))
+          : harden
+            ? num(clamp(0.004 + (goodVetoRate - 0.62) * 0.02, 0.004, 0.016))
+            : 0,
+        paperProbeEligible: soften,
+        shadowPriority: soften && bucket.missedWinnerCount >= 2,
+        blockerSofteningRecommendation: soften ? bucket.id : null,
+        blockerHardeningRecommendation: harden ? bucket.id : null,
+        status: action === "soften"
+          ? "priority"
+          : action === "harden"
+            ? "guarded"
+            : bucket.count >= 3
+              ? "observe"
+              : "warmup"
+      };
+    })
+    .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
+    .slice(0, 12);
+}
+
 function buildBlockerScorecards(counterfactuals = []) {
   const map = new Map();
   const getBucket = (id) => {
@@ -519,6 +694,7 @@ function buildExitLearning(trades = []) {
     scorecards: exitScorecards,
     strategyPolicies: buildScopedExitPolicies(trades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown"),
     regimePolicies: buildScopedExitPolicies(trades, (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown"),
+    conditionPolicies: buildExitConditionScorecards(trades),
     notes: [
       exitScorecards[0]
         ? `${exitScorecards[0].id} is momenteel de sterkste exit-route.`
@@ -586,6 +762,119 @@ function buildScopedExitPolicies(trades = [], keyFn = null) {
       };
     })
     .sort((left, right) => (right.tradeCount || 0) - (left.tradeCount || 0))
+    .slice(0, 8);
+}
+
+function buildExitConditionScorecards(trades = []) {
+  return buildScopedExitPolicies(
+    trades,
+    (trade) => `${resolveTradeConditionId(trade)}::${resolveTradeStrategyFamily(trade)}`
+  ).map((item) => {
+    const [conditionId, familyId] = String(item.id || "").split("::");
+    const averageCapture = safeNumber(item.averageCapture, 0);
+    const preferredExitStyle = item.status === "tighten"
+      ? "trim_or_trail"
+      : item.status === "widen"
+        ? "hold_winner"
+        : "balanced";
+    return {
+      ...item,
+      conditionId: conditionId || null,
+      familyId: familyId || null,
+      preferredExitStyle,
+      trailTightnessBias: num(item.status === "tighten" ? 0.12 : item.status === "widen" ? -0.08 : 0),
+      trimBias: num(item.status === "tighten" ? 0.1 : item.status === "widen" ? -0.06 : 0),
+      holdTolerance: num(item.status === "widen" ? 0.12 : item.status === "tighten" ? -0.08 : 0),
+      maxHoldBias: num(item.status === "widen" ? 0.08 : item.status === "tighten" ? -0.1 : 0),
+      expectancyHint: num(clamp((averageCapture - 0.5) * 0.8, -0.2, 0.2))
+    };
+  });
+}
+
+function buildMissedTradeTuning(blockerConditionScorecards = []) {
+  const top = blockerConditionScorecards.find((item) => item.action !== "observe") || blockerConditionScorecards[0] || null;
+  if (!top) {
+    return {
+      status: "warmup",
+      topBlocker: null,
+      action: "observe",
+      confidence: 0,
+      scope: null,
+      thresholdShift: 0,
+      paperProbeEligible: false,
+      shadowPriority: false,
+      blockerSofteningRecommendation: null,
+      blockerHardeningRecommendation: null,
+      note: "Nog geen condition-specifieke missed-trade tuning zichtbaar."
+    };
+  }
+  return {
+    status: top.action === "soften" ? "priority" : top.action === "harden" ? "guarded" : "observe",
+    topBlocker: top.id,
+    action: top.action,
+    confidence: num(top.confidence || 0, 4),
+    scope: {
+      conditionId: top.conditionId || null,
+      familyId: top.familyId || null
+    },
+    thresholdShift: num(top.thresholdShift || 0, 4),
+    paperProbeEligible: Boolean(top.paperProbeEligible),
+    shadowPriority: Boolean(top.shadowPriority),
+    blockerSofteningRecommendation: top.blockerSofteningRecommendation || null,
+    blockerHardeningRecommendation: top.blockerHardeningRecommendation || null,
+    note: top.action === "soften"
+      ? `${top.id} lijkt te streng binnen ${top.conditionId}/${top.familyId}.`
+      : top.action === "harden"
+        ? `${top.id} blokkeert meestal terecht binnen ${top.conditionId}/${top.familyId}.`
+        : `${top.id} wordt gevolgd binnen ${top.conditionId}/${top.familyId}.`
+  };
+}
+
+function buildPolicyTransitionCandidatesByCondition(conditionStrategyScorecards = [], blockerConditionScorecards = []) {
+  const blockerByScope = new Map(
+    blockerConditionScorecards.map((item) => [`${item.conditionId}::${item.familyId}`, item])
+  );
+  return conditionStrategyScorecards
+    .filter((item) => (item.tradeCount || 0) >= 3)
+    .map((item) => {
+      const familyId = item.strategyId || null;
+      const blocker = blockerByScope.get(`${item.conditionId}::${familyId}`) || null;
+      let action = "observe";
+      if (item.status === "prime" && (item.falsePositiveRate || 0) <= 0.2) {
+        action = "promote_candidate";
+      } else if (item.status === "cooldown") {
+        action = "cooldown_candidate";
+      } else if ((item.falseNegativeRate || 0) >= 0.34 && blocker?.action === "soften") {
+        action = "probe_only";
+      } else if ((item.falsePositiveRate || 0) >= 0.28) {
+        action = "shadow_only";
+      }
+      return {
+        id: item.strategyId,
+        conditionId: item.conditionId,
+        strategyId: item.strategyId,
+        action,
+        confidence: num(clamp(
+          (item.governanceScore || 0) * 0.52 +
+          Math.min(0.24, (item.tradeCount || 0) / 14) +
+          Math.max(0, safeNumber(blocker?.confidence, 0) - 0.5) * 0.18,
+          0,
+          1
+        )),
+        scope: `${item.conditionId} | ${item.strategyId}`,
+        reason: action === "promote_candidate"
+          ? `${item.strategyId} presteert stabiel binnen ${item.conditionId}.`
+          : action === "cooldown_candidate"
+            ? `${item.strategyId} blijft zwak binnen ${item.conditionId}.`
+            : action === "probe_only"
+              ? `${item.strategyId} blijft leerzaam binnen ${item.conditionId}, maar nog niet rijp voor brede exposure.`
+              : action === "shadow_only"
+                ? `${item.strategyId} vraagt eerst extra schaduwevidence binnen ${item.conditionId}.`
+                : `${item.strategyId} wordt voorlopig gemonitord binnen ${item.conditionId}.`
+      };
+    })
+    .filter((item) => item.action !== "observe")
+    .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
     .slice(0, 8);
 }
 
@@ -1133,7 +1422,10 @@ export class OfflineTrainer {
     const falseNegativeByStrategy = buildBucketMap(falseNegatives, (item) => item.strategy || "blocked_setup", (item) => ({ pnl: 0, win: 1, quality: 0.5, label: 0.8, move: item.realizedMovePct || 0, mode: "paper" }));
     const strategyScorecards = buildStrategyScorecards(learningReadyTrades, falsePositives, falseNegatives);
     const regimeScorecards = buildRegimeScorecards(learningReadyTrades, falsePositives, falseNegatives);
+    const conditionScorecards = buildConditionScorecards(learningReadyTrades, falsePositives, falseNegatives);
+    const conditionStrategyScorecards = buildConditionStrategyScorecards(learningReadyTrades, falsePositives, falseNegatives);
     const blockerScorecards = buildBlockerScorecards(usableCounterfactuals);
+    const blockerConditionScorecards = buildBlockerConditionScorecards(usableCounterfactuals);
     const readinessScore = clamp(
       0.24 +
         Math.min(0.3, learningReadyTrades.length / 80) +
@@ -1147,6 +1439,8 @@ export class OfflineTrainer {
     );
     const thresholdPolicy = buildThresholdPolicy(blockerScorecards, this.config);
     const exitLearning = buildExitLearning(learningReadyTrades);
+    const exitConditionScorecards = exitLearning.conditionPolicies || [];
+    const missedTradeTuning = buildMissedTradeTuning(blockerConditionScorecards);
     const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
     const featureGovernance = buildFeatureGovernanceSummary({
       trades: learningReadyTrades,
@@ -1186,6 +1480,7 @@ export class OfflineTrainer {
       readinessScore
     });
     const regimeDeployment = buildRegimeDeployment(regimeScorecards);
+    const policyTransitionCandidatesByCondition = buildPolicyTransitionCandidatesByCondition(conditionStrategyScorecards, blockerConditionScorecards);
     const retrainFocusPlan = buildRetrainFocusPlan({
       retrainReadiness,
       scopeRetrainReadiness
@@ -1231,10 +1526,15 @@ export class OfflineTrainer {
       regimes: regimes.slice(0, 6),
       strategyScorecards,
       regimeScorecards,
+      conditionScorecards,
+      conditionStrategyScorecards,
       blockerScorecards,
+      blockerConditionScorecards,
       thresholdPolicy,
+      missedTradeTuning,
       exitLearning,
       exitScorecards: exitLearning.scorecards || [],
+      exitConditionScorecards,
       featureDecay,
       featureDecayScorecards: featureDecay.scorecards || [],
       featureGovernance,
@@ -1244,6 +1544,7 @@ export class OfflineTrainer {
       retrainExecutionPlan,
       calibrationGovernance,
       regimeDeployment,
+      policyTransitionCandidatesByCondition,
       historyCoverage,
       falsePositiveByStrategy: falsePositiveByStrategy.slice(0, 6),
       falseNegativeByStrategy: falseNegativeByStrategy.slice(0, 6),
@@ -1262,6 +1563,9 @@ export class OfflineTrainer {
         blockerScorecards[0]
           ? `${blockerScorecards[0].id} vraagt momenteel veto-aandacht (${blockerScorecards[0].status}).`
           : "Nog geen veto-feedback met duidelijke blocker-patronen.",
+        missedTradeTuning.topBlocker
+          ? `${missedTradeTuning.topBlocker} krijgt nu ${missedTradeTuning.action}-tuning binnen ${missedTradeTuning.scope?.conditionId || "onbekende conditie"}.`
+          : "Nog geen condition-aware missed-trade tuning actief.",
         thresholdPolicy.topRecommendation
           ? `${thresholdPolicy.topRecommendation.id} geeft threshold-advies: ${thresholdPolicy.topRecommendation.action}.`
           : "Threshold-tuning ziet momenteel geen harde aanpassing nodig.",

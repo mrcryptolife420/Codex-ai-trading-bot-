@@ -44,6 +44,7 @@ import { buildDeepScanPlan, buildLightweightSnapshot } from "./scanPlanner.js";
 import { CapitalLadder } from "./capitalLadder.js";
 import { buildSessionSummary } from "./sessionManager.js";
 import { buildTimeframeConsensus } from "./timeframeConsensus.js";
+import { buildMarketConditionSummary } from "./marketConditionController.js";
 import { buildExchangeSafetyAudit } from "./exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "./operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts as deliverOperatorAlerts } from "./operatorAlertDispatcher.js";
@@ -796,6 +797,7 @@ function summarizeExitIntelligenceDigest({
   const recentExitActions = recentTrades
     .map((trade) => trade.exitIntelligenceSummary?.action || null)
     .filter(Boolean);
+  const leadPolicy = positions.find((position) => position.latestExitPolicy)?.latestExitPolicy || {};
   const status = exitCount > 0
     ? "urgent"
     : trimCount > 0 || trailCount > 0 || (exitLearning.status === "watch" || exitLearning.status === "repair")
@@ -828,6 +830,7 @@ function summarizeExitIntelligenceDigest({
       lateExitCount: exitLearning.lateExitCount || 0,
       averageExitScore: num(exitLearning.averageExitScore || 0, 4)
     },
+    activePolicy: summarizeExitPolicyDigest(leadPolicy),
     note: leadSignal?.symbol
       ? `${leadSignal.symbol} vraagt nu exit focus via ${titleize(leadSignal.action)}.`
       : exitLearning.topReason
@@ -1776,6 +1779,24 @@ function summarizeOfflineTrainer(summary = {}) {
       governanceScore: num(item.governanceScore || 0, 4),
       status: item.status || "warmup"
     })),
+    conditionScorecards: arr(summary.conditionScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      tradeCount: item.tradeCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      governanceScore: num(item.governanceScore || 0, 4),
+      status: item.status || "warmup"
+    })),
+    conditionStrategyScorecards: arr(summary.conditionStrategyScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      conditionId: item.conditionId || null,
+      strategyId: item.strategyId || null,
+      tradeCount: item.tradeCount || 0,
+      governanceScore: num(item.governanceScore || 0, 4),
+      falseNegativeRate: num(item.falseNegativeRate || 0, 4),
+      falsePositiveRate: num(item.falsePositiveRate || 0, 4),
+      status: item.status || "warmup"
+    })),
     blockerScorecards: arr(summary.blockerScorecards || []).slice(0, 6).map((item) => ({
       id: item.id,
       total: item.total || 0,
@@ -1788,6 +1809,17 @@ function summarizeOfflineTrainer(summary = {}) {
       affectedStrategies: [...(item.affectedStrategies || [])],
       affectedRegimes: [...(item.affectedRegimes || [])],
       status: item.status || "observe"
+    })),
+    blockerConditionScorecards: arr(summary.blockerConditionScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      conditionId: item.conditionId || null,
+      familyId: item.familyId || null,
+      count: item.count || 0,
+      action: item.action || "observe",
+      confidence: num(item.confidence || 0, 4),
+      thresholdShift: num(item.thresholdShift || 0, 4),
+      missedWinnerRate: num(item.missedWinnerRate || 0, 4),
+      goodVetoRate: num(item.goodVetoRate || 0, 4)
     })),
     thresholdPolicy: {
       status: summary.thresholdPolicy?.status || "stable",
@@ -1818,6 +1850,7 @@ function summarizeOfflineTrainer(summary = {}) {
       })),
       notes: [...(summary.thresholdPolicy?.notes || [])]
     },
+    missedTradeTuning: summarizeMissedTradeTuning(summary.missedTradeTuning || {}),
     exitLearning: {
       status: summary.exitLearning?.status || "warmup",
       averageExitScore: num(summary.exitLearning?.averageExitScore || 0, 4),
@@ -1842,6 +1875,18 @@ function summarizeOfflineTrainer(summary = {}) {
         trailingStopMultiplier: num(item.trailingStopMultiplier || 1, 4),
         maxHoldMinutesMultiplier: num(item.maxHoldMinutesMultiplier || 1, 4)
       })),
+      conditionPolicies: arr(summary.exitLearning?.conditionPolicies || []).slice(0, 6).map((item) => ({
+        id: item.id || null,
+        conditionId: item.conditionId || null,
+        familyId: item.familyId || null,
+        tradeCount: item.tradeCount || 0,
+        status: item.status || "balanced",
+        preferredExitStyle: item.preferredExitStyle || "balanced",
+        trailTightnessBias: num(item.trailTightnessBias || 0, 4),
+        trimBias: num(item.trimBias || 0, 4),
+        holdTolerance: num(item.holdTolerance || 0, 4),
+        maxHoldBias: num(item.maxHoldBias || 0, 4)
+      })),
       notes: [...(summary.exitLearning?.notes || [])]
     },
     exitScorecards: arr(summary.exitScorecards || []).slice(0, 6).map((item) => ({
@@ -1854,6 +1899,17 @@ function summarizeOfflineTrainer(summary = {}) {
       lateExitCount: item.lateExitCount || 0,
       governanceScore: num(item.governanceScore || 0, 4),
       status: item.status || "observe"
+    })),
+    exitConditionScorecards: arr(summary.exitConditionScorecards || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      conditionId: item.conditionId || null,
+      familyId: item.familyId || null,
+      tradeCount: item.tradeCount || 0,
+      preferredExitStyle: item.preferredExitStyle || "balanced",
+      trailTightnessBias: num(item.trailTightnessBias || 0, 4),
+      trimBias: num(item.trimBias || 0, 4),
+      holdTolerance: num(item.holdTolerance || 0, 4),
+      maxHoldBias: num(item.maxHoldBias || 0, 4)
     })),
     featureDecay: {
       status: summary.featureDecay?.status || "warmup",
@@ -2063,6 +2119,15 @@ function summarizeOfflineTrainer(summary = {}) {
       cooldownRegimes: [...(summary.regimeDeployment?.cooldownRegimes || [])],
       note: summary.regimeDeployment?.note || null
     },
+    policyTransitionCandidatesByCondition: arr(summary.policyTransitionCandidatesByCondition || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      conditionId: item.conditionId || null,
+      strategyId: item.strategyId || null,
+      action: item.action || "observe",
+      confidence: num(item.confidence || 0, 4),
+      scope: item.scope || null,
+      reason: item.reason || null
+    })),
     falsePositiveByStrategy: arr(summary.falsePositiveByStrategy || []).slice(0, 5),
     falseNegativeByStrategy: arr(summary.falseNegativeByStrategy || []).slice(0, 5),
     notes: [...(summary.notes || [])]
@@ -3014,7 +3079,117 @@ function summarizeStrategyAllocation(summary = {}) {
       trades: item.trades || 0,
       lastTradeAt: item.lastTradeAt || null
     })),
+    topConditions: arr(summary.topConditions || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      condition: item.condition || null,
+      signal: num(item.signal || 0, 4),
+      confidence: num(item.confidence || 0, 4),
+      trades: item.trades || 0,
+      lastTradeAt: item.lastTradeAt || null
+    })),
     notes: arr(summary.notes || []).slice(0, 4)
+  };
+}
+
+function summarizeMarketCondition(summary = {}) {
+  return {
+    conditionId: summary.conditionId || "unknown_condition",
+    confidence: num(summary.conditionConfidence || summary.confidence || 0, 4),
+    risk: num(summary.conditionRisk || summary.risk || 0, 4),
+    transitionState: summary.conditionTransitionState || summary.transitionState || "stable",
+    posture: summary.posture || "balanced",
+    regime: summary.regime || null,
+    session: summary.session || null,
+    phase: summary.phase || null,
+    drivers: arr(summary.drivers || []).slice(0, 3),
+    notes: arr(summary.notes || []).slice(0, 2),
+    candidates: arr(summary.candidates || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      score: num(item.score || 0, 4),
+      transitionState: item.transitionState || "stable"
+    }))
+  };
+}
+
+function summarizeMissedTradeTuning(summary = {}) {
+  return {
+    status: summary.status || "warmup",
+    topBlocker: summary.topBlocker || null,
+    action: summary.action || "observe",
+    confidence: num(summary.confidence || 0, 4),
+    thresholdShift: num(summary.thresholdShift || 0, 4),
+    paperProbeEligible: Boolean(summary.paperProbeEligible),
+    shadowPriority: Boolean(summary.shadowPriority),
+    blockerSofteningRecommendation: summary.blockerSofteningRecommendation || null,
+    blockerHardeningRecommendation: summary.blockerHardeningRecommendation || null,
+    scope: {
+      conditionId: summary.scope?.conditionId || null,
+      familyId: summary.scope?.familyId || null
+    },
+    note: summary.note || null
+  };
+}
+
+function summarizeAdaptivePolicy({
+  strategyAllocation = {},
+  paperLearning = {},
+  marketCondition = {},
+  policyTransitions = []
+} = {}) {
+  const value = (input, fallback = 0) => Number.isFinite(input) ? input : fallback;
+  const favoredFamily = strategyAllocation.preferredFamily || strategyAllocation.topFamilies?.[0]?.id || null;
+  const favoredStrategy = strategyAllocation.preferredStrategy || strategyAllocation.topStrategies?.[0]?.id || null;
+  const cooledStrategy = arr(policyTransitions).find((item) => ["cooldown_candidate", "shadow_only", "probe_only"].includes(item.action))?.id || null;
+  return {
+    favoredFamily,
+    favoredStrategy,
+    cooledStrategy,
+    confidence: num(
+      Math.max(
+        value(strategyAllocation.confidence, 0),
+        value(marketCondition.confidence, 0) * 0.7,
+        value(paperLearning.readinessScore, 0) * 0.4
+      ),
+      4
+    ),
+    posture: strategyAllocation.posture || marketCondition.posture || "neutral",
+    note: strategyAllocation.notes?.[0] || paperLearning.policyTransitions?.note || null
+  };
+}
+
+function summarizeExitPolicyDigest(summary = {}) {
+  return {
+    preferredExitStyle: summary.preferredExitStyle || "balanced",
+    trimBias: num(summary.trimBias || 0, 4),
+    trailBias: num(summary.trailTightnessBias || 0, 4),
+    holdTolerance: num(summary.holdTolerance || 0, 4),
+    maxHoldBias: num(summary.maxHoldBias || 0, 4),
+    sources: arr(summary.sources || []).slice(0, 4)
+  };
+}
+
+function summarizeOpportunityRanking(decisions = []) {
+  const top = arr(decisions)
+    .filter((item) => Number.isFinite(item.opportunityScore))
+    .sort((left, right) => (right.opportunityScore || 0) - (left.opportunityScore || 0))
+    .slice(0, 4);
+  return {
+    leader: top[0]
+      ? {
+          symbol: top[0].symbol || null,
+          opportunityScore: num(top[0].opportunityScore || 0, 4),
+          setupStyle: top[0].setupStyle || null
+        }
+      : null,
+    items: top.map((item) => ({
+      symbol: item.symbol || null,
+      opportunityScore: num(item.opportunityScore || 0, 4),
+      edgeToThreshold: num(item.edgeToThreshold || 0, 4),
+      allow: Boolean(item.allow)
+    })),
+    note: top[0]
+      ? `${top[0].symbol} leidt nu de opportunity ranking.`
+      : "Nog geen opportunity ranking beschikbaar."
   };
 }
 
@@ -7911,6 +8086,7 @@ export class TradingBot {
             : "Execution heeft nog toezicht nodig voordat policy-vergelijkingen echt zuiver zijn."
     };
     const strategyRetirement = this.runtime?.strategyRetirement || {};
+    const offlineTrainerConditionTransitions = arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || []);
     const retirementPolicies = arr(strategyRetirement.policies || []);
     const operatorPolicyState = this.ensureOperatorPolicyState();
     const recentDismissals = arr(operatorPolicyState.dismissals || []).filter((item) => {
@@ -8011,6 +8187,20 @@ export class TradingBot {
           scope: item.id,
           reason: item.note || `${item.id} vraagt governance-ingreep.`,
           blocker: null
+        })),
+      ...offlineTrainerConditionTransitions
+        .slice(0, 4)
+        .map((item) => ({
+          id: item.id,
+          type: "condition_strategy",
+          action: item.action || "observe",
+          confidence: item.confidence || 0.5,
+          scope: item.scope || `${item.conditionId || "unknown"} | ${item.strategyId || item.id}`,
+          reason: item.reason || `${item.id} vraagt condition-aware policy review.`,
+          blocker: null,
+          source: "condition_policy",
+          conditionId: item.conditionId || null,
+          preferredStrategy: item.strategyId || item.id || null
         })),
       ...allocatorPolicyCandidates
     ]
@@ -9234,6 +9424,7 @@ export class TradingBot {
       thresholdTuningApplied: candidate.decision.thresholdTuningApplied || null,
       strategyConfidenceFloor: num(candidate.decision.strategyConfidenceFloor || this.config.strategyMinConfidence, 4),
       rankScore: num(candidate.decision.rankScore, 4),
+      opportunityScore: num(candidate.decision.opportunityScore || 0, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
       entryMode: candidate.decision.entryMode || "standard",
       learningLane: candidate.decision.learningLane || null,
@@ -9292,6 +9483,8 @@ export class TradingBot {
       executionNeural: summarizeExecutionNeural(candidate.score.executionNeural),
       strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
       strategyAllocation: summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score.strategyAllocation || {}),
+      marketCondition: candidate.marketConditionSummary || null,
+      missedTradeTuning: candidate.decision.missedTradeTuningApplied || null,
       committee: summarizeCommittee(candidate.committeeSummary),
       rlPolicy: summarizeRlPolicy(candidate.rlAdvice),
       parameterGovernor: candidate.decision.parameterGovernorApplied || null,
@@ -9385,6 +9578,33 @@ export class TradingBot {
       announcementSummary: exchangeSummary,
       calendarSummary
     });
+    const routerTrendStateSummary = buildTrendStateSummary({
+      marketFeatures: marketSnapshot.market,
+      bookFeatures: marketSnapshot.book,
+      newsSummary,
+      announcementSummary: exchangeSummary,
+      timeframeSummary: {}
+    });
+    const routerMarketStateSummary = buildMarketStateSummary({
+      trendStateSummary: routerTrendStateSummary,
+      marketFeatures: marketSnapshot.market,
+      bookFeatures: marketSnapshot.book,
+      newsSummary,
+      announcementSummary: exchangeSummary,
+      timeframeSummary: {}
+    });
+    const routerMarketConditionSummary = buildMarketConditionSummary({
+      marketSnapshot,
+      regimeSummary,
+      sessionSummary,
+      trendStateSummary: routerTrendStateSummary,
+      marketStateSummary: routerMarketStateSummary,
+      newsSummary,
+      announcementSummary: exchangeSummary,
+      calendarSummary,
+      volatilitySummary,
+      marketSentimentSummary
+    });
     const optimizerSummary = context.optimizerSummary || this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
     let strategySummary = evaluateStrategySet({
       symbol,
@@ -9413,7 +9633,8 @@ export class TradingBot {
           confidence: strategyCandidate.confidence || 0
         },
         regimeSummary,
-        sessionSummary
+        sessionSummary,
+        marketConditionSummary: routerMarketConditionSummary
       }),
       optimizerSummary,
       exchangeCapabilities: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}
@@ -9449,7 +9670,8 @@ export class TradingBot {
       timeframeSummary,
       pairHealthSummary,
       regimeSummary,
-      sessionSummary
+      sessionSummary,
+      marketConditionSummary: routerMarketConditionSummary
     });
     const combinedStrategyMetaSummary = {
       ...strategyMetaSummary,
@@ -9526,6 +9748,41 @@ export class TradingBot {
       venueConfirmationSummary,
       bookFeatures: marketSnapshot.book
     });
+    const marketConditionSummary = buildMarketConditionSummary({
+      marketSnapshot,
+      regimeSummary,
+      sessionSummary,
+      timeframeSummary,
+      trendStateSummary,
+      marketStateSummary,
+      newsSummary,
+      announcementSummary: exchangeSummary,
+      calendarSummary,
+      volatilitySummary,
+      marketSentimentSummary,
+      qualityQuorumSummary,
+      pairHealthSummary,
+      venueConfirmationSummary
+    });
+    const conditionAwareStrategyAllocationSummary = this.model.scoreStrategyAllocation({
+      score: {
+        probability: strategySummary.fitScore || 0.5,
+        confidence: strategySummary.confidence || 0
+      },
+      marketSnapshot,
+      newsSummary,
+      marketStructureSummary,
+      strategySummary,
+      timeframeSummary,
+      pairHealthSummary,
+      regimeSummary,
+      sessionSummary,
+      marketConditionSummary
+    });
+    strategySummary = {
+      ...strategySummary,
+      adaptiveSelector: summarizeStrategyAllocation(conditionAwareStrategyAllocationSummary)
+    };
     const attributionSummary = this.strategyAttribution.getAdjustment(context.attributionSnapshot || {}, {
       symbol,
       strategyId: strategySummary.activeStrategy || null,
@@ -9593,10 +9850,11 @@ export class TradingBot {
       calendarSummary,
       strategySummary,
       strategyMetaSummary: combinedStrategyMetaSummary,
-      strategyAllocationSummary,
+      strategyAllocationSummary: conditionAwareStrategyAllocationSummary,
       timeframeSummary,
       pairHealthSummary,
-      divergenceSummary
+      divergenceSummary,
+      marketConditionSummary
     });
     const driftSummary = this.config.enableDriftMonitoring
       ? this.driftMonitor.evaluateCandidate({
@@ -9731,6 +9989,7 @@ export class TradingBot {
       capitalGovernorSummary: this.runtime.capitalGovernor || {},
       executionCostSummary: this.runtime.executionCost || {},
       strategyRetirementSummary: this.runtime.strategyRetirement || {},
+      missedTradeTuningSummary: this.runtime.offlineTrainer?.missedTradeTuning || {},
       timeframeSummary,
       pairHealthSummary,
       qualityQuorumSummary,
@@ -9738,10 +9997,11 @@ export class TradingBot {
       divergenceSummary,
       trendStateSummary,
       marketStateSummary,
+      marketConditionSummary,
       venueConfirmationSummary,
       exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
       strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
-      strategyAllocationSummary: score.strategyAllocation || strategyAllocationSummary,
+      strategyAllocationSummary: score.strategyAllocation || conditionAwareStrategyAllocationSummary,
       nowIso: now.toISOString()
     });
     decision.rankScore = num((decision.rankScore || 0) + (attributionSummary.rankBoost || 0), 4);
@@ -9810,6 +10070,7 @@ export class TradingBot {
       pairHealthSummary,
       trendStateSummary,
       marketStateSummary,
+      marketConditionSummary,
       dataQualitySummary,
       signalQualitySummary,
       confidenceBreakdown,
@@ -9822,7 +10083,7 @@ export class TradingBot {
       regimeSummary,
       strategySummary,
       strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
-      strategyAllocationSummary: score.strategyAllocation || strategyAllocationSummary,
+      strategyAllocationSummary: score.strategyAllocation || conditionAwareStrategyAllocationSummary,
       optimizerSummary,
       portfolioSummary,
       attributionSummary,
@@ -9862,6 +10123,22 @@ export class TradingBot {
         const strategySummary = position.strategyDecision || position.entryRationale?.strategy || {};
         const regimeSummary = this.model.inferRegime({ marketFeatures: marketSnapshot.market, newsSummary, streamFeatures: marketSnapshot.stream || {}, bookFeatures: marketSnapshot.book, marketStructureSummary, marketSentimentSummary, volatilitySummary: this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT, announcementSummary: exchangeSummary, calendarSummary });
         const timeframeSummary = this.config.enableCrossTimeframeConsensus ? buildTimeframeConsensus({ marketSnapshot, regimeSummary, strategySummary, config: this.config }) : summarizeTimeframeConsensus({ enabled: false });
+        const marketConditionSummary = buildMarketConditionSummary({
+          marketSnapshot,
+          regimeSummary,
+          sessionSummary: this.runtime.session || {},
+          timeframeSummary,
+          trendStateSummary: position.entryRationale?.trendState || position.entryRationale?.trendStateSummary || {},
+          marketStateSummary: position.entryRationale?.marketState || position.entryRationale?.marketStateSummary || {},
+          newsSummary,
+          announcementSummary: exchangeSummary,
+          calendarSummary,
+          volatilitySummary: this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT,
+          marketSentimentSummary,
+          qualityQuorumSummary: this.runtime.qualityQuorum || {},
+          pairHealthSummary: this.runtime.pairHealth?.[position.symbol] || {},
+          venueConfirmationSummary: this.runtime.venueConfirmation || {}
+        });
         const currentPrice = marketSnapshot.book.mid || position.lastMarkedPrice || position.entryPrice;
         const currentValue = currentPrice * safeNumber(position.quantity || 0);
         const totalCost = safeNumber(position.totalCost || position.notional || currentValue, currentValue);
@@ -9906,6 +10183,8 @@ export class TradingBot {
               marketSentimentSummary,
               onChainLiteSummary,
               timeframeSummary,
+              strategySummary,
+              marketConditionSummary,
               regimeSummary,
               exitNeuralSummary,
               runtime: this.runtime,
@@ -9944,6 +10223,7 @@ export class TradingBot {
         position.latestMarketStructureSummary = marketStructureSummary;
         position.latestTimeframeSummary = timeframeSummary;
         position.latestOnChainLiteSummary = onChainLiteSummary;
+        position.latestMarketConditionSummary = marketConditionSummary;
         position.latestExitIntelligence = exitIntelligenceSummary;
         position.latestExitPolicy = exitDecision.exitPolicy || null;
         position.replayCheckpoints = arr(position.replayCheckpoints || []);
@@ -10173,7 +10453,7 @@ export class TradingBot {
       this.noteCandidateSignalFlow(candidates, now.toISOString());
     }
 
-    candidates.sort((left, right) => right.decision.rankScore - left.decision.rankScore);
+    candidates.sort((left, right) => (right.decision.opportunityScore ?? right.decision.rankScore) - (left.decision.opportunityScore ?? left.decision.rankScore));
     if (!readOnly) {
       this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: candidates[0]?.symbol || null, leadScore: candidates[0]?.pairHealthSummary?.score ?? null });
       this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(candidates, now.toISOString()));
@@ -10185,6 +10465,8 @@ export class TradingBot {
       strategy: summarizeStrategy(candidate.strategySummary),
       strategyMeta: summarizeStrategyMeta(candidate.strategyMetaSummary || candidate.score.strategyMeta || {}),
       strategyAllocation: summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score.strategyAllocation || {}),
+      marketCondition: candidate.marketConditionSummary || null,
+      missedTradeTuning: candidate.decision.missedTradeTuningApplied || null,
       probability: num(candidate.score.probability, 4),
       rawProbability: num(candidate.score.rawProbability || 0, 4),
       confidence: num(candidate.score.confidence || 0, 4),
@@ -10196,6 +10478,7 @@ export class TradingBot {
       regimeReasons: [...(candidate.regimeSummary.reasons || [])],
       executionReasons: [...(candidate.decision.executionPlan?.rationale || [])],
       rankScore: num(candidate.decision.rankScore, 4),
+      opportunityScore: num(candidate.decision.opportunityScore || 0, 4),
       threshold: num(candidate.decision.threshold, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
       learningLane: candidate.decision.learningLane || null,
@@ -11277,6 +11560,7 @@ export class TradingBot {
       probability: num(decision.probability || 0, 4),
       threshold: num(decision.threshold || 0, 4),
       edgeToThreshold: num(decision.edgeToThreshold ?? ((decision.probability || 0) - (decision.threshold || 0)), 4),
+      opportunityScore: num(decision.opportunityScore || 0, 4),
       executionStyle: decision.executionStyle || decision.executionAttribution?.entryStyle || null,
       freshnessHours: decision.freshnessHours == null ? null : num(decision.freshnessHours, 1),
       providerDiversity: decision.providerDiversity || 0,
@@ -11298,6 +11582,8 @@ export class TradingBot {
         fitScore: num(strategy.fitScore || 0, 4)
       },
       strategyAllocation: summarizeStrategyAllocation(decision.strategyAllocation || decision.strategyAllocationSummary || {}),
+      marketCondition: decision.marketCondition || decision.marketConditionSummary || null,
+      missedTradeTuning: decision.missedTradeTuning || decision.missedTradeTuningApplied || null,
       committee: summarizeCommittee(decision.committee || decision.committeeSummary || {}),
       orderBook: {
         bookPressure: num(decision.orderBook?.bookPressure || 0, 3)
@@ -12146,6 +12432,25 @@ export class TradingBot {
     const checks = this.buildDoctorChecks({ report, balance, previewCandidates, now: new Date() });
     const marketHistorySummary = summarizeMarketHistory(this.runtime.marketHistory || {});
     const adaptationSummary = summarizeAdaptationHealth(this.runtime.adaptation || this.buildAdaptationHealthSnapshot(referenceNow));
+    const previewTopCandidates = previewCandidates.slice(0, 3).map((candidate) => this.buildEntryRationale(candidate));
+    const previewLead = previewTopCandidates[0] || {};
+    const leadManagedPosition = this.runtime.openPositions[0] || null;
+    const offlineTrainerSummary = summarizeOfflineTrainer(this.runtime.offlineTrainer || {});
+    const marketConditionDigest = summarizeMarketCondition(
+      previewLead.marketCondition ||
+      leadManagedPosition?.latestMarketConditionSummary ||
+      leadManagedPosition?.entryRationale?.marketCondition ||
+      {}
+    );
+    const adaptivePolicyDigest = summarizeAdaptivePolicy({
+      strategyAllocation: previewLead.strategyAllocation || this.model.getStrategyAllocationSummary?.() || {},
+      paperLearning: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}),
+      marketCondition: marketConditionDigest,
+      policyTransitions: offlineTrainerSummary.policyTransitionCandidatesByCondition || []
+    });
+    const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
+    const exitPolicyDigest = summarizeExitPolicyDigest(leadManagedPosition?.latestExitPolicy || {});
+    const opportunityRankingDigest = summarizeOpportunityRanking(previewTopCandidates);
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -12162,7 +12467,12 @@ export class TradingBot {
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
-      offlineTrainer: summarizeOfflineTrainer(this.runtime.offlineTrainer || {}),
+      offlineTrainer: offlineTrainerSummary,
+      marketCondition: marketConditionDigest,
+      adaptivePolicy: adaptivePolicyDigest,
+      missedTradeTuning: missedTradeTuningDigest,
+      exitPolicy: exitPolicyDigest,
+      opportunityRanking: opportunityRankingDigest,
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       sourceReliability: this.buildSourceReliabilitySnapshot(),
@@ -12185,7 +12495,7 @@ export class TradingBot {
       universe: summarizeUniverseSelection(this.runtime.universe || {}),
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
-      previewTopCandidates: previewCandidates.slice(0, 3).map((candidate) => this.buildEntryRationale(candidate))
+      previewTopCandidates
     };
   }
 
@@ -12265,6 +12575,24 @@ export class TradingBot {
         exitLearning: offlineTrainerSummary.exitLearning || {}
       })
     };
+    const marketConditionDigest = summarizeMarketCondition(
+      topDecision.marketCondition ||
+      leadPosition?.latestMarketConditionSummary ||
+      leadPosition?.entryRationale?.marketCondition ||
+      {}
+    );
+    const adaptivePolicyDigest = summarizeAdaptivePolicy({
+      strategyAllocation: topDecision.strategyAllocation || leadPosition?.entryRationale?.strategyAllocation || this.model.getStrategyAllocationSummary?.() || {},
+      paperLearning: paperLearningSummary,
+      marketCondition: marketConditionDigest,
+      policyTransitions: [
+        ...arr(paperLearningSummary.policyTransitions?.candidates || []),
+        ...arr(offlineTrainerSummary.policyTransitionCandidatesByCondition || [])
+      ]
+    });
+    const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
+    const exitPolicyDigest = summarizeExitPolicyDigest(leadPosition?.latestExitPolicy || {});
+    const opportunityRankingDigest = summarizeOpportunityRanking(dashboardTopDecisions);
     const operatorDiagnostics = this.buildOperatorDiagnosticsSnapshot({
       topDecisions: dashboardTopDecisions,
       blockedSetups: dashboardBlockedSetups,
@@ -12326,7 +12654,7 @@ export class TradingBot {
         deployment: this.model.getDeploymentSummary(),
         transformer: this.model.getTransformerSummary(),
         strategyMeta: topDecision.strategyMeta || leadPosition?.entryRationale?.strategyMeta || summarizeStrategyMeta({}),
-        strategyAllocation: topDecision.strategyAllocation || leadPosition?.entryRationale?.strategyAllocation || summarizeStrategyAllocation(this.model.getStrategyAllocationSummary()),
+        strategyAllocation: topDecision.strategyAllocation || leadPosition?.entryRationale?.strategyAllocation || summarizeStrategyAllocation(this.model.getStrategyAllocationSummary?.() || {}),
         parameterGovernor: summarizeParameterGovernor(this.runtime.parameterGovernor || {}),
         strategyRetirement: summarizeStrategyRetirement(this.runtime.strategyRetirement || {}),
         rlPolicy: this.rlPolicy.getSummary(),
@@ -12360,9 +12688,9 @@ export class TradingBot {
         alerts: alertsSummary,
         replayChaos: summarizeReplayChaos(this.runtime.ops?.replayChaos || this.runtime.replayChaos || {}),
         shadowTrading: summarizeShadowTrading(this.runtime.shadowTrading || {}),
-        service: serviceSummary,
-        thresholdTuning: summarizeThresholdTuningState(this.runtime.thresholdTuning || {}),
-        executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {}),
+      service: serviceSummary,
+      thresholdTuning: summarizeThresholdTuningState(this.runtime.thresholdTuning || {}),
+      executionCalibration: summarizeExecutionCalibration(this.runtime.executionCalibration || {}),
         capitalLadder: summarizeCapitalLadder(this.runtime.capitalLadder || {}),
         capitalGovernor: summarizeCapitalGovernor(this.runtime.capitalGovernor || {}),
         capitalPolicy: capitalPolicySummary,
@@ -12376,6 +12704,11 @@ export class TradingBot {
         alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {}),
         paperLearning: paperLearningSummary,
         adaptation: adaptationSummary,
+        marketCondition: marketConditionDigest,
+        adaptivePolicy: adaptivePolicyDigest,
+        missedTradeTuning: missedTradeTuningDigest,
+        exitPolicy: exitPolicyDigest,
+        opportunityRanking: opportunityRankingDigest,
         learningInsights,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },

@@ -28,8 +28,11 @@ export class ExitIntelligence {
     marketStructureSummary = {},
     calendarSummary = {},
     timeframeSummary = {},
+    marketSentimentSummary = {},
     onChainLiteSummary = {},
     regimeSummary = {},
+    strategySummary = {},
+    marketConditionSummary = {},
     exitNeuralSummary = {},
     runtime = {},
     journal = {},
@@ -58,8 +61,68 @@ export class ExitIntelligence {
     const alignmentScore = safeNumber(timeframeSummary.alignmentScore, 0.5);
     const onChainLiquidity = safeNumber(onChainLiteSummary.liquidityScore);
     const onChainStress = safeNumber(onChainLiteSummary.stressScore);
+    const conditionId = marketConditionSummary.conditionId || position.marketConditionAtEntry || "unknown_condition";
+    const conditionRisk = safeNumber(marketConditionSummary.conditionRisk ?? marketConditionSummary.risk, 0);
+    const conditionConfidence = safeNumber(marketConditionSummary.conditionConfidence ?? marketConditionSummary.confidence, 0);
+    const conditionTransitionState = marketConditionSummary.conditionTransitionState || marketConditionSummary.transitionState || "stable";
+    const strategyFamily = strategySummary.family || position.strategyFamily || position.strategyDecision?.family || position.entryRationale?.strategy?.family || "unknown_family";
     const entrySlipDelta = safeNumber(position.entryExecutionAttribution?.slippageDeltaBps);
     const executionRegretScore = clamp(Math.max(0, entrySlipDelta) / 8 + Math.max(0, -bookPressure) * 0.18, 0, 1);
+    const holdingPhase = heldMinutes <= Math.max(15, (this.config.maxHoldMinutes || 1) * 0.18)
+      ? "early"
+      : heldMinutes >= Math.max(45, (this.config.maxHoldMinutes || 1) * 0.72)
+        ? "late"
+        : "mature";
+    const winnerState = pnlPct >= 0.02
+      ? "strong_winner"
+      : pnlPct >= 0.006
+        ? drawdownFromHighPct <= -0.008
+          ? "stalled_winner"
+          : "thin_winner"
+        : pnlPct < 0 && drawdownFromHighPct > -0.004
+          ? "loser_rebound"
+          : "neutral";
+    const continuationFriendly = ["trend_continuation", "breakout_release"].includes(conditionId);
+    const failureProne = ["trend_exhaustion", "failed_breakout", "high_vol_event", "low_liquidity_caution"].includes(conditionId);
+    const preferredExitStyle = continuationFriendly
+      ? "trail"
+      : failureProne
+        ? "trim"
+        : conditionId === "range_acceptance"
+          ? "balanced"
+          : "balanced";
+    const trailTightnessBias = clamp(
+      (continuationFriendly ? -0.08 : 0) +
+      (failureProne ? 0.1 : 0) +
+      (holdingPhase === "late" ? 0.04 : 0) +
+      (winnerState === "strong_winner" ? -0.03 : winnerState === "stalled_winner" ? 0.06 : 0),
+      -0.18,
+      0.18
+    );
+    const trimBias = clamp(
+      (failureProne ? 0.1 : 0) +
+      (conditionId === "range_break_risk" ? 0.05 : 0) +
+      (holdingPhase === "late" ? 0.04 : 0) +
+      (winnerState === "stalled_winner" ? 0.06 : winnerState === "loser_rebound" ? 0.05 : 0),
+      -0.18,
+      0.18
+    );
+    const holdTolerance = clamp(
+      (continuationFriendly ? 0.09 : 0) +
+      (conditionConfidence >= 0.68 ? 0.04 : 0) +
+      (failureProne ? -0.08 : 0) +
+      (holdingPhase === "early" ? 0.03 : holdingPhase === "late" ? -0.05 : 0),
+      -0.18,
+      0.18
+    );
+    const maxHoldBias = clamp(
+      (continuationFriendly ? 0.08 : 0) +
+      (conditionTransitionState === "building" ? -0.03 : 0) +
+      (failureProne ? -0.08 : 0) +
+      (winnerState === "strong_winner" ? 0.04 : winnerState === "stalled_winner" ? -0.04 : 0),
+      -0.18,
+      0.18
+    );
 
     const holdTailwind =
       Math.max(0, pnlPct) * 3.2 +
@@ -67,9 +130,12 @@ export class ExitIntelligence {
       Math.max(0, safeNumber(market.bullishPatternScore)) * 0.16 +
       Math.max(0, signalScore) * 0.26 +
       Math.max(0, safeNumber(newsSummary.sentimentScore)) * 0.12 +
+      Math.max(0, safeNumber(marketSentimentSummary.contrarianScore)) * 0.08 +
       Math.max(0, higherBias) * 0.16 +
       onChainLiquidity * 0.12 +
-      alignmentScore * 0.08;
+      alignmentScore * 0.08 +
+      Math.max(0, holdTolerance) * 0.4 +
+      Math.max(0, 0.72 - conditionRisk) * 0.08;
 
     const exitPressure =
       Math.max(0, -bookPressure) * 0.58 +
@@ -84,7 +150,9 @@ export class ExitIntelligence {
       Math.max(0, timePressure - 0.75) * 0.12 +
       Math.max(0, onChainStress - 0.35) * 0.18 +
       Math.max(0, 0.45 - alignmentScore) * 0.14 +
-      executionRegretScore * 0.14;
+      executionRegretScore * 0.14 +
+      conditionRisk * 0.14 +
+      Math.max(0, trailTightnessBias) * 0.2;
 
     const trimPressure =
       Math.max(0, progressToScaleOut - 0.8) * 0.28 +
@@ -93,7 +161,8 @@ export class ExitIntelligence {
       Math.max(0, safeNumber(newsSummary.riskScore) - 0.34) * 0.12 +
       Math.max(0, safeNumber(calendarSummary.riskScore) - 0.32) * 0.12 +
       Math.max(0, safeNumber(announcementSummary.riskScore) - 0.22) * 0.1 +
-      Math.max(0, onChainStress - 0.28) * 0.12;
+      Math.max(0, onChainStress - 0.28) * 0.12 +
+      Math.max(0, trimBias) * 0.22;
 
     const trailPressure =
       Math.max(0, pnlPct) * 1.7 +
@@ -101,7 +170,8 @@ export class ExitIntelligence {
       Math.max(0, riskScore - 0.3) * 0.16 +
       Math.max(0, spreadPressure - 0.55) * 0.1 +
       Math.max(0, safeNumber(book.queueImbalance) < 0 ? Math.abs(safeNumber(book.queueImbalance)) : 0) * 0.08 +
-      Math.max(0, executionRegretScore - 0.16) * 0.08;
+      Math.max(0, executionRegretScore - 0.16) * 0.08 +
+      Math.max(0, trailTightnessBias) * 0.24;
 
     const neuralBlend = clamp(safeNumber(exitNeuralSummary.confidence) * 0.28, 0, 0.28);
     const holdScore = clamp((0.44 + holdTailwind - exitPressure * 0.24) * (1 - neuralBlend) + safeNumber(exitNeuralSummary.holdScore, 0.25) * neuralBlend, 0, 1);
@@ -131,10 +201,12 @@ export class ExitIntelligence {
     pushReason(positiveReasons, bookPressure > 0.12, "supportive_orderbook");
     pushReason(positiveReasons, signalScore > 0.12, "derivatives_still_supportive");
     pushReason(positiveReasons, safeNumber(newsSummary.sentimentScore) > 0.1, "news_tailwind_alive");
+    pushReason(positiveReasons, safeNumber(marketSentimentSummary.contrarianScore) > 0.08, "market_sentiment_support");
     pushReason(positiveReasons, safeNumber(market.bullishPatternScore) > 0.2, "bullish_pattern_context");
     pushReason(positiveReasons, higherBias > 0.16, "higher_timeframe_support");
     pushReason(positiveReasons, onChainLiquidity > 0.58, "stablecoin_liquidity_support");
     pushReason(positiveReasons, safeNumber(exitNeuralSummary.holdScore) > 0.36, "exit_neural_hold_bias");
+    pushReason(positiveReasons, continuationFriendly && conditionConfidence >= 0.58, "condition_continuation_support");
 
     const riskReasons = [];
     pushReason(riskReasons, spreadPressure > 1, "spread_shock_risk");
@@ -151,6 +223,7 @@ export class ExitIntelligence {
     pushReason(riskReasons, onChainStress > 0.58, "stablecoin_stress_risk");
     pushReason(riskReasons, executionRegretScore > 0.36, "execution_regret_risk");
     pushReason(riskReasons, safeNumber(exitNeuralSummary.exitScore) > 0.42, "exit_neural_exit_bias");
+    pushReason(riskReasons, failureProne && conditionRisk >= 0.52, "condition_failure_risk");
 
     let action = "hold";
     if (exitScore >= this.config.exitIntelligenceExitScore && confidence >= this.config.exitIntelligenceMinConfidence) {
@@ -184,6 +257,18 @@ export class ExitIntelligence {
       action,
       reason,
       confidence: num(confidence),
+      strategyFamily,
+      conditionId,
+      conditionConfidence: num(conditionConfidence),
+      conditionRisk: num(conditionRisk),
+      conditionTransitionState,
+      holdingPhase,
+      winnerState,
+      preferredExitStyle,
+      trailTightnessBias: num(trailTightnessBias),
+      trimBias: num(trimBias),
+      holdTolerance: num(holdTolerance),
+      maxHoldBias: num(maxHoldBias),
       holdScore: num(holdScore),
       trimScore: num(trimScore),
       trailScore: num(trailScore),
@@ -203,6 +288,12 @@ export class ExitIntelligence {
       runtimeMode: runtime.selfHeal?.mode || "normal",
       realizedTradeCount: Array.isArray(journal?.trades) ? journal.trades.length : 0,
       executionRegretScore: num(executionRegretScore),
+      sources: [
+        "market_condition",
+        "holding_phase",
+        "winner_state",
+        "exit_neural"
+      ],
       neural: {
         confidence: num(safeNumber(exitNeuralSummary.confidence)),
         dominantAction: exitNeuralSummary.dominantAction || null,

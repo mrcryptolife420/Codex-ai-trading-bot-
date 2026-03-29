@@ -51,7 +51,7 @@ function cloneShadowMetric(metric) {
 function buildDefaultAdaptiveState(legacyState) {
   const championBase = OnlineTradingModel.bootstrapState(legacyState);
   return {
-    version: 6,
+    version: 7,
     champion: {
       specialists: bootstrapSpecialists(championBase)
     },
@@ -76,9 +76,9 @@ function buildDefaultAdaptiveState(legacyState) {
 }
 
 function normalizeState(state) {
-  if (state?.version === 6) {
+  if (state?.version === 7) {
     return {
-      version: 6,
+      version: 7,
       champion: {
         specialists: Object.fromEntries(
           REGIMES.map((regime) => [
@@ -101,7 +101,7 @@ function normalizeState(state) {
       executionNeural: state.executionNeural?.version === 1 ? state.executionNeural : ExecutionNeuralAdvisor.bootstrapState(),
       exitNeural: state.exitNeural?.version === 1 ? state.exitNeural : ExitNeuralAdvisor.bootstrapState(),
       strategyMeta: state.strategyMeta?.version === 1 ? state.strategyMeta : StrategyMetaSelector.bootstrapState(),
-      strategyAllocation: state.strategyAllocation?.version === 1 ? state.strategyAllocation : StrategyAllocationBandit.bootstrapState(),
+      strategyAllocation: state.strategyAllocation?.version === 2 ? state.strategyAllocation : StrategyAllocationBandit.bootstrapState(),
       calibration: { ...(state.calibration || {}) },
       deployment: {
         active: state.deployment?.active || "champion",
@@ -112,7 +112,7 @@ function normalizeState(state) {
     };
   }
 
-  if (state?.version === 5 || state?.version === 4 || state?.version === 3 || state?.version === 2) {
+  if (state?.version === 6 || state?.version === 5 || state?.version === 4 || state?.version === 3 || state?.version === 2) {
     return {
       ...buildDefaultAdaptiveState(),
       champion: {
@@ -137,7 +137,7 @@ function normalizeState(state) {
       executionNeural: state.executionNeural?.version === 1 ? state.executionNeural : ExecutionNeuralAdvisor.bootstrapState(),
       exitNeural: state.exitNeural?.version === 1 ? state.exitNeural : ExitNeuralAdvisor.bootstrapState(),
       strategyMeta: state.strategyMeta?.version === 1 ? state.strategyMeta : StrategyMetaSelector.bootstrapState(),
-      strategyAllocation: state.strategyAllocation?.version === 1 ? state.strategyAllocation : StrategyAllocationBandit.bootstrapState(),
+      strategyAllocation: state.strategyAllocation?.version === 2 ? state.strategyAllocation : StrategyAllocationBandit.bootstrapState(),
       calibration: { ...(state.calibration || {}) },
       deployment: {
         active: state.deployment?.active || "champion",
@@ -280,7 +280,7 @@ export class AdaptiveTradingModel {
   }
 
   getState() {
-    this.state.version = 6;
+    this.state.version = 7;
     this.state.calibration = this.calibrator.getState();
     this.state.champion.specialists = Object.fromEntries(
       REGIMES.map((regime) => [regime, this.models.champion[regime].getState()])

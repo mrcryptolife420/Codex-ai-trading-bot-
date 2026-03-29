@@ -55,7 +55,7 @@ function normalizeBucket(bucket = {}) {
 
 function normalizeState(state = {}) {
   return {
-    version: 1,
+    version: 2,
     buckets: Object.fromEntries(
       Object.entries(state.buckets || {}).map(([key, bucket]) => [key, normalizeBucket(bucket)])
     ),
@@ -78,6 +78,9 @@ function buildInputs(context = {}) {
     strategy: normalizeId(strategySummary.activeStrategy || strategySummary.strategyLabel, "unknown_strategy"),
     regime: normalizeId(regimeSummary.regime, "range"),
     session: normalizeId(sessionSummary.session, "unknown_session"),
+    condition: normalizeId(context.marketConditionSummary?.conditionId, "unknown_condition"),
+    conditionConfidence: clamp(safeNumber(context.marketConditionSummary?.conditionConfidence, 0), 0, 1),
+    conditionRisk: clamp(safeNumber(context.marketConditionSummary?.conditionRisk, 0), 0, 1),
     probability: clamp(safeNumber(score.probability, strategySummary.fitScore || 0.5), 0, 1),
     confidence: clamp(safeNumber(score.confidence, strategySummary.confidence || 0), 0, 1),
     fitScore: clamp(safeNumber(strategySummary.fitScore, 0.5), 0, 1),
@@ -119,18 +122,42 @@ function buildScopeDescriptors(inputs = {}) {
       key: buildBucketKey("session_family", [inputs.session, inputs.family]),
       weight: 0.18,
       label: `${inputs.session}:${inputs.family}`
+    },
+    {
+      id: "condition_family",
+      key: buildBucketKey("condition_family", [inputs.condition, inputs.family]),
+      weight: 0.08,
+      label: `${inputs.condition}:${inputs.family}`,
+      staleAfterHours: 24 * 4,
+      fadeWindowHours: 24 * 7
+    },
+    {
+      id: "condition_strategy",
+      key: buildBucketKey("condition_strategy", [inputs.condition, inputs.strategy]),
+      weight: 0.11,
+      label: `${inputs.condition}:${inputs.strategy}`,
+      staleAfterHours: 24 * 4,
+      fadeWindowHours: 24 * 7
+    },
+    {
+      id: "condition_session_family",
+      key: buildBucketKey("condition_session_family", [inputs.condition, inputs.session, inputs.family]),
+      weight: 0.08,
+      label: `${inputs.condition}:${inputs.session}:${inputs.family}`,
+      staleAfterHours: 24 * 3,
+      fadeWindowHours: 24 * 5
     }
   ];
 }
 
-function computeFreshness(bucket = {}, referenceMs = Date.now(), config = {}) {
+function computeFreshness(bucket = {}, referenceMs = Date.now(), config = {}, descriptor = {}) {
   const lastTradeAt = bucket.lastTradeAt ? new Date(bucket.lastTradeAt).getTime() : Number.NaN;
   if (!Number.isFinite(lastTradeAt)) {
     return { ageHours: null, freshness: 0.42 };
   }
   const ageHours = Math.max(0, (referenceMs - lastTradeAt) / 3_600_000);
-  const staleAfterHours = Math.max(24, safeNumber(config.strategyAllocationStaleHours, 24 * 7));
-  const fadeWindowHours = Math.max(24, safeNumber(config.strategyAllocationFadeHours, 24 * 14));
+  const staleAfterHours = Math.max(24, safeNumber(descriptor.staleAfterHours, safeNumber(config.strategyAllocationStaleHours, 24 * 7)));
+  const fadeWindowHours = Math.max(24, safeNumber(descriptor.fadeWindowHours, safeNumber(config.strategyAllocationFadeHours, 24 * 14)));
   if (ageHours <= staleAfterHours) {
     return { ageHours, freshness: 1 };
   }
@@ -140,10 +167,10 @@ function computeFreshness(bucket = {}, referenceMs = Date.now(), config = {}) {
   };
 }
 
-function scoreBucket(bucket = {}, referenceMs = Date.now(), config = {}) {
+function scoreBucket(bucket = {}, referenceMs = Date.now(), config = {}, descriptor = {}) {
   const posterior = clamp(bucket.alpha / Math.max(bucket.alpha + bucket.beta, 1e-9), 0, 1);
   const sampleConfidence = clamp(bucket.trades / Math.max(4, safeNumber(config.strategyAllocationConfidenceTrades, 10)), 0, 1);
-  const freshness = computeFreshness(bucket, referenceMs, config);
+  const freshness = computeFreshness(bucket, referenceMs, config, descriptor);
   const labelBias = (bucket.avgLabelScore - 0.5) * 2;
   const rewardBias = (bucket.rewardEma - 0.5) * 2;
   const pnlBias = clamp(bucket.avgPnlPct / Math.max(0.005, safeNumber(config.strategyAllocationPnlScalePct, 0.018)), -1, 1);
@@ -187,7 +214,7 @@ function rankBuckets(buckets = {}, scopePrefix, limit = 4, referenceMs = Date.no
 export class StrategyAllocationBandit {
   static bootstrapState() {
     return {
-      version: 1,
+      version: 2,
       buckets: {},
       history: []
     };
@@ -200,7 +227,7 @@ export class StrategyAllocationBandit {
 
   getState() {
     return {
-      version: 1,
+      version: 2,
       buckets: { ...this.state.buckets },
       history: [...this.state.history].slice(-HISTORY_LIMIT)
     };
@@ -212,7 +239,7 @@ export class StrategyAllocationBandit {
     const referenceMs = Date.now();
     const scoredScopes = scopeDescriptors.map((descriptor) => {
       const bucket = this.state.buckets[descriptor.key] || buildDefaultBucket();
-      const scored = scoreBucket(bucket, referenceMs, this.config);
+      const scored = scoreBucket(bucket, referenceMs, this.config, descriptor);
       return {
         id: descriptor.id,
         key: descriptor.key,
@@ -239,18 +266,21 @@ export class StrategyAllocationBandit {
       (1 - clamp(totalScopeTrades / 18, 0, 1)) * 0.24 +
       (nearThreshold ? 0.12 : 0) +
       (inputs.pairHealth >= 0.58 ? 0.04 : 0) -
-      inputs.newsRisk * 0.08,
+      inputs.newsRisk * 0.08 +
+      inputs.conditionRisk * 0.06 -
+      inputs.conditionConfidence * 0.04,
       0.04,
       0.65
     );
-    const fitBoost = clamp(weightedSignal * 0.055, -0.06, 0.06);
-    const confidenceBoost = clamp(weightedSignal * 0.04, -0.03, 0.04);
-    const thresholdShift = clamp(weightedSignal * -0.024, -0.028, 0.028);
-    const sizeMultiplier = clamp(1 + weightedSignal * 0.11 - explorationWeight * 0.025, 0.82, 1.14);
+    const fitBoost = clamp(weightedSignal * 0.055 + (inputs.conditionConfidence - 0.5) * 0.01, -0.06, 0.06);
+    const confidenceBoost = clamp(weightedSignal * 0.04 + (inputs.conditionConfidence - 0.5) * 0.008, -0.03, 0.04);
+    const thresholdShift = clamp(weightedSignal * -0.024 + inputs.conditionRisk * 0.008 - inputs.conditionConfidence * 0.004, -0.028, 0.028);
+    const sizeMultiplier = clamp(1 + weightedSignal * 0.11 - explorationWeight * 0.025 - inputs.conditionRisk * 0.03, 0.82, 1.14);
     const marketRisk = clamp(
       (inputs.newsRisk * 0.46) +
       clamp(inputs.realizedVolPct / Math.max(0.01, safeNumber(this.config.strategyAllocationBudgetVolScalePct, 0.032)), 0, 1) * 0.34 +
-      Math.max(0, -inputs.alignment) * 0.2,
+      Math.max(0, -inputs.alignment) * 0.2 +
+      inputs.conditionRisk * 0.18,
       0,
       1
     );
@@ -285,6 +315,9 @@ export class StrategyAllocationBandit {
       activeStrategy: inputs.strategy,
       regime: inputs.regime,
       session: inputs.session,
+      conditionId: inputs.condition,
+      conditionConfidence: num(inputs.conditionConfidence, 4),
+      conditionRisk: num(inputs.conditionRisk, 4),
       posture,
       fitBoost: num(fitBoost, 4),
       confidenceBoost: num(confidenceBoost, 4),
@@ -304,10 +337,10 @@ export class StrategyAllocationBandit {
       topStrategies,
       notes: [
         weightedSignal >= 0.08
-          ? `Allocator bevoordeelt ${inputs.strategy} binnen ${inputs.regime}.`
+          ? `Allocator bevoordeelt ${inputs.strategy} binnen ${inputs.regime}${inputs.condition !== "unknown_condition" ? ` / ${inputs.condition}` : ""}.`
           : weightedSignal <= -0.08
-            ? `Allocator koelt ${inputs.strategy} binnen ${inputs.regime} voorlopig af.`
-            : `Allocator houdt ${inputs.strategy} in ${inputs.regime} neutraal.`,
+            ? `Allocator koelt ${inputs.strategy} binnen ${inputs.regime}${inputs.condition !== "unknown_condition" ? ` / ${inputs.condition}` : ""} voorlopig af.`
+            : `Allocator houdt ${inputs.strategy} in ${inputs.regime}${inputs.condition !== "unknown_condition" ? ` / ${inputs.condition}` : ""} neutraal.`,
         budgetLane === "conviction"
           ? "Budget lane staat op conviction; deze context verdient iets meer sizing."
           : budgetLane === "reduced"
@@ -329,6 +362,7 @@ export class StrategyAllocationBandit {
       strategySummary: trade.entryRationale?.strategy || trade.strategyDecision || {},
       regimeSummary: trade.entryRationale?.regimeSummary || { regime: trade.regimeAtEntry || "range" },
       sessionSummary: trade.entryRationale?.session || { session: trade.sessionAtEntry || "unknown_session" },
+      marketConditionSummary: trade.entryRationale?.marketCondition || { conditionId: trade.marketConditionAtEntry || "unknown_condition" },
       timeframeSummary: trade.entryRationale?.timeframe || {},
       pairHealthSummary: trade.entryRationale?.pairHealth || {},
       newsSummary: { riskScore: trade.entryRationale?.newsRisk || 0 },
@@ -377,6 +411,7 @@ export class StrategyAllocationBandit {
       at: trade.exitAt || trade.entryAt || new Date().toISOString(),
       regime: inputs.regime,
       session: inputs.session,
+      condition: inputs.condition,
       family: inputs.family,
       strategy: inputs.strategy,
       labelScore: num(labelScore, 4),
@@ -418,6 +453,11 @@ export class StrategyAllocationBandit {
         ...item,
         session: item.context || null
       }));
+    const topConditions = rankBuckets(this.state.buckets, "condition_strategy", 4, referenceMs, this.config)
+      .map((item) => ({
+        ...item,
+        condition: item.context || null
+      }));
     const status = tradeCount >= 8 ? "active" : tradeCount >= 3 ? "building" : "warmup";
     const leadFamily = topFamilies[0];
     const leadStrategy = topStrategies[0];
@@ -430,12 +470,16 @@ export class StrategyAllocationBandit {
       topStrategies,
       topRegimes,
       topSessions,
+      topConditions,
       notes: [
         leadStrategy
           ? `Allocator ziet ${leadStrategy.id} nu als sterkste strategie-bias.`
           : "Allocator warmt nog op; er zijn nog weinig gesloten trades.",
         leadFamily
           ? `Sterkste family-bias staat nu op ${leadFamily.id}.`
+          : null,
+        topConditions[0]
+          ? `Sterkste condition-bias staat nu op ${topConditions[0].condition || "onbekend"} via ${topConditions[0].id}.`
           : null
       ].filter(Boolean)
     };

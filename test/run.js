@@ -73,6 +73,7 @@ import { CapitalLadder } from "../src/runtime/capitalLadder.js";
 import { OfflineTrainer } from "../src/runtime/offlineTrainer.js";
 import { StrategyResearchMiner } from "../src/runtime/strategyResearchMiner.js";
 import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
+import { buildMarketConditionSummary } from "../src/runtime/marketConditionController.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
 import { buildExchangeSafetyAudit } from "../src/runtime/exchangeSafetyReconciler.js";
@@ -651,6 +652,142 @@ await runCheck("strategy allocation bandit learns regime and strategy bias from 
   assert.equal(summary.topFamilies[0]?.id, "trend_following");
 });
 
+await runCheck("market condition controller classifies continuation without lookahead-only inputs", async () => {
+  const summary = buildMarketConditionSummary({
+    marketSnapshot: {
+      market: {
+        realizedVolPct: 0.018,
+        breakoutPct: 0.006,
+        breakoutFollowThroughScore: 0.66,
+        anchoredVwapAcceptanceScore: 0.72,
+        anchoredVwapRejectionScore: 0.18,
+        closeAcceptanceScore: 0.7,
+        volumeAcceptanceScore: 0.64
+      },
+      book: {
+        spreadBps: 3.2,
+        bookPressure: 0.22,
+        depthConfidence: 0.84
+      }
+    },
+    regimeSummary: { regime: "breakout" },
+    sessionSummary: { session: "london" },
+    timeframeSummary: { alignmentScore: 0.74, higherBias: 0.28 },
+    trendStateSummary: { uptrendScore: 0.72, exhaustionScore: 0.12, rangeAcceptanceScore: 0.24, dataConfidenceScore: 0.82 },
+    marketStateSummary: { phase: "breakout_release", trendFailure: 0.08 },
+    newsSummary: { riskScore: 0.08, sentimentScore: 0.12 },
+    announcementSummary: { riskScore: 0.02 },
+    calendarSummary: { riskScore: 0.04 },
+    volatilitySummary: { riskScore: 0.18 },
+    marketSentimentSummary: { contrarianScore: 0.05 },
+    qualityQuorumSummary: { status: "ready", quorumScore: 0.88, observeOnly: false },
+    pairHealthSummary: { score: 0.84 },
+    venueConfirmationSummary: { confirmed: true, status: "confirmed" }
+  });
+  assert.equal(summary.conditionId, "breakout_release");
+  assert.ok(summary.conditionConfidence >= 0.5);
+  assert.equal(summary.posture, "offense");
+  assert.ok(summary.drivers.includes("follow_through_confirmed"));
+});
+
+await runCheck("strategy allocation bandit becomes condition-aware for strategy ranking", async () => {
+  const allocator = new StrategyAllocationBandit(undefined, makeConfig());
+  const baseContext = {
+    score: { probability: 0.57, confidence: 0.52 },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.62, confidence: 0.56 },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    sessionSummary: { session: "london" },
+    timeframeSummary: { alignmentScore: 0.7 },
+    pairHealthSummary: { score: 0.8 },
+    newsSummary: { riskScore: 0.04 },
+    marketSnapshot: { market: { realizedVolPct: 0.018 } },
+    marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.76, conditionRisk: 0.2 }
+  };
+  const before = allocator.score(baseContext);
+  for (let index = 0; index < 10; index += 1) {
+    allocator.updateFromTrade({
+      exitAt: `2026-03-${String(10 + index).padStart(2, "0")}T10:00:00.000Z`,
+      netPnlPct: 0.011 + index * 0.0004,
+      executionQualityScore: 0.74,
+      captureEfficiency: 0.68,
+      regimeAtEntry: "trend",
+      strategyAtEntry: "ema_trend",
+      strategyDecision: { family: "trend_following", activeStrategy: "ema_trend" },
+      entryRationale: {
+        probability: 0.57,
+        confidence: 0.52,
+        strategy: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.62 },
+        regimeSummary: { regime: "trend", confidence: 0.74 },
+        session: { session: "london" },
+        timeframe: { alignmentScore: 0.7 },
+        pairHealth: { score: 0.8 },
+        newsRisk: 0.04,
+        realizedVolPct: 0.018,
+        marketCondition: { conditionId: "trend_continuation", conditionConfidence: 0.76, conditionRisk: 0.2 }
+      }
+    }, { labelScore: 0.8 });
+  }
+  const after = allocator.score(baseContext);
+  assert.ok(after.fitBoost > before.fitBoost);
+  assert.ok(after.confidenceBoost >= before.confidenceBoost);
+  assert.equal(after.conditionId, "trend_continuation");
+  assert.equal(allocator.getSummary().topConditions[0]?.id, "trend_continuation");
+});
+
+await runCheck("offline trainer builds condition-scoped missed-trade tuning without softening hard safety blockers", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const summary = trainer.buildSummary({
+    trades: [
+      {
+        symbol: "BTCUSDT",
+        exitAt: "2026-03-20T12:00:00.000Z",
+        netPnlPct: 0.014,
+        pnlQuote: 12,
+        brokerMode: "paper",
+        executionQualityScore: 0.72,
+        labelScore: 0.78,
+        strategyDecision: { family: "trend_following", activeStrategy: "ema_trend" },
+        entryRationale: {
+          strategy: { family: "trend_following", activeStrategy: "ema_trend" },
+          marketCondition: { conditionId: "trend_continuation" }
+        }
+      }
+    ],
+    counterfactuals: [
+      {
+        blocker: "model_confidence_too_low",
+        outcome: "missed_winner",
+        strategy: "ema_trend",
+        family: "trend_following",
+        marketCondition: { conditionId: "trend_continuation" },
+        realizedMovePct: 0.022
+      },
+      {
+        blocker: "model_confidence_too_low",
+        outcome: "missed_winner",
+        strategy: "ema_trend",
+        family: "trend_following",
+        marketCondition: { conditionId: "trend_continuation" },
+        realizedMovePct: 0.018
+      },
+      {
+        blocker: "exchange_reconcile_blocked",
+        outcome: "missed_winner",
+        strategy: "ema_trend",
+        family: "trend_following",
+        marketCondition: { conditionId: "trend_continuation" },
+        realizedMovePct: 0.02
+      }
+    ],
+    nowIso: "2026-03-21T12:00:00.000Z"
+  });
+  assert.equal(summary.missedTradeTuning.topBlocker, "model_confidence_too_low");
+  assert.equal(summary.missedTradeTuning.scope.conditionId, "trend_continuation");
+  assert.equal(summary.missedTradeTuning.scope.familyId, "trend_following");
+  assert.ok(summary.missedTradeTuning.thresholdShift <= 0);
+  assert.notEqual(summary.missedTradeTuning.topBlocker, "exchange_reconcile_blocked");
+});
+
 await runCheck("adaptive model exposes and persists strategy allocation guidance", async () => {
   const model = new AdaptiveTradingModel(undefined, makeConfig({ enableTransformerChallenger: false }));
   const rawFeatures = { momentum_20: 0.012, ema_gap: 0.004, breakout_pct: 0.005, realized_vol_pct: 0.018 };
@@ -702,8 +839,8 @@ await runCheck("adaptive model exposes and persists strategy allocation guidance
   assert.ok(score.strategyAllocation.thresholdShift < 0);
   assert.ok(score.strategyAllocation.budgetMultiplier >= 1);
   assert.equal(score.strategyAllocation.budgetLane, "conviction");
-  assert.equal(modelState.version, 6);
-  assert.equal(modelState.strategyAllocation.version, 1);
+  assert.equal(modelState.version, 7);
+  assert.equal(modelState.strategyAllocation.version, 2);
   assert.equal(allocationSummary.topStrategies[0]?.id, "ema_trend");
 });
 
@@ -6401,6 +6538,58 @@ await runCheck("risk manager rewards stronger portfolio allocator scores in rank
   assert.ok(highAllocator.rankScore > lowAllocator.rankScore);
 });
 
+await runCheck("risk manager applies condition-scoped missed-trade tuning and opportunity ranking", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.548,
+      calibrationConfidence: 0.72,
+      disagreement: 0.04,
+      confidence: 0.5,
+      shouldAbstain: false,
+      transformer: { probability: 0.55, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 3.2, bookPressure: 0.18, microPriceEdgeBps: 0.5, depthConfidence: 0.82 },
+      market: { realizedVolPct: 0.018, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.16 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.08, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.02, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.14, crowdingBias: 0.04, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { contrarianScore: 0.04 },
+    volatilitySummary: { riskScore: 0.18 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.64, probability: 0.56, netScore: 0.1, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.4, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.66, confidence: 0.56, blockers: [], agreementGap: 0.03 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.012 },
+    portfolioSummary: { sizeMultiplier: 1, allocatorScore: 0.72, diversificationScore: 0.76, maxCorrelation: 0.04, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.78 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.74, conditionRisk: 0.18, conditionTransitionState: "stable" },
+    missedTradeTuningSummary: {
+      status: "priority",
+      topBlocker: "model_confidence_too_low",
+      action: "soften_blocker",
+      confidence: 0.78,
+      thresholdShift: -0.012,
+      paperProbeEligible: true,
+      shadowPriority: false,
+      scope: { conditionId: "trend_continuation", familyId: "trend_following" }
+    },
+    exchangeCapabilitiesSummary: resolveExchangeCapabilities({ userRegion: "BE" }),
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(decision.missedTradeTuningApplied.active, true);
+  assert.ok(decision.threshold < 0.55);
+  assert.ok(decision.opportunityScore > 0.5);
+  assert.ok(decision.rankScore > 0);
+});
+
 await runCheck("risk manager can allow small paper warm-up entries near threshold", async () => {
   const manager = new RiskManager(makeConfig({ paperExplorationMinBookPressure: -0.42 }));
   const decision = manager.evaluateEntry({
@@ -11137,6 +11326,47 @@ await runCheck("exit intelligence escalates when profit starts reversing into ri
   assert.ok(summary.riskReasons.length >= 1);
 });
 
+await runCheck("exit intelligence becomes condition-aware for continuation winners", async () => {
+  const intelligence = new ExitIntelligence(makeConfig());
+  const summary = intelligence.evaluate({
+    position: {
+      symbol: "BTCUSDT",
+      entryAt: "2026-03-08T06:00:00.000Z",
+      entryPrice: 100,
+      quantity: 1,
+      totalCost: 100,
+      highestPrice: 106,
+      stopLossPrice: 97,
+      scaleOutTrailOffsetPct: 0.01,
+      strategyDecision: { family: "trend_following", activeStrategy: "ema_trend" },
+      entryRationale: { strategy: { family: "trend_following", activeStrategy: "ema_trend" } }
+    },
+    marketSnapshot: {
+      book: { mid: 104.8, spreadBps: 6, depthConfidence: 0.82, bookPressure: 0.22 },
+      market: { bearishPatternScore: 0.04, bullishPatternScore: 0.2 }
+    },
+    newsSummary: { coverage: 2, sentimentScore: 0.08, riskScore: 0.12 },
+    announcementSummary: { riskScore: 0.04 },
+    marketStructureSummary: { signalScore: 0.18, riskScore: 0.16, confidence: 0.7, liquidationImbalance: 0.1 },
+    marketSentimentSummary: { contrarianScore: 0.06 },
+    calendarSummary: { coverage: 1, riskScore: 0.08 },
+    timeframeSummary: { alignmentScore: 0.74, higherBias: 0.28 },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend" },
+    marketConditionSummary: {
+      conditionId: "trend_continuation",
+      conditionConfidence: 0.76,
+      conditionRisk: 0.18,
+      conditionTransitionState: "stable"
+    },
+    nowIso: "2026-03-08T08:00:00.000Z"
+  });
+  assert.equal(summary.conditionId, "trend_continuation");
+  assert.equal(summary.holdingPhase, "early");
+  assert.equal(summary.preferredExitStyle, "trail");
+  assert.ok(summary.holdTolerance > 0);
+  assert.ok(summary.trailTightnessBias < 0);
+});
+
 await runCheck("strategy attribution builds a positive adjustment for hot strategy history", async () => {
   const attribution = new StrategyAttribution(makeConfig({ strategyAttributionMinTrades: 2 }));
   const snapshot = attribution.buildSnapshot({
@@ -13104,6 +13334,21 @@ await runCheck("dashboard snapshot surfaces missed-trade and exit learning diges
       {
         symbol: "BTCUSDT",
         unrealizedPnl: 18,
+        latestExitPolicy: {
+          preferredExitStyle: "trail",
+          trimBias: -0.04,
+          trailTightnessBias: -0.08,
+          holdTolerance: 0.1,
+          maxHoldBias: 0.06,
+          sources: ["trend_continuation:trend_following"]
+        },
+        latestMarketConditionSummary: {
+          conditionId: "trend_continuation",
+          conditionConfidence: 0.74,
+          conditionRisk: 0.18,
+          conditionTransitionState: "stable",
+          posture: "offense"
+        },
         latestExitIntelligence: {
           action: "trail",
           confidence: 0.74,
@@ -13161,7 +13406,19 @@ await runCheck("dashboard snapshot surfaces missed-trade and exit learning diges
         prematureExitCount: 2,
         lateExitCount: 1,
         averageExitScore: 0.61
-      }
+      },
+      missedTradeTuning: {
+        status: "priority",
+        topBlocker: "model_confidence_too_low",
+        action: "soften_blocker",
+        confidence: 0.74,
+        thresholdShift: -0.01,
+        paperProbeEligible: true,
+        scope: { conditionId: "trend_continuation", familyId: "trend_following" }
+      },
+      policyTransitionCandidatesByCondition: [
+        { id: "ema_trend", action: "promote_candidate", confidence: 0.72, conditionId: "trend_continuation" }
+      ]
     },
     paperLearning: {
       generatedAt: "2026-03-19T09:59:00.000Z",
@@ -13249,6 +13506,11 @@ await runCheck("dashboard snapshot surfaces missed-trade and exit learning diges
   assert.equal(snapshot.ops.learningInsights.exits.status, "watch");
   assert.equal(snapshot.ops.learningInsights.exits.leadSignal.symbol, "BTCUSDT");
   assert.equal(snapshot.ops.learningInsights.exits.tightenCount, 1);
+  assert.equal(snapshot.ops.marketCondition.conditionId, "trend_continuation");
+  assert.equal(snapshot.ops.adaptivePolicy.posture, "offense");
+  assert.equal(snapshot.ops.missedTradeTuning.topBlocker, "model_confidence_too_low");
+  assert.equal(snapshot.ops.exitPolicy.preferredExitStyle, "trail");
+  assert.ok(snapshot.ops.opportunityRanking.note);
   assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Missed-trade learning"));
   assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Exit AI"));
 });

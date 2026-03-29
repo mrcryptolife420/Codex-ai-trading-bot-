@@ -7,6 +7,10 @@ function safeValue(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function num(value, digits = 4) {
+  return Number(safeValue(value, 0).toFixed(digits));
+}
+
 function isWithinLookback(at, nowIso, lookbackMinutes) {
   if (!at || !Number.isFinite(lookbackMinutes) || lookbackMinutes <= 0) {
     return true;
@@ -1055,12 +1059,52 @@ export class RiskManager {
     };
   }
 
+  resolveMissedTradeTuning(missedTradeTuningSummary = {}, strategySummary = {}, marketConditionSummary = {}) {
+    const scope = missedTradeTuningSummary?.scope || {};
+    const conditionId = marketConditionSummary?.conditionId || null;
+    const familyId = strategySummary?.family || null;
+    const inScope =
+      (!scope.conditionId || scope.conditionId === conditionId) &&
+      (!scope.familyId || scope.familyId === familyId);
+    if (!inScope || !["priority", "guarded", "observe"].includes(missedTradeTuningSummary?.status || "")) {
+      return {
+        active: false,
+        thresholdShift: 0,
+        paperProbeEligible: false,
+        shadowPriority: false,
+        action: "observe",
+        confidence: 0,
+        blocker: null,
+        note: null
+      };
+    }
+    return {
+      active: true,
+      thresholdShift: clamp(safeValue(missedTradeTuningSummary.thresholdShift, 0), -0.018, 0.018),
+      paperProbeEligible: Boolean(missedTradeTuningSummary.paperProbeEligible),
+      shadowPriority: Boolean(missedTradeTuningSummary.shadowPriority),
+      action: missedTradeTuningSummary.action || "observe",
+      confidence: safeValue(missedTradeTuningSummary.confidence, 0),
+      blocker: missedTradeTuningSummary.topBlocker || null,
+      blockerSofteningRecommendation: missedTradeTuningSummary.blockerSofteningRecommendation || null,
+      blockerHardeningRecommendation: missedTradeTuningSummary.blockerHardeningRecommendation || null,
+      note: missedTradeTuningSummary.note || null,
+      scope: {
+        conditionId: scope.conditionId || null,
+        familyId: scope.familyId || null
+      }
+    };
+  }
+
   resolveAdaptiveExitPolicy(exitLearningSummary = {}, position = {}) {
     const strategyId = position.strategyAtEntry || position.strategyDecision?.activeStrategy || position.entryRationale?.strategy?.activeStrategy || null;
     const regimeId = position.regimeAtEntry || position.entryRationale?.regimeSummary?.regime || null;
+    const familyId = position.strategyFamily || position.strategyDecision?.family || position.entryRationale?.strategy?.family || null;
+    const conditionId = position.marketConditionAtEntry || position.entryRationale?.marketCondition?.conditionId || null;
+    const conditionPolicy = (exitLearningSummary?.conditionPolicies || []).find((item) => item.conditionId === conditionId && item.familyId === familyId) || null;
     const strategyPolicy = (exitLearningSummary?.strategyPolicies || []).find((item) => item.id === strategyId) || null;
     const regimePolicy = (exitLearningSummary?.regimePolicies || []).find((item) => item.id === regimeId) || null;
-    const policies = [strategyPolicy, regimePolicy].filter(Boolean);
+    const policies = [conditionPolicy, strategyPolicy, regimePolicy].filter(Boolean);
     if (!policies.length) {
       return {
         active: false,
@@ -1068,6 +1112,11 @@ export class RiskManager {
         scaleOutTriggerMultiplier: 1,
         trailingStopMultiplier: 1,
         maxHoldMinutesMultiplier: 1,
+        preferredExitStyle: "balanced",
+        trailTightnessBias: 0,
+        trimBias: 0,
+        holdTolerance: 0,
+        maxHoldBias: 0,
         sources: []
       };
     }
@@ -1077,6 +1126,11 @@ export class RiskManager {
       scaleOutTriggerMultiplier: clamp(average(policies.map((item) => safeValue(item.scaleOutTriggerMultiplier || 1)), 1), 0.78, 1.25),
       trailingStopMultiplier: clamp(average(policies.map((item) => safeValue(item.trailingStopMultiplier || 1)), 1), 0.82, 1.22),
       maxHoldMinutesMultiplier: clamp(average(policies.map((item) => safeValue(item.maxHoldMinutesMultiplier || 1)), 1), 0.75, 1.25),
+      preferredExitStyle: conditionPolicy?.preferredExitStyle || "balanced",
+      trailTightnessBias: clamp(average(policies.map((item) => safeValue(item.trailTightnessBias || 0)), 0), -0.2, 0.2),
+      trimBias: clamp(average(policies.map((item) => safeValue(item.trimBias || 0)), 0), -0.2, 0.2),
+      holdTolerance: clamp(average(policies.map((item) => safeValue(item.holdTolerance || 0)), 0), -0.2, 0.2),
+      maxHoldBias: clamp(average(policies.map((item) => safeValue(item.maxHoldBias || 0)), 0), -0.2, 0.2),
       sources: policies.map((item) => item.id)
     };
   }
@@ -1251,6 +1305,8 @@ export class RiskManager {
     executionCostSummary = {},
     strategyRetirementSummary = {},
     capitalGovernorSummary = {},
+    missedTradeTuningSummary = {},
+    marketConditionSummary = {},
     runtime,
     journal,
     balance,
@@ -1276,6 +1332,7 @@ export class RiskManager {
     const optimizerAdjustments = this.getOptimizerAdjustments(strategySummary);
     const thresholdTuningAdjustment = this.getThresholdTuningAdjustment(thresholdTuningSummary, strategySummary, regimeSummary);
     const parameterGovernorAdjustment = this.resolveParameterGovernor(parameterGovernorSummary, strategySummary, regimeSummary);
+    const missedTradeTuningApplied = this.resolveMissedTradeTuning(missedTradeTuningSummary, strategySummary, marketConditionSummary);
     const strategyRetirementPolicy = this.resolveStrategyRetirement(strategyRetirementSummary, strategySummary);
     const executionCostBudget = this.resolveExecutionCostBudget(executionCostSummary, strategySummary, regimeSummary);
     const capitalGovernor = this.resolveCapitalGovernor(capitalGovernorSummary);
@@ -1331,6 +1388,8 @@ export class RiskManager {
     const downsideVolDominance = buildDownsideVolDominance(marketSnapshot.market || {});
     const acceptanceQuality = buildAcceptanceQuality(marketSnapshot.market || {});
     const replenishmentQuality = buildReplenishmentQuality(marketSnapshot.book || {});
+    const marketConditionConfidence = safeValue(marketConditionSummary.conditionConfidence, 0);
+    const marketConditionRisk = safeValue(marketConditionSummary.conditionRisk, 0);
     const metaCautionReasons = getMetaCautionReasons(metaSummary);
     const hasDirectMetaCautionGate = metaCautionReasons.some((reason) => ["meta_gate_caution", "trade_quality_caution"].includes(reason));
     const sessionThresholdPenalty = safeValue(sessionSummary.thresholdPenalty || 0);
@@ -1346,7 +1405,7 @@ export class RiskManager {
       ? Math.max(0.5, this.config.minModelConfidence - paperWarmupDiscount)
       : this.config.minModelConfidence;
     let threshold = clamp(
-      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty + thresholdTuningAdjustment.adjustment + parameterGovernorAdjustment.thresholdShift + safeValue(strategyMetaSummary.thresholdShift || 0),
+      baseThreshold - optimizerAdjustments.thresholdAdjustment - paperWarmupDiscount + sessionThresholdPenalty + driftThresholdPenalty + selfHealThresholdPenalty + metaThresholdPenalty + thresholdTuningAdjustment.adjustment + parameterGovernorAdjustment.thresholdShift + safeValue(strategyMetaSummary.thresholdShift || 0) + missedTradeTuningApplied.thresholdShift,
       thresholdFloor,
       0.99
     );
@@ -1870,7 +1929,8 @@ export class RiskManager {
         abstainReasons.every((reason) => reason === "probability_neutral_band")
       );
     const paperProbeThresholdBuffer = this.config.paperExplorationThresholdBuffer +
-      (highQualitySoftPaperProbeCandidate ? 0.03 : 0);
+      (highQualitySoftPaperProbeCandidate ? 0.03 : 0) +
+      (missedTradeTuningApplied.paperProbeEligible ? 0.012 : 0);
 
     if (
       !allow &&
@@ -2169,6 +2229,48 @@ export class RiskManager {
         };
       }
     }
+    if (this.config.botMode === "paper" && missedTradeTuningApplied.active) {
+      if (missedTradeTuningApplied.paperProbeEligible && allow && learningLane === "safe" && entryMode === "standard") {
+        learningLane = "probe";
+      }
+      if (missedTradeTuningApplied.shadowPriority && !allow && learningLane === "safe") {
+        learningLane = "shadow";
+      }
+      learningValueScore = clamp(
+        learningValueScore +
+        (missedTradeTuningApplied.paperProbeEligible ? 0.06 : 0) +
+        (missedTradeTuningApplied.shadowPriority ? 0.04 : 0),
+        0,
+        1
+      );
+      activeLearningState = {
+        ...activeLearningState,
+        activeLearningScore: clamp(
+          safeValue(activeLearningState.activeLearningScore, 0) +
+          (missedTradeTuningApplied.paperProbeEligible ? 0.04 : 0) +
+          (missedTradeTuningApplied.shadowPriority ? 0.03 : 0),
+          0,
+          1
+        ),
+        focusReason: activeLearningState.focusReason || "condition_missed_trade_tuning"
+      };
+    }
+    const opportunityScore = num(clamp(
+      0.34 +
+      clamp(score.probability - threshold, -0.12, 0.12) * 2.4 +
+      safeValue(strategyAllocationSummary.convictionScore, 0) * 0.12 +
+      safeValue(signalQualitySummary.overallScore, 0) * 0.12 +
+      safeValue(confidenceBreakdown.overallConfidence, 0) * 0.08 +
+      safeValue(pairHealthSummary.score, 0.5) * 0.06 +
+      marketConditionConfidence * 0.08 +
+      Math.max(0, 0.6 - marketConditionRisk) * 0.06 +
+      Math.max(0, safeValue(portfolioSummary.diversificationScore, 0.5) - 0.5) * 0.08 +
+      (missedTradeTuningApplied.paperProbeEligible ? 0.05 : 0) +
+      (missedTradeTuningApplied.shadowPriority ? 0.03 : 0) +
+      safeValue(strategyMetaSummary.holdMultiplier, 1) * 0.02,
+      0,
+      1.4
+    ), 4);
 
     return {
       allow,
@@ -2181,6 +2283,7 @@ export class RiskManager {
       paperLearningSampling,
       paperActiveLearning: activeLearningState,
       strategyAllocationGovernance,
+      missedTradeTuningApplied,
       paperThresholdSandbox: {
         ...paperThresholdSandbox,
         thresholdBeforeSandbox,
@@ -2203,8 +2306,10 @@ export class RiskManager {
       executionCostBudgetApplied: executionCostBudget,
       capitalGovernorApplied: capitalGovernor,
       exchangeCapabilitiesApplied: exchangeCapabilities,
+      marketConditionApplied: marketConditionSummary,
       downtrendPolicy,
       trendStateSummary,
+      marketConditionSummary,
       dataQualitySummary,
       signalQualitySummary,
       confidenceBreakdown,
@@ -2227,6 +2332,7 @@ export class RiskManager {
         thresholdAdjustment: optimizerAdjustments.thresholdAdjustment,
         thresholdTuningAdjustment: thresholdTuningAdjustment.adjustment,
         parameterGovernorThresholdShift: parameterGovernorAdjustment.thresholdShift,
+        missedTradeThresholdShift: missedTradeTuningApplied.thresholdShift,
         trendStateThresholdShift: trendStateTuning.thresholdShift,
         globalThresholdTilt: optimizerAdjustments.globalThresholdTilt,
         familyThresholdTilt: optimizerAdjustments.familyThresholdTilt,
@@ -2303,7 +2409,11 @@ export class RiskManager {
         marketSnapshot.book.spreadBps / 20_000 +
         (portfolioSummary.allocatorScore || 0) * 0.03 -
         (portfolioSummary.maxCorrelation || 0) * 0.03 +
-        (score.calibrationConfidence || 0) * 0.02
+        (score.calibrationConfidence || 0) * 0.02 +
+        marketConditionConfidence * 0.03 -
+        marketConditionRisk * 0.02 +
+        (missedTradeTuningApplied.paperProbeEligible ? 0.02 : 0),
+      opportunityScore
     };
   }
 
@@ -2316,17 +2426,40 @@ export class RiskManager {
     }, {
       regime: position.regimeAtEntry || position.entryRationale?.regimeSummary?.regime || null
     });
-    const trailingStopPct = clamp((position.trailingStopPct || this.config.trailingStopPct) * (adaptiveExitPolicy.trailingStopMultiplier || 1) * (parameterGovernorAdjustment.trailingStopMultiplier || 1), 0.004, 0.04);
+    const exitTrailBias = safeValue(exitIntelligenceSummary.trailTightnessBias, 0) + safeValue(adaptiveExitPolicy.trailTightnessBias, 0);
+    const exitTrimBias = safeValue(exitIntelligenceSummary.trimBias, 0) + safeValue(adaptiveExitPolicy.trimBias, 0);
+    const holdToleranceBias = safeValue(exitIntelligenceSummary.holdTolerance, 0) + safeValue(adaptiveExitPolicy.holdTolerance, 0);
+    const maxHoldBias = safeValue(exitIntelligenceSummary.maxHoldBias, 0) + safeValue(adaptiveExitPolicy.maxHoldBias, 0);
+    const trailingStopPct = clamp(
+      (position.trailingStopPct || this.config.trailingStopPct) *
+      (adaptiveExitPolicy.trailingStopMultiplier || 1) *
+      (parameterGovernorAdjustment.trailingStopMultiplier || 1) *
+      (1 + clamp(exitTrailBias, -0.18, 0.18)),
+      0.004,
+      0.04
+    );
     const trailingStopPrice = updatedHigh * (1 - trailingStopPct);
     const heldMinutes = minutesBetween(position.entryAt, nowIso);
-    const scaleOutTriggerPrice = (position.scaleOutTriggerPrice || position.entryPrice * (1 + this.config.scaleOutTriggerPct)) * (adaptiveExitPolicy.scaleOutTriggerMultiplier || 1) * (parameterGovernorAdjustment.scaleOutTriggerMultiplier || 1);
+    const scaleOutTriggerPrice =
+      (position.scaleOutTriggerPrice || position.entryPrice * (1 + this.config.scaleOutTriggerPct)) *
+      (adaptiveExitPolicy.scaleOutTriggerMultiplier || 1) *
+      (parameterGovernorAdjustment.scaleOutTriggerMultiplier || 1) *
+      (1 + clamp(-exitTrimBias * 0.35, -0.08, 0.08));
     const notional = position.lastMarkedPrice ? position.lastMarkedPrice * position.quantity : position.notional || position.totalCost || 0;
-    const effectiveMaxHoldMinutes = Math.max(1, Math.round((position.maxHoldMinutes || this.config.maxHoldMinutes || 1) * (adaptiveExitPolicy.maxHoldMinutesMultiplier || 1) * (parameterGovernorAdjustment.maxHoldMinutesMultiplier || 1)));
+    const effectiveMaxHoldMinutes = Math.max(
+      1,
+      Math.round(
+        (position.maxHoldMinutes || this.config.maxHoldMinutes || 1) *
+        (adaptiveExitPolicy.maxHoldMinutesMultiplier || 1) *
+        (parameterGovernorAdjustment.maxHoldMinutesMultiplier || 1) *
+        (1 + clamp(maxHoldBias, -0.18, 0.18))
+      )
+    );
     const canScaleOut =
       !position.scaleOutCompletedAt &&
       !position.scaleOutInProgress &&
       (position.scaleOutFraction || this.config.scaleOutFraction) > 0 &&
-      notional >= (position.scaleOutMinNotionalUsd || this.config.scaleOutMinNotionalUsd) * 1.2 &&
+      notional >= (position.scaleOutMinNotionalUsd || this.config.scaleOutMinNotionalUsd) * (1.2 + Math.max(0, holdToleranceBias) * 0.15) &&
       currentPrice >= scaleOutTriggerPrice;
 
     if (canScaleOut) {
@@ -2334,7 +2467,10 @@ export class RiskManager {
         shouldExit: false,
         shouldScaleOut: true,
         scaleOutFraction: clamp(
-          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1) * (parameterGovernorAdjustment.scaleOutFractionMultiplier || 1),
+          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) *
+          (adaptiveExitPolicy.scaleOutFractionMultiplier || 1) *
+          (parameterGovernorAdjustment.scaleOutFractionMultiplier || 1) *
+          (1 + clamp(exitTrimBias, -0.18, 0.18)),
           0.05,
           0.95
         ),
@@ -2348,12 +2484,22 @@ export class RiskManager {
       return { shouldExit: true, shouldScaleOut: false, reason: "stop_loss", updatedHigh, updatedLow };
     }
     if (currentPrice >= position.takeProfitPrice) {
+      if ((exitIntelligenceSummary.preferredExitStyle || adaptiveExitPolicy.preferredExitStyle) === "trail" && holdToleranceBias > 0.04) {
+        return {
+          shouldExit: false,
+          shouldScaleOut: false,
+          reason: null,
+          updatedHigh,
+          updatedLow,
+          exitPolicy: adaptiveExitPolicy
+        };
+      }
       return { shouldExit: true, shouldScaleOut: false, reason: "take_profit", updatedHigh, updatedLow };
     }
     if (updatedHigh > position.entryPrice * 1.004 && currentPrice <= trailingStopPrice) {
       return { shouldExit: true, shouldScaleOut: false, reason: "trailing_stop", updatedHigh, updatedLow };
     }
-    if (heldMinutes >= effectiveMaxHoldMinutes) {
+    if (heldMinutes >= effectiveMaxHoldMinutes && holdToleranceBias <= 0.08) {
       return { shouldExit: true, shouldScaleOut: false, reason: "time_stop", updatedHigh, updatedLow };
     }
     if ((marketSnapshot.book?.spreadBps || 0) >= this.config.exitOnSpreadShockBps) {
@@ -2387,7 +2533,10 @@ export class RiskManager {
         shouldExit: false,
         shouldScaleOut: true,
         scaleOutFraction: clamp(
-          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) * (adaptiveExitPolicy.scaleOutFractionMultiplier || 1) * (parameterGovernorAdjustment.scaleOutFractionMultiplier || 1),
+          (exitIntelligenceSummary.trimFraction || position.scaleOutFraction || this.config.scaleOutFraction) *
+          (adaptiveExitPolicy.scaleOutFractionMultiplier || 1) *
+          (parameterGovernorAdjustment.scaleOutFractionMultiplier || 1) *
+          (1 + clamp(exitTrimBias, -0.18, 0.18)),
           0.05,
           0.95
         ),

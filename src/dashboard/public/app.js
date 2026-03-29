@@ -483,6 +483,11 @@ function resolveLearningTopScope(paperLearning = {}) {
 function buildLearningDigest(snapshot) {
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
+  const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
+  const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
+  const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
+  const exitPolicy = snapshot?.dashboard?.ops?.exitPolicy || {};
+  const opportunityRanking = snapshot?.dashboard?.ops?.opportunityRanking || {};
   const missedTradeDigest = learningInsights.missedTrades || {};
   const exitDigest = learningInsights.exits || {};
   const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
@@ -585,6 +590,22 @@ function buildLearningDigest(snapshot) {
             ? `Allocator bias nu naar ${titleize(allocationLead.id)}${allocationLead.context ? ` binnen ${titleize(allocationLead.context)}` : ""}.`
             : null
         ].filter(Boolean).join(" ");
+  const marketConditionText = marketCondition.conditionId
+    ? `${titleize(marketCondition.conditionId)} · ${formatPct(marketCondition.confidence || 0, 1)} · ${titleize(marketCondition.transitionState || "stable")}`
+    : "Nog geen dominante market condition.";
+  const adaptivePolicyText = adaptivePolicy.favoredFamily || adaptivePolicy.favoredStrategy || adaptivePolicy.cooledStrategy
+    ? compactJoin([
+        adaptivePolicy.favoredFamily ? `${titleize(adaptivePolicy.favoredFamily)} favored` : null,
+        adaptivePolicy.favoredStrategy ? `${titleize(adaptivePolicy.favoredStrategy)} voorop` : null,
+        adaptivePolicy.cooledStrategy ? `${titleize(adaptivePolicy.cooledStrategy)} gekoeld` : null
+      ], " · ")
+    : "Adaptive policy bouwt nog confidence op.";
+  const exitPolicyText = exitPolicy.preferredExitStyle
+    ? `${titleize(exitPolicy.preferredExitStyle)} · trail ${formatSignedPct(exitPolicy.trailBias || 0, 0)} · trim ${formatSignedPct(exitPolicy.trimBias || 0, 0)}`
+    : "Nog geen actieve exit bias.";
+  const opportunityText = opportunityRanking.leader?.symbol
+    ? `${opportunityRanking.leader.symbol} leidt met ${formatPct(opportunityRanking.leader.opportunityScore || 0, 1)}`
+    : "Nog geen dominante opportunity leader.";
 
   return {
     paperLearning,
@@ -592,6 +613,11 @@ function buildLearningDigest(snapshot) {
     missedTradeDigest,
     exitDigest,
     adaptation,
+    marketCondition,
+    adaptivePolicy,
+    missedTradeTuning,
+    exitPolicy,
+    opportunityRanking,
     strategyAllocation,
     offlineTrainer,
     retrainPlan,
@@ -619,7 +645,11 @@ function buildLearningDigest(snapshot) {
     nextStep,
     focusText,
     adaptationFoot,
-    adaptationNote
+    adaptationNote,
+    marketConditionText,
+    adaptivePolicyText,
+    exitPolicyText,
+    opportunityText
   };
 }
 
@@ -1254,7 +1284,12 @@ function renderLearning(snapshot) {
     focusText,
     latestTrade,
     adaptationFoot,
-    adaptationNote
+    adaptationNote,
+    marketConditionText,
+    adaptivePolicyText,
+    exitPolicyText,
+    opportunityText,
+    missedTradeTuning
   } = buildLearningDigest(snapshot);
   const learningBoard = makeNode("article", { className: "learning-board" });
   const hero = makeNode("section", { className: "learning-hero" });
@@ -1292,14 +1327,14 @@ function renderLearning(snapshot) {
       topScope?.status
         ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 1)} · ${titleize(topScope.source || "probe_trades")}`
         : "Nog geen sterke scope zichtbaar.",
-      [scopeMeaning, learningInputNote].filter(Boolean).join(" ")
+      [scopeMeaning, learningInputNote, `Markt: ${marketConditionText}.`].filter(Boolean).join(" ")
     ),
     makeLearningDetailCard("Laatste trade", latestTrade.title, latestTrade.detail, latestTrade.lesson),
     makeLearningDetailCard(
       "Model adaptie",
       titleize(adaptation.status || "warmup"),
       adaptationFoot || "Nog geen online adaptie zichtbaar.",
-      adaptationNote
+      [adaptationNote, adaptivePolicyText].filter(Boolean).join(" ")
     ),
     makeLearningDetailCard(
       "Blockers en misses",
@@ -1313,7 +1348,10 @@ function renderLearning(snapshot) {
             : "Nog geen duidelijke blockertrend zichtbaar.",
       compactJoin([
         blockerMeaning,
-        missedTradeDigest.note
+        missedTradeDigest.note,
+        missedTradeTuning?.blockerSofteningRecommendation
+          ? `${titleize(missedTradeTuning.blockerSofteningRecommendation)} nu als mogelijke tuning.`
+          : null
       ], " ")
     ),
     makeLearningDetailCard(
@@ -1326,13 +1364,13 @@ function renderLearning(snapshot) {
         : exitDigest.learning?.topReason
           ? `Top patroon: ${titleize(exitDigest.learning.topReason)}`
           : "Nog geen open exit-focus zichtbaar.",
-      exitDigest.note || "Exit intelligence warmt nog op."
+      [exitDigest.note || "Exit intelligence warmt nog op.", `Bias: ${exitPolicyText}.`].filter(Boolean).join(" ")
     ),
     makeLearningDetailCard(
       "Volgende stap",
       titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"),
       nextStep,
-      reviewText
+      [reviewText, opportunityText].filter(Boolean).join(" ")
     )
   );
 
@@ -1366,6 +1404,9 @@ function renderLearning(snapshot) {
         missedTradeDigest.tuning?.blocker
           ? `Counterfactual tuning kijkt nu vooral naar ${titleize(missedTradeDigest.tuning.blocker)} via ${titleize(missedTradeDigest.tuning.action || "observe")}.`
           : missedTradeDigest.note || "Counterfactual learning heeft nog geen dominante tuningrichting.",
+        missedTradeTuning?.scope?.conditionId
+          ? `Scope: ${titleize(missedTradeTuning.scope.conditionId)}${missedTradeTuning.scope.familyId ? ` · ${titleize(missedTradeTuning.scope.familyId)}` : ""}.`
+          : null,
         exitDigest.leadSignal?.reason
           ? `${exitDigest.leadSignal.symbol} wordt nu vooral gestuurd door ${titleize(exitDigest.leadSignal.reason)}.`
           : exitDigest.learning?.topReason
@@ -1504,6 +1545,10 @@ function buildOpsEvents(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
+  const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
+  const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
+  const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
+  const exitPolicy = snapshot?.dashboard?.ops?.exitPolicy || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
@@ -1562,10 +1607,38 @@ function buildOpsEvents(snapshot) {
           tone: "negative"
         }
       : null,
+    marketCondition.conditionId
+      ? {
+          title: "Market condition",
+          detail: `${titleize(marketCondition.conditionId)} · ${formatPct(marketCondition.confidence || 0, 1)} · ${titleize(marketCondition.transitionState || "stable")}`,
+          tone: (marketCondition.risk || 0) >= 0.58 ? "negative" : "neutral"
+        }
+      : null,
+    adaptivePolicy.favoredFamily || adaptivePolicy.cooledStrategy
+      ? {
+          title: "Adaptive policy",
+          detail: compactJoin([
+            adaptivePolicy.favoredFamily ? `${titleize(adaptivePolicy.favoredFamily)} favored` : null,
+            adaptivePolicy.favoredStrategy ? `${titleize(adaptivePolicy.favoredStrategy)} voorop` : null,
+            adaptivePolicy.cooledStrategy ? `${titleize(adaptivePolicy.cooledStrategy)} gekoeld` : null
+          ], " · "),
+          tone: adaptivePolicy.cooledStrategy ? "neutral" : "positive"
+        }
+      : null,
+    missedTradeTuning.topBlocker
+      ? {
+          title: "Tuning scope",
+          detail: `${titleize(missedTradeTuning.topBlocker)} · ${titleize(missedTradeTuning.action || "observe")} · ${formatPct(missedTradeTuning.confidence || 0, 1)}`,
+          tone: missedTradeTuning.action === "soften_blocker" ? "positive" : missedTradeTuning.action === "harden_blocker" ? "negative" : "neutral"
+        }
+      : null,
     ["urgent", "watch"].includes(learningInsights.exits?.status)
       ? {
           title: "Exit AI",
-          detail: learningInsights.exits.note || "Exit intelligence vraagt nu extra aandacht.",
+          detail: compactJoin([
+            learningInsights.exits.note || "Exit intelligence vraagt nu extra aandacht.",
+            exitPolicy.preferredExitStyle ? `Bias ${titleize(exitPolicy.preferredExitStyle)}` : null
+          ], " · "),
           tone: learningInsights.exits.status === "urgent" ? "negative" : "neutral"
         }
       : null,
