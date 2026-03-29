@@ -13130,6 +13130,13 @@ await runCheck("dashboard frontend defines number formatting helper and section 
   assert.match(source, /function showDashboardRenderIssue\s*\(/);
 });
 
+await runCheck("dashboard frontend consolidates learning helpers and removes duplicate paper-learning ops card", async () => {
+  const source = await fs.readFile(new URL("../src/dashboard/public/app.js", import.meta.url), "utf8");
+  assert.match(source, /function buildLearningDigest\s*\(/);
+  assert.match(source, /function buildMissedTradeMetricTags\s*\(/);
+  assert.doesNotMatch(source, /label:\s*"Paper learning"/);
+});
+
 await runCheck("dashboard frontend smoke renders snapshot without browser DOM", async () => {
   const result = __dashboardSmokeRender({
     manager: {

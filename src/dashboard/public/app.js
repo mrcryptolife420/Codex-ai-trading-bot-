@@ -181,6 +181,10 @@ function makeTagList(items = []) {
   return list;
 }
 
+function compactJoin(parts = [], separator = " · ") {
+  return parts.filter(Boolean).join(separator);
+}
+
 function makeEmptyState(text, tag = "div") {
   return makeNode(tag, { className: "empty", text });
 }
@@ -391,6 +395,192 @@ function externalFeedHeadline(snapshot) {
     value: titleize("healthy"),
     foot: `Avg ${formatPct(external.averageScore || 0, 0)}`,
     tone: "positive"
+  };
+}
+
+function buildMissedTradeMetricTags(analysis = {}, { compact = false } = {}) {
+  const suffix = compact ? " cases" : " vergelijkbare cases";
+  return [
+    analysis.badVetoRate != null ? makeTag(`Te streng ${formatPct(analysis.badVetoRate, 0)}`, "tag negative") : null,
+    analysis.goodVetoRate != null
+      ? makeTag(`Terecht ${formatPct(analysis.goodVetoRate, 0)}`, `tag ${analysis.goodVetoRate >= (analysis.badVetoRate || 0) ? "positive" : ""}`.trim())
+      : null,
+    analysis.averageMissedMovePct != null ? makeTag(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`) : null,
+    analysis.recentMatches ? makeTag(`${analysis.recentMatches}${suffix}`) : null
+  ].filter(Boolean);
+}
+
+function makeLearningEmptyCard(label, note) {
+  const article = makeNode("article", { className: "learning-review-card" });
+  article.append(
+    makeNode("span", { className: "metric-label", text: label }),
+    makeNode("p", { className: "learning-note", text: note })
+  );
+  return article;
+}
+
+function resolveLearningTopScope(paperLearning = {}) {
+  return (
+    paperLearning.primaryScope ||
+    paperLearning.scopeReadiness?.[0] ||
+    (paperLearning.activeLearning?.focusScopes?.[0]
+      ? {
+          ...paperLearning.activeLearning.focusScopes[0],
+          status: paperLearning.activeLearning?.status || "observe",
+          source: "active_learning"
+        }
+      : null) ||
+    (paperLearning.experimentScopes?.[0]
+      ? {
+          id: paperLearning.experimentScopes[0].id,
+          status: paperLearning.experimentScopes[0].status || "observe",
+          score: paperLearning.experimentScopes[0].score || 0,
+          source: paperLearning.experimentScopes[0].source || "experiment"
+        }
+      : null)
+  );
+}
+
+function buildLearningDigest(snapshot) {
+  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
+  const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
+  const missedTradeDigest = learningInsights.missedTrades || {};
+  const exitDigest = learningInsights.exits || {};
+  const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
+  const strategyAllocation = adaptation.strategyAllocation || snapshot?.dashboard?.ai?.strategyAllocation || {};
+  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
+  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
+  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
+  const inputHealth = paperLearning.inputHealth || {};
+  const topScope = resolveLearningTopScope(paperLearning);
+  const topBlocker = paperLearning.topBlockers?.[0];
+  const topOutcome = paperLearning.recentOutcomes?.[0];
+  const latestTrade = latestTradeSummary(snapshot);
+  const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
+  const learningScore = formatPct(paperLearning.readinessScore || 0, 1);
+  const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
+  const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
+  const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
+  const benchmarkLead = paperLearning.challengerScorecards?.[0] || paperLearning.challengerPolicy || null;
+  const policyCandidates = (paperLearning.policyTransitions?.candidates || []).slice(0, 2);
+  const activeOverrides = (paperLearning.operatorActions?.activeOverrides || []).slice(0, 3);
+  const operatorHistory = (paperLearning.operatorActions?.history || []).slice(0, 3);
+  const operatorGuardrails = (paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 3);
+  const reviewText = reviewQueue[0]?.note ||
+    (paperLearning.reviewPacks?.topMissedSetup
+      ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
+      : "Nog geen automatische review-pack beschikbaar.");
+  const blockerMeaning = topBlocker?.id
+    ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
+    : "Er is nog geen dominante rem in de huidige learning-data.";
+  const scopeMeaning = topScope?.id
+    ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_trades"
+      ? `${titleize(topScope.id)} is nu de versere leerscope, omdat probe/live closes stilvallen sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
+      : topScope.source === "shadow_learning"
+        ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-learning; bevestig dit nog met extra probes.`
+        : `${titleize(topScope.id)} is nu de sterkste leerscope.`
+    : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
+  const learningInputTag = inputHealth.status === "stalled"
+    ? makeTag(
+        inputHealth.latestClosedLearningAt
+          ? `Leerinput stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}`
+          : "Leerinput stil",
+        "tag negative"
+      )
+    : makeTag("Leerinput vers", "tag positive");
+  const learningInputNote = inputHealth.note || (
+    inputHealth.status === "stalled"
+      ? "Er zijn geen recente probe/live closes; de kaart valt terug op andere learning-evidence."
+      : topScope?.id
+        ? `${titleize(topScope.id)} blijft de sterkste leerscope.`
+        : "De leerlus bouwt nog basisdata op."
+  );
+  const nextStep =
+    retrainPlan.operatorAction ||
+    replayPlan.operatorGoal ||
+    paperLearning.probation?.note ||
+    paperLearning.notes?.[0] ||
+    "Nog geen directe leeractie nodig.";
+  const sourceLabel = topScope?.source === "shadow_learning"
+    ? "via shadow-learning"
+    : topScope?.source === "active_learning"
+      ? "via active learning"
+      : "in paper readiness";
+  const focusText = inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt
+    ? retrainPlan.selectedScopes?.[0]?.id
+      ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}, maar probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
+      : `Probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}; de bot leunt nu op ${titleize(topScope?.source || "shadow_learning")}.`
+    : retrainPlan.selectedScopes?.[0]?.id
+      ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`
+      : topScope?.id
+        ? `Leert nu vooral op ${titleize(topScope.id)} ${sourceLabel}.`
+        : replayPlan.nextPackType
+          ? `Replay-focus ligt op ${titleize(replayPlan.nextPackType)}.`
+          : topBlocker?.id || topOutcome?.id
+            ? `Leert nog vooral uit ${titleize(topBlocker?.id || topOutcome?.id || "recente paper cases")}.`
+            : "De bot bouwt nog basisleerdata op in paper mode.";
+  const adaptationInputs = (adaptation.adaptiveInputs?.items || [])
+    .filter((item) => item.enabled)
+    .slice(0, 3)
+    .map((item) => titleize(item.id))
+    .join(", ");
+  const allocationLead =
+    strategyAllocation.topStrategies?.[0] ||
+    strategyAllocation.topFamilies?.[0] ||
+    null;
+  const adaptationFoot = compactJoin([
+    `${adaptation.learningFrames || 0} learning frames`,
+    `${adaptation.calibrationObservations || 0} calibration obs`,
+    adaptation.offlineReadinessScore != null ? `${formatPct(adaptation.offlineReadinessScore || 0, 1)} offline ready` : null,
+    strategyAllocation.tradeCount != null ? `${strategyAllocation.tradeCount || 0} allocator closes` : null
+  ]);
+  const adaptationNote = adaptation.status === "stalled"
+    ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De bot ziet nu te weinig verse closed trades om de online leerlus actief te houden."
+    : adaptation.status === "warmup"
+      ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De online leerlus warmt nog op totdat de eerste leerbare closed trades binnenkomen."
+      : [
+          adaptation.notes?.[0],
+          adaptation.lastLearningTradeAt ? `Laatste leertrade: ${formatDate(adaptation.lastLearningTradeAt)}.` : null,
+          adaptationInputs ? `Actieve adaptieve inputs: ${adaptationInputs}.` : null,
+          allocationLead?.id
+            ? `Allocator bias nu naar ${titleize(allocationLead.id)}${allocationLead.context ? ` binnen ${titleize(allocationLead.context)}` : ""}.`
+            : null
+        ].filter(Boolean).join(" ");
+
+  return {
+    paperLearning,
+    learningInsights,
+    missedTradeDigest,
+    exitDigest,
+    adaptation,
+    strategyAllocation,
+    offlineTrainer,
+    retrainPlan,
+    replayPlan,
+    inputHealth,
+    topScope,
+    topBlocker,
+    topOutcome,
+    latestTrade,
+    learningStatus,
+    learningScore,
+    laneText,
+    topBlockerText,
+    reviewQueue,
+    benchmarkLead,
+    policyCandidates,
+    activeOverrides,
+    operatorHistory,
+    operatorGuardrails,
+    reviewText,
+    blockerMeaning,
+    scopeMeaning,
+    learningInputTag,
+    learningInputNote,
+    nextStep,
+    focusText,
+    adaptationFoot,
+    adaptationNote
   };
 }
 
@@ -674,16 +864,9 @@ function makeMissedTradeAnalysisNode(decision) {
   const details = makeNode("details", { className: "analysis-box" });
   details.append(makeNode("summary", { text: "Gemiste trade analyse" }));
   details.append(makeNode("p", { text: analysis.summary || "Nog geen specifieke analyse beschikbaar." }));
-  const metrics = [
-    analysis.badVetoRate != null ? `Te streng ${formatPct(analysis.badVetoRate, 0)}` : null,
-    analysis.goodVetoRate != null ? `Terecht ${formatPct(analysis.goodVetoRate, 0)}` : null,
-    analysis.averageMissedMovePct != null ? `Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}` : null,
-    analysis.recentMatches ? `${analysis.recentMatches} vergelijkbare cases` : null
-  ].filter(Boolean);
+  const metrics = buildMissedTradeMetricTags(analysis);
   if (metrics.length) {
-    const tags = makeNode("div", { className: "tag-list" });
-    tags.append(...metrics.map((item) => makeTag(item)));
-    details.append(tags);
+    details.append(makeTagList(metrics));
   }
   details.append(makeNode("p", {
     className: "analysis-note",
@@ -829,14 +1012,7 @@ function renderMissedTrades(snapshot) {
       ["Les", analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad."]
     ];
     const reasons = makeReasonRows(rows);
-    const tags = makeNode("div", { className: "tag-list" });
-    const tagNodes = [
-      analysis.badVetoRate != null ? makeTag(`Te streng ${formatPct(analysis.badVetoRate, 0)}`, "tag negative") : null,
-      analysis.goodVetoRate != null ? makeTag(`Terecht ${formatPct(analysis.goodVetoRate, 0)}`, `tag ${analysis.goodVetoRate >= analysis.badVetoRate ? "positive" : ""}`.trim()) : null,
-      analysis.averageMissedMovePct != null ? makeTag(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`) : null,
-      analysis.recentMatches ? makeTag(`${analysis.recentMatches} cases`) : null
-    ].filter(Boolean);
-    tags.append(...tagNodes);
+    const tags = makeTagList(buildMissedTradeMetricTags(analysis, { compact: true }));
     summary.append(
       header,
       makeNode("p", { className: "card-copy", text: analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar." }),
@@ -849,55 +1025,7 @@ function renderMissedTrades(snapshot) {
 }
 
 function learningFocusText(snapshot) {
-  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
-  const retrainPlan = snapshot?.dashboard?.offlineTrainer?.retrainExecutionPlan || {};
-  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
-  const inputHealth = paperLearning.inputHealth || {};
-  const topScope =
-    paperLearning.primaryScope ||
-    paperLearning.scopeReadiness?.[0] ||
-    (paperLearning.activeLearning?.focusScopes?.[0]
-      ? {
-          ...paperLearning.activeLearning.focusScopes[0],
-          status: paperLearning.activeLearning?.status || "observe",
-          source: "active_learning"
-        }
-      : null) ||
-    (paperLearning.experimentScopes?.[0]
-      ? {
-          id: paperLearning.experimentScopes[0].id,
-          status: paperLearning.experimentScopes[0].status || "observe",
-          score: paperLearning.experimentScopes[0].score || 0,
-          source: paperLearning.experimentScopes[0].source || "experiment"
-        }
-      : null);
-  const topBlocker = paperLearning.topBlockers?.[0];
-  const latestOutcome = paperLearning.recentOutcomes?.[0];
-
-  if (inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt) {
-    const retrainScope = retrainPlan.selectedScopes?.[0]?.id;
-    return retrainScope
-      ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainScope)}, maar probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
-      : `Probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}; de bot leunt nu op ${titleize(topScope?.source || "shadow_learning")}.`;
-  }
-  if (retrainPlan.selectedScopes?.[0]?.id) {
-    return `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`;
-  }
-  if (topScope?.id) {
-    const sourceLabel = topScope.source === "shadow_learning"
-      ? "via shadow-learning"
-      : topScope.source === "active_learning"
-        ? "via active learning"
-        : "in paper readiness";
-    return `Leert nu vooral op ${titleize(topScope.id)} ${sourceLabel}.`;
-  }
-  if (replayPlan.nextPackType) {
-    return `Replay-focus ligt op ${titleize(replayPlan.nextPackType)}.`;
-  }
-  if (topBlocker?.id || latestOutcome?.id) {
-    return `Leert nog vooral uit ${titleize(topBlocker?.id || latestOutcome?.id || "recente paper cases")}.`;
-  }
-  return "De bot bouwt nog basisleerdata op in paper mode.";
+  return buildLearningDigest(snapshot).focusText;
 }
 
 function latestTradeSummary(snapshot) {
@@ -949,16 +1077,7 @@ function makeLearningReviewCard({
 
 function renderProbeReviewNodes(reviews = []) {
   if (!reviews.length) {
-    return [
-      (() => {
-        const article = makeNode("article", { className: "learning-review-card" });
-        article.append(
-          makeNode("span", { className: "metric-label", text: "Probe review" }),
-          makeNode("p", { className: "learning-note", text: "Nog geen recente probe-trades om te tonen." })
-        );
-        return article;
-      })()
-    ];
+    return [makeLearningEmptyCard("Probe review", "Nog geen recente probe-trades om te tonen.")];
   }
   return reviews.map((review) => makeLearningReviewCard({
     title: review.symbol || "Probe",
@@ -975,16 +1094,7 @@ function renderProbeReviewNodes(reviews = []) {
 
 function renderShadowReviewNodes(reviews = []) {
   if (!reviews.length) {
-    return [
-      (() => {
-        const article = makeNode("article", { className: "learning-review-card" });
-        article.append(
-          makeNode("span", { className: "metric-label", text: "Shadow review" }),
-          makeNode("p", { className: "learning-note", text: "Nog geen recente shadow-cases om te tonen." })
-        );
-        return article;
-      })()
-    ];
+    return [makeLearningEmptyCard("Shadow review", "Nog geen recente shadow-cases om te tonen.")];
   }
   return reviews.map((review) => {
     const branchText = review.bestBranch?.id
@@ -1036,81 +1146,36 @@ function renderLearning(snapshot) {
     return;
   }
 
-  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
-  const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
-  const missedTradeDigest = learningInsights.missedTrades || {};
-  const exitDigest = learningInsights.exits || {};
-  const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
-  const strategyAllocation = adaptation.strategyAllocation || snapshot?.dashboard?.ai?.strategyAllocation || {};
-  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
-  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
-  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
-  const inputHealth = paperLearning.inputHealth || {};
-  const topScope =
-    paperLearning.primaryScope ||
-    paperLearning.scopeReadiness?.[0] ||
-    (paperLearning.activeLearning?.focusScopes?.[0]
-      ? {
-          ...paperLearning.activeLearning.focusScopes[0],
-          status: paperLearning.activeLearning?.status || "observe",
-          source: "active_learning"
-        }
-      : null) ||
-    (paperLearning.experimentScopes?.[0]
-      ? {
-          id: paperLearning.experimentScopes[0].id,
-          status: paperLearning.experimentScopes[0].status || "observe",
-          score: paperLearning.experimentScopes[0].score || 0,
-          source: paperLearning.experimentScopes[0].source || "experiment"
-        }
-      : null);
-  const topBlocker = paperLearning.topBlockers?.[0];
-  const topOutcome = paperLearning.recentOutcomes?.[0];
-  const latestTrade = latestTradeSummary(snapshot);
-  const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
-  const learningScore = formatPct(paperLearning.readinessScore || 0, 1);
-  const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
-  const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
-  const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
-  const benchmarkLead = paperLearning.challengerScorecards?.[0] || paperLearning.challengerPolicy || null;
-  const policyCandidates = (paperLearning.policyTransitions?.candidates || []).slice(0, 2);
-  const activeOverrides = (paperLearning.operatorActions?.activeOverrides || []).slice(0, 3);
-  const operatorHistory = (paperLearning.operatorActions?.history || []).slice(0, 3);
-  const operatorGuardrails = (paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 3);
-  const reviewText = reviewQueue[0]?.note ||
-    (paperLearning.reviewPacks?.topMissedSetup
-      ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
-      : "Nog geen automatische review-pack beschikbaar.");
-  const blockerMeaning = topBlocker?.id
-    ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
-    : "Er is nog geen dominante rem in de huidige learning-data.";
-  const scopeMeaning = topScope?.id
-    ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_trades"
-      ? `${titleize(topScope.id)} is nu de versere leerscope, omdat probe/live closes stilvallen sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
-      : topScope.source === "shadow_learning"
-        ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-learning; bevestig dit nog met extra probes.`
-        : `${titleize(topScope.id)} is nu de sterkste leerscope.`
-    : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
-  const learningInputTag = inputHealth.status === "stalled"
-    ? makeTag(
-        inputHealth.latestClosedLearningAt
-          ? `Leerinput stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}`
-          : "Leerinput stil",
-        "tag negative"
-      )
-    : makeTag("Leerinput vers", "tag positive");
-  const learningInputNote = inputHealth.note || (
-    inputHealth.status === "stalled"
-      ? "Er zijn geen recente probe/live closes; de kaart valt terug op andere learning-evidence."
-      : `${titleize(topScope.id)} is nu de sterkste leerscope.`
-  );
-  const nextStep =
-    retrainPlan.operatorAction ||
-    replayPlan.operatorGoal ||
-    paperLearning.probation?.note ||
-    paperLearning.notes?.[0] ||
-    "Nog geen directe leeractie nodig.";
-  const focusText = learningFocusText(snapshot);
+  const {
+    paperLearning,
+    missedTradeDigest,
+    exitDigest,
+    adaptation,
+    retrainPlan,
+    topScope,
+    topBlocker,
+    topOutcome,
+    learningStatus,
+    learningScore,
+    laneText,
+    topBlockerText,
+    reviewQueue,
+    benchmarkLead,
+    policyCandidates,
+    activeOverrides,
+    operatorHistory,
+    operatorGuardrails,
+    reviewText,
+    blockerMeaning,
+    scopeMeaning,
+    learningInputTag,
+    learningInputNote,
+    nextStep,
+    focusText,
+    latestTrade,
+    adaptationFoot,
+    adaptationNote
+  } = buildLearningDigest(snapshot);
   const learningBoard = makeNode("article", { className: "learning-board" });
   const hero = makeNode("section", { className: "learning-hero" });
   const heroTitle = makeNode("div", { className: "learning-title" });
@@ -1130,8 +1195,7 @@ function renderLearning(snapshot) {
     makeTag(laneText),
     makeTag(`Snapshot: ${formatDate(paperLearning.generatedAt)}`),
     learningInputTag,
-    makeTag(`Top blocker: ${topBlockerText}`),
-    makeTag(`Laatste les: ${titleize(topOutcome?.id || "warmup")}`)
+    makeTag(`Top blocker: ${topBlockerText}`)
   ]);
   stripGrid.className = "learning-strip-grid";
   hero.append(
@@ -1141,36 +1205,9 @@ function renderLearning(snapshot) {
   );
 
   const summaryGrid = makeNode("section", { className: "learning-summary-grid" });
-  const adaptationInputs = (adaptation.adaptiveInputs?.items || [])
-    .filter((item) => item.enabled)
-    .slice(0, 3)
-    .map((item) => titleize(item.id))
-    .join(", ");
-  const allocationLead =
-    strategyAllocation.topStrategies?.[0] ||
-    strategyAllocation.topFamilies?.[0] ||
-    null;
-  const adaptationFoot = [
-    `${adaptation.learningFrames || 0} learning frames`,
-    `${adaptation.calibrationObservations || 0} calibration obs`,
-    adaptation.offlineReadinessScore != null ? `${formatPct(adaptation.offlineReadinessScore || 0, 1)} offline ready` : null,
-    strategyAllocation.tradeCount != null ? `${strategyAllocation.tradeCount || 0} allocator closes` : null
-  ].filter(Boolean).join(" · ");
-  const adaptationNote = adaptation.status === "stalled"
-    ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De bot ziet nu te weinig verse closed trades om de online leerlus actief te houden."
-    : adaptation.status === "warmup"
-      ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De online leerlus warmt nog op totdat de eerste leerbare closed trades binnenkomen."
-      : [
-          adaptation.notes?.[0],
-          adaptation.lastLearningTradeAt ? `Laatste leertrade: ${formatDate(adaptation.lastLearningTradeAt)}.` : null,
-          adaptationInputs ? `Actieve adaptieve inputs: ${adaptationInputs}.` : null,
-          allocationLead?.id
-            ? `Allocator bias nu naar ${titleize(allocationLead.id)}${allocationLead.context ? ` binnen ${titleize(allocationLead.context)}` : ""}.`
-            : null
-        ].filter(Boolean).join(" ");
   summaryGrid.append(
     makeLearningDetailCard(
-      "Leert nu",
+      "Focus",
       topScope?.id ? titleize(topScope.id) : "Warmup dataset",
       topScope?.status
         ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 1)} · ${titleize(topScope.source || "probe_trades")}`
@@ -1185,22 +1222,19 @@ function renderLearning(snapshot) {
       adaptationNote
     ),
     makeLearningDetailCard(
-      "Belangrijkste rem",
-      titleize(topOutcome?.id || topBlocker?.id || "nog geen duidelijke les"),
-      topOutcome?.count
-        ? `${topOutcome.count} recente cases van dit type.`
-        : topBlocker?.count
-          ? `${topBlocker.count} blokkades sturen nu de leerlus.`
-          : "Er is nog te weinig consistente paperdata om 1 duidelijke les te trekken.",
-      blockerMeaning
-    ),
-    makeLearningDetailCard(
-      "Gemiste trades",
-      titleize(missedTradeDigest.topBlocker?.id || missedTradeDigest.topMissedSetup || missedTradeDigest.tuning?.blocker || "warmup"),
+      "Blockers en misses",
+      titleize(missedTradeDigest.topBlocker?.id || topOutcome?.id || topBlocker?.id || "warmup"),
       missedTradeDigest.totalCounterfactuals
-        ? `${missedTradeDigest.totalCounterfactuals} counterfactuals · ${missedTradeDigest.missedWinners || 0} gemiste winnaars · move ${formatPct(missedTradeDigest.averageMissedMovePct || 0, 1)}`
-        : "Nog geen sterke gemiste-trade historie.",
-      missedTradeDigest.note || "Gemiste-trade learning warmt nog op."
+        ? `${missedTradeDigest.totalCounterfactuals} counterfactuals · ${missedTradeDigest.missedWinners || 0} gemiste winnaars`
+        : topOutcome?.count
+          ? `${topOutcome.count} recente cases van dit type.`
+          : topBlocker?.count
+            ? `${topBlocker.count} blokkades sturen nu de leerlus.`
+            : "Nog geen duidelijke blockertrend zichtbaar.",
+      compactJoin([
+        blockerMeaning,
+        missedTradeDigest.note
+      ], " ")
     ),
     makeLearningDetailCard(
       "Exit AI",
@@ -1237,7 +1271,7 @@ function renderLearning(snapshot) {
     : [makeTag("Geen actieve override")];
 
   callouts.append(
-    makeLearningListItem("Wat gebeurt er nu", [
+    makeLearningListItem("Nu aan het testen", [
       paperLearning.probation?.note ||
         (paperLearning.thresholdSandbox?.status
           ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
@@ -1245,35 +1279,25 @@ function renderLearning(snapshot) {
       benchmarkLead?.id
         ? `${titleize(benchmarkLead.id)} presteert nu het sterkst als challenger of benchmark.`
         : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar."
-    ]),
-    makeLearningListItem("Review queue", [reviewText], [makeTagList(reviewTags)]),
+    ], [makeTagList(reviewTags)]),
     makeLearningListItem(
-      "Missed-trade tuning",
+      "Misses en exits",
       [
-        missedTradeDigest.note || "Counterfactual learning heeft nog geen dominante tuningrichting.",
         missedTradeDigest.tuning?.blocker
-          ? `Tuning kijkt nu vooral naar ${titleize(missedTradeDigest.tuning.blocker)} via ${titleize(missedTradeDigest.tuning.action || "observe")}.`
-          : null
-      ]
-    ),
-    makeLearningListItem(
-      "Exit focus",
-      [
-        exitDigest.note || "Exit intelligence heeft nog geen duidelijke focus.",
+          ? `Counterfactual tuning kijkt nu vooral naar ${titleize(missedTradeDigest.tuning.blocker)} via ${titleize(missedTradeDigest.tuning.action || "observe")}.`
+          : missedTradeDigest.note || "Counterfactual learning heeft nog geen dominante tuningrichting.",
         exitDigest.leadSignal?.reason
           ? `${exitDigest.leadSignal.symbol} wordt nu vooral gestuurd door ${titleize(exitDigest.leadSignal.reason)}.`
           : exitDigest.learning?.topReason
             ? `Offline exit learning ziet nu vooral ${titleize(exitDigest.learning.topReason)} terugkomen.`
-            : null
+            : exitDigest.note || "Exit intelligence heeft nog geen duidelijke focus."
       ],
-      [
-        makeTagList([
-          makeTag(`${exitDigest.exitCount || 0} exit`),
-          makeTag(`${exitDigest.trimCount || 0} trim`),
-          makeTag(`${exitDigest.trailCount || 0} trail`),
-          makeTag(`${exitDigest.tightenCount || 0} tighten`)
-        ])
-      ]
+      [makeTagList([
+        makeTag(`${exitDigest.exitCount || 0} exit`),
+        makeTag(`${exitDigest.trimCount || 0} trim`),
+        makeTag(`${exitDigest.trailCount || 0} trail`),
+        makeTag(`${missedTradeDigest.missedWinners || 0} gemist`)
+      ])]
     ),
     makeLearningListItem(
       "Policy en operatoracties",
@@ -1331,13 +1355,11 @@ function renderLearning(snapshot) {
 function buildOpsCards(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const alerts = unresolvedAlerts(snapshot);
-  const lifecycle = pendingActions(snapshot);
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
   const effectiveBudget = capitalPolicy.effectiveBudget || snapshot?.dashboard?.overview?.effectiveBudget || {};
   const sizingGuide = snapshot?.dashboard?.ops?.sizingGuide || snapshot?.dashboard?.overview?.sizingGuide || {};
   const strategyAllocation = snapshot?.dashboard?.ai?.strategyAllocation || {};
-  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
   const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
@@ -1354,12 +1376,6 @@ function buildOpsCards(snapshot) {
       value: `${alerts.length}`,
       foot: alerts.find((item) => !item.acknowledgedAt) ? "Ack nodig" : "Onder controle",
       tone: alerts.find((item) => !item.acknowledgedAt) ? "negative" : "neutral"
-    },
-    {
-      label: "Lifecycle",
-      value: `${lifecycle.length}`,
-      foot: lifecycle[0]?.state ? titleize(lifecycle[0].state) : "Geen pending actions",
-      tone: lifecycle.some((item) => ["manual_review", "reconcile_required"].includes(item.state)) ? "negative" : "neutral"
     },
     {
       label: "Exposure",
@@ -1400,12 +1416,6 @@ function buildOpsCards(snapshot) {
         ? `${titleize(primaryDashboardFeed.id)} | ${titleize(primaryDashboardFeed.status)}`
         : "Geen feed issues zichtbaar",
       tone: ["failed", "degraded"].includes(dashboardFeeds.status || "") ? "negative" : statusTone(dashboardFeeds.status || "idle")
-    },
-    {
-      label: "Paper learning",
-      value: titleize(paperLearning.readinessStatus || paperLearning.status || "warmup"),
-      foot: paperLearning.probation?.status ? titleize(paperLearning.probation.status) : "Nog geen probation",
-      tone: statusTone(paperLearning.readinessStatus || paperLearning.status)
     }
   ];
 }

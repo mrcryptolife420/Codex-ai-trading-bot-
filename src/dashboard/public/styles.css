@@ -452,13 +452,13 @@ input[type="search"] {
 }
 
 .compact-list .event-row + .event-row {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .event-row {
   display: grid;
   gap: 8px;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
@@ -466,13 +466,13 @@ input[type="search"] {
 
 .learning-board {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .learning-hero {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px;
   border: 1px solid rgba(114, 144, 255, 0.18);
   border-radius: var(--radius-lg);
   background: linear-gradient(180deg, rgba(114, 144, 255, 0.12), rgba(255, 255, 255, 0.03));
@@ -504,19 +504,19 @@ input[type="search"] {
 .learning-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .learning-callouts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .learning-detail {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 5px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.025);
@@ -546,8 +546,8 @@ input[type="search"] {
 
 .learning-list-item {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 5px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.02);
@@ -556,18 +556,18 @@ input[type="search"] {
 .learning-review-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .learning-review-column {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .learning-review-card {
   display: grid;
   gap: 8px;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.02);
