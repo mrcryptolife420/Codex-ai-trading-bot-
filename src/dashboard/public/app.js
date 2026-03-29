@@ -638,6 +638,11 @@ function compactOperatorText(value, fallback = "-") {
   return truncate(text, 54);
 }
 
+function compactBodyText(value, max = 120, fallback = "") {
+  const text = `${value || fallback || ""}`.trim();
+  return truncate(text, max);
+}
+
 function signalPrimaryReason(decision) {
   if (decision.allow) {
     return decision.summary || whyTradeable(decision) || "Setup is tradebaar volgens de huidige checks.";
@@ -925,8 +930,8 @@ function buildSignalCard(decision) {
 
   const quickGrid = makeNode("div", { className: "quick-grid" });
   quickGrid.append(
-    makeMetricStat("Kans", formatPct(decision.probability, 0)),
-    makeMetricStat("Confidence", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
+    makeMetricStat("Prob", formatPct(decision.probability, 0)),
+    makeMetricStat("Conf", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
     makeMetricStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))
   );
 
@@ -940,18 +945,16 @@ function buildSignalCard(decision) {
   overview.append(...tags);
 
   const reasons = makeReasonRows([
-    ["Setup", whyTradeable(decision) || formatDecisionType(decision)],
-    [decision.allow ? "Waarom nu" : "Waarom niet", signalPrimaryReason(decision)],
-    ["Actie", signalSupportText(decision)]
+    ["Setup", compactBodyText(whyTradeable(decision) || formatDecisionType(decision), 84, formatDecisionType(decision))],
+    ["Focus", compactBodyText(signalPrimaryReason(decision), 120)],
+    ["Next", compactBodyText(signalSupportText(decision), 92)]
   ]);
 
   summary.append(
     header,
-    makeNode("p", { className: "card-copy", text: truncate(signalPrimaryReason(decision), 190) }),
     quickGrid,
     overview,
-    reasons,
-    makeNode("p", { className: "signal-note", text: truncate(signalSummary(decision), 220) })
+    reasons
   );
   const analysisNode = makeMissedTradeAnalysisNode(decision);
   if (analysisNode) {
@@ -1034,15 +1037,15 @@ function renderMissedTrades(snapshot) {
       pillClassName: "pill negative"
     });
     const rows = [
-      ["Setup", formatDecisionType(decision)],
-      ["Hoe wel", hypotheticalTradeText(decision)],
-      ["Les", analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad."]
+      ["Setup", compactBodyText(formatDecisionType(decision), 64)],
+      ["Move", compactBodyText(hypotheticalTradeText(decision), 110)],
+      ["Les", compactBodyText(analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad.", 110)]
     ];
     const reasons = makeReasonRows(rows);
     const tags = makeTagList(buildMissedTradeMetricTags(analysis, { compact: true }));
     summary.append(
       header,
-      makeNode("p", { className: "card-copy", text: analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar." }),
+      makeNode("p", { className: "card-copy", text: compactBodyText(analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar.", 132) }),
       reasons,
       tags
     );
@@ -1569,15 +1572,8 @@ function renderTrades(snapshot) {
       }
     });
     reasonCell.append(makeNode("span", { text: titleize(trade.reasonLabel || trade.reason || "-") }));
-    if (trade.reasonNote) {
-      reasonCell.append(makeNode("span", { className: "metric-foot", text: trade.reasonNote }));
-    }
     const pnlCell = makeNode("td", { className: toneClass(trade.pnlQuote) });
     pnlCell.append(makeNode("span", { text: formatMoney(trade.pnlQuote) }));
-    pnlCell.append(makeNode("span", {
-      className: "metric-foot",
-      text: `Bruto ${formatMoney(trade.grossMovePnl)} · Fees ${formatMoney(-(trade.totalFees || 0))}`
-    }));
     const fields = [
       makeNode("td", { text: trade.symbol || "-" }),
       makeNode("td", { text: number(trade.entryPrice, 4) }),
@@ -1662,7 +1658,7 @@ function renderDiagnostics(snapshot) {
     })(),
     (() => {
       const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Operatorfocus", "Wat nu als eerste aandacht vraagt"), ...actionRows);
+      section.append(makeSectionHead("Operatorfocus", "Wat nu eerst aandacht vraagt"), ...actionRows);
       return section;
     })(),
     (() => {
@@ -1749,7 +1745,6 @@ function renderExplainability(snapshot) {
     ? decisions.map((item) => {
       const card = makeNode("article", { className: "signal-card" });
       const summary = makeNode("div", { className: "card-summary" });
-      const inputRows = makeReasonRows((item.inputs || []).map((step) => [step.label, step.detail]));
       summary.append(
         makeCardHeader({
           eyebrow: "Decision explainer",
@@ -1757,9 +1752,9 @@ function renderExplainability(snapshot) {
           pillText: titleize(item.status || "observe"),
           pillClassName: `pill ${item.status === "tradeable" ? "positive" : "negative"}`
         }),
-        makeNode("p", { className: "card-copy", text: item.headline || "Geen explainability headline." }),
-        makeReasonRows((item.explainSteps || []).slice(0, 4).map((step) => [step.label, step.detail])),
-        inputRows,
+        makeNode("p", { className: "card-copy", text: compactBodyText(item.headline || "Geen explainability headline.", 140) }),
+        makeReasonRows((item.explainSteps || []).slice(0, 3).map((step) => [step.label, compactBodyText(step.detail, 92)])),
+        makeReasonRows((item.inputs || []).slice(0, 3).map((step) => [step.label, compactBodyText(step.detail, 88)])),
         makeTagList((item.guardrails || item.blockerChain || []).slice(0, 4).map((blocker) => makeTag(titleize(blocker), "tag negative")))
       );
       card.append(summary);
@@ -1779,7 +1774,7 @@ function renderExplainability(snapshot) {
         : null;
       if (timelineRows) {
         timelineRows.append(
-          ...item.fullTimeline.slice(0, 8).map((stage) => makeEventRow({
+          ...item.fullTimeline.slice(0, 5).map((stage) => makeEventRow({
             title: `${titleize(stage.label || stage.type || "step")} · ${formatDate(stage.at)}`,
             detail: stage.detail || "Geen detail."
           }))
@@ -1792,14 +1787,14 @@ function renderExplainability(snapshot) {
           pillText: formatMoney(item.pnlQuote || 0),
           pillClassName: `pill ${toneClass(item.pnlQuote)}`
         }),
-        makeNode("p", { className: "card-copy", text: item.keyTakeaway || "Replay beschikbaar." }),
+        makeNode("p", { className: "card-copy", text: compactBodyText(item.keyTakeaway || "Replay beschikbaar.", 140) }),
         makeReasonRows([
-          ["Open", item.whyOpened || "Onbekend."],
-          ["Sluit", item.whyClosed || "Onbekend."],
+          ["Open", compactBodyText(item.whyOpened || "Onbekend.", 90)],
+          ["Sluit", compactBodyText(item.whyClosed || "Onbekend.", 90)],
           ["Strategie", titleize(item.strategy || "unknown")],
           ["Gate", item.gateSnapshot ? `p ${formatPct(item.gateSnapshot.probability || 0, 1)} · gate ${formatPct(item.gateSnapshot.threshold || 0, 1)}` : "Onbekend."]
         ]),
-        makeReasonRows((item.decisionInputs || []).map((entry) => [entry.label, entry.detail])),
+        makeReasonRows((item.decisionInputs || []).slice(0, 3).map((entry) => [entry.label, compactBodyText(entry.detail, 86)])),
         compareRows,
         makeTagList((item.keyStages || []).slice(0, 4).map((stage) => makeTag(`${titleize(stage.label || stage.type || "step")} · ${truncate(stage.detail || "", 48)}`))),
         timelineRows
