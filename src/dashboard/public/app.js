@@ -240,6 +240,38 @@ function makeEventRow({ title, detail, tone = "" } = {}) {
   return row;
 }
 
+function showDashboardRenderIssue(section, error) {
+  const message = `${section}: ${error?.message || "Onbekende renderfout"}`;
+  console.error("Dashboard render failed", { section, error: error?.message || error });
+  if (elements.controlHint) {
+    elements.controlHint.textContent = `Render issue: ${truncate(message, 160)}`;
+  }
+  if (elements.operatorSummary) {
+    const staleIssues = elements.operatorSummary.querySelectorAll?.("[data-render-issue='1']") || [];
+    staleIssues.forEach((item) => item.remove());
+    const pill = makeNode("span", { className: "hero-pill negative" });
+    pill.setAttribute("data-render-issue", "1");
+    pill.append(
+      makeNode("strong", { text: "Dashboard render" }),
+      makeNode("span", { text: truncate(message, 140) })
+    );
+    elements.operatorSummary.append(pill);
+  }
+}
+
+function safeRenderSection(section, renderFn) {
+  try {
+    renderFn();
+    return null;
+  } catch (error) {
+    showDashboardRenderIssue(section, error);
+    return {
+      section,
+      message: error?.message || "Onbekende renderfout"
+    };
+  }
+}
+
 function readStoredBoolean(key, fallback = false) {
   try {
     const raw = window.localStorage.getItem(key);
@@ -263,6 +295,10 @@ function writeStoredBoolean(key, value) {
 function number(value, digits = 2) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0";
+}
+
+function formatNumber(value, digits = 2) {
+  return number(value, digits);
 }
 
 function formatMoney(value) {
@@ -1945,19 +1981,30 @@ function renderPromotion(snapshot) {
 function render(snapshot) {
   latestSnapshot = snapshot;
   lastSnapshotReceivedAt = new Date().toISOString();
-  renderBadges(snapshot);
-  renderHero(snapshot);
-  renderSignals(snapshot);
-  renderPositions(snapshot);
-  renderLearning(snapshot);
-  renderMissedTrades(snapshot);
-  renderOps(snapshot);
-  renderTrades(snapshot);
-  renderDiagnostics(snapshot);
-  renderExplainability(snapshot);
-  renderPromotion(snapshot);
-  syncControls(snapshot);
-  syncPanels();
+  const renderErrors = [];
+  for (const [section, renderFn] of [
+    ["badges", () => renderBadges(snapshot)],
+    ["hero", () => renderHero(snapshot)],
+    ["signals", () => renderSignals(snapshot)],
+    ["positions", () => renderPositions(snapshot)],
+    ["learning", () => renderLearning(snapshot)],
+    ["missed_trades", () => renderMissedTrades(snapshot)],
+    ["ops", () => renderOps(snapshot)],
+    ["trades", () => renderTrades(snapshot)],
+    ["diagnostics", () => renderDiagnostics(snapshot)],
+    ["explainability", () => renderExplainability(snapshot)],
+    ["promotion", () => renderPromotion(snapshot)],
+    ["controls", () => syncControls(snapshot)],
+    ["panels", () => syncPanels()]
+  ]) {
+    const issue = safeRenderSection(section, renderFn);
+    if (issue) {
+      renderErrors.push(issue);
+    }
+  }
+  if (!renderErrors.length && elements.controlHint) {
+    elements.controlHint.textContent = buildHeroSummary(snapshot).subline;
+  }
 }
 
 function syncControls(snapshot) {

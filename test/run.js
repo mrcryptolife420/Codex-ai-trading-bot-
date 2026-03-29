@@ -13122,6 +13122,13 @@ await runCheck("dashboard snapshot surfaces missed-trade and exit learning diges
   assert.ok(snapshot.operatorDiagnostics.actionItems.some((item) => item.title === "Exit AI"));
 });
 
+await runCheck("dashboard frontend defines number formatting helper and section render guard", async () => {
+  const source = await fs.readFile(new URL("../src/dashboard/public/app.js", import.meta.url), "utf8");
+  assert.match(source, /function formatNumber\s*\(/);
+  assert.match(source, /function safeRenderSection\s*\(/);
+  assert.match(source, /function showDashboardRenderIssue\s*\(/);
+});
+
 await runCheck("doctor checks flag failed market history dashboard feed", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ tradingIntervalSeconds: 60 });
