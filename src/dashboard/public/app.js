@@ -633,6 +633,11 @@ function actionText(decision) {
   return decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.";
 }
 
+function compactOperatorText(value, fallback = "-") {
+  const text = humanizeReason(value, fallback);
+  return truncate(text, 54);
+}
+
 function signalPrimaryReason(decision) {
   if (decision.allow) {
     return decision.summary || whyTradeable(decision) || "Setup is tradebaar volgens de huidige checks.";
@@ -751,9 +756,12 @@ function buildHeroSummary(snapshot) {
   const overview = dashboard.overview || {};
   const effectiveBudget = overview.effectiveBudget || {};
   const focusText = leadDecision?.allow
-    ? actionText(leadDecision)
-    : humanizeReason(leadDecision?.operatorAction || topReason, "Geen directe focus");
-  const recoveryText = leadDecision?.autoRecovery || (unresolvedCritical.length ? "Na ack of resolve van kritieke alerts" : "Geen automatische recovery actief");
+    ? compactOperatorText(leadDecision?.summary || actionText(leadDecision), "Geen directe focus")
+    : compactOperatorText(leadDecision?.operatorAction || topReason, "Geen directe focus");
+  const recoveryText = compactOperatorText(
+    leadDecision?.autoRecovery || (unresolvedCritical.length ? "Na ack of resolve van kritieke alerts" : "Geen automatische recovery actief"),
+    "Geen automatische recovery actief"
+  );
 
   const subline = leadDecision?.allow
     ? `${leadDecision.symbol} is momenteel de beste tradebare setup.`
@@ -773,15 +781,20 @@ function buildHeroSummary(snapshot) {
       tone: (effectiveBudget.deployableBudget || 0) > 0 ? "positive" : "neutral"
     },
     {
-      label: "Beste kans",
-      value: leadDecision?.symbol || "Geen setup",
-      tone: leadDecision?.allow ? "positive" : "neutral"
-    },
-    {
       label: "Focus",
       value: focusText,
       tone: leadDecision?.allow ? "neutral" : topReason ? "negative" : "positive"
     },
+    leadDecision?.symbol
+      ? {
+          label: "Setup",
+          value: compactJoin([
+            leadDecision.symbol,
+            leadDecision.allow ? "tradebaar" : null
+          ], " · "),
+          tone: leadDecision.allow ? "positive" : "neutral"
+        }
+      : null,
     recoveryText && recoveryText !== focusText
       ? {
           label: "Herstel",

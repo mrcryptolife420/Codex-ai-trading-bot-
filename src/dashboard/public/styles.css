@@ -3,6 +3,7 @@
   --panel: rgba(12, 22, 35, 0.94);
   --panel-strong: rgba(16, 28, 44, 0.98);
   --line: rgba(147, 166, 193, 0.14);
+  --line-strong: rgba(147, 166, 193, 0.22);
   --text: #edf4ff;
   --text-soft: #afbdd4;
   --muted: #7890ae;
@@ -10,7 +11,7 @@
   --accent-2: #7290ff;
   --success: #3bd28e;
   --danger: #ff7b95;
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+  --shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
   --radius-xl: 24px;
   --radius-lg: 18px;
   --radius-md: 14px;
@@ -71,7 +72,7 @@ h3 {
 .panel {
   border: 1px solid var(--line);
   border-radius: var(--radius-xl);
-  background: linear-gradient(180deg, var(--panel), var(--panel-strong));
+  background: linear-gradient(180deg, rgba(11, 21, 34, 0.98), rgba(13, 24, 38, 0.95));
   box-shadow: var(--shadow);
 }
 
@@ -153,6 +154,7 @@ th,
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
+  padding-top: 2px;
 }
 
 .status-chip,
@@ -179,6 +181,11 @@ th,
   border-color: rgba(89, 216, 186, 0.2);
 }
 
+.status-chip.muted {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--line);
+}
+
 .refresh-chip {
   justify-content: flex-start;
   min-width: 220px;
@@ -191,9 +198,10 @@ th,
   gap: 3px;
   min-height: 0;
   padding: 10px 12px;
-  border-radius: 16px;
+  border-radius: 15px;
   max-width: 100%;
-  background: rgba(255, 255, 255, 0.03);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.02));
+  border-color: rgba(147, 166, 193, 0.16);
 }
 
 .hero-pill strong {
@@ -235,7 +243,8 @@ button:disabled {
 }
 
 .ghost {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--line);
 }
 
 .ghost-small {
@@ -308,7 +317,9 @@ button:disabled {
   align-items: end;
   justify-content: space-between;
   gap: 8px 12px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(147, 166, 193, 0.1);
 }
 
 .panel-head h3 {
@@ -330,9 +341,9 @@ button:disabled {
 .position-card,
 .risk-card,
 .missed-card {
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.12);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.03);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.016));
 }
 
 .signal-card {
@@ -347,8 +358,8 @@ button:disabled {
 
 .card-copy {
   color: var(--text-soft);
-  line-height: 1.45;
-  font-size: 0.92rem;
+  line-height: 1.4;
+  font-size: 0.89rem;
 }
 
 .signal-status {
@@ -366,8 +377,8 @@ button:disabled {
 .signal-note {
   margin: 0;
   color: var(--muted);
-  line-height: 1.45;
-  font-size: 0.82rem;
+  line-height: 1.35;
+  font-size: 0.8rem;
 }
 
 .decision-reasons {
@@ -384,10 +395,10 @@ button:disabled {
 }
 
 .reason-row strong {
-  min-width: 78px;
+  min-width: 72px;
   color: var(--text);
-  font-size: 0.76rem;
-  letter-spacing: 0.05em;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -448,9 +459,9 @@ button:disabled {
 
 .stat {
   padding: 9px 11px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.1);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .stat strong {
@@ -475,8 +486,9 @@ button:disabled {
 
 .table-wrap {
   overflow-x: auto;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.12);
   border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.015);
 }
 
 table {
@@ -487,15 +499,19 @@ table {
 
 th,
 td {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(147, 166, 193, 0.08);
   text-align: left;
 }
 
 th {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
+}
+
+tbody tr:hover {
+  background: rgba(255, 255, 255, 0.025);
 }
 
 input[type="search"] {
@@ -503,7 +519,7 @@ input[type="search"] {
   min-height: 36px;
   padding: 0 12px;
   border-radius: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.16);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
 }
@@ -525,9 +541,9 @@ input[type="search"] {
   display: grid;
   gap: 6px;
   padding: 9px 11px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.1);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .learning-board {
@@ -541,7 +557,7 @@ input[type="search"] {
   padding: 12px;
   border: 1px solid rgba(114, 144, 255, 0.18);
   border-radius: var(--radius-lg);
-  background: linear-gradient(180deg, rgba(114, 144, 255, 0.12), rgba(255, 255, 255, 0.03));
+  background: linear-gradient(180deg, rgba(114, 144, 255, 0.1), rgba(255, 255, 255, 0.02));
 }
 
 .learning-title {
@@ -583,9 +599,9 @@ input[type="search"] {
   display: grid;
   gap: 5px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.1);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .learning-detail strong {
@@ -614,9 +630,9 @@ input[type="search"] {
   display: grid;
   gap: 5px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.1);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .learning-review-grid {
@@ -634,9 +650,9 @@ input[type="search"] {
   display: grid;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(147, 166, 193, 0.1);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .learning-review-head {
