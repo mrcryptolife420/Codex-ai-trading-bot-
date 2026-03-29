@@ -3270,6 +3270,10 @@ await runCheck("paper signal flow can execute and persist a deterministic paper 
     entryAttempt: attempt,
     openedPosition: attempt.openedPosition
   });
+  bot.noteEntryPersisted({
+    position: attempt.openedPosition,
+    at: "2026-03-28T12:00:06.000Z"
+  });
   bot.notePaperTradePersisted({
     position: attempt.openedPosition,
     at: "2026-03-28T12:00:06.000Z"
@@ -3280,12 +3284,18 @@ await runCheck("paper signal flow can execute and persist a deterministic paper 
   assert.equal(bot.runtime.openPositions.length, 1);
   assert.equal(bot.runtime.signalFlow.generatedSignals, 1);
   assert.equal(bot.runtime.signalFlow.rejectedSignals, 0);
+  assert.equal(bot.runtime.signalFlow.entriesAttempted, 1);
+  assert.equal(bot.runtime.signalFlow.entriesExecuted, 1);
+  assert.equal(bot.runtime.signalFlow.entriesPersisted, 1);
   assert.equal(bot.runtime.signalFlow.paperTradesAttempted, 1);
   assert.equal(bot.runtime.signalFlow.paperTradesExecuted, 1);
   assert.equal(bot.runtime.signalFlow.paperTradesPersisted, 1);
+  assert.equal(bot.runtime.signalFlow.tradingFlowHealth?.status, "active");
   assert.equal(persisted.runtime.openPositions.length, 1);
+  assert.equal(persisted.runtime.signalFlow.entriesPersisted, 1);
   assert.equal(persisted.runtime.signalFlow.paperTradesPersisted, 1);
   assert.ok(persisted.journal.events.some((event) => event.type === "paper_trade_executed"));
+  assert.ok(persisted.journal.events.some((event) => event.type === "entry_persisted"));
   assert.ok(persisted.journal.events.some((event) => event.type === "paper_trade_persisted"));
 });
 
@@ -12427,6 +12437,142 @@ await runCheck("risk manager keeps live entries blocked when regime kill switche
   assert.ok(decision.reasons.includes("regime_kill_switch_active"));
 });
 
+await runCheck("risk manager ignores advisory portfolio reasons while keeping hard portfolio blocks", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const advisoryOnly = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.67,
+      calibrationConfidence: 0.72,
+      disagreement: 0.01,
+      shouldAbstain: false,
+      transformer: { probability: 0.66, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.14, microPriceEdgeBps: 0.25 },
+      market: { realizedVolPct: 0.012, atrPct: 0.008, bearishPatternScore: 0.01, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.03, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.14, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.7, probability: 0.66, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.68, confidence: 0.56, blockers: [], agreementGap: 0.03, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.67, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: {
+      sizeMultiplier: 0.92,
+      dailyBudgetFactor: 1,
+      allocatorScore: 0.52,
+      reasons: ["regime_kill_switch_active"],
+      advisoryReasons: ["regime_kill_switch_active"],
+      blockingReasons: [],
+      hardReasons: []
+    },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-29T03:10:00.000Z"
+  });
+  assert.equal(advisoryOnly.reasons.includes("regime_kill_switch_active"), false);
+
+  const hardBlocked = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: advisoryOnly.strategyMetaApplied ? {
+      probability: 0.67,
+      calibrationConfidence: 0.72,
+      disagreement: 0.01,
+      shouldAbstain: false,
+      transformer: { probability: 0.66, confidence: 0.18 }
+    } : advisoryOnly.score,
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.14, microPriceEdgeBps: 0.25 },
+      market: { realizedVolPct: 0.012, atrPct: 0.008, bearishPatternScore: 0.01, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.03, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.14, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.7, probability: 0.66, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.68, confidence: 0.56, blockers: [], agreementGap: 0.03, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.67, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: {
+      sizeMultiplier: 0.92,
+      dailyBudgetFactor: 1,
+      allocatorScore: 0.52,
+      reasons: ["regime_exposure_limit_hit"],
+      advisoryReasons: [],
+      blockingReasons: ["regime_exposure_limit_hit"],
+      hardReasons: ["regime_exposure_limit_hit"]
+    },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-29T03:10:00.000Z"
+  });
+  assert.equal(hardBlocked.allow, false);
+  assert.ok(hardBlocked.reasons.includes("regime_exposure_limit_hit"));
+});
+
+await runCheck("risk manager surfaces invalid sizing before execution", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.66,
+      calibrationConfidence: 0.71,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      transformer: { probability: 0.65, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.16, microPriceEdgeBps: 0.22 },
+      market: { realizedVolPct: 0.011, atrPct: 0, bearishPatternScore: 0.01, bullishPatternScore: 0.11, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.04, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.12, crowdingBias: 0.02, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.07 },
+    volatilitySummary: { riskScore: 0.21, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.71, probability: 0.65, netScore: 0.11, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.68, confidence: 0.56, blockers: [], agreementGap: 0.03, optimizer: { sampleSize: 12, sampleConfidence: 0.7 } },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.02 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.67, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.01 },
+    portfolioSummary: { sizeMultiplier: 1, dailyBudgetFactor: 1, allocatorScore: 0.52, reasons: [], advisoryReasons: [], blockingReasons: [], hardReasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-29T03:10:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("trade_size_invalid"));
+  assert.equal(decision.sizingSummary.invalidQuoteAmount, true);
+});
+
 await runCheck("dashboard decision view preserves readable operator fields and maps probe-only codes", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
@@ -16011,6 +16157,70 @@ await runCheck("run cycle refreshes governance before scanning candidates to avo
 
   await bot.runCycleCore();
   assert.deepEqual(order.slice(0, 3), ["manage", "governance", "scan"]);
+});
+
+await runCheck("run cycle only marks entries persisted after store success", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [],
+    openPositions: [],
+    signalFlow: {},
+    service: {},
+    ops: {}
+  };
+  bot.journal = { events: [], trades: [], equitySnapshots: [], cycles: [] };
+  bot.health = {
+    recordSuccess() {},
+    recordFailure() {}
+  };
+  bot.updateSafetyState = () => ({});
+  bot.refreshOperationalViews = () => {};
+  bot.trimJournal = () => {};
+  bot.markReportDirty = () => {};
+  bot.recordEvent = TradingBot.prototype.recordEvent;
+  bot.ensureSignalFlowMetrics = TradingBot.prototype.ensureSignalFlowMetrics;
+  bot.noteEntryPersisted = TradingBot.prototype.noteEntryPersisted;
+  bot.noteEntryPersistFailed = TradingBot.prototype.noteEntryPersistFailed;
+  bot.notePaperTradePersisted = TradingBot.prototype.notePaperTradePersisted;
+  let persistCalls = 0;
+  bot.persist = async () => {
+    persistCalls += 1;
+    if (persistCalls === 1) {
+      throw new Error("disk write failed");
+    }
+  };
+  bot.runCycleCore = async () => ({
+    openedPosition: { id: "paper-1", symbol: "BTCUSDT", brokerMode: "paper" }
+  });
+
+  await assert.rejects(async () => bot.runCycle(), /disk write failed/);
+  assert.equal(bot.runtime.signalFlow.entriesPersisted || 0, 0);
+  assert.equal(bot.runtime.signalFlow.paperTradesPersisted || 0, 0);
+  assert.equal(bot.runtime.signalFlow.entriesPersistFailed || 0, 1);
+  assert.ok(bot.journal.events.some((event) => event.type === "entry_persist_failed"));
+});
+
+await runCheck("signal flow summary exposes identical blocker headline for ops consumers", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    signalFlow: {},
+    ops: {}
+  };
+  bot.markReportDirty = () => {};
+  bot.logger = { info() {} };
+  bot.noteCandidateSignalFlow = TradingBot.prototype.noteCandidateSignalFlow;
+  const candidates = [
+    { symbol: "BTCUSDT", decision: { allow: false, reasons: ["model_confidence_too_low"] }, score: {}, strategySummary: {}, regimeSummary: {} },
+    { symbol: "ETHUSDT", decision: { allow: false, reasons: ["model_confidence_too_low", "committee_veto"] }, score: {}, strategySummary: {}, regimeSummary: {} }
+  ];
+  bot.noteCandidateSignalFlow(candidates, "2026-03-29T10:00:00.000Z", {
+    symbolsScanned: 12,
+    candidatesScored: 2
+  });
+  assert.equal(bot.runtime.ops.signalFlow.tradingFlowHealth.dominantBlocker, "model_confidence_too_low");
+  assert.equal(bot.runtime.ops.signalFlow.tradingFlowHealth.status, "inactive");
+  assert.equal(bot.runtime.ops.tradingFlowHealth.dominantBlocker, "model_confidence_too_low");
 });
 
 await runCheck("trading bot paper learning summary uses runtime journal truth for shadow budget instead of stale decision snapshots", async () => {

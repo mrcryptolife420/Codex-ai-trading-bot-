@@ -572,6 +572,9 @@ export class PortfolioOptimizer {
       reasons.push("portfolio_allocator_score_low");
     }
 
+    const blockingReasons = [...new Set(hardReasons)];
+    const advisoryReasons = [...new Set(reasons.filter((reason) => !blockingReasons.includes(reason)))];
+
     return {
       sameClusterCount: sameClusterPositions.length,
       sameSectorCount: sameSectorPositions.length,
@@ -616,8 +619,10 @@ export class PortfolioOptimizer {
       unknownSectorOverlapIgnored: !hasSpecificSector,
       allocatorScore,
       sizeMultiplier,
-      reasons,
-      hardReasons: [...new Set(hardReasons)],
+      reasons: [...new Set(reasons)],
+      advisoryReasons,
+      blockingReasons,
+      hardReasons: blockingReasons,
       correlations
     };
   }

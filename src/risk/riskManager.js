@@ -11,6 +11,10 @@ function num(value, digits = 4) {
   return Number(safeValue(value, 0).toFixed(digits));
 }
 
+function isValidPositiveNumber(value) {
+  return Number.isFinite(value) && value > 0;
+}
+
 function isWithinLookback(at, nowIso, lookbackMinutes) {
   if (!at || !Number.isFinite(lookbackMinutes) || lookbackMinutes <= 0) {
     return true;
@@ -1636,8 +1640,12 @@ export class RiskManager {
     if (currentExposure / totalEquityProxy >= this.config.maxTotalExposureFraction) {
       reasons.push("max_total_exposure_reached");
     }
-    if ((portfolioSummary.reasons || []).length) {
-      reasons.push(...portfolioSummary.reasons);
+    const portfolioBlockingReasons = [
+      ...(portfolioSummary.blockingReasons || []),
+      ...((portfolioSummary.blockingReasons || []).length ? [] : (portfolioSummary.hardReasons || []))
+    ];
+    if (portfolioBlockingReasons.length) {
+      reasons.push(...portfolioBlockingReasons);
     }
     if (executionCostBudget.blocked) {
       reasons.push("execution_cost_budget_exceeded");
@@ -1767,7 +1775,7 @@ export class RiskManager {
     ) {
       reasons.push("symbol_loss_cooldown_active");
     }
-    if (recentTrade?.exitAt && minutesBetween(recentTrade.exitAt, nowIso) < this.config.entryCooldownMinutes) {
+    if (!hasOpenPositionForSymbol && recentTrade?.exitAt && minutesBetween(recentTrade.exitAt, nowIso) < this.config.entryCooldownMinutes) {
       reasons.push("entry_cooldown_active");
     }
     const recentPortfolioTradeAt = getMostRecentTradeTimestamp(journal);
@@ -1883,14 +1891,27 @@ export class RiskManager {
       spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
     const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier;
+    const invalidQuoteAmount =
+      !Number.isFinite(quoteAmount) ||
+      !Number.isFinite(adjustedQuoteAmount) ||
+      adjustedQuoteAmount <= 0 ||
+      !Number.isFinite(maxByPosition) ||
+      !Number.isFinite(maxByRisk) ||
+      !Number.isFinite(remainingExposureBudget);
+
+    if (invalidQuoteAmount) {
+      reasons.push("trade_size_invalid");
+    }
 
     const confidenceBreakdown = preliminaryConfidenceBreakdown;
 
-    if (adjustedQuoteAmount < this.config.minTradeUsdt) {
+    if (!invalidQuoteAmount && adjustedQuoteAmount < this.config.minTradeUsdt) {
       reasons.push("trade_size_below_minimum");
     }
 
-    const cappedQuoteAmount = Math.min(adjustedQuoteAmount, maxByPosition, maxByRisk, remainingExposureBudget);
+    const cappedQuoteAmount = invalidQuoteAmount
+      ? 0
+      : Math.min(adjustedQuoteAmount, maxByPosition, maxByRisk, remainingExposureBudget);
 
     let allow = reasons.length === 0;
     let entryMode = "standard";
@@ -2313,6 +2334,17 @@ export class RiskManager {
       dataQualitySummary,
       signalQualitySummary,
       confidenceBreakdown,
+      sizingSummary: {
+        rawQuoteAmount: Number.isFinite(quoteAmount) ? num(quoteAmount, 2) : null,
+        adjustedQuoteAmount: Number.isFinite(adjustedQuoteAmount) ? num(adjustedQuoteAmount, 2) : null,
+        cappedQuoteAmount: Number.isFinite(cappedQuoteAmount) ? num(cappedQuoteAmount, 2) : null,
+        maxByPosition: Number.isFinite(maxByPosition) ? num(maxByPosition, 2) : null,
+        maxByRisk: Number.isFinite(maxByRisk) ? num(maxByRisk, 2) : null,
+        remainingExposureBudget: Number.isFinite(remainingExposureBudget) ? num(remainingExposureBudget, 2) : null,
+        minTradeUsdt: num(this.config.minTradeUsdt || 0, 2),
+        invalidQuoteAmount,
+        advisoryPortfolioReasons: [...(portfolioSummary.advisoryReasons || [])]
+      },
       modelAbstainReasons: abstainReasons,
       committeeVetoObservation: {
         vetoIds: committeeVetoIds,

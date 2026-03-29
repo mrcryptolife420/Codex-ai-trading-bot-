@@ -1475,6 +1475,8 @@ function renderLearning(snapshot) {
 
 function buildOpsCards(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
+  const signalFlow = snapshot?.dashboard?.ops?.signalFlow || {};
+  const tradingFlowHealth = snapshot?.dashboard?.ops?.tradingFlowHealth || signalFlow.tradingFlowHealth || {};
   const alerts = unresolvedAlerts(snapshot);
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
@@ -1486,6 +1488,12 @@ function buildOpsCards(snapshot) {
   const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
   const externalFeeds = externalFeedHeadline(snapshot);
   return [
+    {
+      label: "Trading flow",
+      value: titleize(tradingFlowHealth.status || "idle"),
+      foot: `${signalFlow.lastCycle?.allowedSignals || 0} allow · ${signalFlow.lastCycle?.entriesAttempted || 0} attempt · ${signalFlow.lastCycle?.entriesExecuted || 0} exec · ${signalFlow.lastCycle?.entriesPersisted || 0} persist${tradingFlowHealth.dominantBlocker ? ` | ${titleize(tradingFlowHealth.dominantBlocker)}` : ""}`,
+      tone: tradingFlowHealth.status === "active" ? "positive" : tradingFlowHealth.status === "degraded" || tradingFlowHealth.status === "blocked" ? "negative" : "neutral"
+    },
     {
       label: "Readiness",
       value: titleize(readiness.status || "unknown"),
@@ -1543,6 +1551,8 @@ function buildOpsCards(snapshot) {
 
 function buildOpsEvents(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
+  const signalFlow = snapshot?.dashboard?.ops?.signalFlow || {};
+  const tradingFlowHealth = snapshot?.dashboard?.ops?.tradingFlowHealth || signalFlow.tradingFlowHealth || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
   const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
@@ -1571,6 +1581,20 @@ function buildOpsEvents(snapshot) {
   }));
 
   const items = [
+    tradingFlowHealth.headline
+      ? {
+          title: "Trading flow",
+          detail: compactJoin([
+            tradingFlowHealth.headline,
+            `${signalFlow.lastCycle?.generatedSignals || 0} gen`,
+            `${signalFlow.lastCycle?.allowedSignals || 0} allow`,
+            `${signalFlow.lastCycle?.entriesAttempted || 0} attempt`,
+            `${signalFlow.lastCycle?.entriesExecuted || 0} exec`,
+            `${signalFlow.lastCycle?.entriesPersisted || 0} persist`
+          ], " · "),
+          tone: tradingFlowHealth.status === "active" ? "positive" : tradingFlowHealth.status === "degraded" || tradingFlowHealth.status === "blocked" ? "negative" : "neutral"
+        }
+      : null,
     readiness.reasons?.[0]
       ? {
           title: "Belangrijkste blokkade",

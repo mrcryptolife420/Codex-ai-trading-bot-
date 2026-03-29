@@ -202,9 +202,19 @@ function classifySignalRejectionCategory(reason = "") {
   if (!normalized) {
     return "other";
   }
+  if (normalized.startsWith("committee_")) {
+    return "committee";
+  }
+  if (
+    normalized.includes("live_paper_divergence") ||
+    normalized.includes("entry_requires_runtime_recovery") ||
+    normalized.includes("broker_mode_mismatch") ||
+    normalized.includes("mode_mismatch")
+  ) {
+    return "mode_mismatch";
+  }
   if (
     normalized.startsWith("capital_") ||
-    normalized.startsWith("execution_cost_") ||
     normalized.startsWith("quality_quorum") ||
     normalized.startsWith("meta_gate") ||
     normalized.startsWith("strategy_") ||
@@ -216,15 +226,33 @@ function classifySignalRejectionCategory(reason = "") {
   if (normalized.includes("timeframe") || normalized.includes("higher_tf_conflict") || normalized.includes("lower_tf_conflict")) {
     return "timeframe";
   }
-  if (normalized.startsWith("model_") || normalized.startsWith("committee_")) {
+  if (normalized.startsWith("model_")) {
     return "model";
   }
   if (
+    normalized.startsWith("execution_cost_") ||
     normalized.includes("spread") ||
-    normalized.includes("volatility") ||
     normalized.includes("orderbook") ||
     normalized.includes("local_book") ||
     normalized.includes("book_quality") ||
+    normalized.includes("reference_venue") ||
+    normalized.includes("execution") ||
+    normalized.includes("liquidity_guard") ||
+    normalized.includes("maker") ||
+    normalized.includes("taker")
+  ) {
+    return "execution";
+  }
+  if (
+    normalized.includes("cooldown") ||
+    normalized.includes("weekend") ||
+    normalized.includes("session") ||
+    normalized.includes("funding")
+  ) {
+    return "session";
+  }
+  if (
+    normalized.includes("volatility") ||
     normalized.includes("pattern") ||
     normalized.includes("structure") ||
     normalized.includes("sentiment") ||
@@ -253,18 +281,17 @@ function classifySignalRejectionCategory(reason = "") {
     return "sizing";
   }
   if (
-    normalized.includes("cooldown") ||
     normalized.includes("quarantine") ||
-    normalized.includes("weekend") ||
-    normalized.includes("session") ||
     normalized.includes("operator") ||
     normalized.includes("self_heal") ||
     normalized.includes("provider") ||
     normalized.includes("drift") ||
-    normalized.includes("exchange") ||
     normalized.includes("divergence")
   ) {
     return "ops";
+  }
+  if (normalized.includes("exchange")) {
+    return "execution";
   }
   return "other";
 }
@@ -3408,10 +3435,32 @@ function summarizeExecutionCost(summary = {}) {
 
 function summarizeSignalFlow(summary = {}) {
   const lastCycle = summary.lastCycle || {};
+  const topRejectionReasons = summarizeCountMap(lastCycle.rejectionReasons || {}, 5);
+  const topRejectionCategories = summarizeCountMap(lastCycle.rejectionCategories || {}, 5);
+  const dominantBlocker = topRejectionReasons[0]?.id || null;
+  const dominantCategory = topRejectionCategories[0]?.id || null;
+  const flowStatus =
+    (lastCycle.allowedSignals || 0) > 0 && (lastCycle.entriesAttempted || 0) === 0
+      ? "blocked"
+      : (lastCycle.entriesExecuted || 0) > (lastCycle.entriesPersisted || 0)
+        ? "degraded"
+        : (lastCycle.generatedSignals || 0) > 0 && (lastCycle.allowedSignals || 0) === 0
+          ? "inactive"
+          : (lastCycle.entriesExecuted || 0) > 0
+            ? "active"
+            : (lastCycle.generatedSignals || 0) > 0
+              ? "watch"
+              : "idle";
   return {
+    symbolsScanned: summary.symbolsScanned || 0,
+    candidatesScored: summary.candidatesScored || 0,
     generatedSignals: summary.generatedSignals || 0,
     rejectedSignals: summary.rejectedSignals || 0,
     allowedSignals: summary.allowedSignals || 0,
+    entriesAttempted: summary.entriesAttempted || 0,
+    entriesExecuted: summary.entriesExecuted || 0,
+    entriesPersisted: summary.entriesPersisted || 0,
+    entriesPersistFailed: summary.entriesPersistFailed || 0,
     paperTradesAttempted: summary.paperTradesAttempted || 0,
     paperTradesExecuted: summary.paperTradesExecuted || 0,
     paperTradesPersisted: summary.paperTradesPersisted || 0,
@@ -3425,16 +3474,49 @@ function summarizeSignalFlow(summary = {}) {
     rejectionCategories: summarizeCountMap(summary.rejectionCategories || {}, 8),
     lastCycle: {
       at: lastCycle.at || null,
+      symbolsScanned: lastCycle.symbolsScanned || 0,
+      candidatesScored: lastCycle.candidatesScored || 0,
       generatedSignals: lastCycle.generatedSignals || 0,
       rejectedSignals: lastCycle.rejectedSignals || 0,
       allowedSignals: lastCycle.allowedSignals || 0,
+      entriesAttempted: lastCycle.entriesAttempted || 0,
+      entriesExecuted: lastCycle.entriesExecuted || 0,
+      entriesPersisted: lastCycle.entriesPersisted || 0,
+      entriesPersistFailed: lastCycle.entriesPersistFailed || 0,
       paperTradesAttempted: lastCycle.paperTradesAttempted || 0,
       paperTradesExecuted: lastCycle.paperTradesExecuted || 0,
       paperTradesPersisted: lastCycle.paperTradesPersisted || 0,
       entryStatus: lastCycle.entryStatus || "idle",
       openedSymbol: lastCycle.openedSymbol || null,
-      topRejectionReasons: summarizeCountMap(lastCycle.rejectionReasons || {}, 5),
-      topRejectionCategories: summarizeCountMap(lastCycle.rejectionCategories || {}, 5)
+      topRejectionReasons,
+      topRejectionCategories
+    },
+    tradingFlowHealth: {
+      status: flowStatus,
+      dominantBlocker,
+      dominantCategory,
+      headline:
+        dominantBlocker
+          ? `${titleize(dominantBlocker)} blokkeert nu de flow`
+          : flowStatus === "active"
+            ? "Trading flow actief"
+            : flowStatus === "inactive"
+              ? "Signalen worden gegenereerd maar niets komt door de entry-gate"
+              : flowStatus === "blocked"
+                ? "Geldige setups raken de execution flow niet"
+                : flowStatus === "degraded"
+                  ? "Execution en persistence lopen niet volledig gelijk"
+                  : "Nog geen trading-flow activiteit zichtbaar",
+      counters: {
+        symbolsScanned: lastCycle.symbolsScanned || 0,
+        candidatesScored: lastCycle.candidatesScored || 0,
+        generatedSignals: lastCycle.generatedSignals || 0,
+        rejectedSignals: lastCycle.rejectedSignals || 0,
+        allowedSignals: lastCycle.allowedSignals || 0,
+        attempted: lastCycle.entriesAttempted || 0,
+        executed: lastCycle.entriesExecuted || 0,
+        persisted: lastCycle.entriesPersisted || 0
+      }
     },
     notes: [...(summary.notes || [])]
   };
@@ -4662,9 +4744,15 @@ export class TradingBot {
     this.runtime.strategyRetirement = this.runtime.strategyRetirement || {};
     this.runtime.replayChaos = this.runtime.replayChaos || {};
     this.runtime.signalFlow = this.runtime.signalFlow || {
+      symbolsScanned: 0,
+      candidatesScored: 0,
       generatedSignals: 0,
       rejectedSignals: 0,
       allowedSignals: 0,
+      entriesAttempted: 0,
+      entriesExecuted: 0,
+      entriesPersisted: 0,
+      entriesPersistFailed: 0,
       paperTradesAttempted: 0,
       paperTradesExecuted: 0,
       paperTradesPersisted: 0,
@@ -5202,9 +5290,15 @@ export class TradingBot {
   ensureSignalFlowMetrics() {
     this.runtime = this.runtime || {};
     this.runtime.signalFlow = this.runtime.signalFlow || {
+      symbolsScanned: 0,
+      candidatesScored: 0,
       generatedSignals: 0,
       rejectedSignals: 0,
       allowedSignals: 0,
+      entriesAttempted: 0,
+      entriesExecuted: 0,
+      entriesPersisted: 0,
+      entriesPersistFailed: 0,
       paperTradesAttempted: 0,
       paperTradesExecuted: 0,
       paperTradesPersisted: 0,
@@ -5221,7 +5315,7 @@ export class TradingBot {
     return this.runtime.signalFlow;
   }
 
-  noteCandidateSignalFlow(candidates = [], at = nowIso()) {
+  noteCandidateSignalFlow(candidates = [], at = nowIso(), { symbolsScanned = null, candidatesScored = null } = {}) {
     const metrics = this.ensureSignalFlowMetrics();
     const rejectionReasons = {};
     const rejectionCategories = {};
@@ -5249,6 +5343,10 @@ export class TradingBot {
         rejectionCategories: categories
       });
     }
+    const scannedCount = Number.isFinite(symbolsScanned) ? Math.max(0, symbolsScanned) : candidates.length;
+    const scoredCount = Number.isFinite(candidatesScored) ? Math.max(0, candidatesScored) : candidates.length;
+    metrics.symbolsScanned += scannedCount;
+    metrics.candidatesScored += scoredCount;
     metrics.generatedSignals += candidates.length;
     metrics.rejectedSignals += rejectedCandidates.length;
     metrics.allowedSignals += Math.max(0, candidates.length - rejectedCandidates.length);
@@ -5260,9 +5358,15 @@ export class TradingBot {
     }
     metrics.lastCycle = {
       at,
+      symbolsScanned: scannedCount,
+      candidatesScored: scoredCount,
       generatedSignals: candidates.length,
       rejectedSignals: rejectedCandidates.length,
       allowedSignals: Math.max(0, candidates.length - rejectedCandidates.length),
+      entriesAttempted: 0,
+      entriesExecuted: 0,
+      entriesPersisted: 0,
+      entriesPersistFailed: 0,
       paperTradesAttempted: 0,
       paperTradesExecuted: 0,
       paperTradesPersisted: 0,
@@ -5273,14 +5377,97 @@ export class TradingBot {
     };
     metrics.notes = [
       candidates.length
-        ? `${candidates.length} signalen geëvalueerd in de laatste cycle.`
+        ? `${candidates.length} signalen geëvalueerd uit ${scannedCount} gescande symbols.`
         : "Geen signalen geëvalueerd in de laatste cycle.",
       rejectedCandidates.length
         ? `${rejectedCandidates.length} signalen afgewezen; topcategorie ${summarizeCountMap(rejectionCategories, 1)[0]?.id || "unknown"}.`
         : "Geen signalen afgewezen in de laatste cycle."
     ].filter(Boolean);
     if (this.runtime.ops) {
-      this.runtime.ops.signalFlow = summarizeSignalFlow(metrics);
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
+    }
+    this.markReportDirty();
+    return metrics;
+  }
+
+  noteEntryAttempt({ candidate = {}, at = nowIso() } = {}) {
+    const metrics = this.ensureSignalFlowMetrics();
+    metrics.entriesAttempted += 1;
+    metrics.lastEntryAttemptAt = at;
+    metrics.lastCycle = {
+      ...(metrics.lastCycle || {}),
+      entriesAttempted: (metrics.lastCycle?.entriesAttempted || 0) + 1
+    };
+    if (this.runtime.ops) {
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
+    }
+    this.markReportDirty();
+    return metrics;
+  }
+
+  noteEntryExecuted({ candidate = {}, position = null, at = nowIso() } = {}) {
+    const metrics = this.ensureSignalFlowMetrics();
+    metrics.entriesExecuted += 1;
+    metrics.lastEntryExecutedAt = at;
+    metrics.lastCycle = {
+      ...(metrics.lastCycle || {}),
+      entriesExecuted: (metrics.lastCycle?.entriesExecuted || 0) + 1,
+      openedSymbol: position?.symbol || candidate.symbol || null
+    };
+    if (this.runtime.ops) {
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
+    }
+    this.markReportDirty();
+    return metrics;
+  }
+
+  noteEntryPersisted({ position = null, at = nowIso() } = {}) {
+    if (!position) {
+      return this.ensureSignalFlowMetrics();
+    }
+    const metrics = this.ensureSignalFlowMetrics();
+    metrics.entriesPersisted += 1;
+    metrics.lastEntryPersistedAt = at;
+    metrics.lastCycle = {
+      ...(metrics.lastCycle || {}),
+      entriesPersisted: (metrics.lastCycle?.entriesPersisted || 0) + 1
+    };
+    this.recordEvent("entry_persisted", {
+      symbol: position.symbol,
+      positionId: position.id || null,
+      brokerMode: position.brokerMode || this.config.botMode
+    });
+    if (this.runtime.ops) {
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
+    }
+    return metrics;
+  }
+
+  noteEntryPersistFailed({ symbol = null, position = null, error = null, at = nowIso() } = {}) {
+    const metrics = this.ensureSignalFlowMetrics();
+    metrics.entriesPersistFailed += 1;
+    metrics.lastEntryPersistFailedAt = at;
+    metrics.lastCycle = {
+      ...(metrics.lastCycle || {}),
+      entriesPersistFailed: (metrics.lastCycle?.entriesPersistFailed || 0) + 1
+    };
+    this.recordEvent("entry_persist_failed", {
+      symbol: symbol || position?.symbol || null,
+      positionId: position?.id || null,
+      error: error?.message || `${error || "unknown_error"}`
+    });
+    if (this.runtime.ops) {
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
     }
     this.markReportDirty();
     return metrics;
@@ -5305,7 +5492,9 @@ export class TradingBot {
       entryMode: candidate.decision?.entryMode || "standard"
     });
     if (this.runtime.ops) {
-      this.runtime.ops.signalFlow = summarizeSignalFlow(metrics);
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
     }
     this.markReportDirty();
     return metrics;
@@ -5330,7 +5519,9 @@ export class TradingBot {
       entryMode: candidate.decision?.entryMode || "standard"
     });
     if (this.runtime.ops) {
-      this.runtime.ops.signalFlow = summarizeSignalFlow(metrics);
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
     }
     return metrics;
   }
@@ -5351,7 +5542,9 @@ export class TradingBot {
       positionId: position.id || null
     });
     if (this.runtime.ops) {
-      this.runtime.ops.signalFlow = summarizeSignalFlow(metrics);
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
     }
     return metrics;
   }
@@ -5375,9 +5568,15 @@ export class TradingBot {
     const topReason = summarizeCountMap(metrics.lastCycle?.rejectionReasons || {}, 1)[0]?.id || null;
     const topCategory = summarizeCountMap(metrics.lastCycle?.rejectionCategories || {}, 1)[0]?.id || null;
     this.recordEvent("signal_flow_cycle", {
+      symbolsScanned: metrics.lastCycle.symbolsScanned || 0,
+      candidatesScored: metrics.lastCycle.candidatesScored || 0,
       generatedSignals: metrics.lastCycle.generatedSignals || 0,
       rejectedSignals: metrics.lastCycle.rejectedSignals || 0,
       allowedSignals: metrics.lastCycle.allowedSignals || 0,
+      entriesAttempted: metrics.lastCycle.entriesAttempted || 0,
+      entriesExecuted: metrics.lastCycle.entriesExecuted || 0,
+      entriesPersisted: metrics.lastCycle.entriesPersisted || 0,
+      entriesPersistFailed: metrics.lastCycle.entriesPersistFailed || 0,
       paperTradesAttempted: metrics.lastCycle.paperTradesAttempted || 0,
       paperTradesExecuted: metrics.lastCycle.paperTradesExecuted || 0,
       paperTradesPersisted: metrics.lastCycle.paperTradesPersisted || 0,
@@ -5387,7 +5586,9 @@ export class TradingBot {
       topRejectionCategory: topCategory
     });
     if (this.runtime.ops) {
-      this.runtime.ops.signalFlow = summarizeSignalFlow(metrics);
+      const summary = summarizeSignalFlow(metrics);
+      this.runtime.ops.signalFlow = summary;
+      this.runtime.ops.tradingFlowHealth = summary.tradingFlowHealth;
     }
     this.markReportDirty();
     return metrics;
@@ -8667,6 +8868,7 @@ export class TradingBot {
       config: this.config,
       nowIso: referenceNow
     }));
+    const signalFlowSummary = summarizeSignalFlow(this.runtime.signalFlow || {});
     this.runtime.ops = {
       ...existingOps,
       lastUpdatedAt: referenceNow,
@@ -8680,7 +8882,8 @@ export class TradingBot {
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       paperLearning: summarizePaperLearning(this.runtime.paperLearning || {}),
       adaptation: summarizeAdaptationHealth(this.runtime.adaptation || {}),
-      signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {}),
+      signalFlow: signalFlowSummary,
+      tradingFlowHealth: signalFlowSummary.tradingFlowHealth,
       diagnosticsActions: existingOps.diagnosticsActions || { history: [] },
       promotionState
     };
@@ -10450,7 +10653,10 @@ export class TradingBot {
           this.queueCounterfactualCandidate(candidate, now.toISOString());
         }
       }
-      this.noteCandidateSignalFlow(candidates, now.toISOString());
+      this.noteCandidateSignalFlow(candidates, now.toISOString(), {
+        symbolsScanned: symbolsToEvaluate.length,
+        candidatesScored: candidates.length
+      });
     }
 
     candidates.sort((left, right) => (right.decision.opportunityScore ?? right.decision.rankScore) - (left.decision.opportunityScore ?? left.decision.rankScore));
@@ -10772,7 +10978,42 @@ export class TradingBot {
         attempt.symbolBlockers.push({ symbol: candidate.symbol, reason: symbolConflict });
         continue;
       }
+      const invalidExecutionState = [];
+      if (!this.symbolRules[candidate.symbol]) {
+        invalidExecutionState.push("missing_symbol_rules");
+      }
+      if (!Number.isFinite(candidate.decision?.quoteAmount) || (candidate.decision?.quoteAmount || 0) <= 0) {
+        invalidExecutionState.push("invalid_quote_amount");
+      }
+      if (!candidate.decision?.executionPlan) {
+        invalidExecutionState.push("missing_execution_plan");
+      }
+      if (!candidate.strategySummary?.activeStrategy) {
+        invalidExecutionState.push("missing_strategy_summary");
+      }
+      if (!candidate.rawFeatures || typeof candidate.rawFeatures !== "object") {
+        invalidExecutionState.push("missing_raw_features");
+      }
+      if (
+        !Number.isFinite(candidate.marketSnapshot?.book?.mid) &&
+        !(Number.isFinite(candidate.marketSnapshot?.book?.bid) && Number.isFinite(candidate.marketSnapshot?.book?.ask))
+      ) {
+        invalidExecutionState.push("missing_market_price");
+      }
+      if (invalidExecutionState.length) {
+        attempt.symbolBlockers.push({ symbol: candidate.symbol, reason: invalidExecutionState[0] });
+        this.logger?.warn?.("Allowed candidate skipped before execution", {
+          symbol: candidate.symbol,
+          reasons: invalidExecutionState
+        });
+        this.recordEvent("entry_candidate_invalid", {
+          symbol: candidate.symbol,
+          reasons: invalidExecutionState
+        });
+        continue;
+      }
       attempt.attemptedSymbols.push(candidate.symbol);
+      this.noteEntryAttempt({ candidate });
       if (botMode === "paper") {
         this.notePaperTradeAttempt({ candidate });
       }
@@ -10791,6 +11032,7 @@ export class TradingBot {
           entryRationale,
           runtime: this.runtime
         });
+        this.noteEntryExecuted({ candidate, position });
         if (botMode === "paper") {
           this.notePaperTradeExecuted({ candidate, position });
         }
@@ -11234,10 +11476,22 @@ export class TradingBot {
       };
       this.refreshOperationalViews({ nowIso: nowIso() });
       this.trimJournal();
-      if ((this.config?.botMode || "paper") === "paper" && result.openedPosition) {
-        this.notePaperTradePersisted({ position: result.openedPosition, at: nowIso() });
+      try {
+        await this.persist();
+      } catch (error) {
+        if (result.openedPosition) {
+          this.noteEntryPersistFailed({ position: result.openedPosition, error, at: nowIso() });
+          await this.persist().catch(() => {});
+        }
+        throw error;
       }
-      await this.persist();
+      if (result.openedPosition) {
+        this.noteEntryPersisted({ position: result.openedPosition, at: nowIso() });
+        if ((this.config?.botMode || "paper") === "paper") {
+          this.notePaperTradePersisted({ position: result.openedPosition, at: nowIso() });
+        }
+        await this.persist();
+      }
       return result;
     } catch (error) {
       this.health.recordFailure(this.runtime, error);
