@@ -28,9 +28,9 @@ body {
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(circle at top left, rgba(89, 216, 186, 0.08), transparent 24%),
-    radial-gradient(circle at top right, rgba(114, 144, 255, 0.08), transparent 28%),
-    linear-gradient(180deg, #071018 0%, #050b12 100%);
+    radial-gradient(circle at 12% 0%, rgba(89, 216, 186, 0.12), transparent 24%),
+    radial-gradient(circle at 86% 0%, rgba(114, 144, 255, 0.09), transparent 22%),
+    linear-gradient(180deg, #08111b 0%, #060c14 100%);
   color: var(--text);
   font-family: var(--font-body);
 }
@@ -87,6 +87,7 @@ h3 {
   gap: 10px;
   padding: 12px 14px;
   overflow: hidden;
+  backdrop-filter: blur(16px);
 }
 
 .topbar::before {
@@ -96,6 +97,16 @@ h3 {
   height: 1px;
   background: linear-gradient(90deg, rgba(89, 216, 186, 0.34), rgba(114, 144, 255, 0.18), transparent 82%);
   pointer-events: none;
+}
+
+.topbar::after {
+  content: "";
+  position: absolute;
+  inset: auto -10% -40% 38%;
+  height: 140px;
+  background: radial-gradient(circle, rgba(89, 216, 186, 0.08), transparent 62%);
+  pointer-events: none;
+  filter: blur(12px);
 }
 
 .topbar-head,
@@ -133,6 +144,14 @@ h3 {
   font-size: 1rem;
   font-weight: 700;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.brand-block {
+  min-width: 0;
+}
+
+.brand-block .eyebrow {
+  color: rgba(205, 225, 255, 0.76);
 }
 
 .brand-block h1 {
@@ -188,6 +207,15 @@ th,
   flex-wrap: wrap;
 }
 
+.status-strip,
+.topbar-actions {
+  padding: 5px;
+  border-radius: 999px;
+  border: 1px solid rgba(147, 166, 193, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
 .status-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -217,6 +245,7 @@ th,
 .status-chip {
   background: rgba(89, 216, 186, 0.08);
   border-color: rgba(89, 216, 186, 0.2);
+  color: #dffaf0;
 }
 
 .status-chip.muted {
@@ -245,6 +274,14 @@ th,
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+.hero-pill.positive {
+  border-color: rgba(89, 216, 186, 0.22);
+}
+
+.hero-pill.negative {
+  border-color: rgba(255, 123, 149, 0.18);
+}
+
 .hero-pill strong {
   color: var(--text);
   flex-shrink: 0;
@@ -271,6 +308,7 @@ button {
   font-weight: 700;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   transition: transform 140ms ease, filter 140ms ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 button:hover:not(:disabled),
@@ -285,7 +323,7 @@ button:disabled {
 }
 
 .ghost {
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(255, 255, 255, 0.028);
   border: 1px solid var(--line);
 }
 
@@ -328,6 +366,7 @@ button:disabled {
   position: relative;
   padding: 11px 12px;
   overflow: hidden;
+  backdrop-filter: blur(10px);
 }
 
 .panel::before {
@@ -355,6 +394,34 @@ button:disabled {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0)),
     linear-gradient(180deg, rgba(10, 19, 30, 0.96), rgba(9, 17, 26, 0.95));
+}
+
+#signalsSection {
+  box-shadow:
+    var(--shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px rgba(89, 216, 186, 0.05);
+}
+
+#signalsSection::after {
+  content: "";
+  position: absolute;
+  inset: auto -8% -26% 46%;
+  height: 180px;
+  background: radial-gradient(circle, rgba(89, 216, 186, 0.08), transparent 62%);
+  filter: blur(12px);
+  pointer-events: none;
+}
+
+#signalsSection .panel-body {
+  min-height: 520px;
+}
+
+#positionsSection .panel-body,
+#riskSection .panel-body,
+#diagnosticsSection .panel-body,
+#explainabilitySection .panel-body {
+  gap: 8px;
 }
 
 #signalsSection {
@@ -408,6 +475,10 @@ button:disabled {
   font-size: 0.98rem;
 }
 
+.panel-head .eyebrow {
+  color: rgba(186, 201, 223, 0.72);
+}
+
 .list-stack,
 .risk-grid {
   display: grid;
@@ -428,10 +499,21 @@ button:disabled {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.01)),
     rgba(255, 255, 255, 0.012);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .signal-card {
   position: relative;
+  border-color: rgba(147, 166, 193, 0.1);
+}
+
+.signal-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(89, 216, 186, 0.8), rgba(114, 144, 255, 0));
+  opacity: 0.72;
 }
 
 .card-summary {
@@ -530,7 +612,7 @@ button:disabled {
 .card-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
+  gap: 10px;
   align-items: start;
 }
 
@@ -556,6 +638,7 @@ button:disabled {
 .tag,
 .pill {
   justify-content: flex-start;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .positive,
@@ -573,6 +656,16 @@ button:disabled {
   border: 1px solid rgba(147, 166, 193, 0.12);
   border-radius: var(--radius-lg);
   background: rgba(255, 255, 255, 0.012);
+}
+
+.table-wrap,
+.learning-hero,
+.learning-detail,
+.learning-list-item,
+.learning-review-card,
+.event-row,
+.stat {
+  backdrop-filter: blur(6px);
 }
 
 table {
@@ -606,6 +699,7 @@ input[type="search"] {
   border: 1px solid rgba(147, 166, 193, 0.16);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .toggle {
@@ -783,6 +877,10 @@ input[type="search"] {
 
   .status-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #signalsSection .panel-body {
+    min-height: 0;
   }
 }
 
