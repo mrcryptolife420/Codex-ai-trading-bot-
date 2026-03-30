@@ -2979,7 +2979,15 @@ function buildMarketHistoryAggregate(items = []) {
 function buildTradeReplayHistoryCoverage(trade = {}, marketHistory = {}) {
   const symbolSummary = marketHistory?.symbols?.[trade.symbol] || null;
   if (!symbolSummary) {
-    return null;
+    return {
+      status: "missing",
+      coversTradeWindow: false,
+      gapCount: 0,
+      freshnessLagCandles: null,
+      partitionCount: 0,
+      coverageRatio: 0,
+      note: "Geen lokale market-history dekking voor dit symbool."
+    };
   }
   const entryTime = new Date(trade.entryAt || 0).getTime();
   const exitTime = new Date(trade.exitAt || trade.entryAt || 0).getTime();
@@ -2998,7 +3006,14 @@ function buildTradeReplayHistoryCoverage(trade = {}, marketHistory = {}) {
     gapCount: symbolSummary.gapCount || 0,
     freshnessLagCandles: symbolSummary.freshnessLagCandles == null ? null : symbolSummary.freshnessLagCandles,
     partitionCount: symbolSummary.partitionCount || 0,
-    coverageRatio: num(symbolSummary.coverageRatio || 0, 4)
+    coverageRatio: num(symbolSummary.coverageRatio || 0, 4),
+    note: symbolSummary.gapCount > 0
+      ? "Lokale history bevat gaten binnen deze replay-dekking."
+      : symbolSummary.stale
+        ? "Lokale history loopt achter op de verwachte laatste candle."
+        : coversTradeWindow
+          ? "Lokale history dekt de volledige trade-window."
+          : "Lokale history dekt deze trade maar gedeeltelijk."
   };
 }
 
@@ -3388,6 +3403,30 @@ function summarizePromotionByConditionDigest({
         ? `${titleize(headlineId)} blijft nu op ${titleize(action)}${headlineCondition ? ` binnen ${titleize(headlineCondition)}` : ""} en wacht op ${humanizeReason(blockers[0])}.`
         : `${titleize(headlineId)} staat nu op ${titleize(action)}${headlineCondition ? ` binnen ${titleize(headlineCondition)}` : ""}.`
       : "Nog geen condition-aware policy transition klaar."
+  };
+}
+
+function summarizeHistoryCoverageDigest(historyCoverage = {}) {
+  const status = historyCoverage.status || "unknown";
+  const uncoveredCount = historyCoverage.uncoveredSymbolCount || 0;
+  const gapCount = historyCoverage.gapSymbolCount || 0;
+  const staleCount = historyCoverage.staleSymbolCount || 0;
+  const urgent = status === "missing" || uncoveredCount > 0 || gapCount > 0;
+  const watch = !urgent && staleCount > 0;
+  return {
+    status: urgent ? "urgent" : watch ? "watch" : status === "ready" ? "stable" : "warmup",
+    uncoveredCount,
+    gapCount,
+    staleCount,
+    note: urgent
+      ? uncoveredCount > 0
+        ? `${uncoveredCount} history-symbolen missen nog dekking voor replay of governance.`
+        : `${gapCount} history-symbolen hebben nog gaten voor replay of offline learning.`
+      : watch
+        ? `${staleCount} history-symbolen lopen nog achter op de laatste gesloten candle.`
+        : status === "ready"
+          ? "History-dekking is stabiel genoeg voor replay en governance."
+          : "History-dekking warmt nog op."
   };
 }
 
@@ -8557,6 +8596,7 @@ export class TradingBot {
           ? "Execution-kwaliteit is voorlopig stabiel genoeg om challengers inhoudelijk te vergelijken."
             : "Execution heeft nog toezicht nodig voordat policy-vergelijkingen echt zuiver zijn."
     };
+    const historyCoverage = offlineTrainer.historyCoverage || {};
     const strategyRetirement = this.runtime?.strategyRetirement || {};
     const offlineTrainerConditionTransitions = arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || []);
     const retirementPolicies = arr(strategyRetirement.policies || []);
@@ -8685,7 +8725,10 @@ export class TradingBot {
       blockedBy: [
         ...(modelPromotionPolicy.allowPromotion ? [] : arr(modelPromotionPolicy.blockerReasons || []).slice(0, 2)),
         ...(retirementPolicies.some((item) => item.status === "retire") ? ["strategy_retirement_active"] : []),
-        ...(executionInsights.status === "repair" ? ["execution_quality_not_stable"] : [])
+        ...(executionInsights.status === "repair" ? ["execution_quality_not_stable"] : []),
+        ...((historyCoverage.status === "missing" || (historyCoverage.uncoveredSymbolCount || 0) > 0) ? ["history_coverage_not_ready"] : []),
+        ...((historyCoverage.gapSymbolCount || 0) > 0 ? ["history_gap_not_ready"] : []),
+        ...((historyCoverage.staleSymbolCount || 0) > 0 ? ["history_freshness_not_ready"] : [])
       ].filter((item, index, all) => item && all.indexOf(item) === index).slice(0, 4),
       safeAutoActions: [
         "collect_more_samples",
@@ -12839,6 +12882,13 @@ export class TradingBot {
             detail: learningInsights.exits.note || "Exit intelligence vraagt nu extra aandacht.",
             tone: learningInsights.exits.status === "urgent" ? "negative" : "neutral"
           }
+        : null,
+      ["urgent", "watch"].includes(learningInsights.history?.status)
+        ? {
+            title: "History dekking",
+            detail: learningInsights.history.note || "Replay- of governance-dekking mist nog history truth.",
+            tone: learningInsights.history.status === "urgent" ? "negative" : "neutral"
+          }
         : null
     ].filter(Boolean).slice(0, 6);
     const tradeableCount = topDecisions.filter((item) => item.allow).length;
@@ -13017,6 +13067,15 @@ export class TradingBot {
             }
             if ((tradingFlowHealth.counters?.executed || 0) > (tradingFlowHealth.counters?.persisted || 0)) {
               guardedLiveBlockers.push("persistence_truth_not_ready");
+            }
+            if (historyCoverage.status === "missing" || (historyCoverage.uncoveredSymbolCount || 0) > 0) {
+              guardedLiveBlockers.push("history_coverage_not_ready");
+            }
+            if ((historyCoverage.gapSymbolCount || 0) > 0) {
+              guardedLiveBlockers.push("history_gap_not_ready");
+            }
+            if (rawAction === "live_ready" && (historyCoverage.staleSymbolCount || 0) > 0) {
+              guardedLiveBlockers.push("history_freshness_not_ready");
             }
           }
           const effectiveAction =
@@ -13312,6 +13371,7 @@ export class TradingBot {
         ...paperLearningSummary,
         counterfactuals: offlineTrainerSummary.counterfactuals || {}
       }),
+      history: summarizeHistoryCoverageDigest(offlineTrainerSummary.historyCoverage || {}),
       exits: summarizeExitIntelligenceDigest({
         positions: fullPositions,
         recentTrades: arr(report.recentTrades || []).slice(0, 12),

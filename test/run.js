@@ -14629,6 +14629,35 @@ await runCheck("trade replay digest carries local market history coverage", asyn
   assert.equal(digest.historyCoverage.partitionCount, 2);
 });
 
+await runCheck("trade replay digest marks missing local history explicitly", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.journal = { scaleOuts: [] };
+  bot.runtime = {
+    marketHistory: {
+      symbols: {}
+    }
+  };
+  const replay = bot.buildTradeReplayView({
+    id: "trade-history-missing",
+    symbol: "ETHUSDT",
+    entryAt: "2026-03-19T10:00:00.000Z",
+    exitAt: "2026-03-19T11:00:00.000Z",
+    entryPrice: 100,
+    exitPrice: 101,
+    pnlQuote: 5,
+    netPnlPct: 0.01,
+    captureEfficiency: 0.4,
+    reason: "take_profit",
+    entryRationale: { summary: "Missing history replay test.", probability: 0.58, threshold: 0.54, confidence: 0.6, marketState: { phase: "trend" }, committee: { agreement: 0.7, netScore: 0.2, vetoes: [] } },
+    entryExecutionAttribution: { entryStyle: "market" },
+    exitExecutionAttribution: { entryStyle: "market" }
+  });
+  const digest = bot.buildTradeReplayDigest(replay);
+  assert.equal(replay.historyCoverage.status, "missing");
+  assert.equal(digest.historyCoverage.status, "missing");
+  assert.match(digest.historyCoverage.note || "", /geen lokale market-history/i);
+});
+
 await runCheck("trade replay digest exposes full timeline and decision outcome comparisons", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.journal = {
@@ -17907,6 +17936,53 @@ await runCheck("promotion pipeline keeps live-ready candidates in guarded live w
   assert.equal(candidate.guardedLiveReady, false);
   assert.ok(candidate.guardedLiveBlockers.includes("condition_confidence_not_ready"));
   assert.equal(candidate.conditionId, "breakout_release");
+});
+
+await runCheck("promotion pipeline blocks guarded live candidates when history coverage is missing or gappy", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summary = bot.buildPromotionPipelineSnapshot({
+    paperLearning: {
+      promotionRoadmap: { status: "observe", allowPromotion: false, note: "collect more proof" },
+      policyTransitions: { candidates: [] }
+    },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: [] } },
+    researchRegistry: { governance: { promotionCandidates: [] } },
+    promotionState: {},
+    offlineTrainer: {
+      historyCoverage: {
+        status: "missing",
+        uncoveredSymbolCount: 1,
+        gapSymbolCount: 1,
+        staleSymbolCount: 0
+      },
+      policyTransitionCandidatesByCondition: [
+        {
+          id: "ema_trend",
+          strategyId: "ema_trend",
+          familyId: "trend_following",
+          conditionId: "trend_continuation",
+          action: "guarded_live_candidate",
+          confidence: 0.82,
+          scope: "trend_continuation | ema_trend",
+          reason: "multi-condition proof is stable"
+        }
+      ]
+    },
+    tradingFlowHealth: {
+      counters: { executed: 2, persisted: 2 }
+    },
+    executionSummary: {
+      avgExecutionQualityScore: 0.72,
+      avgSlippageDeltaBps: 1.1
+    }
+  });
+  const candidate = summary.rolloutCandidates.find((item) => item.id === "ema_trend");
+  assert.ok(candidate);
+  assert.equal(candidate.action, "paper_ready");
+  assert.equal(candidate.guardedLiveReady, false);
+  assert.ok(candidate.guardedLiveBlockers.includes("history_coverage_not_ready"));
+  assert.ok(candidate.guardedLiveBlockers.includes("history_gap_not_ready"));
+  assert.ok(summary.operatorGuardrails.blockedBy.includes("history_coverage_not_ready"));
 });
 
 await runCheck("offline trainer builds feature governance attribution parity and pruning plans", async () => {
