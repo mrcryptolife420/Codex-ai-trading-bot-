@@ -29,6 +29,7 @@ import { ModelRegistry } from "./modelRegistry.js";
 import { StateBackupManager } from "./stateBackupManager.js";
 import { MarketHistoryStore } from "../storage/marketHistoryStore.js";
 import { runResearchLab } from "./researchLab.js";
+import { backfillHistoricalCandles } from "./marketHistory.js";
 import { ResearchRegistry } from "./researchRegistry.js";
 import { UniverseSelector } from "./universeSelector.js";
 import { StrategyResearchMiner } from "./strategyResearchMiner.js";
@@ -2842,6 +2843,19 @@ function summarizeMarketHistory(summary = {}) {
       watchlistIncludedCount: summary.selection?.watchlistIncludedCount || 0,
       omittedCount: summary.selection?.omittedCount || 0
     },
+    repair: {
+      status: summary.repair?.status || "idle",
+      context: summary.repair?.context || null,
+      attemptedCount: summary.repair?.attemptedCount || 0,
+      repairedCount: summary.repair?.repairedCount || 0,
+      failedCount: summary.repair?.failedCount || 0,
+      skippedDueCooldownCount: summary.repair?.skippedDueCooldownCount || 0,
+      attemptedSymbols: arr(summary.repair?.attemptedSymbols || []).slice(0, 6),
+      repairedSymbols: arr(summary.repair?.repairedSymbols || []).slice(0, 6),
+      failedSymbols: arr(summary.repair?.failedSymbols || []).slice(0, 6),
+      lastRunAt: summary.repair?.lastRunAt || null,
+      note: summary.repair?.note || null
+    },
     aggregate: {
       status: aggregate.status || "unknown",
       symbolCount: aggregate.symbolCount || 0,
@@ -4693,10 +4707,140 @@ export class TradingBot {
     return feed;
   }
 
+  async maybeRepairMarketHistoryCoverage({ summaries = [], referenceNow = nowIso(), context = "runtime" } = {}) {
+    const repairEnabled = this.config.historyCacheEnabled !== false && this.config.historyAutoRepairEnabled !== false;
+    const repairState = {
+      status: "idle",
+      context,
+      attemptedCount: 0,
+      repairedCount: 0,
+      failedCount: 0,
+      skippedDueCooldownCount: 0,
+      attemptedSymbols: [],
+      repairedSymbols: [],
+      failedSymbols: [],
+      lastRunAt: referenceNow,
+      note: repairEnabled ? "Geen history repair nodig." : "History auto-repair is uitgeschakeld."
+    };
+    this.runtime.ops = this.runtime.ops || {};
+    const persistedRepairState = this.runtime.ops.marketHistoryRepair || {};
+    const perSymbolState = persistedRepairState.symbols || {};
+    if (!repairEnabled) {
+      this.runtime.ops.marketHistoryRepair = {
+        ...persistedRepairState,
+        ...repairState,
+        symbols: perSymbolState
+      };
+      return repairState;
+    }
+    const cooldownMinutes = Math.max(5, Number(this.config.historyAutoRepairCooldownMinutes || 30));
+    const cooldownMs = cooldownMinutes * 60_000;
+    const maxRepairSymbols = Math.max(1, Math.min(4, Number(this.config.historyAutoRepairMaxSymbols || 2)));
+    const targetCount = Math.max(
+      Number(this.config.klineLimit || 180),
+      Math.min(Number(this.config.researchTrainCandles || 240), 240)
+    );
+    const nowMs = new Date(referenceNow).getTime();
+    const candidates = arr(summaries)
+      .map((item, index) => ({
+        ...item,
+        index,
+        repairPriority: !(item.count > 0)
+          ? 3
+          : (item.gapCount || 0) > 0
+            ? 2
+            : item.stale
+              ? 1
+              : 0
+      }))
+      .filter((item) => item.repairPriority > 0);
+    const dueCandidates = [];
+    for (const item of candidates) {
+      const lastAttemptAt = perSymbolState[item.symbol]?.lastAttemptAt || null;
+      const lastAttemptMs = lastAttemptAt ? new Date(lastAttemptAt).getTime() : 0;
+      if (lastAttemptMs && Number.isFinite(lastAttemptMs) && (nowMs - lastAttemptMs) < cooldownMs) {
+        repairState.skippedDueCooldownCount += 1;
+        continue;
+      }
+      dueCandidates.push(item);
+    }
+    const selected = dueCandidates
+      .sort((left, right) => {
+        const priorityDelta = (right.repairPriority || 0) - (left.repairPriority || 0);
+        return priorityDelta !== 0 ? priorityDelta : left.index - right.index;
+      })
+      .slice(0, maxRepairSymbols);
+    if (!selected.length) {
+      repairState.status = repairState.skippedDueCooldownCount ? "cooldown" : "idle";
+      repairState.note = repairState.skippedDueCooldownCount
+        ? `History repair wacht nog op cooldown voor ${repairState.skippedDueCooldownCount} symbolen.`
+        : "Geen history repair nodig.";
+      this.runtime.ops.marketHistoryRepair = {
+        ...persistedRepairState,
+        ...repairState,
+        symbols: perSymbolState
+      };
+      return repairState;
+    }
+    repairState.status = "repairing";
+    for (const item of selected) {
+      repairState.attemptedCount += 1;
+      repairState.attemptedSymbols.push(item.symbol);
+      perSymbolState[item.symbol] = {
+        ...(perSymbolState[item.symbol] || {}),
+        lastAttemptAt: referenceNow,
+        lastContext: context,
+        lastRequestedPriority: item.repairPriority
+      };
+      try {
+        await backfillHistoricalCandles({
+          config: this.config,
+          logger: this.logger,
+          symbol: item.symbol,
+          interval: this.config.klineInterval,
+          targetCount,
+          client: this.client,
+          store: this.historyStore,
+          refreshLatest: true
+        });
+        repairState.repairedCount += 1;
+        repairState.repairedSymbols.push(item.symbol);
+        perSymbolState[item.symbol] = {
+          ...perSymbolState[item.symbol],
+          lastSuccessAt: referenceNow,
+          lastError: null
+        };
+      } catch (error) {
+        repairState.failedCount += 1;
+        repairState.failedSymbols.push(item.symbol);
+        perSymbolState[item.symbol] = {
+          ...perSymbolState[item.symbol],
+          lastError: error?.message || "unknown error"
+        };
+      }
+    }
+    repairState.status = repairState.failedCount && !repairState.repairedCount
+      ? "failed"
+      : repairState.repairedCount
+        ? "repaired"
+        : "repairing";
+    repairState.note = repairState.repairedCount
+      ? `${repairState.repairedCount} history-symbolen kregen een auto-repair poging vanuit ${titleize(context)}.`
+      : repairState.failedCount
+        ? `History repair faalde voor ${repairState.failedCount} symbolen.`
+        : "Geen history repair nodig.";
+    this.runtime.ops.marketHistoryRepair = {
+      ...persistedRepairState,
+      ...repairState,
+      symbols: perSymbolState
+    };
+    return repairState;
+  }
+
   async safeRefreshMarketHistorySnapshot({ symbols = null, referenceNow = nowIso(), context = "runtime" } = {}) {
     const startedAt = Date.now();
     try {
-      const result = await this.refreshMarketHistorySnapshot({ symbols, referenceNow });
+      const result = await this.refreshMarketHistorySnapshot({ symbols, referenceNow, context });
       this.noteDashboardFeedSuccess("market_history", {
         at: referenceNow,
         durationMs: Date.now() - startedAt,
@@ -4713,7 +4857,7 @@ export class TradingBot {
     }
   }
 
-  async refreshMarketHistorySnapshot({ symbols = null, referenceNow = nowIso() } = {}) {
+  async refreshMarketHistorySnapshot({ symbols = null, referenceNow = nowIso(), context = "runtime" } = {}) {
     if (this.config.historyCacheEnabled === false) {
       this.runtime.marketHistory = summarizeMarketHistory({
         generatedAt: referenceNow,
@@ -4743,7 +4887,7 @@ export class TradingBot {
       maxSymbols: this.config.researchMaxSymbols || this.config.watchlist.length || 12,
       recentTradeLimit: 18
     });
-    const summaries = [];
+    let summaries = [];
     for (const symbol of selectedSymbols) {
       summaries.push(await this.historyStore.verifySeries({
         symbol,
@@ -4752,12 +4896,27 @@ export class TradingBot {
         freshnessThresholdMultiplier: this.config.historyVerifyFreshnessMultiplier || 4
       }));
     }
+    const repair = await this.maybeRepairMarketHistoryCoverage({ summaries, referenceNow, context });
+    if (repair.attemptedCount > 0) {
+      const repairedSet = new Set(repair.attemptedSymbols);
+      const repairedSummaries = new Map();
+      for (const symbol of repair.attemptedSymbols) {
+        repairedSummaries.set(symbol, await this.historyStore.verifySeries({
+          symbol,
+          interval: this.config.klineInterval,
+          referenceNow,
+          freshnessThresholdMultiplier: this.config.historyVerifyFreshnessMultiplier || 4
+        }));
+      }
+      summaries = summaries.map((item) => repairedSet.has(item.symbol) ? (repairedSummaries.get(item.symbol) || item) : item);
+    }
     const aggregate = buildMarketHistoryAggregate(summaries);
     this.runtime.marketHistory = summarizeMarketHistory({
       generatedAt: referenceNow,
       interval: this.config.klineInterval,
       status: aggregate.status,
       selection,
+      repair,
       aggregate,
       symbols: Object.fromEntries(summaries.map((item) => [item.symbol, item])),
       notes: [
@@ -4770,13 +4929,14 @@ export class TradingBot {
         aggregate.partitionedSymbolCount
           ? `${aggregate.partitionedSymbolCount} symbolen gebruiken al partities in de lokale history-store.`
           : "History-store gebruikt nog geen meerpartitie-dekking voor de huidige symbolen.",
+        repair.note || null,
         aggregate.gapSymbolCount
           ? `${aggregate.gapSymbolCount} symbolen hebben nog gaten die backfill of verify vragen.`
           : "Geen openstaande history gaps in de gecontroleerde symbolen.",
         aggregate.staleSymbolCount
           ? `${aggregate.staleSymbolCount} symbolen lopen achter op de verwachte laatste gesloten candle.`
           : "History freshness is gezond voor de gecontroleerde symbolen."
-      ]
+      ].filter(Boolean)
     });
     return this.runtime.marketHistory;
   }

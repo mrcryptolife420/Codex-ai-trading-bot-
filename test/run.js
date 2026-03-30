@@ -9659,6 +9659,47 @@ await runCheck("market history backfill repairs missing candle gaps from the API
   assert.equal(result.candles.length, 3);
 });
 
+await runCheck("trading bot market history refresh auto-repairs missing local coverage", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-auto-repair-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  const intervalMs = 15 * 60_000;
+  const base = Date.parse("2026-03-30T11:15:00.000Z");
+  const rawCandles = Array.from({ length: 3 }, (_, index) => {
+    const openTime = base + index * intervalMs;
+    return [openTime, "100", "101", "99", `${100.4 + index * 0.2}`, "12", openTime + intervalMs - 1, "1206", 10, "6", "603", "0"];
+  });
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({
+    historyDir,
+    watchlist: ["BTCUSDT"],
+    historyCacheEnabled: true,
+    historyAutoRepairMaxSymbols: 1,
+    historyAutoRepairCooldownMinutes: 30,
+    klineLimit: 3,
+    klineInterval: "15m"
+  });
+  bot.logger = { info() {}, warn() {}, error() {} };
+  bot.historyStore = store;
+  bot.client = {
+    async getKlines(symbol, interval, limit, options = {}) {
+      const endTime = options.endTime == null ? Number.POSITIVE_INFINITY : Number(options.endTime);
+      return rawCandles.filter((item) => item[0] <= endTime).slice(-limit);
+    }
+  };
+  bot.runtime = { ops: {}, openPositions: [] };
+  bot.journal = { trades: [] };
+  const snapshot = await TradingBot.prototype.refreshMarketHistorySnapshot.call(bot, {
+    referenceNow: "2026-03-30T12:05:00.000Z",
+    context: "doctor"
+  });
+  assert.equal(snapshot.aggregate.coveredSymbolCount, 1);
+  assert.equal(snapshot.aggregate.uncoveredSymbolCount, 0);
+  assert.equal(snapshot.repair.status, "repaired");
+  assert.deepEqual(snapshot.repair.repairedSymbols, ["BTCUSDT"]);
+  assert.equal(bot.runtime.ops.marketHistoryRepair.context, "doctor");
+});
+
 await runCheck("backtest loads candles from the local history store", async () => {
   const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-backtest-history-"));
   const store = new MarketHistoryStore({ rootDir: historyDir });
