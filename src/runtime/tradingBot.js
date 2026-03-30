@@ -2832,6 +2832,16 @@ function summarizeMarketHistory(summary = {}) {
     generatedAt: summary.generatedAt || null,
     interval: summary.interval || null,
     status: summary.status || aggregate.status || "unknown",
+    selection: {
+      explicit: Boolean(summary.selection?.explicit),
+      maxSymbols: summary.selection?.maxSymbols || 0,
+      candidateCount: summary.selection?.candidateCount || 0,
+      selectedCount: summary.selection?.selectedCount || 0,
+      openPositionIncludedCount: summary.selection?.openPositionIncludedCount || 0,
+      recentTradeIncludedCount: summary.selection?.recentTradeIncludedCount || 0,
+      watchlistIncludedCount: summary.selection?.watchlistIncludedCount || 0,
+      omittedCount: summary.selection?.omittedCount || 0
+    },
     aggregate: {
       status: aggregate.status || "unknown",
       symbolCount: aggregate.symbolCount || 0,
@@ -2857,6 +2867,88 @@ function summarizeMarketHistory(summary = {}) {
       }])
     ),
     notes: arr(summary.notes || []).slice(0, 6)
+  };
+}
+
+function normalizeHistorySymbols(items = []) {
+  const ordered = [];
+  const seen = new Set();
+  for (const item of arr(items)) {
+    const raw = typeof item === "string" ? item : item?.symbol;
+    const symbol = `${raw || ""}`.trim().toUpperCase();
+    if (!symbol || seen.has(symbol)) {
+      continue;
+    }
+    seen.add(symbol);
+    ordered.push(symbol);
+  }
+  return ordered;
+}
+
+export function resolveMarketHistoryCoverageSymbols({
+  symbols = null,
+  watchlist = [],
+  openPositions = [],
+  trades = [],
+  maxSymbols = null,
+  recentTradeLimit = 18
+} = {}) {
+  const explicitSymbols = normalizeHistorySymbols(symbols);
+  if (explicitSymbols.length) {
+    const explicitMax = Number.isFinite(maxSymbols) && maxSymbols > 0 ? Math.max(1, Math.floor(maxSymbols)) : explicitSymbols.length;
+    const selectedSymbols = explicitSymbols.slice(0, explicitMax);
+    return {
+      symbols: selectedSymbols,
+      selection: {
+        explicit: true,
+        maxSymbols: explicitMax,
+        candidateCount: explicitSymbols.length,
+        selectedCount: selectedSymbols.length,
+        openPositionIncludedCount: 0,
+        recentTradeIncludedCount: 0,
+        watchlistIncludedCount: 0,
+        omittedCount: Math.max(0, explicitSymbols.length - selectedSymbols.length)
+      }
+    };
+  }
+
+  const watchlistSymbols = normalizeHistorySymbols(watchlist);
+  const openPositionSymbols = normalizeHistorySymbols(openPositions);
+  const recentTradeSymbols = normalizeHistorySymbols(arr(trades).slice(-Math.max(1, recentTradeLimit)).reverse());
+  const configuredMax = Number.isFinite(maxSymbols) && maxSymbols > 0 ? Math.floor(maxSymbols) : null;
+  const resolvedMax = Math.max(
+    configuredMax || 0,
+    openPositionSymbols.length,
+    watchlistSymbols.length || 12
+  );
+  const orderedSymbols = [];
+  const seen = new Set();
+  const addSymbols = (items = []) => {
+    for (const symbol of items) {
+      if (seen.has(symbol)) {
+        continue;
+      }
+      seen.add(symbol);
+      orderedSymbols.push(symbol);
+    }
+  };
+  addSymbols(openPositionSymbols);
+  addSymbols(recentTradeSymbols);
+  addSymbols(watchlistSymbols);
+  const selectedSymbols = orderedSymbols.slice(0, resolvedMax);
+  const selectedSet = new Set(selectedSymbols);
+  return {
+    symbols: selectedSymbols,
+    selection: {
+      explicit: false,
+      maxSymbols: resolvedMax,
+      candidateCount: orderedSymbols.length,
+      selectedCount: selectedSymbols.length,
+      openPositionIncludedCount: openPositionSymbols.filter((symbol) => selectedSet.has(symbol)).length,
+      recentTradeIncludedCount: recentTradeSymbols.filter((symbol) => selectedSet.has(symbol)).length,
+      watchlistIncludedCount: watchlistSymbols.filter((symbol) => selectedSet.has(symbol)).length,
+      omittedCount: Math.max(0, orderedSymbols.length - selectedSymbols.length)
+    }
   };
 }
 
@@ -4588,22 +4680,32 @@ export class TradingBot {
         generatedAt: referenceNow,
         interval: this.config.klineInterval,
         status: "disabled",
+        selection: {
+          explicit: false,
+          maxSymbols: 0,
+          candidateCount: 0,
+          selectedCount: 0,
+          openPositionIncludedCount: 0,
+          recentTradeIncludedCount: 0,
+          watchlistIncludedCount: 0,
+          omittedCount: 0
+        },
         aggregate: { status: "disabled", symbolCount: 0, coveredSymbolCount: 0, staleSymbolCount: 0, gapSymbolCount: 0, uncoveredSymbolCount: 0, partitionedSymbolCount: 0, staleSymbols: [], gapSymbols: [], uncoveredSymbols: [] },
         symbols: {},
         notes: ["History cache staat uit; replay en offline learning gebruiken geen persistente candles."]
       });
       return this.runtime.marketHistory;
     }
-    const baseSymbols = symbols?.length
-      ? symbols
-      : [
-          ...this.config.watchlist,
-          ...arr(this.journal?.trades || []).slice(-18).map((trade) => trade.symbol)
-        ];
-    const uniqueSymbols = [...new Set(baseSymbols.map((symbol) => `${symbol || ""}`.trim().toUpperCase()).filter(Boolean))]
-      .slice(0, this.config.researchMaxSymbols || this.config.watchlist.length || 12);
+    const { symbols: selectedSymbols, selection } = resolveMarketHistoryCoverageSymbols({
+      symbols,
+      watchlist: this.config.watchlist,
+      openPositions: this.runtime?.openPositions || [],
+      trades: this.journal?.trades || [],
+      maxSymbols: this.config.researchMaxSymbols || this.config.watchlist.length || 12,
+      recentTradeLimit: 18
+    });
     const summaries = [];
-    for (const symbol of uniqueSymbols) {
+    for (const symbol of selectedSymbols) {
       summaries.push(await this.historyStore.verifySeries({
         symbol,
         interval: this.config.klineInterval,
@@ -4616,9 +4718,16 @@ export class TradingBot {
       generatedAt: referenceNow,
       interval: this.config.klineInterval,
       status: aggregate.status,
+      selection,
       aggregate,
       symbols: Object.fromEntries(summaries.map((item) => [item.symbol, item])),
       notes: [
+        selection.explicit
+          ? `${selection.selectedCount} expliciete history-symbolen gecontroleerd.`
+          : `${selection.selectedCount} history-symbolen gecontroleerd (${selection.openPositionIncludedCount} open posities, ${selection.recentTradeIncludedCount} recente trades, ${selection.watchlistIncludedCount} watchlist).`,
+        selection.omittedCount
+          ? `${selection.omittedCount} lagere-prioriteit symbolen vallen buiten het huidige history-budget.`
+          : "Alle geselecteerde focus-symbolen vallen binnen het huidige history-budget.",
         aggregate.partitionedSymbolCount
           ? `${aggregate.partitionedSymbolCount} symbolen gebruiken al partities in de lokale history-store.`
           : "History-store gebruikt nog geen meerpartitie-dekking voor de huidige symbolen.",

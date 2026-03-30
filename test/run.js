@@ -87,7 +87,7 @@ import { backfillHistoricalCandles, fetchLatestCandlesPaginated, runHistoryComma
 import { runBacktest } from "../src/runtime/backtestRunner.js";
 import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
 import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.js";
-import { TradingBot, buildCandidateQualityQuorum } from "../src/runtime/tradingBot.js";
+import { TradingBot, buildCandidateQualityQuorum, resolveMarketHistoryCoverageSymbols } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
 import { normalizeSymbolList, readRequestBody } from "../src/dashboard/server.js";
@@ -14948,6 +14948,69 @@ await runCheck("trading bot does not keep stale recorder warm start active", asy
   assert.equal(bot.runtime.thresholdTuning.warmStart.focus, null);
   assert.equal(bot.runtime.thresholdTuning.warmStart.stale, true);
   assert.equal((bot.runtime.paperLearning.notes || []).length, 0);
+});
+
+await runCheck("market history symbol resolver preserves open positions and recent trades inside capped coverage", async () => {
+  const resolved = resolveMarketHistoryCoverageSymbols({
+    watchlist: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
+    openPositions: [{ symbol: "XRPUSDT" }],
+    trades: [
+      { symbol: "DOGEUSDT" },
+      { symbol: "BNBUSDT" }
+    ],
+    maxSymbols: 4,
+    recentTradeLimit: 4
+  });
+  assert.deepEqual(resolved.symbols, ["XRPUSDT", "BNBUSDT", "DOGEUSDT", "BTCUSDT"]);
+  assert.equal(resolved.selection.openPositionIncludedCount, 1);
+  assert.equal(resolved.selection.recentTradeIncludedCount, 2);
+  assert.equal(resolved.selection.watchlistIncludedCount, 1);
+  assert.equal(resolved.selection.omittedCount, 3);
+});
+
+await runCheck("trading bot refreshes market history with prioritized focus symbols", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({
+    watchlist: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
+    researchMaxSymbols: 4,
+    klineInterval: "15m",
+    historyCacheEnabled: true
+  });
+  bot.journal = {
+    trades: [
+      { symbol: "DOGEUSDT" },
+      { symbol: "BNBUSDT" }
+    ]
+  };
+  bot.runtime = {
+    openPositions: [{ symbol: "XRPUSDT" }]
+  };
+  const verified = [];
+  bot.historyStore = {
+    async verifySeries({ symbol }) {
+      verified.push(symbol);
+      return {
+        symbol,
+        count: 10,
+        gapCount: 0,
+        stale: false,
+        freshnessLagCandles: 0,
+        coverageRatio: 1,
+        partitionCount: 1,
+        firstOpenTime: 1,
+        lastOpenTime: 2
+      };
+    }
+  };
+  const snapshot = await TradingBot.prototype.refreshMarketHistorySnapshot.call(bot, {
+    referenceNow: "2026-03-30T12:00:00.000Z"
+  });
+  assert.deepEqual(verified, ["XRPUSDT", "BNBUSDT", "DOGEUSDT", "BTCUSDT"]);
+  assert.equal(snapshot.selection.openPositionIncludedCount, 1);
+  assert.equal(snapshot.selection.recentTradeIncludedCount, 2);
+  assert.equal(snapshot.selection.watchlistIncludedCount, 1);
+  assert.equal(snapshot.selection.omittedCount, 3);
+  assert.match(snapshot.notes[0] || "", /open posities/i);
 });
 
 await runCheck("trading bot threshold experiment snapshot respects combined strategy and regime scope", async () => {
