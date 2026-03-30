@@ -2839,6 +2839,7 @@ function summarizeMarketHistory(summary = {}) {
       candidateCount: summary.selection?.candidateCount || 0,
       selectedCount: summary.selection?.selectedCount || 0,
       openPositionIncludedCount: summary.selection?.openPositionIncludedCount || 0,
+      decisionIncludedCount: summary.selection?.decisionIncludedCount || 0,
       recentTradeIncludedCount: summary.selection?.recentTradeIncludedCount || 0,
       watchlistIncludedCount: summary.selection?.watchlistIncludedCount || 0,
       omittedCount: summary.selection?.omittedCount || 0
@@ -2903,6 +2904,7 @@ export function resolveMarketHistoryCoverageSymbols({
   symbols = null,
   watchlist = [],
   openPositions = [],
+  decisionSymbols = [],
   trades = [],
   maxSymbols = null,
   recentTradeLimit = 18
@@ -2919,6 +2921,7 @@ export function resolveMarketHistoryCoverageSymbols({
         candidateCount: explicitSymbols.length,
         selectedCount: selectedSymbols.length,
         openPositionIncludedCount: 0,
+        decisionIncludedCount: 0,
         recentTradeIncludedCount: 0,
         watchlistIncludedCount: 0,
         omittedCount: Math.max(0, explicitSymbols.length - selectedSymbols.length)
@@ -2928,11 +2931,13 @@ export function resolveMarketHistoryCoverageSymbols({
 
   const watchlistSymbols = normalizeHistorySymbols(watchlist);
   const openPositionSymbols = normalizeHistorySymbols(openPositions);
+  const decisionFocusSymbols = normalizeHistorySymbols(decisionSymbols);
   const recentTradeSymbols = normalizeHistorySymbols(arr(trades).slice(-Math.max(1, recentTradeLimit)).reverse());
   const configuredMax = Number.isFinite(maxSymbols) && maxSymbols > 0 ? Math.floor(maxSymbols) : null;
   const resolvedMax = Math.max(
     configuredMax || 0,
     openPositionSymbols.length,
+    Math.min(decisionFocusSymbols.length + openPositionSymbols.length, Math.max(configuredMax || 0, 4)),
     watchlistSymbols.length || 12
   );
   const orderedSymbols = [];
@@ -2947,6 +2952,7 @@ export function resolveMarketHistoryCoverageSymbols({
     }
   };
   addSymbols(openPositionSymbols);
+  addSymbols(decisionFocusSymbols);
   addSymbols(recentTradeSymbols);
   addSymbols(watchlistSymbols);
   const selectedSymbols = orderedSymbols.slice(0, resolvedMax);
@@ -2959,6 +2965,7 @@ export function resolveMarketHistoryCoverageSymbols({
       candidateCount: orderedSymbols.length,
       selectedCount: selectedSymbols.length,
       openPositionIncludedCount: openPositionSymbols.filter((symbol) => selectedSet.has(symbol)).length,
+      decisionIncludedCount: decisionFocusSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       recentTradeIncludedCount: recentTradeSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       watchlistIncludedCount: watchlistSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       omittedCount: Math.max(0, orderedSymbols.length - selectedSymbols.length)
@@ -4378,6 +4385,22 @@ function isCorruptStateLoadError(error) {
   return error instanceof SyntaxError || error?.name === "SyntaxError";
 }
 
+function resolveHistoryAutoRepairBudget(config = {}, context = "runtime") {
+  const configured = Number(config.historyAutoRepairMaxSymbols);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.min(4, Math.floor(configured));
+  }
+  const defaults = {
+    bootstrap: 3,
+    runtime: 3,
+    research: 2,
+    doctor: 1,
+    report: 1,
+    dashboard_snapshot: 1
+  };
+  return defaults[context] ?? 1;
+}
+
 export class TradingBot {
   constructor({ config, logger }) {
     this.config = config;
@@ -4735,7 +4758,7 @@ export class TradingBot {
     }
     const cooldownMinutes = Math.max(5, Number(this.config.historyAutoRepairCooldownMinutes || 30));
     const cooldownMs = cooldownMinutes * 60_000;
-    const maxRepairSymbols = Math.max(1, Math.min(4, Number(this.config.historyAutoRepairMaxSymbols || 2)));
+    const maxRepairSymbols = Math.max(0, resolveHistoryAutoRepairBudget(this.config, context));
     const targetCount = Math.max(
       Number(this.config.klineLimit || 180),
       Math.min(Number(this.config.researchTrainCandles || 240), 240)
@@ -4771,10 +4794,17 @@ export class TradingBot {
       })
       .slice(0, maxRepairSymbols);
     if (!selected.length) {
-      repairState.status = repairState.skippedDueCooldownCount ? "cooldown" : "idle";
-      repairState.note = repairState.skippedDueCooldownCount
-        ? `History repair wacht nog op cooldown voor ${repairState.skippedDueCooldownCount} symbolen.`
-        : "Geen history repair nodig.";
+      const budgetBlocked = maxRepairSymbols === 0 && dueCandidates.length > 0;
+      repairState.status = budgetBlocked
+        ? "deferred"
+        : repairState.skippedDueCooldownCount
+          ? "cooldown"
+          : "idle";
+      repairState.note = budgetBlocked
+        ? `History repair is uitgesteld voor ${titleize(context)}; runtime-cycles warmen deze dekking verder op.`
+        : repairState.skippedDueCooldownCount
+          ? `History repair wacht nog op cooldown voor ${repairState.skippedDueCooldownCount} symbolen.`
+          : "Geen history repair nodig.";
       this.runtime.ops.marketHistoryRepair = {
         ...persistedRepairState,
         ...repairState,
@@ -4869,6 +4899,7 @@ export class TradingBot {
           candidateCount: 0,
           selectedCount: 0,
           openPositionIncludedCount: 0,
+          decisionIncludedCount: 0,
           recentTradeIncludedCount: 0,
           watchlistIncludedCount: 0,
           omittedCount: 0
@@ -4883,6 +4914,7 @@ export class TradingBot {
       symbols,
       watchlist: this.config.watchlist,
       openPositions: this.runtime?.openPositions || [],
+      decisionSymbols: arr(this.runtime?.latestDecisions || []).slice(0, this.config.dashboardDecisionLimit || 12),
       trades: this.journal?.trades || [],
       maxSymbols: this.config.researchMaxSymbols || this.config.watchlist.length || 12,
       recentTradeLimit: 18
@@ -4922,7 +4954,7 @@ export class TradingBot {
       notes: [
         selection.explicit
           ? `${selection.selectedCount} expliciete history-symbolen gecontroleerd.`
-          : `${selection.selectedCount} history-symbolen gecontroleerd (${selection.openPositionIncludedCount} open posities, ${selection.recentTradeIncludedCount} recente trades, ${selection.watchlistIncludedCount} watchlist).`,
+          : `${selection.selectedCount} history-symbolen gecontroleerd (${selection.openPositionIncludedCount} open posities, ${selection.decisionIncludedCount} focus-decisions, ${selection.recentTradeIncludedCount} recente trades, ${selection.watchlistIncludedCount} watchlist).`,
         selection.omittedCount
           ? `${selection.omittedCount} lagere-prioriteit symbolen vallen buiten het huidige history-budget.`
           : "Alle geselecteerde focus-symbolen vallen binnen het huidige history-budget.",
