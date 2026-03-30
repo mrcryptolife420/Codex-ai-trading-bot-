@@ -4637,28 +4637,56 @@ export class TradingBot {
     if (!bootstrap || bootstrap.status === "empty") {
       return;
     }
+    const warmStart = bootstrap.warmStart || {};
+    const warmStartFresh = warmStart.fresh !== false;
+    const existingWarmStart = this.runtime.thresholdTuning?.warmStart || null;
+    const existingWarmStartAt = existingWarmStart?.generatedAt ? new Date(existingWarmStart.generatedAt).getTime() : 0;
+    const nextWarmStartAt = (warmStart.sourceAt || bootstrap.generatedAt) ? new Date(warmStart.sourceAt || bootstrap.generatedAt).getTime() : 0;
+    const shouldReplaceRecorderWarmStart = !existingWarmStart ||
+      existingWarmStart.source !== "data_recorder" ||
+      nextWarmStartAt >= existingWarmStartAt;
     this.runtime.historicalBootstrap = bootstrap;
     this.runtime.ops = this.runtime.ops || {};
     this.runtime.ops.historicalBootstrap = {
       status: bootstrap.status || "ready",
       generatedAt: bootstrap.generatedAt || null,
-      warmStart: bootstrap.warmStart || null
+      warmStart: warmStart || null,
+      stale: !warmStartFresh,
+      warmStartApplied: Boolean(warmStartFresh && warmStart.governanceFocus)
     };
+    if (!warmStartFresh) {
+      if (existingWarmStart?.source === "data_recorder") {
+        this.runtime.thresholdTuning = {
+          ...(this.runtime.thresholdTuning || {}),
+          warmStart: {
+            ...existingWarmStart,
+            source: "data_recorder",
+            focus: null,
+            generatedAt: warmStart.sourceAt || bootstrap.generatedAt || existingWarmStart.generatedAt || null,
+            stale: true,
+            note: warmStart.note || existingWarmStart.note || "Recorder warm start is te oud en is geneutraliseerd."
+          }
+        };
+      }
+      return;
+    }
     if (!this.runtime.paperLearning || !arr(this.runtime.paperLearning.notes || []).length) {
       this.runtime.paperLearning = {
         ...(this.runtime.paperLearning || {}),
-        notes: [bootstrap.warmStart?.note].filter(Boolean)
+        notes: [warmStart.note].filter(Boolean)
       };
-    } else if (bootstrap.warmStart?.note) {
-      this.runtime.paperLearning.notes = [bootstrap.warmStart.note, ...arr(this.runtime.paperLearning.notes || [])].slice(0, 6);
+    } else if (warmStart.note) {
+      this.runtime.paperLearning.notes = [warmStart.note, ...arr(this.runtime.paperLearning.notes || [])].slice(0, 6);
     }
-    if (!this.runtime.thresholdTuning?.warmStart) {
+    if (shouldReplaceRecorderWarmStart) {
       this.runtime.thresholdTuning = {
         ...(this.runtime.thresholdTuning || {}),
         warmStart: {
           source: "data_recorder",
-          focus: bootstrap.warmStart?.governanceFocus || null,
-          generatedAt: bootstrap.generatedAt || null
+          focus: warmStart.governanceFocus || null,
+          generatedAt: warmStart.sourceAt || bootstrap.generatedAt || null,
+          stale: false,
+          note: warmStart.note || null
         }
       };
     }

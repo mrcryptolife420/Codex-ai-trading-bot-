@@ -10635,11 +10635,41 @@ await runCheck("data recorder builds historical bootstrap summary from stored fr
     });
     const bootstrap = await recorder.loadHistoricalBootstrap();
     assert.equal(bootstrap.status, "ready");
+    assert.equal(bootstrap.warmStart.fresh, true);
     assert.equal(bootstrap.learning.topFamilies[0].id, "trend_following");
     assert.equal(bootstrap.news.topProviders[0].id, "coindesk");
     assert.equal(bootstrap.contexts.topKinds[0].id, "calendar");
     assert.equal(bootstrap.latestDatasetCuration.paperLearningStatus, "building");
     assert.equal(recorder.getSummary().latestBootstrap.status, "ready");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("data recorder marks stale warm start datasets as stale", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-recorder-bootstrap-stale-"));
+  try {
+    const recorder = new DataRecorder({
+      runtimeDir: tempDir,
+      config: { dataRecorderEnabled: true, dataRecorderRetentionDays: 30, dataRecorderWarmStartMaxAgeHours: 48 },
+      logger: { info() {}, warn() {} }
+    });
+    await recorder.init();
+    await recorder.recordDatasetCuration({
+      at: "2026-03-20T08:05:00.000Z",
+      paperLearning: { status: "building" },
+      journal: {
+        trades: [{ brokerMode: "paper", regimeAtEntry: "trend", strategyAtEntry: "ema_trend", executionQualityScore: 0.67 }],
+        blockedSetups: [],
+        counterfactuals: []
+      }
+    });
+    const bootstrap = await recorder.loadHistoricalBootstrap();
+    assert.equal(bootstrap.status, "stale");
+    assert.equal(bootstrap.warmStart.fresh, false);
+    assert.equal(bootstrap.warmStart.paperLearningReady, false);
+    assert.ok(bootstrap.warmStart.note.includes("oud"));
+    assert.equal(bootstrap.latestDatasetCuration.stale, true);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -14885,8 +14915,39 @@ await runCheck("trading bot applies historical bootstrap warm start", async () =
   });
   assert.equal(bot.runtime.historicalBootstrap.status, "ready");
   assert.equal(bot.runtime.ops.historicalBootstrap.warmStart.governanceFocus, "veto_review");
+  assert.equal(bot.runtime.ops.historicalBootstrap.warmStartApplied, true);
   assert.equal(bot.runtime.thresholdTuning.warmStart.focus, "veto_review");
   assert.equal(bot.runtime.paperLearning.notes[0], "Warm start vanuit recorder.");
+});
+
+await runCheck("trading bot does not keep stale recorder warm start active", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    ops: {},
+    thresholdTuning: {
+      warmStart: {
+        source: "data_recorder",
+        focus: "execution_learning",
+        generatedAt: "2026-03-20T08:05:00.000Z"
+      }
+    },
+    paperLearning: {}
+  };
+  TradingBot.prototype.applyHistoricalBootstrap.call(bot, {
+    status: "stale",
+    generatedAt: "2026-03-30T08:05:00.000Z",
+    warmStart: {
+      sourceAt: "2026-03-20T08:05:00.000Z",
+      fresh: false,
+      governanceFocus: "veto_review",
+      note: "Recorder warm start is 240u oud en wordt niet actief toegepast."
+    }
+  });
+  assert.equal(bot.runtime.ops.historicalBootstrap.stale, true);
+  assert.equal(bot.runtime.ops.historicalBootstrap.warmStartApplied, false);
+  assert.equal(bot.runtime.thresholdTuning.warmStart.focus, null);
+  assert.equal(bot.runtime.thresholdTuning.warmStart.stale, true);
+  assert.equal((bot.runtime.paperLearning.notes || []).length, 0);
 });
 
 await runCheck("trading bot threshold experiment snapshot respects combined strategy and regime scope", async () => {

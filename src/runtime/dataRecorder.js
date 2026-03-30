@@ -1433,11 +1433,24 @@ export class DataRecorder {
       loadBucket("datasets")
     ]);
 
-    const latestDataset = datasetRecords[0]?.datasets || null;
+    const latestDatasetRecord = datasetRecords[0] || null;
+    const latestDataset = latestDatasetRecord?.datasets || null;
+    const latestDatasetAt = latestDatasetRecord?.at || null;
+    const warmStartMaxAgeHours = Math.max(24, Number(this.config.dataRecorderWarmStartMaxAgeHours || 72));
+    const warmStartAgeHours = latestDatasetAt
+      ? Math.max(0, (new Date().getTime() - new Date(latestDatasetAt).getTime()) / 36e5)
+      : null;
+    const warmStartFresh = latestDatasetAt == null
+      ? true
+      : Number.isFinite(warmStartAgeHours)
+        ? warmStartAgeHours <= warmStartMaxAgeHours
+        : false;
     const bootstrap = {
       generatedAt: new Date().toISOString(),
       status: decisionRecords.length || tradeRecords.length || learningRecords.length || newsRecords.length || contextRecords.length
-        ? "ready"
+        ? warmStartFresh
+          ? "ready"
+          : "stale"
         : "empty",
       decisions: {
         count: decisionRecords.length,
@@ -1468,6 +1481,9 @@ export class DataRecorder {
         topEventTypes: topCounts(contextRecords.flatMap((item) => arr(item.items || []).map((contextItem) => contextItem.type)), 6)
       },
       latestDatasetCuration: latestDataset ? {
+        at: latestDatasetAt || null,
+        ageHours: num(warmStartAgeHours || 0, 2),
+        stale: !warmStartFresh,
         paperLearningStatus: latestDataset.paperLearning?.status || "unknown",
         paperLearningOutcomes: latestDataset.paperLearning?.recentOutcomes || {},
         topVetoBlockerCount: latestDataset.vetoReview?.blockedSetups || 0,
@@ -1479,7 +1495,10 @@ export class DataRecorder {
         dataQuality: latestDataset.dataQuality || null
       } : null,
       warmStart: {
-        paperLearningReady: (latestDataset?.paperLearning?.tradeCount || 0) >= 3,
+        sourceAt: latestDatasetAt || null,
+        ageHours: num(warmStartAgeHours || 0, 2),
+        fresh: warmStartFresh,
+        paperLearningReady: warmStartFresh && (latestDataset?.paperLearning?.tradeCount || 0) >= 3,
         governanceFocus: latestDataset?.vetoReview?.badVetoCount > latestDataset?.vetoReview?.goodVetoCount
           ? "veto_review"
           : latestDataset?.executionLearning?.executionDragCount > 0
@@ -1488,7 +1507,9 @@ export class DataRecorder {
               ? "exit_learning"
               : "paper_learning",
         note: latestDataset
-          ? `Warm start vanuit recorder: ${latestDataset.paperLearning?.status || "unknown"} paper learning met ${latestDataset.featureStore?.learningFrames || 0} learning frames.`
+          ? warmStartFresh
+            ? `Warm start vanuit recorder: ${latestDataset.paperLearning?.status || "unknown"} paper learning met ${latestDataset.featureStore?.learningFrames || 0} learning frames.`
+            : `Recorder warm start is ${num(warmStartAgeHours || 0, 1)}u oud en wordt niet actief toegepast.`
           : "Nog geen dataset-curation beschikbaar voor warm start."
       }
     };
