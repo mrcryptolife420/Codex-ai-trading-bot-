@@ -2801,11 +2801,27 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
     featurePenalty: num(guidance.featurePenalty || 0, 4),
     featureTrustPenalty: num(guidance.featureTrustPenalty || 0, 4),
     adjacentScopePressure: num(guidance.adjacentScopePressure || 0, 4),
+    independentWeakGroupPressure: num(guidance.independentWeakGroupPressure || 0, 4),
+    correlatedWeakFeaturePressure: num(guidance.correlatedWeakFeaturePressure || 0, 4),
+    adjacentFeaturePressure: num(guidance.adjacentFeaturePressure || 0, 4),
     executionCaution: num(guidance.executionCaution || 0, 4),
     executionCostBufferBps: num(guidance.executionCostBufferBps || 0, 2),
     benchmarkLead: guidance.benchmarkLead || null,
     focusReason: guidance.focusReason || null,
     impactedFeatures: [...(guidance.impactedFeatures || [])].slice(0, 6),
+    featurePressureSources: [...(guidance.featurePressureSources || [])].slice(0, 4).map((item) => ({
+      source: item.source || null,
+      featureCount: item.featureCount || 0,
+      penalty: num(item.penalty || 0, 4)
+    })),
+    impactedFeatureGroups: arr(guidance.impactedFeatureGroups || []).slice(0, 4).map((item) => ({
+      group: item.group || "context",
+      featureCount: item.featureCount || 0,
+      sourceCount: item.sourceCount || 0,
+      penalty: num(item.penalty || 0, 4),
+      topFeatures: [...(item.topFeatures || [])].slice(0, 3),
+      sourceTypes: [...(item.sourceTypes || [])].slice(0, 3)
+    })),
     matchedOutcomeScopes: arr(guidance.matchedOutcomeScopes || []).slice(0, 4).map((item) => ({
       id: item.id || null,
       scopeType: item.scopeType || null,
@@ -2818,6 +2834,34 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
     })),
     note: guidance.note || null
   };
+}
+
+function inferFeatureGovernanceGroup(name = "") {
+  if (name.includes("execution") || name.includes("book_") || name.includes("queue_") || name.includes("spread") || name.includes("depth_") || name.includes("microprice")) {
+    return "execution";
+  }
+  if (name.includes("vol") || name.includes("atr") || name.includes("squeeze")) {
+    return "volatility";
+  }
+  if (name.includes("volume") || name === "cmf" || name === "mfi_centered" || name === "obv_slope") {
+    return "volume";
+  }
+  if (name.includes("regime_")) {
+    return "regime";
+  }
+  if (name.includes("structure") || name.includes("vwap") || name.includes("liquidity_sweep") || name.includes("trend_failure")) {
+    return "market_structure";
+  }
+  if (name.includes("momentum") || name.includes("rsi") || name.includes("stoch") || name.includes("macd")) {
+    return "momentum";
+  }
+  if (name.includes("trend") || name.includes("ema") || name.includes("adx") || name.includes("dmi") || name.includes("supertrend")) {
+    return "trend";
+  }
+  if (name.includes("risk") || name.includes("calendar") || name.includes("pair_") || name.includes("portfolio_")) {
+    return "risk";
+  }
+  return "context";
 }
 
 function summarizeLowConfidencePressure(pressure = {}) {
@@ -10952,6 +10996,9 @@ export class TradingBot {
     const guardOnly = new Set(arr(featureGovernance.pruning?.guardOnlyFeatures || []));
     const missingInLive = new Set(arr(featureGovernance.parityAudit?.missingInLive || []));
     const topNegative = new Map(arr(featureGovernance.attribution?.topNegative || []).map((item) => [item.id, item]));
+    const parityDetails = new Map(arr(featureGovernance.parityAudit?.details || []).map((item) => [item.id, item]));
+    const pruningRecommendations = new Map(arr(featureGovernance.pruning?.recommendations || []).map((item) => [item.id, item]));
+    const impactedFeatureEntries = [];
     let featurePenalty = 0;
 
     for (const [id, value] of Object.entries(rawFeatureMap)) {
@@ -10959,21 +11006,82 @@ export class TradingBot {
         continue;
       }
       const absValue = Math.abs(value);
+      let penalty = 0;
+      let source = null;
       if (dropCandidates.has(id) && absValue >= 0.28) {
-        featurePenalty += 0.018;
-        impactedFeatures.push(id);
+        penalty = 0.018;
+        source = "pruning_drop_candidate";
       } else if (guardOnly.has(id) && absValue >= 0.22) {
-        featurePenalty += 0.016;
-        impactedFeatures.push(id);
+        penalty = 0.016;
+        source = "pruning_guard_only";
       } else if (missingInLive.has(id) && absValue >= 0.18) {
-        featurePenalty += 0.014;
-        impactedFeatures.push(id);
+        penalty = 0.014;
+        source = "parity_missing_in_live";
       } else if (topNegative.has(id) && absValue >= 0.3) {
-        const weight = Math.max(0.01, Math.min(0.02, (topNegative.get(id)?.influenceScore || 0.1) * 0.1));
-        featurePenalty += weight;
+        penalty = Math.max(0.01, Math.min(0.02, (topNegative.get(id)?.influenceScore || 0.1) * 0.1));
+        source = "inverse_attribution";
+      }
+      if (penalty > 0) {
+        const group = topNegative.get(id)?.group ||
+          pruningRecommendations.get(id)?.group ||
+          parityDetails.get(id)?.group ||
+          inferFeatureGovernanceGroup(id);
         impactedFeatures.push(id);
+        impactedFeatureEntries.push({
+          id,
+          group,
+          source,
+          penalty,
+          absValue: num(absValue, 4)
+        });
       }
     }
+
+    const groupedFeatureEntries = new Map();
+    const sourcePressure = new Map();
+    for (const item of impactedFeatureEntries) {
+      if (!groupedFeatureEntries.has(item.group)) {
+        groupedFeatureEntries.set(item.group, {
+          group: item.group,
+          features: [],
+          sources: new Set()
+        });
+      }
+      const bucket = groupedFeatureEntries.get(item.group);
+      bucket.features.push(item);
+      bucket.sources.add(item.source);
+      if (!sourcePressure.has(item.source)) {
+        sourcePressure.set(item.source, { source: item.source, featureCount: 0, penalty: 0 });
+      }
+      const sourceBucket = sourcePressure.get(item.source);
+      sourceBucket.featureCount += 1;
+      sourceBucket.penalty += item.penalty;
+    }
+
+    const impactedFeatureGroups = [...groupedFeatureEntries.values()]
+      .map((bucket) => {
+        const rankedFeatures = bucket.features
+          .slice()
+          .sort((left, right) => (right.penalty || 0) - (left.penalty || 0) || (right.absValue || 0) - (left.absValue || 0));
+        const strongestPenalty = rankedFeatures[0]?.penalty || 0;
+        const correlatedPenalty = rankedFeatures
+          .slice(1)
+          .reduce((total, item, index) => total + item.penalty * (index === 0 ? 0.45 : 0.3), 0);
+        const penalty = strongestPenalty +
+          Math.min(0.01, correlatedPenalty) +
+          (bucket.sources.size >= 2 ? Math.min(0.008, bucket.sources.size * 0.003) : 0);
+        return {
+          group: bucket.group,
+          featureCount: rankedFeatures.length,
+          sourceCount: bucket.sources.size,
+          sourceTypes: [...bucket.sources],
+          topFeatures: rankedFeatures.slice(0, 3).map((item) => item.id),
+          penalty: num(penalty, 4)
+        };
+      })
+      .sort((left, right) => (right.penalty || 0) - (left.penalty || 0) || (right.featureCount || 0) - (left.featureCount || 0));
+
+    featurePenalty = impactedFeatureGroups.reduce((total, item) => total + (item.penalty || 0), 0);
 
     const adjacentScopePressure = clamp(
       scopeMatches
@@ -10982,8 +11090,22 @@ export class TradingBot {
       0,
       1.8
     );
-    const repeatedWeakFeaturePressure = impactedFeatures.length >= 2 ? Math.min(0.03, impactedFeatures.length * 0.008) : 0;
-    const featureTrustPenalty = clamp(featurePenalty + repeatedWeakFeaturePressure + adjacentScopePressure * 0.012, 0, 0.12);
+    const independentWeakGroupPressure = impactedFeatureGroups.length >= 2
+      ? Math.min(0.036, impactedFeatureGroups.length * 0.011)
+      : 0;
+    const correlatedWeakFeaturePressure = impactedFeatureEntries.length > impactedFeatureGroups.length
+      ? Math.min(0.016, (impactedFeatureEntries.length - impactedFeatureGroups.length) * 0.004)
+      : 0;
+    const adjacentFeaturePressure = clamp(
+      adjacentScopePressure * Math.min(0.016, impactedFeatureGroups.length * 0.005 + (impactedFeatureGroups.length >= 2 ? 0.003 : 0)),
+      0,
+      0.024
+    );
+    const featureTrustPenalty = clamp(
+      featurePenalty + independentWeakGroupPressure + correlatedWeakFeaturePressure + adjacentFeaturePressure,
+      0,
+      0.12
+    );
     const executionCautionBase = weightedConfidence
       ? scopeMatches.reduce(
           (total, item) => total + (
@@ -11046,6 +11168,12 @@ export class TradingBot {
     if (impactedFeatures.length) {
       noteParts.push(`Feature pressure op ${impactedFeatures.slice(0, 3).join(", ")}.`);
     }
+    if (impactedFeatureGroups[0]) {
+      noteParts.push(`Sterkste zwakke featuregroep: ${impactedFeatureGroups[0].group}.`);
+    }
+    if (sourcePressure.size) {
+      noteParts.push(`Dominante bron: ${[...sourcePressure.values()].sort((left, right) => (right.penalty || 0) - (left.penalty || 0))[0]?.source || "feature_governance"}.`);
+    }
     if (executionCaution >= 0.06) {
       noteParts.push("Execution drag of quality traps duwen nu extra cost-caution.");
     }
@@ -11060,11 +11188,23 @@ export class TradingBot {
       featurePenalty: num(featurePenalty, 4),
       featureTrustPenalty: num(featureTrustPenalty, 4),
       adjacentScopePressure: num(adjacentScopePressure, 4),
+      independentWeakGroupPressure: num(independentWeakGroupPressure, 4),
+      correlatedWeakFeaturePressure: num(correlatedWeakFeaturePressure, 4),
+      adjacentFeaturePressure: num(adjacentFeaturePressure, 4),
       executionCaution: num(executionCaution, 4),
       executionCostBufferBps: num(clamp(executionCaution * 8, 0, 2.6), 2),
       benchmarkLead,
       focusReason,
       impactedFeatures: [...new Set(impactedFeatures)].slice(0, 6),
+      featurePressureSources: [...sourcePressure.values()]
+        .map((item) => ({
+          source: item.source,
+          featureCount: item.featureCount,
+          penalty: num(item.penalty || 0, 4)
+        }))
+        .sort((left, right) => (right.penalty || 0) - (left.penalty || 0) || (right.featureCount || 0) - (left.featureCount || 0))
+        .slice(0, 4),
+      impactedFeatureGroups: impactedFeatureGroups.slice(0, 4),
       matchedOutcomeScopes: scopeMatches.slice(0, 4),
       note: noteParts.join(" ") || outcomeScopeLearning.notes?.[0] || featureGovernance.notes?.[0] || "Offline learning guidance warmt nog op."
     };

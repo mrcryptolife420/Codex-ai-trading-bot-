@@ -16198,7 +16198,85 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
   assert.ok(guidance.featureTrustPenalty >= guidance.featurePenalty);
   assert.ok(guidance.adjacentScopePressure > 0);
   assert.ok(guidance.impactedFeatures.includes("stoch_cross"));
+  assert.ok(guidance.featurePressureSources.some((item) => item.source === "pruning_drop_candidate"));
+  assert.ok(guidance.impactedFeatureGroups.some((item) => item.group === "momentum"));
   assert.ok(guidance.matchedOutcomeScopes.length >= 2);
+});
+
+await runCheck("trading bot penalizes independent weak feature groups harder than correlated duplicates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    paperLearning: {
+      status: "active",
+      benchmarkLanes: { bestLane: "probe_lane" },
+      challengerPolicy: {}
+    },
+    offlineTrainer: {
+      outcomeScopeScorecards: {
+        status: "active",
+        family: [
+          { id: "trend_following", scopeType: "family", thresholdShift: -0.01, sizeMultiplier: 1.01, cautionPenalty: 0.012, confidence: 0.72, status: "relax", note: "family stable", executionDragRate: 0.08, qualityTrapRate: 0.06 }
+        ]
+      },
+      featureGovernance: {
+        status: "watch",
+        attribution: {
+          topNegative: [
+            { id: "ema_alignment", group: "trend", influenceScore: 0.18 },
+            { id: "trend_quality_composite", group: "trend", influenceScore: 0.17 },
+            { id: "downside_vol_dominance", group: "volatility", influenceScore: 0.19 },
+            { id: "orderbook_imbalance", group: "execution", influenceScore: 0.16 }
+          ]
+        },
+        parityAudit: {
+          missingInLive: ["ema_alignment", "downside_vol_dominance"],
+          details: [
+            { id: "ema_alignment", group: "trend", status: "misaligned" },
+            { id: "downside_vol_dominance", group: "volatility", status: "misaligned" }
+          ]
+        },
+        pruning: {
+          dropCandidates: ["ema_alignment", "downside_vol_dominance"],
+          guardOnlyFeatures: ["orderbook_imbalance"],
+          recommendations: [
+            { id: "ema_alignment", group: "trend", action: "drop_candidate", status: "drop_candidate" },
+            { id: "trend_quality_composite", group: "trend", action: "observe_only", status: "observe" },
+            { id: "downside_vol_dominance", group: "volatility", action: "drop_candidate", status: "drop_candidate" },
+            { id: "orderbook_imbalance", group: "execution", action: "fix_live_parity", status: "guard_only" }
+          ]
+        }
+      }
+    }
+  };
+
+  const correlated = bot.buildOfflineLearningGuidance({
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "asia" },
+    marketConditionSummary: { conditionId: "trend_continuation" },
+    rawFeatures: {
+      ema_alignment: 0.74,
+      trend_quality_composite: 0.68
+    }
+  });
+  const independent = bot.buildOfflineLearningGuidance({
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "asia" },
+    marketConditionSummary: { conditionId: "trend_continuation" },
+    rawFeatures: {
+      ema_alignment: 0.74,
+      downside_vol_dominance: 0.71,
+      orderbook_imbalance: 0.55
+    }
+  });
+
+  assert.ok(correlated.impactedFeatureGroups.length === 1);
+  assert.ok(independent.impactedFeatureGroups.length >= 2);
+  assert.ok(independent.featureTrustPenalty > correlated.featureTrustPenalty);
+  assert.ok(independent.independentWeakGroupPressure > 0);
+  assert.ok(independent.featurePressureSources.some((item) => item.source === "parity_missing_in_live"));
 });
 
 await runCheck("trading bot paper learning summary surfaces execution and quality-trap review focus", async () => {
