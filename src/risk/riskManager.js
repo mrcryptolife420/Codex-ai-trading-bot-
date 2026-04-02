@@ -1039,6 +1039,11 @@ function buildLowConfidencePressure({
   const dataConfidenceGap = clamp(0.6 - safeValue(confidenceBreakdown.dataConfidence, 0.6), 0, 1);
   const executionConfidenceGap = clamp(0.58 - safeValue(confidenceBreakdown.executionConfidence, 0.58), 0, 1);
   const disagreementPressure = clamp(safeValue(score.disagreement, 0) / 0.28, 0, 1);
+  const disagreementAudit = score.disagreementAudit || {};
+  const rawDisagreement = clamp(safeValue(disagreementAudit.rawDisagreement, safeValue(score.disagreement, 0)), 0, 1);
+  const weightedDisagreement = clamp(safeValue(disagreementAudit.weightedDisagreement, safeValue(score.disagreement, 0)), 0, 1);
+  const disagreementCompression = clamp(rawDisagreement - weightedDisagreement, 0, 0.2);
+  const dominantDisagreementPair = disagreementAudit.dominantPair || null;
   const blendAudit = score.blendAudit || {};
   const blendDrag = clamp(
     safeValue(blendAudit.championToBlendDrag, 0),
@@ -1083,7 +1088,7 @@ function buildLowConfidencePressure({
     calibration_confidence: calibrationConfidenceGap * 1.25 + Math.max(0, safeValue(minCalibrationConfidence, 0) - safeValue(score.calibrationConfidence, 0)) * 0.8,
     threshold_penalty_stack: thresholdPenaltyPressure * 8.5 - thresholdRelief * 2.4,
     auxiliary_blend_drag: blendDrag * 10.5 + Math.max(challengerNeutralDrag, transformerNeutralDrag, sequenceNeutralDrag) * 4.5,
-    model_disagreement: disagreementPressure * 1.05,
+    model_disagreement: disagreementPressure * 1.05 + Math.max(0, rawDisagreement - 0.22) * 0.35,
     feature_trust: featureTrustPenalty * 8.2,
     execution_quality: executionConfidenceGap * 1.12 + executionCaution * 2.1,
     data_quality: dataConfidenceGap * 1.05 + Math.max(0, 0.58 - dataQuality) * 0.7,
@@ -1097,9 +1102,9 @@ function buildLowConfidencePressure({
     dataQuality >= 0.58 &&
     safeValue(confidenceBreakdown.executionConfidence, 0) >= 0.56 &&
     safeValue(confidenceBreakdown.dataConfidence, 0) >= 0.58 &&
-    disagreementPressure <= 0.42 &&
-    executionCaution <= 0.08 &&
-    (
+      disagreementPressure <= 0.42 &&
+      executionCaution <= 0.08 &&
+      (
       (
         featureTrustPenalty <= 0.08 &&
         ["calibration_warmup", "calibration_confidence", "threshold_penalty_stack"].includes(primaryDriver)
@@ -1108,6 +1113,13 @@ function buildLowConfidencePressure({
         primaryDriver === "auxiliary_blend_drag" &&
         blendDrag <= 0.045 &&
         disagreementPressure <= 0.32 &&
+        featureTrustPenalty <= 0.08 &&
+        executionCaution <= 0.06
+      ) ||
+      (
+        primaryDriver === "model_disagreement" &&
+        rawDisagreement <= 0.22 &&
+        disagreementCompression >= 0.03 &&
         featureTrustPenalty <= 0.08 &&
         executionCaution <= 0.06
       ) ||
@@ -1134,7 +1146,7 @@ function buildLowConfidencePressure({
               : primaryDriver === "data_quality"
                 ? "Datakwaliteit en quorum houden de confidence nu zichtbaar omlaag."
                 : primaryDriver === "model_disagreement"
-                  ? "Model disagreement blijft te hoog om deze setup normaal te vertrouwen."
+                  ? `${dominantDisagreementPair || "ensemble"} blijft verdeeld, maar een deel van die spanning komt uit zwakke auxiliary signalen.`
                   : "Model confidence blijft te laag ten opzichte van de huidige threshold-stack.";
 
   return {
@@ -1148,6 +1160,10 @@ function buildLowConfidencePressure({
     calibrationWarmupGap: num(calibrationWarmupGap, 4),
     calibrationConfidenceGap: num(calibrationConfidenceGap, 4),
     disagreementPressure: num(disagreementPressure, 4),
+    rawDisagreement: num(rawDisagreement, 4),
+    weightedDisagreement: num(weightedDisagreement, 4),
+    disagreementCompression: num(disagreementCompression, 4),
+    dominantDisagreementPair,
     blendDrag: num(blendDrag, 4),
     challengerNeutralDrag: num(challengerNeutralDrag, 4),
     transformerNeutralDrag: num(transformerNeutralDrag, 4),
@@ -2379,12 +2395,14 @@ export class RiskManager {
                 ? 0.01
                 : lowConfidencePressure.primaryDriver === "auxiliary_blend_drag"
                   ? 0.008
+                : lowConfidencePressure.primaryDriver === "model_disagreement"
+                  ? 0.006
                 : lowConfidencePressure.primaryDriver === "feature_trust" && lowConfidencePressure.featureTrustNarrowPressure
                   ? 0.007
                 : 0.008) +
             Math.max(0, 0.03 + safeValue(lowConfidencePressure.edgeToThreshold, 0)) * 0.08,
             0,
-            lowConfidencePressure.primaryDriver === "feature_trust" ? 0.01 : 0.014
+            ["feature_trust", "model_disagreement"].includes(lowConfidencePressure.primaryDriver) ? 0.01 : 0.014
           )
         : 0;
     const paperProbeThresholdBuffer = this.config.paperExplorationThresholdBuffer +

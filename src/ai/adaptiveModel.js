@@ -41,6 +41,19 @@ function computeAuxiliaryBlendModifier(probability) {
   };
 }
 
+function computeDisagreementSignal({ probability, confidence = 0, minimumWeight = 0.18 } = {}) {
+  const edgeStrength = clamp(Math.abs(safeNumber(probability, 0.5) - 0.5) * 2, 0, 1);
+  const effectiveWeight = clamp(
+    minimumWeight + clamp(confidence, 0, 1) * 0.42 + edgeStrength * 0.4,
+    minimumWeight,
+    1
+  );
+  return {
+    edgeStrength: num(edgeStrength, 4),
+    effectiveWeight: num(effectiveWeight, 4)
+  };
+}
+
 function bootstrapSpecialists(baseState) {
   return Object.fromEntries(
     REGIMES.map((regime) => [regime, OnlineTradingModel.bootstrapState(baseState)])
@@ -408,13 +421,61 @@ export class AdaptiveTradingModel {
           timeframeEncoding
         });
     const calibration = this.calibrator.calibrate(championScore.probability);
-    const disagreement = Math.max(
-      Math.abs(championScore.probability - challengerScore.probability),
-      Math.abs(championScore.probability - transformerScore.probability),
-      Math.abs(championScore.probability - sequenceScore.probability),
-      Math.abs(challengerScore.probability - transformerScore.probability),
-      Math.abs(challengerScore.probability - sequenceScore.probability)
-    );
+    const disagreementSignals = {
+      champion: computeDisagreementSignal({
+        probability: championScore.probability,
+        confidence: championScore.confidence,
+        minimumWeight: 0.72
+      }),
+      challenger: computeDisagreementSignal({
+        probability: challengerScore.probability,
+        confidence: challengerScore.confidence,
+        minimumWeight: 0.18
+      }),
+      transformer: computeDisagreementSignal({
+        probability: transformerScore.probability,
+        confidence: transformerScore.confidence,
+        minimumWeight: 0.14
+      }),
+      sequence: computeDisagreementSignal({
+        probability: sequenceScore.probability,
+        confidence: sequenceScore.confidence,
+        minimumWeight: 0.14
+      })
+    };
+    const disagreementPairs = [
+      {
+        source: "champion_vs_challenger",
+        rawGap: Math.abs(championScore.probability - challengerScore.probability),
+        weight: disagreementSignals.challenger.effectiveWeight
+      },
+      {
+        source: "champion_vs_transformer",
+        rawGap: Math.abs(championScore.probability - transformerScore.probability),
+        weight: disagreementSignals.transformer.effectiveWeight
+      },
+      {
+        source: "champion_vs_sequence",
+        rawGap: Math.abs(championScore.probability - sequenceScore.probability),
+        weight: disagreementSignals.sequence.effectiveWeight
+      },
+      {
+        source: "challenger_vs_transformer",
+        rawGap: Math.abs(challengerScore.probability - transformerScore.probability),
+        weight: Math.min(disagreementSignals.challenger.effectiveWeight, disagreementSignals.transformer.effectiveWeight)
+      },
+      {
+        source: "challenger_vs_sequence",
+        rawGap: Math.abs(challengerScore.probability - sequenceScore.probability),
+        weight: Math.min(disagreementSignals.challenger.effectiveWeight, disagreementSignals.sequence.effectiveWeight)
+      }
+    ].map((item) => ({
+      ...item,
+      effectiveGap: num(item.rawGap * item.weight, 4),
+      rawGap: num(item.rawGap, 4),
+      weight: num(item.weight, 4)
+    }));
+    const disagreement = Math.max(...disagreementPairs.map((item) => item.effectiveGap), 0);
     const rawProbability = championScore.probability;
     const calibrationWarmup = clamp(
       calibration.warmupProgress ?? calibration.globalConfidence ?? calibration.confidence ?? 0,
@@ -469,6 +530,15 @@ export class AdaptiveTradingModel {
       rawProbability: num(rawProbability, 4),
       blendedProbability: num(blendedProbability, 4),
       championToBlendDrag: num(Math.max(0, rawProbability - blendedProbability), 4)
+    };
+    const disagreementAudit = {
+      rawDisagreement: num(Math.max(...disagreementPairs.map((item) => item.rawGap), 0), 4),
+      weightedDisagreement: num(disagreement, 4),
+      dominantPair: disagreementPairs
+        .slice()
+        .sort((left, right) => right.effectiveGap - left.effectiveGap)[0]?.source || null,
+      signals: disagreementSignals,
+      pairs: disagreementPairs
     };
     const coldStartConfidence = clamp(
       0.22 + championScore.confidence * 0.44 + regimeSummary.confidence * 0.18 + challengerScore.confidence * 0.06 + sequenceScore.confidence * 0.1,
@@ -569,6 +639,7 @@ export class AdaptiveTradingModel {
       calibrationConfidence,
       edgeStrength,
       blendAudit,
+      disagreementAudit,
       disagreement,
       regime: regimeSummary.regime,
       regimeSummary,
