@@ -538,6 +538,42 @@ await runCheck("adaptive model still lets high-confidence challenger influence t
   assert.ok(score.probability > 0.54);
 });
 
+await runCheck("adaptive model limits neutral transformer and sequence drag on champion probability", async () => {
+  const config = makeConfig();
+  const model = new AdaptiveTradingModel(undefined, config);
+  for (const specialist of Object.values(model.models.champion)) {
+    specialist.score = () => ({ probability: 0.64, confidence: 0.72, contributions: [], preparedFeatures: {} });
+  }
+  for (const specialist of Object.values(model.models.challenger)) {
+    specialist.score = () => ({ probability: 0.63, confidence: 0.76, contributions: [], preparedFeatures: {} });
+  }
+  model.calibrator.calibrate = () => ({
+    calibratedProbability: 0.63,
+    confidence: 0.82,
+    globalConfidence: 0.8,
+    warmupProgress: 1
+  });
+  model.transformer.score = () => ({ probability: 0.505, confidence: 0.9, dominantHead: "range", headScores: {}, attention: [], horizons: [], drivers: [], query: {} });
+  model.sequence.score = () => ({ probability: 0.498, confidence: 0.88, inputs: {}, drivers: [], sampleCount: 40 });
+  model.metaNeural.score = () => ({ probability: 0.63, confidence: 0.6, action: "allow", contributions: [] });
+  model.executionNeural.score = () => ({ probability: 0.63, confidence: 0.6, action: "allow", contributions: [] });
+  model.strategyMeta.score = () => ({ preferredFamily: "trend_following", preferredExecutionStyle: "limit_maker", families: [], executionStyles: [], confidence: 0.5 });
+
+  const score = model.score(
+    { trend_quality_composite: 0.44, strategy_fit: 0.68 },
+    {
+      regimeSummary: { regime: "trend", confidence: 0.82, bias: 0.22, reasons: ["persistent_trend"] },
+      marketSnapshot: { market: { emaTrendScore: 0.22, momentum20: 0.018 }, book: {} },
+      timeframeSummary: { alignmentScore: 0.8 }
+    }
+  );
+
+  assert.ok(score.blendAudit.transformer.effectiveWeight < score.blendAudit.transformer.rawWeight);
+  assert.ok(score.blendAudit.sequence.effectiveWeight < score.blendAudit.sequence.rawWeight);
+  assert.ok(score.blendAudit.championToBlendDrag < 0.03);
+  assert.ok(score.probability > 0.61);
+});
+
 await runCheck("adaptive model exposes strategy meta guidance", async () => {
   const config = makeConfig();
   const model = new AdaptiveTradingModel(undefined, config);
@@ -7174,6 +7210,74 @@ await runCheck("risk manager can use narrow feature-trust pressure for paper low
   assert.equal(guided.lowConfidencePressure.dominantFeaturePressureSource, "inverse_attribution");
   assert.equal(guided.lowConfidencePressure.featureTrustNarrowPressure, true);
   assert.ok((guided.paperExploration?.confidenceThresholdRelief || 0) > 0);
+});
+
+await runCheck("risk manager can treat neutral auxiliary blend drag as a bounded paper near-miss relief case", async () => {
+  const manager = new RiskManager(makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 }));
+  const unguided = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.517,
+      rawProbability: 0.548,
+      confidence: 0.31,
+      calibrationConfidence: 0.78,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      abstainReasons: [],
+      blendAudit: {
+        championToBlendDrag: 0.031,
+        challenger: { neutralDrag: 0.003 },
+        transformer: { neutralDrag: 0.019 },
+        sequence: { neutralDrag: 0.015 }
+      },
+      calibrator: { warmupProgress: 1, globalConfidence: 0.9 },
+      transformer: { probability: 0.505, confidence: 0.88 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.2, bookPressure: -0.18, microPriceEdgeBps: 0.18, depthConfidence: 0.82 },
+      market: { realizedVolPct: 0.011, atrPct: 0.007, bearishPatternScore: 0.02, bullishPatternScore: 0.11, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.05, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.07, signalScore: 0.1, crowdingBias: 0.02, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.16, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.04, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.74, probability: 0.53, netScore: 0.04, sizeMultiplier: 0.99, confidence: 0.76, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.39, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.73,
+      confidence: 0.69,
+      blockers: [],
+      agreementGap: 0.02,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.7, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.78 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.92, blockerReasons: [] },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.81 },
+    pairHealthSummary: { quarantined: false, score: 0.76 },
+    signalQualitySummary: { overallScore: 0.74, executionViability: 0.72, structureQuality: 0.7, quorumQuality: 0.9 },
+    dataQualitySummary: { overallScore: 0.68 },
+    confidenceBreakdown: { overallConfidence: 0.72, executionConfidence: 0.71, dataConfidence: 0.69, modelConfidence: 0.68 },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  });
+
+  assert.equal(unguided.allow, true);
+  assert.equal(unguided.entryMode, "paper_exploration");
+  assert.equal(unguided.lowConfidencePressure.primaryDriver, "auxiliary_blend_drag");
+  assert.equal(unguided.lowConfidencePressure.dominantBlendDragSource, "transformer");
+  assert.ok((unguided.paperExploration?.confidenceThresholdRelief || 0) > 0);
 });
 
 await runCheck("risk manager does not relax paper low-confidence probes when feature trust is driven by live parity loss", async () => {

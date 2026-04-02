@@ -1039,6 +1039,20 @@ function buildLowConfidencePressure({
   const dataConfidenceGap = clamp(0.6 - safeValue(confidenceBreakdown.dataConfidence, 0.6), 0, 1);
   const executionConfidenceGap = clamp(0.58 - safeValue(confidenceBreakdown.executionConfidence, 0.58), 0, 1);
   const disagreementPressure = clamp(safeValue(score.disagreement, 0) / 0.28, 0, 1);
+  const blendAudit = score.blendAudit || {};
+  const blendDrag = clamp(
+    safeValue(blendAudit.championToBlendDrag, 0),
+    0,
+    0.12
+  );
+  const challengerNeutralDrag = clamp(safeValue(blendAudit.challenger?.neutralDrag, 0), 0, 0.08);
+  const transformerNeutralDrag = clamp(safeValue(blendAudit.transformer?.neutralDrag, 0), 0, 0.08);
+  const sequenceNeutralDrag = clamp(safeValue(blendAudit.sequence?.neutralDrag, 0), 0, 0.08);
+  const dominantBlendDragSource = [
+    ["challenger", challengerNeutralDrag],
+    ["transformer", transformerNeutralDrag],
+    ["sequence", sequenceNeutralDrag]
+  ].sort((left, right) => right[1] - left[1])[0]?.[0] || null;
   const featureTrustPenalty = clamp(safeValue(offlineLearningGuidanceApplied.featureTrustPenalty, 0), 0, 0.12);
   const executionCaution = clamp(safeValue(offlineLearningGuidanceApplied.executionCaution, 0), 0, 0.18);
   const featurePressureSources = Array.isArray(offlineLearningGuidanceApplied.featurePressureSources)
@@ -1068,6 +1082,7 @@ function buildLowConfidencePressure({
     calibration_warmup: calibrationWarmupGap * 0.95 + Math.max(0, thresholdPenaltyPressure - 0.01) * 1.4,
     calibration_confidence: calibrationConfidenceGap * 1.25 + Math.max(0, safeValue(minCalibrationConfidence, 0) - safeValue(score.calibrationConfidence, 0)) * 0.8,
     threshold_penalty_stack: thresholdPenaltyPressure * 8.5 - thresholdRelief * 2.4,
+    auxiliary_blend_drag: blendDrag * 10.5 + Math.max(challengerNeutralDrag, transformerNeutralDrag, sequenceNeutralDrag) * 4.5,
     model_disagreement: disagreementPressure * 1.05,
     feature_trust: featureTrustPenalty * 8.2,
     execution_quality: executionConfidenceGap * 1.12 + executionCaution * 2.1,
@@ -1090,6 +1105,13 @@ function buildLowConfidencePressure({
         ["calibration_warmup", "calibration_confidence", "threshold_penalty_stack"].includes(primaryDriver)
       ) ||
       (
+        primaryDriver === "auxiliary_blend_drag" &&
+        blendDrag <= 0.045 &&
+        disagreementPressure <= 0.32 &&
+        featureTrustPenalty <= 0.08 &&
+        executionCaution <= 0.06
+      ) ||
+      (
         primaryDriver === "feature_trust" &&
         featureTrustNarrowPressure &&
         ["inverse_attribution", "pruning_guard_only", null].includes(dominantFeaturePressureSource)
@@ -1103,6 +1125,8 @@ function buildLowConfidencePressure({
         ? "Calibrated confidence blijft nog zwak terwijl de rest van de setup relatief gezond is."
         : primaryDriver === "threshold_penalty_stack"
           ? "Threshold-penalties stapelen nu harder op dan de ruwe setupkwaliteit rechtvaardigt."
+          : primaryDriver === "auxiliary_blend_drag"
+            ? `${dominantBlendDragSource || "auxiliary"} trekt de champion-score met weinig directional edge terug richting neutraal.`
           : primaryDriver === "feature_trust"
             ? `${dominantFeaturePressureGroup || "feature"}-druk uit ${dominantFeaturePressureSource || "feature_governance"} duwt deze setup nu onder de vertrouwenstrigger.`
             : primaryDriver === "execution_quality"
@@ -1124,6 +1148,11 @@ function buildLowConfidencePressure({
     calibrationWarmupGap: num(calibrationWarmupGap, 4),
     calibrationConfidenceGap: num(calibrationConfidenceGap, 4),
     disagreementPressure: num(disagreementPressure, 4),
+    blendDrag: num(blendDrag, 4),
+    challengerNeutralDrag: num(challengerNeutralDrag, 4),
+    transformerNeutralDrag: num(transformerNeutralDrag, 4),
+    sequenceNeutralDrag: num(sequenceNeutralDrag, 4),
+    dominantBlendDragSource,
     modelConfidenceGap: num(modelConfidenceGap, 4),
     dataConfidenceGap: num(dataConfidenceGap, 4),
     executionConfidenceGap: num(executionConfidenceGap, 4),
@@ -2348,6 +2377,8 @@ export class RiskManager {
               ? 0.012
               : lowConfidencePressure.primaryDriver === "calibration_confidence"
                 ? 0.01
+                : lowConfidencePressure.primaryDriver === "auxiliary_blend_drag"
+                  ? 0.008
                 : lowConfidencePressure.primaryDriver === "feature_trust" && lowConfidencePressure.featureTrustNarrowPressure
                   ? 0.007
                 : 0.008) +

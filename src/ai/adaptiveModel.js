@@ -30,6 +30,17 @@ function computeChallengerBlendWeight(challengerConfidence, calibrationWarmup) {
   return clamp(baseBlend + adaptiveBlend, 0.02, 0.15);
 }
 
+function computeAuxiliaryBlendModifier(probability) {
+  const edgeStrength = clamp(Math.abs(safeNumber(probability, 0.5) - 0.5) * 2, 0, 1);
+  const modifier = edgeStrength < 0.16
+    ? clamp(0.22 + edgeStrength * 2.2, 0.22, 0.6)
+    : clamp(0.88 + ((edgeStrength - 0.16) / 0.84) * 0.12, 0.88, 1);
+  return {
+    edgeStrength,
+    modifier: num(modifier, 4)
+  };
+}
+
 function bootstrapSpecialists(baseState) {
   return Object.fromEntries(
     REGIMES.map((regime) => [regime, OnlineTradingModel.bootstrapState(baseState)])
@@ -412,9 +423,15 @@ export class AdaptiveTradingModel {
     );
     const hasCalibrationGate = calibrationWarmup >= 1;
     const calibrationWeight = 0.08 + calibrationWarmup * 0.2;
-    const challengerWeight = computeChallengerBlendWeight(challengerScore.confidence, calibrationWarmup);
-    const transformerBlend = clamp(transformerScore.confidence * (0.04 + calibrationWarmup * 0.06), 0, 0.1);
-    const sequenceBlend = clamp(sequenceScore.confidence * (0.03 + calibrationWarmup * 0.05), 0, 0.09);
+    const challengerRawWeight = computeChallengerBlendWeight(challengerScore.confidence, calibrationWarmup);
+    const challengerBlendProfile = computeAuxiliaryBlendModifier(challengerScore.probability);
+    const transformerRawBlend = clamp(transformerScore.confidence * (0.04 + calibrationWarmup * 0.06), 0, 0.1);
+    const transformerBlendProfile = computeAuxiliaryBlendModifier(transformerScore.probability);
+    const sequenceRawBlend = clamp(sequenceScore.confidence * (0.03 + calibrationWarmup * 0.05), 0, 0.09);
+    const sequenceBlendProfile = computeAuxiliaryBlendModifier(sequenceScore.probability);
+    const challengerWeight = clamp(challengerRawWeight * challengerBlendProfile.modifier, 0.01, 0.15);
+    const transformerBlend = clamp(transformerRawBlend * transformerBlendProfile.modifier, 0, 0.1);
+    const sequenceBlend = clamp(sequenceRawBlend * sequenceBlendProfile.modifier, 0, 0.09);
     const championWeight = clamp(1 - calibrationWeight - challengerWeight - transformerBlend - sequenceBlend, 0.45, 0.76);
     const totalWeight = championWeight + calibrationWeight + challengerWeight + transformerBlend + sequenceBlend;
     const blendedProbability = clamp(
@@ -428,6 +445,31 @@ export class AdaptiveTradingModel {
       0,
       1
     );
+    const blendAudit = {
+      championWeight: num(championWeight, 4),
+      calibrationWeight: num(calibrationWeight, 4),
+      challenger: {
+        rawWeight: num(challengerRawWeight, 4),
+        effectiveWeight: num(challengerWeight, 4),
+        edgeStrength: challengerBlendProfile.edgeStrength,
+        neutralDrag: num(Math.max(0, championScore.probability - challengerScore.probability) * Math.max(0, challengerRawWeight - challengerWeight), 4)
+      },
+      transformer: {
+        rawWeight: num(transformerRawBlend, 4),
+        effectiveWeight: num(transformerBlend, 4),
+        edgeStrength: transformerBlendProfile.edgeStrength,
+        neutralDrag: num(Math.max(0, championScore.probability - transformerScore.probability) * Math.max(0, transformerRawBlend - transformerBlend), 4)
+      },
+      sequence: {
+        rawWeight: num(sequenceRawBlend, 4),
+        effectiveWeight: num(sequenceBlend, 4),
+        edgeStrength: sequenceBlendProfile.edgeStrength,
+        neutralDrag: num(Math.max(0, championScore.probability - sequenceScore.probability) * Math.max(0, sequenceRawBlend - sequenceBlend), 4)
+      },
+      rawProbability: num(rawProbability, 4),
+      blendedProbability: num(blendedProbability, 4),
+      championToBlendDrag: num(Math.max(0, rawProbability - blendedProbability), 4)
+    };
     const coldStartConfidence = clamp(
       0.22 + championScore.confidence * 0.44 + regimeSummary.confidence * 0.18 + challengerScore.confidence * 0.06 + sequenceScore.confidence * 0.1,
       0.22,
@@ -526,6 +568,7 @@ export class AdaptiveTradingModel {
       confidence,
       calibrationConfidence,
       edgeStrength,
+      blendAudit,
       disagreement,
       regime: regimeSummary.regime,
       regimeSummary,
