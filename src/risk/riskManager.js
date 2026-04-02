@@ -904,6 +904,11 @@ function applyOfflineLearningGuidance({
       cautionPenalty: 0,
       executionCaution: 0,
       featureTrustPenalty: 0,
+      independentWeakGroupPressure: 0,
+      correlatedWeakFeaturePressure: 0,
+      adjacentFeaturePressure: 0,
+      featurePressureSources: [],
+      impactedFeatureGroups: [],
       opportunityShift: 0,
       learningValueScore,
       activeLearningState,
@@ -916,6 +921,11 @@ function applyOfflineLearningGuidance({
   const baseCautionPenalty = clamp(safeValue(guidance.cautionPenalty, 0), 0, 0.14);
   const executionCaution = clamp(safeValue(guidance.executionCaution, 0), 0, 0.18);
   const featureTrustPenalty = clamp(safeValue(guidance.featureTrustPenalty, guidance.featurePenalty || 0), 0, 0.12);
+  const independentWeakGroupPressure = clamp(safeValue(guidance.independentWeakGroupPressure, 0), 0, 0.04);
+  const correlatedWeakFeaturePressure = clamp(safeValue(guidance.correlatedWeakFeaturePressure, 0), 0, 0.02);
+  const adjacentFeaturePressure = clamp(safeValue(guidance.adjacentFeaturePressure, 0), 0, 0.03);
+  const featurePressureSources = Array.isArray(guidance.featurePressureSources) ? guidance.featurePressureSources : [];
+  const impactedFeatureGroups = Array.isArray(guidance.impactedFeatureGroups) ? guidance.impactedFeatureGroups : [];
   const cautionPenalty = clamp(baseCautionPenalty + executionCaution * 0.55 + featureTrustPenalty * 0.4, 0, 0.18);
   const thresholdShift = botMode === "paper"
     ? rawThresholdShift
@@ -962,6 +972,11 @@ function applyOfflineLearningGuidance({
     cautionPenalty: num(cautionPenalty, 4),
     executionCaution: num(executionCaution, 4),
     featureTrustPenalty: num(featureTrustPenalty, 4),
+    independentWeakGroupPressure: num(independentWeakGroupPressure, 4),
+    correlatedWeakFeaturePressure: num(correlatedWeakFeaturePressure, 4),
+    adjacentFeaturePressure: num(adjacentFeaturePressure, 4),
+    featurePressureSources: featurePressureSources.slice(0, 4),
+    impactedFeatureGroups: impactedFeatureGroups.slice(0, 4),
     opportunityShift,
     learningValueScore: nextLearningValueScore,
     activeLearningState: {
@@ -1026,6 +1041,24 @@ function buildLowConfidencePressure({
   const disagreementPressure = clamp(safeValue(score.disagreement, 0) / 0.28, 0, 1);
   const featureTrustPenalty = clamp(safeValue(offlineLearningGuidanceApplied.featureTrustPenalty, 0), 0, 0.12);
   const executionCaution = clamp(safeValue(offlineLearningGuidanceApplied.executionCaution, 0), 0, 0.18);
+  const featurePressureSources = Array.isArray(offlineLearningGuidanceApplied.featurePressureSources)
+    ? offlineLearningGuidanceApplied.featurePressureSources
+    : [];
+  const impactedFeatureGroups = Array.isArray(offlineLearningGuidanceApplied.impactedFeatureGroups)
+    ? offlineLearningGuidanceApplied.impactedFeatureGroups
+    : [];
+  const dominantFeaturePressureSource = featurePressureSources
+    .slice()
+    .sort((left, right) => safeValue(right.penalty, 0) - safeValue(left.penalty, 0))[0]?.source || null;
+  const dominantFeaturePressureGroup = impactedFeatureGroups
+    .slice()
+    .sort((left, right) => safeValue(right.penalty, 0) - safeValue(left.penalty, 0))[0]?.group || null;
+  const independentWeakGroupCount = impactedFeatureGroups.length;
+  const featureTrustNarrowPressure =
+    independentWeakGroupCount > 0 &&
+    independentWeakGroupCount <= 1 &&
+    featureTrustPenalty <= 0.08 &&
+    !featurePressureSources.some((item) => ["parity_missing_in_live", "pruning_drop_candidate"].includes(item?.source || "") && safeValue(item?.penalty, 0) >= 0.018);
   const edgeToThreshold = num(safeValue(score.probability, 0) - safeValue(threshold, 0), 4);
   const edgeToBaseThreshold = num(safeValue(score.probability, 0) - safeValue(baseThreshold, 0), 4);
   const signalQuality = clamp(safeValue(signalQualitySummary.overallScore, 0), 0, 1);
@@ -1050,9 +1083,18 @@ function buildLowConfidencePressure({
     safeValue(confidenceBreakdown.executionConfidence, 0) >= 0.56 &&
     safeValue(confidenceBreakdown.dataConfidence, 0) >= 0.58 &&
     disagreementPressure <= 0.42 &&
-    featureTrustPenalty <= 0.08 &&
     executionCaution <= 0.08 &&
-    ["calibration_warmup", "calibration_confidence", "threshold_penalty_stack"].includes(primaryDriver);
+    (
+      (
+        featureTrustPenalty <= 0.08 &&
+        ["calibration_warmup", "calibration_confidence", "threshold_penalty_stack"].includes(primaryDriver)
+      ) ||
+      (
+        primaryDriver === "feature_trust" &&
+        featureTrustNarrowPressure &&
+        ["inverse_attribution", "pruning_guard_only", null].includes(dominantFeaturePressureSource)
+      )
+    );
 
   const note =
     primaryDriver === "calibration_warmup"
@@ -1062,7 +1104,7 @@ function buildLowConfidencePressure({
         : primaryDriver === "threshold_penalty_stack"
           ? "Threshold-penalties stapelen nu harder op dan de ruwe setupkwaliteit rechtvaardigt."
           : primaryDriver === "feature_trust"
-            ? "Zwakke of gedegradeerde features drukken nu de vertrouwenstrigger extra omlaag."
+            ? `${dominantFeaturePressureGroup || "feature"}-druk uit ${dominantFeaturePressureSource || "feature_governance"} duwt deze setup nu onder de vertrouwenstrigger.`
             : primaryDriver === "execution_quality"
               ? "Execution-confidence en cost-caution drukken dit signaal onder de gewone entry-grens."
               : primaryDriver === "data_quality"
@@ -1086,6 +1128,10 @@ function buildLowConfidencePressure({
     dataConfidenceGap: num(dataConfidenceGap, 4),
     executionConfidenceGap: num(executionConfidenceGap, 4),
     featureTrustPenalty: num(featureTrustPenalty, 4),
+    dominantFeaturePressureSource,
+    dominantFeaturePressureGroup,
+    independentWeakGroupCount,
+    featureTrustNarrowPressure,
     executionCaution: num(executionCaution, 4),
     signalQuality: num(signalQuality, 4),
     dataQuality: num(dataQuality, 4),
@@ -2302,10 +2348,12 @@ export class RiskManager {
               ? 0.012
               : lowConfidencePressure.primaryDriver === "calibration_confidence"
                 ? 0.01
+                : lowConfidencePressure.primaryDriver === "feature_trust" && lowConfidencePressure.featureTrustNarrowPressure
+                  ? 0.007
                 : 0.008) +
             Math.max(0, 0.03 + safeValue(lowConfidencePressure.edgeToThreshold, 0)) * 0.08,
             0,
-            0.014
+            lowConfidencePressure.primaryDriver === "feature_trust" ? 0.01 : 0.014
           )
         : 0;
     const paperProbeThresholdBuffer = this.config.paperExplorationThresholdBuffer +
@@ -2375,6 +2423,8 @@ export class RiskManager {
           guidanceThresholdRelief: num(paperGuidanceProbeRelief, 4),
           confidenceThresholdRelief: num(lowConfidenceProbeRelief, 4),
           confidencePrimaryDriver: lowConfidencePressure.primaryDriver || null,
+          confidenceDriverSource: lowConfidencePressure.dominantFeaturePressureSource || null,
+          confidenceDriverGroup: lowConfidencePressure.dominantFeaturePressureGroup || null,
           selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
           selfHealIssues: [...(selfHealState.issues || [])]
         };

@@ -7100,6 +7100,152 @@ await runCheck("risk manager surfaces calibration-driven low confidence pressure
   assert.ok((decision.paperExploration?.confidenceThresholdRelief || 0) > 0);
 });
 
+await runCheck("risk manager can use narrow feature-trust pressure for paper low-confidence probe relief", async () => {
+  const manager = new RiskManager(makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 }));
+  const payload = {
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.518,
+      calibrationConfidence: 0.72,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 1, globalConfidence: 0.96 },
+      transformer: { probability: 0.53, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.6, bookPressure: -0.24, microPriceEdgeBps: 0.16 },
+      market: { realizedVolPct: 0.012, atrPct: 0.008, bearishPatternScore: 0.03, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.05, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.26, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.66, probability: 0.52, netScore: 0.02, sizeMultiplier: 0.99, confidence: 0.72, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.74,
+      confidence: 0.71,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.73 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.74 },
+    pairHealthSummary: { quarantined: false, score: 0.74 },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  };
+  const unguided = manager.evaluateEntry(payload);
+  const guided = manager.evaluateEntry({
+    ...payload,
+    offlineLearningGuidance: {
+      active: true,
+      thresholdShift: 0,
+      sizeMultiplier: 0.98,
+      cautionPenalty: 0.03,
+      executionCaution: 0.02,
+      featureTrustPenalty: 0.06,
+      featurePenalty: 0.04,
+      independentWeakGroupPressure: 0.011,
+      correlatedWeakFeaturePressure: 0.004,
+      adjacentFeaturePressure: 0,
+      featurePressureSources: [{ source: "inverse_attribution", featureCount: 2, penalty: 0.02 }],
+      impactedFeatureGroups: [{ group: "momentum", featureCount: 2, sourceCount: 1, penalty: 0.024, topFeatures: ["rsi_centered", "macd_hist"], sourceTypes: ["inverse_attribution"] }]
+    }
+  });
+
+  assert.equal(unguided.allow, false);
+  assert.equal(guided.allow, true);
+  assert.equal(guided.entryMode, "paper_exploration");
+  assert.equal(guided.lowConfidencePressure.primaryDriver, "feature_trust");
+  assert.equal(guided.lowConfidencePressure.dominantFeaturePressureSource, "inverse_attribution");
+  assert.equal(guided.lowConfidencePressure.featureTrustNarrowPressure, true);
+  assert.ok((guided.paperExploration?.confidenceThresholdRelief || 0) > 0);
+});
+
+await runCheck("risk manager does not relax paper low-confidence probes when feature trust is driven by live parity loss", async () => {
+  const manager = new RiskManager(makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 }));
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.518,
+      calibrationConfidence: 0.72,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 1, globalConfidence: 0.96 },
+      transformer: { probability: 0.53, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.6, bookPressure: -0.24, microPriceEdgeBps: 0.16 },
+      market: { realizedVolPct: 0.012, atrPct: 0.008, bearishPatternScore: 0.03, bullishPatternScore: 0.12, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.05, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.26, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.66, probability: 0.52, netScore: 0.02, sizeMultiplier: 0.99, confidence: 0.72, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.74,
+      confidence: 0.71,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.73 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    timeframeSummary: { blockerReasons: [], alignmentScore: 0.74 },
+    pairHealthSummary: { quarantined: false, score: 0.74 },
+    offlineLearningGuidance: {
+      active: true,
+      thresholdShift: 0,
+      sizeMultiplier: 0.98,
+      cautionPenalty: 0.03,
+      executionCaution: 0.02,
+      featureTrustPenalty: 0.06,
+      featurePenalty: 0.04,
+      independentWeakGroupPressure: 0.011,
+      correlatedWeakFeaturePressure: 0.004,
+      adjacentFeaturePressure: 0,
+      featurePressureSources: [{ source: "parity_missing_in_live", featureCount: 2, penalty: 0.024 }],
+      impactedFeatureGroups: [{ group: "momentum", featureCount: 2, sourceCount: 1, penalty: 0.024, topFeatures: ["rsi_centered", "macd_hist"], sourceTypes: ["parity_missing_in_live"] }]
+    },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  });
+
+  assert.equal(decision.allow, false);
+  assert.equal(decision.lowConfidencePressure.primaryDriver, "feature_trust");
+  assert.equal(decision.lowConfidencePressure.dominantFeaturePressureSource, "parity_missing_in_live");
+  assert.equal(decision.lowConfidencePressure.featureTrustNarrowPressure, false);
+  assert.ok((decision.paperExploration?.confidenceThresholdRelief || 0) === 0);
+});
+
 await runCheck("risk manager only escalates explicit meta caution gates, not neural-only caution", async () => {
   const config = makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 });
   const manager = new RiskManager(config);
