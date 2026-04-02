@@ -2820,6 +2820,59 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
   };
 }
 
+function summarizeLowConfidencePressure(pressure = {}) {
+  return {
+    active: Boolean(pressure.active),
+    primaryDriver: pressure.primaryDriver || null,
+    edgeToThreshold: num(pressure.edgeToThreshold || 0, 4),
+    edgeToBaseThreshold: num(pressure.edgeToBaseThreshold || 0, 4),
+    thresholdPenaltyPressure: num(pressure.thresholdPenaltyPressure || 0, 4),
+    thresholdRelief: num(pressure.thresholdRelief || 0, 4),
+    calibrationWarmup: num(pressure.calibrationWarmup || 0, 4),
+    calibrationWarmupGap: num(pressure.calibrationWarmupGap || 0, 4),
+    calibrationConfidenceGap: num(pressure.calibrationConfidenceGap || 0, 4),
+    disagreementPressure: num(pressure.disagreementPressure || 0, 4),
+    modelConfidenceGap: num(pressure.modelConfidenceGap || 0, 4),
+    dataConfidenceGap: num(pressure.dataConfidenceGap || 0, 4),
+    executionConfidenceGap: num(pressure.executionConfidenceGap || 0, 4),
+    featureTrustPenalty: num(pressure.featureTrustPenalty || 0, 4),
+    executionCaution: num(pressure.executionCaution || 0, 4),
+    signalQuality: num(pressure.signalQuality || 0, 4),
+    dataQuality: num(pressure.dataQuality || 0, 4),
+    reliefEligible: Boolean(pressure.reliefEligible),
+    note: pressure.note || null
+  };
+}
+
+function summarizeLowConfidenceAudit(summary = {}) {
+  return {
+    status: summary.status || "quiet",
+    nearMissCount: summary.nearMissCount || 0,
+    candidateCount: summary.candidateCount || 0,
+    dominantDriver: summary.dominantDriver || null,
+    averageEdgeToThreshold: num(summary.averageEdgeToThreshold || 0, 4),
+    averageCalibrationWarmup: num(summary.averageCalibrationWarmup || 0, 4),
+    averageThresholdPenaltyPressure: num(summary.averageThresholdPenaltyPressure || 0, 4),
+    averageFeatureTrustPenalty: num(summary.averageFeatureTrustPenalty || 0, 4),
+    averageExecutionCaution: num(summary.averageExecutionCaution || 0, 4),
+    topDrivers: arr(summary.topDrivers || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    topFeatures: arr(summary.topFeatures || []).slice(0, 5).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0
+    })),
+    examples: arr(summary.examples || []).slice(0, 4).map((item) => ({
+      symbol: item.symbol || null,
+      strategy: item.strategy || null,
+      edgeToThreshold: num(item.edgeToThreshold || 0, 4),
+      primaryDriver: item.primaryDriver || null
+    })),
+    note: summary.note || null
+  };
+}
+
 function summarizeOutcomeScopeLearning(summary = {}) {
   const topActionable = summary.topActionable || null;
   const mapScope = (item) => ({
@@ -10527,6 +10580,7 @@ export class TradingBot {
     const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
     const paperLearningGuidance = summarizePaperLearningGuidance(candidate.decision?.paperLearningGuidance || {});
     const offlineLearningGuidance = summarizeOfflineLearningGuidance(candidate.decision?.offlineLearningGuidance || {});
+    const lowConfidencePressure = summarizeLowConfidencePressure(candidate.decision?.lowConfidencePressure || {});
     const policyTransitions = arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || []);
     const adaptivePolicy = summarizeAdaptivePolicy({
       strategyAllocation,
@@ -10545,9 +10599,100 @@ export class TradingBot {
       adaptivePolicy,
       paperLearningGuidance,
       offlineLearningGuidance,
+      lowConfidencePressure,
       missedTradeTuning,
       exitPolicy,
       opportunityScore: num(candidate.decision?.opportunityScore || 0, 4)
+    };
+  }
+
+  buildLowConfidenceAudit(candidates = []) {
+    const nearMisses = arr(candidates)
+      .filter((candidate) =>
+        !candidate?.decision?.allow &&
+        arr(candidate?.decision?.reasons || []).includes("model_confidence_too_low") &&
+        safeNumber(candidate?.signalQualitySummary?.overallScore, 0) >= 0.58 &&
+        safeNumber(candidate?.dataQualitySummary?.overallScore, 0) >= 0.56 &&
+        safeNumber(candidate?.score?.probability, 0) >= safeNumber(candidate?.decision?.threshold, 0) - 0.05
+      )
+      .sort((left, right) =>
+        safeNumber(right?.decision?.lowConfidencePressure?.edgeToThreshold, safeNumber(right?.score?.probability, 0) - safeNumber(right?.decision?.threshold, 0)) -
+        safeNumber(left?.decision?.lowConfidencePressure?.edgeToThreshold, safeNumber(left?.score?.probability, 0) - safeNumber(left?.decision?.threshold, 0))
+      );
+    const driverCounts = new Map();
+    const featureCounts = new Map();
+    for (const candidate of nearMisses) {
+      const pressure = candidate?.decision?.lowConfidencePressure || {};
+      const driver = pressure.primaryDriver || "model_confidence";
+      driverCounts.set(driver, (driverCounts.get(driver) || 0) + 1);
+      for (const feature of arr(candidate?.decision?.offlineLearningGuidance?.impactedFeatures || [])) {
+        featureCounts.set(feature, (featureCounts.get(feature) || 0) + 1);
+      }
+    }
+    const topDrivers = [...driverCounts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .map(([id, count]) => ({ id, count }));
+    const topFeatures = [...featureCounts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .map(([id, count]) => ({ id, count }));
+    const dominantDriver = topDrivers[0]?.id || null;
+    const averageEdgeToThreshold = average(
+      nearMisses.map((candidate) => safeNumber(candidate?.decision?.lowConfidencePressure?.edgeToThreshold, safeNumber(candidate?.score?.probability, 0) - safeNumber(candidate?.decision?.threshold, 0))),
+      0
+    );
+    const averageCalibrationWarmup = average(
+      nearMisses.map((candidate) => safeNumber(candidate?.decision?.lowConfidencePressure?.calibrationWarmup, candidate?.score?.calibrator?.warmupProgress || 0)),
+      0
+    );
+    const averageThresholdPenaltyPressure = average(
+      nearMisses.map((candidate) => safeNumber(candidate?.decision?.lowConfidencePressure?.thresholdPenaltyPressure, 0)),
+      0
+    );
+    const averageFeatureTrustPenalty = average(
+      nearMisses.map((candidate) => safeNumber(candidate?.decision?.lowConfidencePressure?.featureTrustPenalty, 0)),
+      0
+    );
+    const averageExecutionCaution = average(
+      nearMisses.map((candidate) => safeNumber(candidate?.decision?.lowConfidencePressure?.executionCaution, 0)),
+      0
+    );
+    const note =
+      dominantDriver === "calibration_warmup"
+        ? "Calibrator-warmup blokkeert nu relatief vaak high-quality near misses."
+        : dominantDriver === "calibration_confidence"
+          ? "Calibrated confidence blijft nu vaker de rem dan setupkwaliteit."
+          : dominantDriver === "threshold_penalty_stack"
+            ? "Threshold-penalties stapelen nu zichtbaar op bij de beste near misses."
+            : dominantDriver === "feature_trust"
+              ? "Zwakke of gedegradeerde features drukken nu te vaak anders sterke setups omlaag."
+              : dominantDriver === "execution_quality"
+                ? "Execution-confidence en cost-caution houden nu de beste near misses tegen."
+                : dominantDriver === "data_quality"
+                  ? "Datakwaliteit en quorum trekken nu high-quality near misses onder de lijn."
+                  : dominantDriver === "model_disagreement"
+                    ? "Model disagreement is nu de dominante confidence-rem."
+                    : nearMisses.length
+                      ? "Model confidence blijft de dominante rem op high-quality near misses."
+                      : "Nog geen duidelijke high-quality low-confidence bottleneck in de huidige cycle.";
+    return {
+      status: nearMisses.length >= 3 ? "priority" : nearMisses.length > 0 ? "watch" : "quiet",
+      nearMissCount: nearMisses.length,
+      candidateCount: arr(candidates).length,
+      dominantDriver,
+      averageEdgeToThreshold: num(averageEdgeToThreshold, 4),
+      averageCalibrationWarmup: num(averageCalibrationWarmup, 4),
+      averageThresholdPenaltyPressure: num(averageThresholdPenaltyPressure, 4),
+      averageFeatureTrustPenalty: num(averageFeatureTrustPenalty, 4),
+      averageExecutionCaution: num(averageExecutionCaution, 4),
+      topDrivers: topDrivers.slice(0, 4),
+      topFeatures: topFeatures.slice(0, 5),
+      examples: nearMisses.slice(0, 4).map((candidate) => ({
+        symbol: candidate.symbol || null,
+        strategy: candidate.strategySummary?.activeStrategy || null,
+        edgeToThreshold: num(safeNumber(candidate?.decision?.lowConfidencePressure?.edgeToThreshold, safeNumber(candidate?.score?.probability, 0) - safeNumber(candidate?.decision?.threshold, 0)), 4),
+        primaryDriver: candidate?.decision?.lowConfidencePressure?.primaryDriver || null
+      })),
+      note
     };
   }
 
@@ -12192,6 +12337,7 @@ export class TradingBot {
         modelConfidence: num(candidate.confidenceBreakdown.modelConfidence || 0, 4),
         overallConfidence: num(candidate.confidenceBreakdown.overallConfidence || 0, 4)
       } : null,
+      lowConfidencePressure: summarizeLowConfidencePressure(candidate.decision.lowConfidencePressure || {}),
       riskPolicy: {
         downtrendPolicy: candidate.decision.downtrendPolicy || null,
         qualityQuorum: summarizeQualityQuorum(candidate.qualityQuorumSummary),
@@ -12297,6 +12443,8 @@ export class TradingBot {
       adaptiveContext: candidate.decision.adaptiveContext || null,
       familyOpportunityBudget: candidate.decision.familyOpportunityBudget || null
     }));
+      this.runtime.ops = this.runtime.ops || {};
+      this.runtime.ops.lowConfidenceAudit = summarizeLowConfidenceAudit(this.buildLowConfidenceAudit(rankedCandidates));
       const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
       blockedAt: now.toISOString()
@@ -13172,6 +13320,7 @@ export class TradingBot {
 
   buildDashboardDecisionView(decision = {}) {
     const strategy = decision.strategy || decision.strategySummary || {};
+    const lowConfidencePressure = summarizeLowConfidencePressure(decision.lowConfidencePressure || {});
     const blockerReasons = [
       ...arr(decision.blockerReasons || decision.reasons || []),
       ...arr(decision.sessionBlockers || decision.session?.blockerReasons || []),
@@ -13214,7 +13363,7 @@ export class TradingBot {
         : prioritizedPaperBlocker === "regime_kill_switch_active"
           ? "De regime kill switch houdt paper nu in recovery. Laat alleen gecontroleerde probe-cases lopen tot nieuwe data de drawdown-context verbetert."
         : prioritizedPaperBlocker === "model_confidence_too_low"
-          ? "Modelconfidence is te laag voor een normale entry. Vergelijk vergelijkbare probe- en shadow-cases voordat je versoepelt."
+          ? lowConfidencePressure.note || "Modelconfidence is te laag voor een normale entry. Vergelijk vergelijkbare probe- en shadow-cases voordat je versoepelt."
         : prioritizedPaperBlocker === "committee_veto"
           ? "Geblokkeerd door leer/governance: eerdere vergelijkbare setups scoorden te zwak of werden terecht gevetoed. Bekijk gemiste-trade analyse om te zien of deze blokkade te streng was."
         : prioritizedPaperBlocker === "execution_cost_budget_exceeded"
@@ -13337,6 +13486,7 @@ export class TradingBot {
         modelConfidence: num(decision.confidenceBreakdown?.modelConfidence || 0, 4),
         overallConfidence: num(decision.confidenceBreakdown?.overallConfidence || 0, 4)
       },
+      lowConfidencePressure,
       paperLearning: decision.paperLearning ? {
         lane: decision.paperLearning.lane || null,
         learningValueScore: num(decision.paperLearning.learningValueScore || 0, 4),
@@ -13833,6 +13983,13 @@ export class TradingBot {
             tone: "negative"
           }
         : null,
+      ["priority", "watch"].includes(learningInsights.confidence?.status)
+        ? {
+            title: "Confidence bottleneck",
+            detail: learningInsights.confidence.note || "High-quality near misses vallen nu te vaak onder de confidence-threshold.",
+            tone: learningInsights.confidence.status === "priority" ? "negative" : "neutral"
+          }
+        : null,
       ["urgent", "watch"].includes(learningInsights.exits?.status)
         ? {
             title: "Exit AI",
@@ -14271,6 +14428,7 @@ export class TradingBot {
       paperLearningTransitions: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}).policyTransitions?.candidates || [],
       rolloutCandidates: promotionPipeline.rolloutCandidates || []
     });
+    const lowConfidenceAudit = summarizeLowConfidenceAudit(this.buildLowConfidenceAudit(previewCandidates));
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -14294,6 +14452,7 @@ export class TradingBot {
       exitPolicy: exitPolicyDigest,
       opportunityRanking: opportunityRankingDigest,
       promotionByCondition: promotionByConditionDigest,
+      lowConfidenceAudit,
       promotionPipeline,
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
@@ -14387,12 +14546,14 @@ export class TradingBot {
       mode: this.config.botMode
     });
     const signalFlowSummary = summarizeSignalFlow(this.runtime.signalFlow || {});
+    const lowConfidenceAudit = summarizeLowConfidenceAudit(this.runtime.ops?.lowConfidenceAudit || {});
     const learningInsights = {
       missedTrades: summarizeMissedTradeLearning({
         ...paperLearningSummary,
         counterfactuals: offlineTrainerSummary.counterfactuals || {}
       }),
       history: summarizeHistoryCoverageDigest(offlineTrainerSummary.historyCoverage || {}),
+      confidence: lowConfidenceAudit,
       exits: summarizeExitIntelligenceDigest({
         positions: fullPositions,
         recentTrades: arr(report.recentTrades || []).slice(0, 12),
@@ -14541,6 +14702,7 @@ export class TradingBot {
         exitPolicy: exitPolicyDigest,
         opportunityRanking: opportunityRankingDigest,
         promotionByCondition: promotionByConditionDigest,
+        lowConfidenceAudit,
         learningInsights,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },

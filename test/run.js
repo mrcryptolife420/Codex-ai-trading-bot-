@@ -7049,6 +7049,57 @@ await runCheck("risk manager can use paper learning guidance to rescue a strong 
   assert.ok((guided.paperExploration?.guidanceThresholdRelief || 0) > 0);
 });
 
+await runCheck("risk manager surfaces calibration-driven low confidence pressure for high-quality paper near misses", async () => {
+  const manager = new RiskManager(makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 }));
+  const decision = manager.evaluateEntry({
+    symbol: "SOLUSDT",
+    score: {
+      probability: 0.485,
+      calibrationConfidence: 0.39,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 0.74, globalConfidence: 0.74 },
+      transformer: { probability: 0.5, confidence: 0.1 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.4, bookPressure: -0.26, microPriceEdgeBps: 0.1 },
+      market: { realizedVolPct: 0.013, atrPct: 0.009, bearishPatternScore: 0.03, bullishPatternScore: 0.11, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.05, eventBullishScore: 0.02, eventBearishScore: 0, socialSentiment: 0.03, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.12 },
+    volatilitySummary: { riskScore: 0.28, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.05, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.58, probability: 0.49, netScore: -0.02, sizeMultiplier: 0.98, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.36, expectedReward: 0.011 },
+    strategySummary: {
+      activeStrategy: "ema_trend",
+      family: "trend_following",
+      fitScore: 0.72,
+      confidence: 0.69,
+      blockers: [],
+      agreementGap: 0.04,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.05 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.68, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.71 },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.entryMode, "paper_exploration");
+  assert.equal(decision.lowConfidencePressure.primaryDriver, "calibration_warmup");
+  assert.ok((decision.paperExploration?.confidenceThresholdRelief || 0) > 0);
+});
+
 await runCheck("risk manager only escalates explicit meta caution gates, not neural-only caution", async () => {
   const config = makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 });
   const manager = new RiskManager(config);
@@ -12868,6 +12919,79 @@ await runCheck("dashboard decision view prefers more specific paper blockers ove
     confidenceBreakdown: { marketConfidence: 0.55, dataConfidence: 0.7, executionConfidence: 0.48, modelConfidence: 0.41, overallConfidence: 0.53 }
   });
   assert.ok(view.operatorAction.includes("Modelconfidence is te laag"));
+});
+
+await runCheck("dashboard decision view uses low confidence pressure note for model-confidence blockers", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = { botMode: "paper" };
+  bot.runtime = { offlineTrainer: { counterfactuals: { total: 0, averageMissedMovePct: 0 }, blockerScorecards: [], strategyScorecards: [] } };
+  bot.journal = { counterfactuals: [] };
+  const view = bot.buildDashboardDecisionView({
+    symbol: "DOGEUSDT",
+    allow: false,
+    blockerReasons: ["model_confidence_too_low"],
+    dataQuality: { status: "ready", overallScore: 0.72, freshnessScore: 0.7, trustScore: 0.68, coverageScore: 0.75, degradedButAllowed: false, sources: [] },
+    signalQuality: { overallScore: 0.64, setupFit: 0.68, structureQuality: 0.63, executionViability: 0.61, newsCleanliness: 0.66, quorumQuality: 0.71 },
+    confidenceBreakdown: { marketConfidence: 0.62, dataConfidence: 0.68, executionConfidence: 0.61, modelConfidence: 0.49, overallConfidence: 0.61 },
+    lowConfidencePressure: {
+      primaryDriver: "calibration_warmup",
+      note: "Calibrator warmt nog op; sterke paper setups vallen daardoor net onder de entry-threshold."
+    }
+  });
+  assert.ok(view.operatorAction.includes("Calibrator warmt nog op"));
+  assert.equal(view.lowConfidencePressure.primaryDriver, "calibration_warmup");
+});
+
+await runCheck("trading bot builds a low confidence audit from high-quality near misses", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const audit = bot.buildLowConfidenceAudit([
+    {
+      symbol: "BTCUSDT",
+      score: { probability: 0.54 },
+      decision: {
+        allow: false,
+        threshold: 0.565,
+        reasons: ["model_confidence_too_low"],
+        lowConfidencePressure: {
+          primaryDriver: "threshold_penalty_stack",
+          edgeToThreshold: -0.025,
+          calibrationWarmup: 0.94,
+          thresholdPenaltyPressure: 0.028,
+          featureTrustPenalty: 0.012,
+          executionCaution: 0.01
+        },
+        offlineLearningGuidance: { impactedFeatures: ["funding_rate", "crowding_bias"] }
+      },
+      signalQualitySummary: { overallScore: 0.71 },
+      dataQualitySummary: { overallScore: 0.66 },
+      strategySummary: { activeStrategy: "ema_trend" }
+    },
+    {
+      symbol: "ETHUSDT",
+      score: { probability: 0.548 },
+      decision: {
+        allow: false,
+        threshold: 0.57,
+        reasons: ["model_confidence_too_low"],
+        lowConfidencePressure: {
+          primaryDriver: "threshold_penalty_stack",
+          edgeToThreshold: -0.022,
+          calibrationWarmup: 0.91,
+          thresholdPenaltyPressure: 0.031,
+          featureTrustPenalty: 0.018,
+          executionCaution: 0.012
+        },
+        offlineLearningGuidance: { impactedFeatures: ["funding_rate"] }
+      },
+      signalQualitySummary: { overallScore: 0.69 },
+      dataQualitySummary: { overallScore: 0.64 },
+      strategySummary: { activeStrategy: "vwap_trend" }
+    }
+  ]);
+  assert.equal(audit.status, "watch");
+  assert.equal(audit.dominantDriver, "threshold_penalty_stack");
+  assert.equal(audit.topDrivers[0].count, 2);
+  assert.equal(audit.topFeatures[0].id, "funding_rate");
 });
 
 await runCheck("dashboard decision view surfaces regime kill switches and committee veto detail in paper mode", async () => {

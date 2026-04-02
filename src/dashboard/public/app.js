@@ -483,6 +483,7 @@ function resolveLearningTopScope(paperLearning = {}) {
 function buildLearningDigest(snapshot) {
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
+  const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
   const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
@@ -542,6 +543,7 @@ function buildLearningDigest(snapshot) {
   );
   const nextStep =
     retrainPlan.operatorAction ||
+    (["priority", "watch"].includes(lowConfidenceAudit.status) ? lowConfidenceAudit.note : null) ||
     replayPlan.operatorGoal ||
     paperLearning.probation?.note ||
     paperLearning.notes?.[0] ||
@@ -1568,6 +1570,7 @@ function buildOpsEvents(snapshot) {
   const tradingFlowHealth = snapshot?.dashboard?.ops?.tradingFlowHealth || signalFlow.tradingFlowHealth || {};
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
+  const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
   const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
@@ -1643,6 +1646,13 @@ function buildOpsEvents(snapshot) {
           title: "Missed-trade learning",
           detail: learningInsights.missedTrades.note || "Counterfactual learning ziet nu een te strenge blocker.",
           tone: "negative"
+        }
+      : null,
+    ["priority", "watch"].includes(lowConfidenceAudit.status)
+      ? {
+          title: "Confidence bottleneck",
+          detail: lowConfidenceAudit.note || "High-quality near misses vallen nu te vaak onder de confidence-threshold.",
+          tone: lowConfidenceAudit.status === "priority" ? "negative" : "neutral"
         }
       : null,
     marketCondition.conditionId

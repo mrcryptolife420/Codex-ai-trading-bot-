@@ -981,6 +981,119 @@ function applyOfflineLearningGuidance({
   };
 }
 
+function buildLowConfidencePressure({
+  score = {},
+  threshold = 0,
+  baseThreshold = 0,
+  confidenceBreakdown = {},
+  calibrationWarmup = 0,
+  minCalibrationConfidence = 0,
+  sessionThresholdPenalty = 0,
+  driftThresholdPenalty = 0,
+  selfHealThresholdPenalty = 0,
+  metaThresholdPenalty = 0,
+  thresholdTuningAdjustment = {},
+  parameterGovernorAdjustment = {},
+  strategyMetaSummary = {},
+  missedTradeTuningApplied = {},
+  trendStateTuning = {},
+  offlineLearningGuidanceApplied = {},
+  signalQualitySummary = {},
+  dataQualitySummary = {}
+} = {}) {
+  const thresholdPenaltyPressure = clamp(
+    Math.max(0, safeValue(sessionThresholdPenalty, 0)) +
+      Math.max(0, safeValue(driftThresholdPenalty, 0)) +
+      Math.max(0, safeValue(selfHealThresholdPenalty, 0)) +
+      Math.max(0, safeValue(metaThresholdPenalty, 0)) +
+      Math.max(0, safeValue(thresholdTuningAdjustment.adjustment, 0)) +
+      Math.max(0, safeValue(parameterGovernorAdjustment.thresholdShift, 0)) +
+      Math.max(0, safeValue(strategyMetaSummary.thresholdShift || 0, 0)) +
+      Math.max(0, safeValue(trendStateTuning.thresholdShift, 0)),
+    0,
+    0.18
+  );
+  const thresholdRelief = clamp(
+    Math.max(0, -safeValue(missedTradeTuningApplied.thresholdShift, 0)),
+    0,
+    0.08
+  );
+  const calibrationWarmupGap = clamp(1 - safeValue(calibrationWarmup, 0), 0, 1);
+  const calibrationConfidenceGap = clamp(0.5 - safeValue(score.calibrationConfidence, 0.5), 0, 1);
+  const modelConfidenceGap = clamp(0.62 - safeValue(confidenceBreakdown.modelConfidence, 0.62), 0, 1);
+  const dataConfidenceGap = clamp(0.6 - safeValue(confidenceBreakdown.dataConfidence, 0.6), 0, 1);
+  const executionConfidenceGap = clamp(0.58 - safeValue(confidenceBreakdown.executionConfidence, 0.58), 0, 1);
+  const disagreementPressure = clamp(safeValue(score.disagreement, 0) / 0.28, 0, 1);
+  const featureTrustPenalty = clamp(safeValue(offlineLearningGuidanceApplied.featureTrustPenalty, 0), 0, 0.12);
+  const executionCaution = clamp(safeValue(offlineLearningGuidanceApplied.executionCaution, 0), 0, 0.18);
+  const edgeToThreshold = num(safeValue(score.probability, 0) - safeValue(threshold, 0), 4);
+  const edgeToBaseThreshold = num(safeValue(score.probability, 0) - safeValue(baseThreshold, 0), 4);
+  const signalQuality = clamp(safeValue(signalQualitySummary.overallScore, 0), 0, 1);
+  const dataQuality = clamp(safeValue(dataQualitySummary.overallScore, 0), 0, 1);
+
+  const driverScores = {
+    calibration_warmup: calibrationWarmupGap * 0.95 + Math.max(0, thresholdPenaltyPressure - 0.01) * 1.4,
+    calibration_confidence: calibrationConfidenceGap * 1.25 + Math.max(0, safeValue(minCalibrationConfidence, 0) - safeValue(score.calibrationConfidence, 0)) * 0.8,
+    threshold_penalty_stack: thresholdPenaltyPressure * 8.5 - thresholdRelief * 2.4,
+    model_disagreement: disagreementPressure * 1.05,
+    feature_trust: featureTrustPenalty * 8.2,
+    execution_quality: executionConfidenceGap * 1.12 + executionCaution * 2.1,
+    data_quality: dataConfidenceGap * 1.05 + Math.max(0, 0.58 - dataQuality) * 0.7,
+    model_confidence: modelConfidenceGap * 1.08
+  };
+  const [primaryDriver = "model_confidence", primaryScore = 0] = Object.entries(driverScores)
+    .sort((left, right) => right[1] - left[1])[0] || [];
+  const reliefEligible =
+    edgeToThreshold >= -0.045 &&
+    signalQuality >= 0.64 &&
+    dataQuality >= 0.58 &&
+    safeValue(confidenceBreakdown.executionConfidence, 0) >= 0.56 &&
+    safeValue(confidenceBreakdown.dataConfidence, 0) >= 0.58 &&
+    disagreementPressure <= 0.42 &&
+    featureTrustPenalty <= 0.08 &&
+    executionCaution <= 0.08 &&
+    ["calibration_warmup", "calibration_confidence", "threshold_penalty_stack"].includes(primaryDriver);
+
+  const note =
+    primaryDriver === "calibration_warmup"
+      ? "Calibrator warmt nog op; sterke paper setups vallen daardoor net onder de entry-threshold."
+      : primaryDriver === "calibration_confidence"
+        ? "Calibrated confidence blijft nog zwak terwijl de rest van de setup relatief gezond is."
+        : primaryDriver === "threshold_penalty_stack"
+          ? "Threshold-penalties stapelen nu harder op dan de ruwe setupkwaliteit rechtvaardigt."
+          : primaryDriver === "feature_trust"
+            ? "Zwakke of gedegradeerde features drukken nu de vertrouwenstrigger extra omlaag."
+            : primaryDriver === "execution_quality"
+              ? "Execution-confidence en cost-caution drukken dit signaal onder de gewone entry-grens."
+              : primaryDriver === "data_quality"
+                ? "Datakwaliteit en quorum houden de confidence nu zichtbaar omlaag."
+                : primaryDriver === "model_disagreement"
+                  ? "Model disagreement blijft te hoog om deze setup normaal te vertrouwen."
+                  : "Model confidence blijft te laag ten opzichte van de huidige threshold-stack.";
+
+  return {
+    active: edgeToThreshold < 0 || primaryScore > 0.08,
+    primaryDriver,
+    edgeToThreshold,
+    edgeToBaseThreshold,
+    thresholdPenaltyPressure: num(thresholdPenaltyPressure, 4),
+    thresholdRelief: num(thresholdRelief, 4),
+    calibrationWarmup: num(calibrationWarmup, 4),
+    calibrationWarmupGap: num(calibrationWarmupGap, 4),
+    calibrationConfidenceGap: num(calibrationConfidenceGap, 4),
+    disagreementPressure: num(disagreementPressure, 4),
+    modelConfidenceGap: num(modelConfidenceGap, 4),
+    dataConfidenceGap: num(dataConfidenceGap, 4),
+    executionConfidenceGap: num(executionConfidenceGap, 4),
+    featureTrustPenalty: num(featureTrustPenalty, 4),
+    executionCaution: num(executionCaution, 4),
+    signalQuality: num(signalQuality, 4),
+    dataQuality: num(dataQuality, 4),
+    reliefEligible,
+    note
+  };
+}
+
 function toBoolean(value, fallback = false) {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
@@ -1609,6 +1722,26 @@ export class RiskManager {
       thresholdFloor,
       0.99
     );
+    const lowConfidencePressure = buildLowConfidencePressure({
+      score,
+      threshold,
+      baseThreshold,
+      confidenceBreakdown: preliminaryConfidenceBreakdown,
+      calibrationWarmup,
+      minCalibrationConfidence: this.config.minCalibrationConfidence,
+      sessionThresholdPenalty,
+      driftThresholdPenalty,
+      selfHealThresholdPenalty,
+      metaThresholdPenalty,
+      thresholdTuningAdjustment,
+      parameterGovernorAdjustment,
+      strategyMetaSummary,
+      missedTradeTuningApplied,
+      trendStateTuning,
+      offlineLearningGuidanceApplied,
+      signalQualitySummary,
+      dataQualitySummary
+    });
     const strongTrendGuardOverride =
       ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "") &&
       relativeStrengthComposite > 0.004 &&
@@ -2156,8 +2289,28 @@ export class RiskManager {
             0.018
           )
         : 0;
+    const lowConfidenceProbeRelief =
+      this.config.botMode === "paper" &&
+      lowConfidencePressure.reliefEligible &&
+      reasons.includes("model_confidence_too_low") &&
+      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
+      !["always_skip", "simple_exit", "safe_lane"].includes(paperLearningGuidance?.benchmarkLead || "") &&
+      safeValue(offlineLearningGuidance.executionCaution, 0) <= 0.08 &&
+      safeValue(offlineLearningGuidance.featureTrustPenalty, offlineLearningGuidance.featurePenalty || 0) <= 0.08
+        ? clamp(
+            (lowConfidencePressure.primaryDriver === "calibration_warmup"
+              ? 0.012
+              : lowConfidencePressure.primaryDriver === "calibration_confidence"
+                ? 0.01
+                : 0.008) +
+            Math.max(0, 0.03 + safeValue(lowConfidencePressure.edgeToThreshold, 0)) * 0.08,
+            0,
+            0.014
+          )
+        : 0;
     const paperProbeThresholdBuffer = this.config.paperExplorationThresholdBuffer +
       paperGuidanceProbeRelief +
+      lowConfidenceProbeRelief +
       (highQualitySoftPaperProbeCandidate ? 0.03 : 0) +
       (missedTradeTuningApplied.paperProbeEligible ? 0.012 : 0);
     const paperProbeBookPressureFloor = clamp(
@@ -2220,6 +2373,8 @@ export class RiskManager {
           guardrailReliefReasons: paperGuardrailRelief,
           adaptiveThresholdRelief: clamp(paperProbeThresholdBuffer - this.config.paperExplorationThresholdBuffer, 0, 0.05),
           guidanceThresholdRelief: num(paperGuidanceProbeRelief, 4),
+          confidenceThresholdRelief: num(lowConfidenceProbeRelief, 4),
+          confidencePrimaryDriver: lowConfidencePressure.primaryDriver || null,
           selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
           selfHealIssues: [...(selfHealState.issues || [])]
         };
@@ -2631,6 +2786,7 @@ export class RiskManager {
       dataQualitySummary,
       signalQualitySummary,
       confidenceBreakdown,
+      lowConfidencePressure,
       sizingSummary: {
         rawQuoteAmount: Number.isFinite(quoteAmount) ? num(quoteAmount, 2) : null,
         adjustedQuoteAmount: Number.isFinite(adjustedQuoteAmount) ? num(adjustedQuoteAmount, 2) : null,
