@@ -15020,43 +15020,52 @@ await runCheck("trading bot does not keep stale recorder warm start active", asy
   assert.equal((bot.runtime.paperLearning.notes || []).length, 0);
 });
 
-await runCheck("market history symbol resolver prioritizes open positions and active decisions inside capped coverage", async () => {
+await runCheck("market history symbol resolver prioritizes blocked setups and replay focus before generic history buckets", async () => {
   const resolved = resolveMarketHistoryCoverageSymbols({
     watchlist: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
     openPositions: [{ symbol: "XRPUSDT" }],
+    blockedSymbols: [{ symbol: "PEPEUSDT" }],
     decisionSymbols: [{ symbol: "INJUSDT" }],
+    replaySymbols: [{ symbol: "LTCUSDT" }],
     trades: [
       { symbol: "DOGEUSDT" },
       { symbol: "BNBUSDT" }
     ],
-    maxSymbols: 4,
+    maxSymbols: 6,
     recentTradeLimit: 4
   });
-  assert.deepEqual(resolved.symbols, ["XRPUSDT", "INJUSDT", "BNBUSDT", "DOGEUSDT"]);
+  assert.deepEqual(resolved.symbols, ["XRPUSDT", "PEPEUSDT", "INJUSDT", "LTCUSDT", "BNBUSDT", "DOGEUSDT"]);
   assert.equal(resolved.selection.openPositionIncludedCount, 1);
+  assert.equal(resolved.selection.blockedIncludedCount, 1);
   assert.equal(resolved.selection.decisionIncludedCount, 1);
+  assert.equal(resolved.selection.replayIncludedCount, 1);
   assert.equal(resolved.selection.recentTradeIncludedCount, 2);
   assert.equal(resolved.selection.watchlistIncludedCount, 0);
   assert.equal(resolved.selection.omittedCount, 4);
 });
 
-await runCheck("trading bot refreshes market history with prioritized focus symbols", async () => {
+await runCheck("trading bot refreshes market history with prioritized blocked and replay focus symbols", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({
     watchlist: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
-    researchMaxSymbols: 4,
+    researchMaxSymbols: 6,
     klineInterval: "15m",
     historyCacheEnabled: true
   });
   bot.journal = {
     trades: [
+      { symbol: "ATOMUSDT" },
+      { symbol: "LINKUSDT" },
+      { symbol: "AVAXUSDT" },
+      { symbol: "LTCUSDT" },
       { symbol: "DOGEUSDT" },
       { symbol: "BNBUSDT" }
     ]
   };
   bot.runtime = {
     openPositions: [{ symbol: "XRPUSDT" }],
-    latestDecisions: [{ symbol: "INJUSDT" }]
+    latestDecisions: [{ symbol: "INJUSDT" }],
+    latestBlockedSetups: [{ symbol: "PEPEUSDT" }]
   };
   const verified = [];
   bot.historyStore = {
@@ -15078,13 +15087,16 @@ await runCheck("trading bot refreshes market history with prioritized focus symb
   const snapshot = await TradingBot.prototype.refreshMarketHistorySnapshot.call(bot, {
     referenceNow: "2026-03-30T12:00:00.000Z"
   });
-  assert.deepEqual(verified, ["XRPUSDT", "INJUSDT", "BNBUSDT", "DOGEUSDT"]);
+  assert.deepEqual(verified, ["XRPUSDT", "PEPEUSDT", "INJUSDT", "BNBUSDT", "DOGEUSDT", "LTCUSDT"]);
   assert.equal(snapshot.selection.openPositionIncludedCount, 1);
+  assert.equal(snapshot.selection.blockedIncludedCount, 1);
   assert.equal(snapshot.selection.decisionIncludedCount, 1);
-  assert.equal(snapshot.selection.recentTradeIncludedCount, 2);
+  assert.equal(snapshot.selection.replayIncludedCount, 3);
+  assert.equal(snapshot.selection.recentTradeIncludedCount, 3);
   assert.equal(snapshot.selection.watchlistIncludedCount, 0);
-  assert.equal(snapshot.selection.omittedCount, 4);
-  assert.match(snapshot.notes[0] || "", /focus-decisions/i);
+  assert.equal(snapshot.selection.omittedCount, 7);
+  assert.match(snapshot.notes[0] || "", /blocked-focus/i);
+  assert.match(snapshot.notes[0] || "", /replay-focus/i);
 });
 
 await runCheck("dashboard snapshot uses smaller history auto-repair budget than runtime", async () => {

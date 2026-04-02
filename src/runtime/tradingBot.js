@@ -2839,7 +2839,9 @@ function summarizeMarketHistory(summary = {}) {
       candidateCount: summary.selection?.candidateCount || 0,
       selectedCount: summary.selection?.selectedCount || 0,
       openPositionIncludedCount: summary.selection?.openPositionIncludedCount || 0,
+      blockedIncludedCount: summary.selection?.blockedIncludedCount || 0,
       decisionIncludedCount: summary.selection?.decisionIncludedCount || 0,
+      replayIncludedCount: summary.selection?.replayIncludedCount || 0,
       recentTradeIncludedCount: summary.selection?.recentTradeIncludedCount || 0,
       watchlistIncludedCount: summary.selection?.watchlistIncludedCount || 0,
       omittedCount: summary.selection?.omittedCount || 0
@@ -2904,7 +2906,9 @@ export function resolveMarketHistoryCoverageSymbols({
   symbols = null,
   watchlist = [],
   openPositions = [],
+  blockedSymbols = [],
   decisionSymbols = [],
+  replaySymbols = [],
   trades = [],
   maxSymbols = null,
   recentTradeLimit = 18
@@ -2921,7 +2925,9 @@ export function resolveMarketHistoryCoverageSymbols({
         candidateCount: explicitSymbols.length,
         selectedCount: selectedSymbols.length,
         openPositionIncludedCount: 0,
+        blockedIncludedCount: 0,
         decisionIncludedCount: 0,
+        replayIncludedCount: 0,
         recentTradeIncludedCount: 0,
         watchlistIncludedCount: 0,
         omittedCount: Math.max(0, explicitSymbols.length - selectedSymbols.length)
@@ -2931,13 +2937,18 @@ export function resolveMarketHistoryCoverageSymbols({
 
   const watchlistSymbols = normalizeHistorySymbols(watchlist);
   const openPositionSymbols = normalizeHistorySymbols(openPositions);
+  const blockedFocusSymbols = normalizeHistorySymbols(blockedSymbols);
   const decisionFocusSymbols = normalizeHistorySymbols(decisionSymbols);
+  const replayFocusSymbols = normalizeHistorySymbols(replaySymbols);
   const recentTradeSymbols = normalizeHistorySymbols(arr(trades).slice(-Math.max(1, recentTradeLimit)).reverse());
   const configuredMax = Number.isFinite(maxSymbols) && maxSymbols > 0 ? Math.floor(maxSymbols) : null;
   const resolvedMax = Math.max(
     configuredMax || 0,
     openPositionSymbols.length,
-    Math.min(decisionFocusSymbols.length + openPositionSymbols.length, Math.max(configuredMax || 0, 4)),
+    Math.min(
+      openPositionSymbols.length + blockedFocusSymbols.length + decisionFocusSymbols.length,
+      Math.max(configuredMax || 0, 5)
+    ),
     watchlistSymbols.length || 12
   );
   const orderedSymbols = [];
@@ -2952,7 +2963,9 @@ export function resolveMarketHistoryCoverageSymbols({
     }
   };
   addSymbols(openPositionSymbols);
+  addSymbols(blockedFocusSymbols);
   addSymbols(decisionFocusSymbols);
+  addSymbols(replayFocusSymbols);
   addSymbols(recentTradeSymbols);
   addSymbols(watchlistSymbols);
   const selectedSymbols = orderedSymbols.slice(0, resolvedMax);
@@ -2965,7 +2978,9 @@ export function resolveMarketHistoryCoverageSymbols({
       candidateCount: orderedSymbols.length,
       selectedCount: selectedSymbols.length,
       openPositionIncludedCount: openPositionSymbols.filter((symbol) => selectedSet.has(symbol)).length,
+      blockedIncludedCount: blockedFocusSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       decisionIncludedCount: decisionFocusSymbols.filter((symbol) => selectedSet.has(symbol)).length,
+      replayIncludedCount: replayFocusSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       recentTradeIncludedCount: recentTradeSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       watchlistIncludedCount: watchlistSymbols.filter((symbol) => selectedSet.has(symbol)).length,
       omittedCount: Math.max(0, orderedSymbols.length - selectedSymbols.length)
@@ -4899,7 +4914,9 @@ export class TradingBot {
           candidateCount: 0,
           selectedCount: 0,
           openPositionIncludedCount: 0,
+          blockedIncludedCount: 0,
           decisionIncludedCount: 0,
+          replayIncludedCount: 0,
           recentTradeIncludedCount: 0,
           watchlistIncludedCount: 0,
           omittedCount: 0
@@ -4914,7 +4931,9 @@ export class TradingBot {
       symbols,
       watchlist: this.config.watchlist,
       openPositions: this.runtime?.openPositions || [],
+      blockedSymbols: arr(this.runtime?.latestBlockedSetups || []).slice(0, this.config.dashboardDecisionLimit || 12),
       decisionSymbols: arr(this.runtime?.latestDecisions || []).slice(0, this.config.dashboardDecisionLimit || 12),
+      replaySymbols: arr(this.journal?.trades || []).slice(-Math.min(this.config.dashboardRecentTradeLimit || 6, 8)).reverse(),
       trades: this.journal?.trades || [],
       maxSymbols: this.config.researchMaxSymbols || this.config.watchlist.length || 12,
       recentTradeLimit: 18
@@ -4954,7 +4973,7 @@ export class TradingBot {
       notes: [
         selection.explicit
           ? `${selection.selectedCount} expliciete history-symbolen gecontroleerd.`
-          : `${selection.selectedCount} history-symbolen gecontroleerd (${selection.openPositionIncludedCount} open posities, ${selection.decisionIncludedCount} focus-decisions, ${selection.recentTradeIncludedCount} recente trades, ${selection.watchlistIncludedCount} watchlist).`,
+          : `${selection.selectedCount} history-symbolen gecontroleerd (${selection.openPositionIncludedCount} open posities, ${selection.blockedIncludedCount} blocked-focus, ${selection.decisionIncludedCount} focus-decisions, ${selection.replayIncludedCount} replay-focus, ${selection.recentTradeIncludedCount} recente trades, ${selection.watchlistIncludedCount} watchlist).`,
         selection.omittedCount
           ? `${selection.omittedCount} lagere-prioriteit symbolen vallen buiten het huidige history-budget.`
           : "Alle geselecteerde focus-symbolen vallen binnen het huidige history-budget.",
