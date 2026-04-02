@@ -15099,6 +15099,73 @@ await runCheck("trading bot refreshes market history with prioritized blocked an
   assert.match(snapshot.notes[0] || "", /replay-focus/i);
 });
 
+await runCheck("history auto-repair prioritizes learnable blocked setups before weaker blocked focus", async () => {
+  const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-blocked-focus-"));
+  const store = new MarketHistoryStore({ rootDir: historyDir });
+  await store.init();
+  const intervalMs = 15 * 60_000;
+  const base = Date.parse("2026-03-30T11:15:00.000Z");
+  const rawCandles = Array.from({ length: 3 }, (_, index) => {
+    const openTime = base + index * intervalMs;
+    return [openTime, "100", "101", "99", `${100.4 + index * 0.2}`, "12", openTime + intervalMs - 1, "1206", 10, "6", "603", "0"];
+  });
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({
+    historyDir,
+    watchlist: ["BTCUSDT", "ETHUSDT"],
+    historyCacheEnabled: true,
+    historyAutoRepairEnabled: true,
+    historyAutoRepairMaxSymbols: 1,
+    researchMaxSymbols: 3,
+    klineLimit: 3,
+    klineInterval: "15m"
+  });
+  bot.logger = { info() {}, warn() {}, error() {} };
+  bot.historyStore = store;
+  bot.client = {
+    async getKlines(symbol, interval, limit, options = {}) {
+      const endTime = options.endTime == null ? Number.POSITIVE_INFINITY : Number(options.endTime);
+      return rawCandles.filter((item) => item[0] <= endTime).slice(-limit);
+    }
+  };
+  bot.runtime = {
+    ops: {},
+    openPositions: [],
+    latestDecisions: [],
+    latestBlockedSetups: [
+      {
+        symbol: "WEAKUSDT",
+        allow: false,
+        opportunityScore: 0.14,
+        edgeToThreshold: -0.21,
+        learningLane: null,
+        blockerReasons: ["model_confidence_too_low"]
+      },
+      {
+        symbol: "LEARNUSDT",
+        allow: false,
+        opportunityScore: 0.63,
+        edgeToThreshold: -0.018,
+        learningLane: "probe",
+        learningValueScore: 0.74,
+        blockerReasons: ["model_confidence_too_low"],
+        missedTradeTuning: { paperProbeEligible: true }
+      }
+    ]
+  };
+  bot.journal = { trades: [] };
+  const snapshot = await TradingBot.prototype.refreshMarketHistorySnapshot.call(bot, {
+    referenceNow: "2026-03-30T12:05:00.000Z",
+    context: "runtime"
+  });
+  assert.equal(snapshot.repair.status, "repaired");
+  assert.equal(snapshot.repair.attemptedCount, 1);
+  assert.deepEqual(snapshot.repair.repairedSymbols, ["LEARNUSDT"]);
+  assert.equal(snapshot.repair.focusedSymbols[0]?.symbol, "LEARNUSDT");
+  assert.equal(snapshot.repair.focusedSymbols[0]?.source, "blocked");
+  assert.match(snapshot.repair.note || "", /blocked-focus|blocked-focus/i);
+});
+
 await runCheck("dashboard snapshot uses smaller history auto-repair budget than runtime", async () => {
   const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "playground-history-context-budget-"));
   const store = new MarketHistoryStore({ rootDir: historyDir });

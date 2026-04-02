@@ -2856,6 +2856,11 @@ function summarizeMarketHistory(summary = {}) {
       attemptedSymbols: arr(summary.repair?.attemptedSymbols || []).slice(0, 6),
       repairedSymbols: arr(summary.repair?.repairedSymbols || []).slice(0, 6),
       failedSymbols: arr(summary.repair?.failedSymbols || []).slice(0, 6),
+      focusedSymbols: arr(summary.repair?.focusedSymbols || []).slice(0, 6).map((item) => ({
+        symbol: item.symbol || null,
+        source: item.source || null,
+        score: num(item.score || 0, 4)
+      })),
       lastRunAt: summary.repair?.lastRunAt || null,
       note: summary.repair?.note || null
     },
@@ -4416,6 +4421,101 @@ function resolveHistoryAutoRepairBudget(config = {}, context = "runtime") {
   return defaults[context] ?? 1;
 }
 
+function resolveHistoryEdgeCloseness(value) {
+  const edge = Math.abs(Number(value));
+  if (!Number.isFinite(edge)) {
+    return 0;
+  }
+  return clamp(1 - Math.min(1, edge / 0.08), 0, 1);
+}
+
+function scoreDecisionHistoryFocus(item = {}) {
+  const opportunity = clamp(Number(item.opportunityScore ?? item.rankScore ?? 0), 0, 1);
+  const learningValue = clamp(Number(item.learningValueScore || 0), 0, 1);
+  const edgeCloseness = resolveHistoryEdgeCloseness(item.edgeToThreshold);
+  const laneBonus = item.learningLane === "probe"
+    ? 0.18
+    : item.learningLane === "shadow"
+      ? 0.1
+      : 0;
+  return num((opportunity * 0.48) + (learningValue * 0.24) + (edgeCloseness * 0.2) + laneBonus, 4);
+}
+
+function scoreBlockedHistoryFocus(item = {}) {
+  const base = scoreDecisionHistoryFocus(item);
+  const tuningBonus = item.missedTradeTuning?.paperProbeEligible ? 0.12 : 0;
+  const blockerBonus = arr(item.blockerReasons || []).length ? 0.06 : 0;
+  return num(base + tuningBonus + blockerBonus + 0.08, 4);
+}
+
+function scoreReplayHistoryFocus(trade = {}, index = 0) {
+  const recency = clamp(1 - Math.min(index, 8) / 8, 0.2, 1);
+  const moveMagnitude = clamp(Math.abs(Number(trade.netPnlPct || 0)) * 20, 0, 0.5);
+  const durationWeight = clamp((Number(trade.durationMinutes || 0) || 0) / 240, 0, 0.2);
+  return num(recency + moveMagnitude + durationWeight, 4);
+}
+
+function sortHistoryFocusEntries(items = [], scorer = () => 0) {
+  return arr(items)
+    .map((item, index) => ({
+      ...item,
+      historyFocusScore: scorer(item, index),
+      historyFocusOrder: index
+    }))
+    .sort((left, right) => {
+      const scoreDelta = (right.historyFocusScore || 0) - (left.historyFocusScore || 0);
+      return scoreDelta !== 0 ? scoreDelta : left.historyFocusOrder - right.historyFocusOrder;
+    });
+}
+
+function buildHistoryFocusInputs({
+  blockedSetups = [],
+  decisions = [],
+  trades = [],
+  limit = 12
+} = {}) {
+  const cappedLimit = Math.max(1, Math.min(Number(limit) || 12, 16));
+  const blockedEntries = sortHistoryFocusEntries(blockedSetups, scoreBlockedHistoryFocus).slice(0, cappedLimit);
+  const decisionEntries = sortHistoryFocusEntries(decisions, scoreDecisionHistoryFocus).slice(0, cappedLimit);
+  const replayEntries = sortHistoryFocusEntries(trades, scoreReplayHistoryFocus).slice(0, Math.min(cappedLimit, 8));
+  const focusMap = new Map();
+  const noteFocus = (items = [], source) => {
+    for (const item of items) {
+      const symbol = `${item?.symbol || ""}`.trim().toUpperCase();
+      if (!symbol) {
+        continue;
+      }
+      const current = focusMap.get(symbol) || {
+        primarySource: source,
+        score: 0,
+        sources: []
+      };
+      const score = Number(item.historyFocusScore || 0);
+      const nextSources = [...new Set([...current.sources, source])];
+      focusMap.set(symbol, {
+        primarySource: score > (current.score || 0) ? source : current.primarySource,
+        score: Math.max(current.score || 0, score),
+        sources: nextSources
+      });
+    }
+  };
+  noteFocus(blockedEntries, "blocked");
+  noteFocus(decisionEntries, "decision");
+  noteFocus(replayEntries, "replay");
+  return {
+    blockedSymbols: blockedEntries,
+    decisionSymbols: decisionEntries,
+    replaySymbols: replayEntries,
+    focusBySymbol: Object.fromEntries(
+      [...focusMap.entries()].map(([symbol, meta]) => [symbol, {
+        primarySource: meta.primarySource || null,
+        score: num(meta.score || 0, 4),
+        sources: [...(meta.sources || [])]
+      }])
+    )
+  };
+}
+
 export class TradingBot {
   constructor({ config, logger }) {
     this.config = config;
@@ -4805,7 +4905,22 @@ export class TradingBot {
     const selected = dueCandidates
       .sort((left, right) => {
         const priorityDelta = (right.repairPriority || 0) - (left.repairPriority || 0);
-        return priorityDelta !== 0 ? priorityDelta : left.index - right.index;
+        if (priorityDelta !== 0) {
+          return priorityDelta;
+        }
+        const focusSourceRank = (item) => item.historyFocus?.primarySource === "blocked"
+          ? 3
+          : item.historyFocus?.primarySource === "decision"
+            ? 2
+            : item.historyFocus?.primarySource === "replay"
+              ? 1
+              : 0;
+        const focusDelta = focusSourceRank(right) - focusSourceRank(left);
+        if (focusDelta !== 0) {
+          return focusDelta;
+        }
+        const focusScoreDelta = (right.historyFocus?.score || 0) - (left.historyFocus?.score || 0);
+        return focusScoreDelta !== 0 ? focusScoreDelta : left.index - right.index;
       })
       .slice(0, maxRepairSymbols);
     if (!selected.length) {
@@ -4828,6 +4943,11 @@ export class TradingBot {
       return repairState;
     }
     repairState.status = "repairing";
+    repairState.focusedSymbols = selected.map((item) => ({
+      symbol: item.symbol,
+      source: item.historyFocus?.primarySource || null,
+      score: num(item.historyFocus?.score || 0, 4)
+    }));
     for (const item of selected) {
       repairState.attemptedCount += 1;
       repairState.attemptedSymbols.push(item.symbol);
@@ -4869,8 +4989,9 @@ export class TradingBot {
       : repairState.repairedCount
         ? "repaired"
         : "repairing";
+    const leadFocus = repairState.focusedSymbols[0] || null;
     repairState.note = repairState.repairedCount
-      ? `${repairState.repairedCount} history-symbolen kregen een auto-repair poging vanuit ${titleize(context)}.`
+      ? `${repairState.repairedCount} history-symbolen kregen een auto-repair poging vanuit ${titleize(context)}${leadFocus?.source ? ` met ${leadFocus.source}-focus eerst` : ""}.`
       : repairState.failedCount
         ? `History repair faalde voor ${repairState.failedCount} symbolen.`
         : "Geen history repair nodig.";
@@ -4927,37 +5048,51 @@ export class TradingBot {
       });
       return this.runtime.marketHistory;
     }
+    const historyFocus = buildHistoryFocusInputs({
+      blockedSetups: arr(this.runtime?.latestBlockedSetups || []),
+      decisions: arr(this.runtime?.latestDecisions || []),
+      trades: arr(this.journal?.trades || []).slice().reverse(),
+      limit: this.config.dashboardDecisionLimit || 12
+    });
     const { symbols: selectedSymbols, selection } = resolveMarketHistoryCoverageSymbols({
       symbols,
       watchlist: this.config.watchlist,
       openPositions: this.runtime?.openPositions || [],
-      blockedSymbols: arr(this.runtime?.latestBlockedSetups || []).slice(0, this.config.dashboardDecisionLimit || 12),
-      decisionSymbols: arr(this.runtime?.latestDecisions || []).slice(0, this.config.dashboardDecisionLimit || 12),
-      replaySymbols: arr(this.journal?.trades || []).slice(-Math.min(this.config.dashboardRecentTradeLimit || 6, 8)).reverse(),
+      blockedSymbols: historyFocus.blockedSymbols,
+      decisionSymbols: historyFocus.decisionSymbols,
+      replaySymbols: historyFocus.replaySymbols,
       trades: this.journal?.trades || [],
       maxSymbols: this.config.researchMaxSymbols || this.config.watchlist.length || 12,
       recentTradeLimit: 18
     });
     let summaries = [];
     for (const symbol of selectedSymbols) {
-      summaries.push(await this.historyStore.verifySeries({
+      const summary = await this.historyStore.verifySeries({
         symbol,
         interval: this.config.klineInterval,
         referenceNow,
         freshnessThresholdMultiplier: this.config.historyVerifyFreshnessMultiplier || 4
-      }));
+      });
+      summaries.push({
+        ...summary,
+        historyFocus: historyFocus.focusBySymbol[symbol] || null
+      });
     }
     const repair = await this.maybeRepairMarketHistoryCoverage({ summaries, referenceNow, context });
     if (repair.attemptedCount > 0) {
       const repairedSet = new Set(repair.attemptedSymbols);
       const repairedSummaries = new Map();
       for (const symbol of repair.attemptedSymbols) {
-        repairedSummaries.set(symbol, await this.historyStore.verifySeries({
+        const refreshed = await this.historyStore.verifySeries({
           symbol,
           interval: this.config.klineInterval,
           referenceNow,
           freshnessThresholdMultiplier: this.config.historyVerifyFreshnessMultiplier || 4
-        }));
+        });
+        repairedSummaries.set(symbol, {
+          ...refreshed,
+          historyFocus: historyFocus.focusBySymbol[symbol] || null
+        });
       }
       summaries = summaries.map((item) => repairedSet.has(item.symbol) ? (repairedSummaries.get(item.symbol) || item) : item);
     }
