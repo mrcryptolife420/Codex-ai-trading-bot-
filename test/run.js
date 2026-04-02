@@ -6980,6 +6980,75 @@ await runCheck("risk manager can keep paper exploration available after warm-up 
   assert.ok(decision.suppressedReasons.includes("model_confidence_too_low"));
 });
 
+await runCheck("risk manager can use paper learning guidance to rescue a strong near-threshold probe", async () => {
+  const manager = new RiskManager(makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 }));
+  const payload = {
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.486,
+      calibrationConfidence: 0.5,
+      disagreement: 0.03,
+      shouldAbstain: false,
+      calibrator: { warmupProgress: 1, globalConfidence: 0.95 },
+      transformer: { probability: 0.5, confidence: 0.08 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.8, bookPressure: -0.38, microPriceEdgeBps: 0.12 },
+      market: { realizedVolPct: 0.013, atrPct: 0.009, bearishPatternScore: 0.04, bullishPatternScore: 0.11, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.05, eventBullishScore: 0.03, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.02, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.24, contrarianScore: 0.16 },
+    volatilitySummary: { riskScore: 0.42, ivPremium: 4 },
+    calendarSummary: { riskScore: 0.06, bullishScore: 0, urgencyScore: 0.04 },
+    committeeSummary: { agreement: 0.42, probability: 0.49, netScore: -0.03, sizeMultiplier: 0.96, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.39, expectedReward: 0.012 },
+    strategySummary: {
+      activeStrategy: "vwap_trend",
+      family: "trend_following",
+      fitScore: 0.56,
+      confidence: 0.48,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 0, sampleConfidence: 0 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1 },
+    driftSummary: { blockerReasons: [], severity: 0.05 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false, learningAllowed: true },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.7 },
+    nowIso: "2026-03-08T12:00:00.000Z"
+  };
+  const unguided = manager.evaluateEntry(payload);
+  const guided = manager.evaluateEntry({
+    ...payload,
+    paperLearningGuidance: {
+      active: true,
+      preferredLane: "probe",
+      priorityBoost: 0.045,
+      probeBoost: 0.05,
+      cautionPenalty: 0.02,
+      benchmarkLead: "probe_lane",
+      targetScopeMatched: true
+    },
+    offlineLearningGuidance: {
+      active: false,
+      executionCaution: 0,
+      featureTrustPenalty: 0
+    }
+  });
+  assert.equal(unguided.allow, false);
+  assert.equal(guided.allow, true);
+  assert.equal(guided.entryMode, "paper_exploration");
+  assert.ok((guided.paperExploration?.guidanceThresholdRelief || 0) > 0);
+});
+
 await runCheck("risk manager only escalates explicit meta caution gates, not neural-only caution", async () => {
   const config = makeConfig({ modelThreshold: 0.55, minModelConfidence: 0.55 });
   const manager = new RiskManager(config);
@@ -13191,6 +13260,8 @@ await runCheck("trading bot readiness flags stalled paper signal flow", async ()
     signalFlow: {
       consecutiveCyclesWithSignalsNoPaperTrade: 4,
       lastCycle: {
+        generatedSignals: 3,
+        allowedSignals: 1,
         rejectionReasons: { capital_governor_blocked: 3 },
         rejectionCategories: { governance: 3 }
       }
@@ -13212,6 +13283,40 @@ await runCheck("trading bot readiness flags stalled paper signal flow", async ()
   assert.equal(readiness.status, "degraded");
   assert.ok(readiness.reasons.includes("paper_signal_flow_stalled"));
   assert.equal(checks.checks.find((item) => item.id === "paper_signal_flow")?.passed, false);
+});
+
+await runCheck("trading bot readiness does not flag stalled paper flow when every signal was legitimately blocked", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper", paperSilentFailureCycleThreshold: 3 });
+  bot.runtime = {
+    lastAnalysisAt: "2026-03-19T10:00:00.000Z",
+    health: { circuitOpen: false },
+    exchangeTruth: { orphanedSymbols: [], manualInterferenceSymbols: [], unmatchedOrderSymbols: [] },
+    exchangeSafety: { status: "ready" },
+    orderLifecycle: { pendingActions: [] },
+    capitalLadder: { allowEntries: true },
+    capitalGovernor: { allowEntries: true },
+    signalFlow: {
+      consecutiveCyclesWithSignalsNoPaperTrade: 0,
+      lastCycle: {
+        generatedSignals: 4,
+        allowedSignals: 0,
+        entriesAttempted: 0,
+        paperTradesAttempted: 0,
+        rejectionReasons: { model_confidence_too_low: 4 },
+        rejectionCategories: { model: 4 }
+      }
+    },
+    ops: { alerts: { alerts: [] } },
+    service: {
+      lastHeartbeatAt: "2026-03-19T09:59:30.000Z",
+      watchdogStatus: "running",
+      restartBackoffSeconds: 0
+    }
+  };
+  const readiness = bot.buildOperationalReadiness("2026-03-19T10:00:00.000Z");
+  assert.equal(readiness.status, "ready");
+  assert.ok(!readiness.reasons.includes("paper_signal_flow_stalled"));
 });
 
 await runCheck("trading bot readiness flags paused self-heal states", async () => {

@@ -6331,11 +6331,19 @@ export class TradingBot {
   finalizeSignalFlowCycle({ at = nowIso(), entryAttempt = {}, openedPosition = null } = {}) {
     const metrics = this.ensureSignalFlowMetrics();
     const generatedSignals = metrics.lastCycle?.generatedSignals || 0;
-    if ((this.config?.botMode || this.runtime?.mode || "paper") === "paper" && generatedSignals > 0) {
+    const eligiblePaperFlow =
+      (metrics.lastCycle?.allowedSignals || 0) > 0 ||
+      (metrics.lastCycle?.entriesAttempted || 0) > 0 ||
+      (metrics.lastCycle?.paperTradesAttempted || 0) > 0;
+    if (
+      (this.config?.botMode || this.runtime?.mode || "paper") === "paper" &&
+      generatedSignals > 0 &&
+      eligiblePaperFlow
+    ) {
       metrics.consecutiveCyclesWithSignalsNoPaperTrade = openedPosition
         ? 0
         : (metrics.consecutiveCyclesWithSignalsNoPaperTrade || 0) + 1;
-    } else if (openedPosition) {
+    } else {
       metrics.consecutiveCyclesWithSignalsNoPaperTrade = 0;
     }
     metrics.lastCycle = {
@@ -6359,6 +6367,7 @@ export class TradingBot {
       paperTradesAttempted: metrics.lastCycle.paperTradesAttempted || 0,
       paperTradesExecuted: metrics.lastCycle.paperTradesExecuted || 0,
       paperTradesPersisted: metrics.lastCycle.paperTradesPersisted || 0,
+      eligiblePaperFlow,
       entryStatus: entryAttempt.status || "idle",
       openedSymbol: openedPosition?.symbol || null,
       topRejectionReason: topReason,
