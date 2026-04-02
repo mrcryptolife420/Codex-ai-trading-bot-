@@ -2749,6 +2749,33 @@ function summarizePaperLearning(summary = {}) {
   };
 }
 
+function summarizePaperLearningGuidance(guidance = {}) {
+  return {
+    active: Boolean(guidance.active),
+    sourceStatus: guidance.sourceStatus || "warmup",
+    preferredLane: guidance.preferredLane || null,
+    guidanceStrength: num(guidance.guidanceStrength || 0, 4),
+    priorityBoost: num(guidance.priorityBoost || 0, 4),
+    probeBoost: num(guidance.probeBoost || 0, 4),
+    shadowBoost: num(guidance.shadowBoost || 0, 4),
+    cautionPenalty: num(guidance.cautionPenalty || 0, 4),
+    focusReason: guidance.focusReason || null,
+    benchmarkLead: guidance.benchmarkLead || null,
+    challengerRecommendation: guidance.challengerRecommendation || null,
+    targetScope: guidance.targetScope || null,
+    targetScopeMatched: Boolean(guidance.targetScopeMatched),
+    focusCandidateSymbol: guidance.focusCandidateSymbol || null,
+    matchedScopes: arr(guidance.matchedScopes || []).slice(0, 3).map((item) => ({
+      id: item.id || null,
+      type: item.type || null,
+      status: item.status || "warmup",
+      readinessScore: num(item.readinessScore || 0, 4),
+      matchScore: num(item.matchScore || 0, 4)
+    })),
+    note: guidance.note || null
+  };
+}
+
 function summarizeServiceState(summary = {}, config = {}, referenceNow = nowIso()) {
   const thresholdMs = Math.max(60000, (config.tradingIntervalSeconds || 60) * 3 * 1000);
   const referenceTime = new Date(referenceNow).getTime();
@@ -10310,6 +10337,7 @@ export class TradingBot {
     const marketCondition = summarizeMarketCondition(candidate.marketConditionSummary || {});
     const strategyAllocation = summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score?.strategyAllocation || {});
     const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
+    const paperLearningGuidance = summarizePaperLearningGuidance(candidate.decision?.paperLearningGuidance || {});
     const policyTransitions = arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || []);
     const adaptivePolicy = summarizeAdaptivePolicy({
       strategyAllocation,
@@ -10326,9 +10354,182 @@ export class TradingBot {
       marketCondition,
       strategyAllocation,
       adaptivePolicy,
+      paperLearningGuidance,
       missedTradeTuning,
       exitPolicy,
       opportunityScore: num(candidate.decision?.opportunityScore || 0, 4)
+    };
+  }
+
+  buildPaperLearningGuidance({
+    symbol = null,
+    strategySummary = {},
+    regimeSummary = {},
+    sessionSummary = {}
+  } = {}) {
+    const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
+    if ((this.config?.botMode || "paper") !== "paper" || paperLearning.status === "warmup") {
+      return {
+        active: false,
+        sourceStatus: paperLearning.status || "warmup",
+        note: "Paper learning guidance is nog in warmup."
+      };
+    }
+
+    const normalize = (value) => String(value || "").trim().toLowerCase();
+    const family = strategySummary.family || null;
+    const regime = regimeSummary.regime || null;
+    const session = sessionSummary.session || null;
+    const benchmarkLead = paperLearning.benchmarkLanes?.bestLane || paperLearning.challengerPolicy?.leadingLane || null;
+    const challengerRecommendation = paperLearning.challengerPolicy?.recommendation || null;
+    const targetScope = paperLearning.challengerPolicy?.targetScope || paperLearning.paperToLiveReadiness?.topScope || null;
+    const focusCandidate = arr(paperLearning.activeLearning?.topCandidates || []).find((item) => item.symbol === symbol) || null;
+    const strongestScope = paperLearning.scopeCoaching?.strongest || null;
+    const targetScopeMatched = Boolean(
+      targetScope &&
+      [family, regime, session].filter(Boolean).some((part) => normalize(targetScope).includes(normalize(part)))
+    );
+    const matchedScopes = arr(paperLearning.scopeReadiness || [])
+      .map((item) => {
+        let matchScore = 0;
+        if (item.type === "strategy_family" && family && normalize(item.id) === normalize(family)) {
+          matchScore = 1;
+        } else if (item.type === "regime" && regime && normalize(item.id) === normalize(regime)) {
+          matchScore = 0.84;
+        } else if (item.type === "session" && session && normalize(item.id) === normalize(session)) {
+          matchScore = 0.68;
+        } else if (item.id && [family, regime, session].filter(Boolean).some((part) => normalize(item.id).includes(normalize(part)))) {
+          matchScore = 0.52;
+        }
+        return {
+          ...item,
+          matchScore
+        };
+      })
+      .filter((item) => item.matchScore > 0)
+      .sort((left, right) => {
+        const scoreDelta = (right.matchScore || 0) - (left.matchScore || 0);
+        return scoreDelta !== 0 ? scoreDelta : (right.readinessScore || 0) - (left.readinessScore || 0);
+      })
+      .slice(0, 3);
+
+    let priorityBoost = 0;
+    let probeBoost = 0;
+    let shadowBoost = 0;
+    let cautionPenalty = 0;
+    let preferredLane = null;
+    const topScope = matchedScopes[0] || null;
+
+    if (topScope) {
+      if (topScope.status === "paper_ready") {
+        priorityBoost += 0.05;
+        probeBoost += 0.03;
+        preferredLane = "probe";
+      } else if (topScope.status === "building") {
+        priorityBoost += 0.03;
+        probeBoost += 0.02;
+        preferredLane = preferredLane || "probe";
+      } else if (topScope.status === "warmup") {
+        shadowBoost += 0.02;
+      }
+    }
+
+    if (focusCandidate) {
+      priorityBoost += focusCandidate.priorityBand === "high_priority" ? 0.04 : 0.025;
+      if (focusCandidate.priorityBand !== "observe") {
+        probeBoost += 0.02;
+      }
+    }
+
+    if (symbol && symbol === paperLearning.reviewPacks?.topMissedSetup) {
+      priorityBoost += 0.035;
+      probeBoost += 0.025;
+      preferredLane = preferredLane || "probe";
+    } else if (symbol && symbol === paperLearning.reviewPacks?.weakestProbe) {
+      shadowBoost += 0.03;
+      preferredLane = preferredLane || "shadow";
+    } else if (symbol && symbol === paperLearning.reviewPacks?.bestProbeWinner) {
+      priorityBoost += 0.02;
+    }
+
+    if (benchmarkLead === "shadow_take") {
+      shadowBoost += 0.05;
+      priorityBoost += 0.02;
+      preferredLane = preferredLane || "shadow";
+    } else if (["always_take", "fixed_threshold"].includes(benchmarkLead)) {
+      probeBoost += 0.04;
+      priorityBoost += 0.03;
+      preferredLane = preferredLane || "probe";
+    } else if (benchmarkLead === "probe_lane") {
+      probeBoost += 0.025;
+      priorityBoost += 0.015;
+      preferredLane = preferredLane || "probe";
+    } else if (benchmarkLead === "safe_lane") {
+      cautionPenalty += 0.025;
+    }
+
+    if (challengerRecommendation === "sample_more_shadow") {
+      shadowBoost += 0.04;
+      preferredLane = preferredLane || "shadow";
+    } else if (challengerRecommendation === "review_thresholds") {
+      probeBoost += 0.03;
+      priorityBoost += 0.025;
+      preferredLane = preferredLane || "probe";
+    } else if (challengerRecommendation === "keep_probe_champion") {
+      probeBoost += 0.02;
+      priorityBoost += 0.015;
+      preferredLane = preferredLane || "probe";
+    } else if (challengerRecommendation === "stabilize_execution") {
+      cautionPenalty += 0.02;
+    }
+
+    if (targetScopeMatched) {
+      priorityBoost += 0.02;
+      probeBoost += 0.015;
+    }
+    if (strongestScope?.id && [family, regime, session].filter(Boolean).some((part) => normalize(strongestScope.id).includes(normalize(part)))) {
+      priorityBoost += 0.015;
+    }
+
+    priorityBoost = clamp(priorityBoost, 0, 0.1);
+    probeBoost = clamp(probeBoost, 0, 0.08);
+    shadowBoost = clamp(shadowBoost, 0, 0.08);
+    cautionPenalty = clamp(cautionPenalty, 0, 0.06);
+    const guidanceStrength = clamp(priorityBoost + probeBoost + shadowBoost - cautionPenalty * 0.6, 0, 1);
+    const focusReason = focusCandidate?.reason ||
+      (benchmarkLead === "shadow_take" ? "benchmark_shadow_take_edge" :
+        ["always_take", "fixed_threshold"].includes(benchmarkLead) ? "benchmark_threshold_gap" :
+          targetScopeMatched ? "scope_readiness_match" :
+            strongestScope ? "scope_readiness_followup" : "paper_learning_guidance");
+
+    const noteParts = [];
+    if (topScope) {
+      noteParts.push(`${topScope.id} staat op ${topScope.status}.`);
+    }
+    if (benchmarkLead) {
+      noteParts.push(`Benchmark: ${benchmarkLead}.`);
+    }
+    if (challengerRecommendation) {
+      noteParts.push(`Challenger: ${challengerRecommendation}.`);
+    }
+
+    return {
+      active: guidanceStrength > 0 || cautionPenalty > 0,
+      sourceStatus: paperLearning.status || "observe",
+      preferredLane,
+      guidanceStrength,
+      priorityBoost,
+      probeBoost,
+      shadowBoost,
+      cautionPenalty,
+      focusReason,
+      benchmarkLead,
+      challengerRecommendation,
+      targetScope,
+      targetScopeMatched,
+      focusCandidateSymbol: focusCandidate?.symbol || null,
+      matchedScopes,
+      note: noteParts.join(" ") || paperLearning.challengerPolicy?.note || paperLearning.coaching?.nextReview || "Paper learning guidance is actief."
     };
   }
 
@@ -10416,6 +10617,7 @@ export class TradingBot {
       learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
       paperLearningBudget: candidate.decision.paperLearningBudget || null,
       paperLearningSampling: candidate.decision.paperLearningSampling || null,
+      paperLearningGuidance: summarizePaperLearningGuidance(candidate.decision.paperLearningGuidance || {}),
       suppressedReasons: candidate.decision.suppressedReasons || [],
       paperExploration: candidate.decision.paperExploration || null,
       paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
@@ -10986,6 +11188,12 @@ export class TradingBot {
       trendStateSummary,
       marketStateSummary,
       marketConditionSummary,
+      paperLearningGuidance: this.buildPaperLearningGuidance({
+        symbol,
+        strategySummary,
+        regimeSummary,
+        sessionSummary
+      }),
       venueConfirmationSummary,
       exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
       strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
@@ -11496,6 +11704,7 @@ export class TradingBot {
       learningLane: candidate.decision.learningLane || null,
       learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
       paperLearningBudget: candidate.decision.paperLearningBudget || null,
+      paperLearningGuidance: summarizePaperLearningGuidance(candidate.decision.paperLearningGuidance || {}),
       spreadBps: num(candidate.marketSnapshot.book.spreadBps, 2),
       realizedVolPct: num(candidate.marketSnapshot.market.realizedVolPct, 4),
       edgeToThreshold: num(candidate.score.probability - candidate.decision.threshold, 4),
@@ -11606,6 +11815,7 @@ export class TradingBot {
           disagreementScore: num(candidate.decision.paperActiveLearning.disagreementScore || 0, 4),
           uncertaintyScore: num(candidate.decision.paperActiveLearning.uncertaintyScore || 0, 4)
         } : null,
+        guidance: summarizePaperLearningGuidance(candidate.decision.paperLearningGuidance || {}),
         scope: {
           family: candidate.decision.paperLearningSampling?.scope?.family || null,
           regime: candidate.decision.paperLearningSampling?.scope?.regime || null,

@@ -811,6 +811,86 @@ function buildStrategyAllocationGovernanceState({
   return state;
 }
 
+function applyPaperLearningGuidance({
+  botMode = "paper",
+  guidance = {},
+  allow = false,
+  entryMode = "standard",
+  learningLane = null,
+  learningValueScore = 0,
+  activeLearningState = {},
+  score = {},
+  threshold = 0
+} = {}) {
+  if (botMode !== "paper" || !guidance?.active) {
+    return {
+      learningLane,
+      learningValueScore,
+      activeLearningState,
+      opportunityBoost: 0,
+      applied: false
+    };
+  }
+
+  const nearMiss = safeValue(score.probability, 0) >= threshold - 0.035;
+  let nextLearningLane = learningLane;
+  if (
+    guidance.preferredLane === "probe" &&
+    allow &&
+    nextLearningLane === "safe" &&
+    ["standard", "paper_exploration", "paper_recovery_probe"].includes(entryMode) &&
+    nearMiss
+  ) {
+    nextLearningLane = "probe";
+  } else if (
+    guidance.preferredLane === "shadow" &&
+    !allow &&
+    (nextLearningLane === "safe" || !nextLearningLane)
+  ) {
+    nextLearningLane = "shadow";
+  }
+
+  const positiveLearningBoost =
+    safeValue(guidance.priorityBoost, 0) * 0.7 +
+    safeValue(guidance.probeBoost, 0) * (allow ? 0.75 : 0.35) +
+    safeValue(guidance.shadowBoost, 0) * (!allow ? 0.7 : 0.2);
+  const negativeLearningPenalty = safeValue(guidance.cautionPenalty, 0) * 0.45;
+  const nextLearningValueScore = clamp(learningValueScore + positiveLearningBoost - negativeLearningPenalty, 0, 1);
+  const nextActiveLearningScore = clamp(
+    safeValue(activeLearningState.activeLearningScore, 0) +
+      safeValue(guidance.priorityBoost, 0) * 0.55 +
+      safeValue(guidance.probeBoost, 0) * 0.35 +
+      safeValue(guidance.shadowBoost, 0) * 0.32 -
+      safeValue(guidance.cautionPenalty, 0) * 0.24,
+    0,
+    1
+  );
+  const opportunityBoost = num(clamp(
+    (allow
+      ? safeValue(guidance.priorityBoost, 0) + safeValue(guidance.probeBoost, 0) * 0.8
+      : safeValue(guidance.priorityBoost, 0) * 0.45 + safeValue(guidance.shadowBoost, 0) * 0.9) -
+      safeValue(guidance.cautionPenalty, 0) * 0.8,
+    -0.05,
+    0.12
+  ), 4);
+
+  return {
+    learningLane: nextLearningLane,
+    learningValueScore: nextLearningValueScore,
+    activeLearningState: {
+      ...activeLearningState,
+      activeLearningScore: nextActiveLearningScore,
+      focusReason: activeLearningState.focusReason || guidance.focusReason || "paper_learning_guidance"
+    },
+    opportunityBoost,
+    applied:
+      nextLearningLane !== learningLane ||
+      nextLearningValueScore !== learningValueScore ||
+      nextActiveLearningScore !== safeValue(activeLearningState.activeLearningScore, 0) ||
+      opportunityBoost !== 0
+  };
+}
+
 function toBoolean(value, fallback = false) {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
@@ -1328,6 +1408,7 @@ export class RiskManager {
     venueConfirmationSummary = {},
     strategyMetaSummary = {},
     strategyAllocationSummary = {},
+    paperLearningGuidance = {},
     exchangeCapabilitiesSummary = {}
   }) {
     const reasons = [];
@@ -2279,6 +2360,23 @@ export class RiskManager {
         focusReason: activeLearningState.focusReason || "condition_missed_trade_tuning"
       };
     }
+    const paperLearningGuidanceApplied = applyPaperLearningGuidance({
+      botMode: this.config.botMode,
+      guidance: paperLearningGuidance,
+      allow,
+      entryMode,
+      learningLane,
+      learningValueScore,
+      activeLearningState,
+      score,
+      threshold
+    });
+    learningLane = paperLearningGuidanceApplied.learningLane;
+    learningValueScore = paperLearningGuidanceApplied.learningValueScore;
+    activeLearningState = paperLearningGuidanceApplied.activeLearningState;
+    const paperLearningGuidanceOpportunityBoost = this.config.botMode === "paper"
+      ? paperLearningGuidanceApplied.opportunityBoost
+      : 0;
     const paperPriorityOpportunityBoost =
       this.config.botMode === "paper"
         ? clamp(
@@ -2303,7 +2401,8 @@ export class RiskManager {
       (missedTradeTuningApplied.paperProbeEligible ? 0.05 : 0) +
       (missedTradeTuningApplied.shadowPriority ? 0.03 : 0) +
       safeValue(strategyMetaSummary.holdMultiplier, 1) * 0.02 +
-      paperPriorityOpportunityBoost,
+      paperPriorityOpportunityBoost +
+      paperLearningGuidanceOpportunityBoost,
       0,
       1.4
     ), 4);
@@ -2320,6 +2419,11 @@ export class RiskManager {
       paperActiveLearning: activeLearningState,
       strategyAllocationGovernance,
       missedTradeTuningApplied,
+      paperLearningGuidance: {
+        ...(paperLearningGuidance || {}),
+        applied: paperLearningGuidanceApplied.applied,
+        opportunityBoost: paperLearningGuidanceApplied.opportunityBoost
+      },
       paperThresholdSandbox: {
         ...paperThresholdSandbox,
         thresholdBeforeSandbox,
@@ -2332,6 +2436,7 @@ export class RiskManager {
       }, {}),
       paperExploration,
       paperPriorityOpportunityBoost,
+      paperLearningGuidanceOpportunityBoost,
       paperGuardrailRelief,
       baseThreshold,
       threshold,

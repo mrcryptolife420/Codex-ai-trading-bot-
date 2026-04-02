@@ -6600,6 +6600,119 @@ await runCheck("risk manager applies condition-scoped missed-trade tuning and op
   assert.ok(decision.rankScore > 0);
 });
 
+await runCheck("risk manager uses paper learning guidance to prioritize strong paper probe candidates", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const basePayload = {
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.586,
+      calibrationConfidence: 0.74,
+      disagreement: 0.04,
+      confidence: 0.56,
+      shouldAbstain: false,
+      transformer: { probability: 0.59, confidence: 0.12 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.8, bookPressure: 0.16, microPriceEdgeBps: 0.52, depthConfidence: 0.84 },
+      market: { realizedVolPct: 0.016, atrPct: 0.008, bearishPatternScore: 0.03, bullishPatternScore: 0.18 }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.08, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.12, crowdingBias: 0.02, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { contrarianScore: 0.06, riskScore: 0.18 },
+    volatilitySummary: { riskScore: 0.16, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.66, probability: 0.58, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.42, expectedReward: 0.022 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.68, confidence: 0.58, blockers: [], agreementGap: 0.02 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.012 },
+    portfolioSummary: { sizeMultiplier: 1, allocatorScore: 0.7, diversificationScore: 0.74, maxCorrelation: 0.04, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.8 },
+    sessionSummary: { session: "europe", blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.78, conditionRisk: 0.14, conditionTransitionState: "stable" },
+    exchangeCapabilitiesSummary: resolveExchangeCapabilities({ userRegion: "BE" }),
+    nowIso: "2026-03-10T10:00:00.000Z"
+  };
+  const baseline = manager.evaluateEntry(basePayload);
+  const guided = manager.evaluateEntry({
+    ...basePayload,
+    paperLearningGuidance: {
+      active: true,
+      preferredLane: "probe",
+      priorityBoost: 0.06,
+      probeBoost: 0.05,
+      shadowBoost: 0,
+      cautionPenalty: 0.01,
+      focusReason: "benchmark_threshold_gap",
+      benchmarkLead: "always_take",
+      challengerRecommendation: "review_thresholds",
+      matchedScopes: [
+        { id: "trend_following", type: "strategy_family", status: "paper_ready", readinessScore: 0.82, matchScore: 1 }
+      ]
+    }
+  });
+  assert.equal(baseline.allow, true);
+  assert.equal(baseline.learningLane, "safe");
+  assert.equal(guided.allow, true);
+  assert.equal(guided.learningLane, "probe");
+  assert.ok(guided.opportunityScore > baseline.opportunityScore);
+  assert.equal(guided.paperLearningGuidance.applied, true);
+});
+
+await runCheck("risk manager paper learning guidance never bypasses hard safety blockers", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.61,
+      calibrationConfidence: 0.78,
+      disagreement: 0.03,
+      confidence: 0.6,
+      shouldAbstain: false,
+      transformer: { probability: 0.62, confidence: 0.15 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.4, bookPressure: 0.18, microPriceEdgeBps: 0.44, depthConfidence: 0.86 },
+      market: { realizedVolPct: 0.014, atrPct: 0.007, bearishPatternScore: 0.03, bullishPatternScore: 0.14 }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.06, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.12, crowdingBias: 0.02, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { contrarianScore: 0.04, riskScore: 0.18 },
+    volatilitySummary: { riskScore: 0.16, ivPremium: 2 },
+    calendarSummary: { riskScore: 0.03, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.68, probability: 0.61, netScore: 0.14, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.44, expectedReward: 0.024 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7, confidence: 0.6, blockers: [], agreementGap: 0.02 },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0.014 },
+    portfolioSummary: { sizeMultiplier: 1, allocatorScore: 0.72, diversificationScore: 0.75, maxCorrelation: 0.04, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.82 },
+    sessionSummary: { session: "us", blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    qualityQuorumSummary: { status: "ready", observeOnly: true, quorumScore: 0.9, blockerReasons: [] },
+    marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.8, conditionRisk: 0.14, conditionTransitionState: "stable" },
+    paperLearningGuidance: {
+      active: true,
+      preferredLane: "probe",
+      priorityBoost: 0.08,
+      probeBoost: 0.06,
+      shadowBoost: 0.02,
+      cautionPenalty: 0,
+      focusReason: "scope_readiness_match"
+    },
+    exchangeCapabilitiesSummary: resolveExchangeCapabilities({ userRegion: "BE" }),
+    nowIso: "2026-03-10T12:00:00.000Z"
+  });
+  assert.equal(decision.allow, false);
+  assert.ok(decision.reasons.includes("quality_quorum_observe_only"));
+});
+
 await runCheck("risk manager can allow small paper warm-up entries near threshold", async () => {
   const manager = new RiskManager(makeConfig({ paperExplorationMinBookPressure: -0.42 }));
   const decision = manager.evaluateEntry({
@@ -15569,6 +15682,48 @@ await runCheck("trading bot paper learning summary exposes active learning bench
   assert.ok(summary.recentShadowReviews.some((item) => item.outcome === "good_veto"));
   assert.ok(summary.recentShadowReviews.some((item) => item.outcome === "bad_veto"));
   assert.ok(summary.recentShadowReviews.every((item) => item.bestBranch.id === "maker_bias"));
+});
+
+await runCheck("trading bot derives paper learning guidance from benchmark and scope signals", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    paperLearning: {
+      status: "active",
+      benchmarkLanes: { bestLane: "always_take" },
+      challengerPolicy: {
+        recommendation: "review_thresholds",
+        targetScope: "trend_following"
+      },
+      scopeReadiness: [
+        { id: "trend_following", type: "strategy_family", status: "paper_ready", readinessScore: 0.84 }
+      ],
+      activeLearning: {
+        topCandidates: [
+          { symbol: "BTCUSDT", priorityBand: "high_priority", reason: "threshold_near_miss" }
+        ]
+      },
+      reviewPacks: {
+        topMissedSetup: "BTCUSDT"
+      },
+      scopeCoaching: {
+        strongest: { id: "trend_following" }
+      }
+    }
+  };
+  const guidance = bot.buildPaperLearningGuidance({
+    symbol: "BTCUSDT",
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "europe" }
+  });
+  assert.equal(guidance.active, true);
+  assert.equal(guidance.preferredLane, "probe");
+  assert.equal(guidance.benchmarkLead, "always_take");
+  assert.equal(guidance.challengerRecommendation, "review_thresholds");
+  assert.equal(guidance.matchedScopes[0].id, "trend_following");
+  assert.ok(guidance.priorityBoost >= 0.08);
+  assert.ok(guidance.probeBoost >= 0.05);
 });
 
 await runCheck("trading bot queues richer counterfactual branch scenarios for paper review", async () => {
