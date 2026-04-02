@@ -318,6 +318,11 @@ function titleize(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function humanizeReason(value, fallback = "-") {
+  const text = `${value || ""}`.trim();
+  return text ? titleize(text) : fallback;
+}
+
 function isSnapshotCacheFresh(snapshot, cacheMinutes = 0, nowMs = Date.now()) {
   const ttlMs = Math.max(0, Number(cacheMinutes || 0)) * 60_000;
   const cachedAtMs = new Date(snapshot?.cachedAt || 0).getTime();
@@ -2444,7 +2449,10 @@ function summarizePaperLearning(summary = {}) {
     reviewPacks: summary.reviewPacks ? {
       bestProbeWinner: summary.reviewPacks.bestProbeWinner || null,
       weakestProbe: summary.reviewPacks.weakestProbe || null,
-      topMissedSetup: summary.reviewPacks.topMissedSetup || null
+      topMissedSetup: summary.reviewPacks.topMissedSetup || null,
+      topExecutionDrag: summary.reviewPacks.topExecutionDrag || null,
+      topQualityTrap: summary.reviewPacks.topQualityTrap || null,
+      topProbationRisk: summary.reviewPacks.topProbationRisk || null
     } : null,
     recentProbeReviews: arr(summary.recentProbeReviews || []).slice(0, 4).map((item) => ({
       id: item.id || null,
@@ -2744,6 +2752,11 @@ function summarizePaperLearning(summary = {}) {
       promotionReady: Boolean(summary.probation.promotionReady),
       rollbackRisk: Boolean(summary.probation.rollbackRisk),
       leadingOutcome: summary.probation.leadingOutcome || null,
+      executionDragCount: summary.probation.executionDragCount || 0,
+      qualityTrapCount: summary.probation.qualityTrapCount || 0,
+      weakSetupCount: summary.probation.weakSetupCount || 0,
+      followThroughFailedCount: summary.probation.followThroughFailedCount || 0,
+      dominantWeakness: summary.probation.dominantWeakness || null,
       note: summary.probation.note || null
     } : null,
     notes: arr(summary.notes || []).slice(0, 6)
@@ -2786,6 +2799,10 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
     cautionPenalty: num(guidance.cautionPenalty || 0, 4),
     confidence: num(guidance.confidence || 0, 4),
     featurePenalty: num(guidance.featurePenalty || 0, 4),
+    featureTrustPenalty: num(guidance.featureTrustPenalty || 0, 4),
+    adjacentScopePressure: num(guidance.adjacentScopePressure || 0, 4),
+    executionCaution: num(guidance.executionCaution || 0, 4),
+    executionCostBufferBps: num(guidance.executionCostBufferBps || 0, 2),
     benchmarkLead: guidance.benchmarkLead || null,
     focusReason: guidance.focusReason || null,
     impactedFeatures: [...(guidance.impactedFeatures || [])].slice(0, 6),
@@ -3179,6 +3196,30 @@ function resolvePaperOutcomeBucket(trade = {}) {
     return "execution_drag";
   }
   return "bad_trade";
+}
+
+function isPaperQualityTrapTrade(trade = {}) {
+  return trade.paperLearningOutcome?.outcome === "quality_trap" || (
+    (trade.captureEfficiency || 0) < 0.25 &&
+    (trade.mfePct || 0) > 0.012
+  );
+}
+
+function buildPaperOutcomeSignal(trade = {}) {
+  const outcome = resolvePaperOutcomeBucket(trade);
+  const review = buildTradeQualityReview(trade);
+  const executionDrag = outcome === "execution_drag" || review.verdict === "execution_drag" || (
+    (trade.executionQualityScore || 0) < 0.42 &&
+    (trade.pnlQuote || 0) <= 0
+  );
+  return {
+    outcome,
+    review,
+    executionDrag,
+    qualityTrap: isPaperQualityTrapTrade(trade),
+    weakSetup: review.verdict === "weak_setup",
+    followThroughFailed: review.verdict === "follow_through_failed"
+  };
 }
 
 function summarizePaperTradeReview(trade = {}) {
@@ -6727,17 +6768,39 @@ export class TradingBot {
       const completedTrades = sinceApproved.filter((trade) => Boolean(trade.exitAt));
       const weakTrades = completedTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade)));
       const goodTrades = completedTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade)));
+      const completedSignals = completedTrades.map((trade) => buildPaperOutcomeSignal(trade));
+      const executionDragCount = completedSignals.filter((item) => item.executionDrag).length;
+      const qualityTrapCount = completedSignals.filter((item) => item.qualityTrap).length;
+      const weakSetupCount = completedSignals.filter((item) => item.weakSetup).length;
+      const followThroughFailedCount = completedSignals.filter((item) => item.followThroughFailed).length;
+      const avgReviewComposite = average(completedSignals.map((item) => item.review.compositeScore || 0), 0);
+      const dominantWeakness = [
+        ["execution_drag", executionDragCount],
+        ["quality_trap", qualityTrapCount],
+        ["weak_setup", weakSetupCount],
+        ["follow_through_failed", followThroughFailedCount]
+      ].sort((left, right) => right[1] - left[1])[0];
       const avgExecutionQuality = average(completedTrades.map((trade) => trade.executionQualityScore || 0), 0);
       const avgNetPnlPct = average(completedTrades.map((trade) => trade.netPnlPct || 0), 0);
       const targetSampleCount = Math.max(2, Number(item.targetSampleCount || 3));
       const weakLossLimit = Math.max(1, Number(item.weakLossLimit || 2));
       const expiresAtMs = new Date(item.expiresAt || 0).getTime();
       const expired = Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs;
-      const rollbackRecommended = weakTrades.length >= weakLossLimit;
+      const rollbackRecommended =
+        weakTrades.length >= weakLossLimit ||
+        qualityTrapCount >= Math.max(1, Math.ceil(targetSampleCount * 0.34)) ||
+        (executionDragCount >= Math.max(1, Math.ceil(targetSampleCount * 0.5)) && avgExecutionQuality < 0.58) ||
+        weakSetupCount >= Math.max(1, Math.ceil(targetSampleCount * 0.5));
       const complete = completedTrades.length >= targetSampleCount && !rollbackRecommended;
+      const healthyOutcomeMix =
+        executionDragCount <= Math.max(1, Math.floor(targetSampleCount * 0.25)) &&
+        qualityTrapCount === 0 &&
+        weakSetupCount <= Math.max(1, Math.floor(targetSampleCount * 0.34)) &&
+        followThroughFailedCount <= Math.max(1, Math.floor(targetSampleCount * 0.34)) &&
+        avgReviewComposite >= 0.5;
       const verdict = rollbackRecommended
         ? "rollback"
-        : complete && goodTrades.length >= Math.ceil(targetSampleCount * 0.6) && avgExecutionQuality >= 0.55 && avgNetPnlPct >= -0.002
+        : complete && goodTrades.length >= Math.ceil(targetSampleCount * 0.6) && avgExecutionQuality >= 0.55 && avgNetPnlPct >= -0.002 && healthyOutcomeMix
           ? "go"
           : complete || expired
             ? "hold"
@@ -6747,8 +6810,14 @@ export class TradingBot {
         completedTrades: completedTrades.length,
         goodTrades: goodTrades.length,
         weakTrades: weakTrades.length,
+        executionDragCount,
+        qualityTrapCount,
+        weakSetupCount,
+        followThroughFailedCount,
         avgExecutionQuality: num(avgExecutionQuality, 4),
         avgNetPnlPct: num(avgNetPnlPct, 4),
+        avgReviewComposite: num(avgReviewComposite, 4),
+        dominantWeakness: dominantWeakness?.[1] ? dominantWeakness[0] : null,
         rollbackRecommended,
         expired,
         targetSampleCount,
@@ -6776,12 +6845,22 @@ export class TradingBot {
           stage: item.stage || null,
           status: next.status,
           governanceScore: num(item.governanceScore || 0, 4),
+          executionDragCount,
+          qualityTrapCount,
+          weakSetupCount,
+          followThroughFailedCount,
+          avgReviewComposite: num(avgReviewComposite, 4),
+          dominantWeakness: dominantWeakness?.[1] ? dominantWeakness[0] : null,
           verdict,
           note: rollbackRecommended
-            ? "Rollback guardrail geraakt door zwakke probation-uitkomsten."
+            ? dominantWeakness?.[1]
+              ? `Rollback guardrail geraakt door ${humanizeReason(dominantWeakness[0])} in probation-uitkomsten.`
+              : "Rollback guardrail geraakt door zwakke probation-uitkomsten."
             : expired
               ? "Probation verstreken zonder expliciete operatorbeslissing."
-              : "Probation haalde het sample-doel en is klaar voor review."
+              : healthyOutcomeMix
+                ? "Probation haalde het sample-doel en is klaar voor review."
+                : "Probation haalde wel samples, maar de outcome-mix blijft nog te zwak voor promotie."
         });
       } else {
         active.push(next);
@@ -8277,7 +8356,7 @@ export class TradingBot {
       .filter((item) => (item.brokerMode || "paper") === "paper" && isUsableCounterfactual(item))
       .slice(-80);
     const replayPacks = this.runtime?.ops?.replayChaos?.replayPacks || this.runtime?.replayChaos?.replayPacks || {};
-    const reviewPacks = {
+    let reviewPacks = {
       bestProbeWinner: replayPacks.probeWinners?.[0]?.symbol || null,
       weakestProbe: replayPacks.paperMisses?.[0]?.symbol || null,
       topMissedSetup: replayPacks.nearMissSetups?.[0]?.symbol || null
@@ -8416,10 +8495,29 @@ export class TradingBot {
           return candidateKey === key;
         }) === index;
       });
-    const probeGoodCount = recentProbeTrades.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
-    const probeWeakCount = recentProbeTrades.filter((trade) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(resolvePaperOutcomeBucket(trade))).length;
-    const promotionReady = recentProbeTrades.length >= 4 && probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6);
-    const rollbackRisk = recentProbeTrades.length >= 3 && probeWeakCount >= Math.ceil(recentProbeTrades.length * 0.5);
+    const recentProbeSignals = recentProbeTrades.map((trade) => ({ trade, signal: buildPaperOutcomeSignal(trade) }));
+    const probeGoodCount = recentProbeSignals.filter(({ signal }) => ["good_trade", "acceptable_trade"].includes(signal.outcome)).length;
+    const probeWeakCount = recentProbeSignals.filter(({ signal }) => ["bad_trade", "early_exit", "late_exit", "execution_drag"].includes(signal.outcome)).length;
+    const probeExecutionDragCount = recentProbeSignals.filter(({ signal }) => signal.executionDrag).length;
+    const probeQualityTrapCount = recentProbeSignals.filter(({ signal }) => signal.qualityTrap).length;
+    const probeWeakSetupCount = recentProbeSignals.filter(({ signal }) => signal.weakSetup).length;
+    const probeFollowThroughFailedCount = recentProbeSignals.filter(({ signal }) => signal.followThroughFailed).length;
+    const dominantProbationWeakness = [
+      ["execution_drag", probeExecutionDragCount],
+      ["quality_trap", probeQualityTrapCount],
+      ["weak_setup", probeWeakSetupCount],
+      ["follow_through_failed", probeFollowThroughFailedCount]
+    ].sort((left, right) => right[1] - left[1])[0];
+    const promotionReady = recentProbeTrades.length >= 4 &&
+      probeGoodCount >= Math.ceil(recentProbeTrades.length * 0.6) &&
+      probeExecutionDragCount <= Math.max(1, Math.floor(recentProbeTrades.length * 0.25)) &&
+      probeQualityTrapCount === 0 &&
+      probeWeakSetupCount <= Math.max(1, Math.floor(recentProbeTrades.length * 0.34));
+    const rollbackRisk = recentProbeTrades.length >= 3 && (
+      probeWeakCount >= Math.ceil(recentProbeTrades.length * 0.5) ||
+      probeExecutionDragCount >= Math.ceil(recentProbeTrades.length * 0.5) ||
+      probeQualityTrapCount >= Math.max(1, Math.ceil(recentProbeTrades.length * 0.34))
+    );
     const avgLearningValue = average(scoredLearningEntries.map((item) => item.learningValueScore || 0), 0);
     const avgNovelty = average(scoredLearningEntries.map((item) => item.paperLearning?.noveltyScore || 0), 0);
     const avgActiveLearning = average(scoredLearningEntries.map((item) => item.paperLearning?.activeLearning?.score || 0), 0);
@@ -8437,6 +8535,9 @@ export class TradingBot {
         avgActiveLearning * 0.08 +
         recencyFreshnessScore * 0.08 +
         (promotionReady ? 0.12 : 0) -
+        Math.min(0.08, probeExecutionDragCount * 0.025) -
+        Math.min(0.08, probeQualityTrapCount * 0.03) -
+        Math.min(0.05, probeWeakSetupCount * 0.016) -
         (rollbackRisk ? 0.14 : 0) -
         Math.min(0.08, (topBlockers[0]?.count || 0) / 10),
       0,
@@ -8482,14 +8583,18 @@ export class TradingBot {
         readinessScore * 0.52 +
         (promotedScope?.readinessScore || 0) * 0.28 +
         (promotionReady ? 0.12 : 0) -
+        Math.min(0.08, probeExecutionDragCount * 0.025) -
+        Math.min(0.08, probeQualityTrapCount * 0.03) -
         ((topBlockers[0]?.count || 0) >= 3 ? 0.08 : 0),
         0,
         1
       ),
       topScope: promotedScope?.id || null,
-      blocker: topBlockers[0]?.id || null,
+      blocker: dominantProbationWeakness?.[1] ? dominantProbationWeakness[0] : topBlockers[0]?.id || null,
       note: promotedScope
-        ? `${promotedScope.id} is momenteel de beste paper-scope voor een volgende probationstap.`
+        ? dominantProbationWeakness?.[1]
+          ? `${promotedScope.id} is de beste paper-scope, maar ${humanizeReason(dominantProbationWeakness[0])} remt nog de volgende promotion-stap.`
+          : `${promotedScope.id} is momenteel de beste paper-scope voor een volgende probationstap.`
         : "Nog geen duidelijke paper-scope klaar voor een volgende stap."
     };
     const counterfactualTuning = tuningRecommendation
@@ -8523,10 +8628,17 @@ export class TradingBot {
       promotionReady,
       rollbackRisk,
       leadingOutcome: recentOutcomes[0]?.id || null,
+      executionDragCount: probeExecutionDragCount,
+      qualityTrapCount: probeQualityTrapCount,
+      weakSetupCount: probeWeakSetupCount,
+      followThroughFailedCount: probeFollowThroughFailedCount,
+      dominantWeakness: dominantProbationWeakness?.[1] ? dominantProbationWeakness[0] : null,
       note: recentProbeTrades.length < 3
         ? "Nog te weinig gesloten probe-trades voor paper probation."
         : promotionReady
           ? "Recente probe-trades zijn sterk genoeg om paper-promotie te overwegen."
+          : dominantProbationWeakness?.[1]
+            ? `Probation blijft nog te zwak door ${humanizeReason(dominantProbationWeakness[0])}.`
           : rollbackRisk
             ? "Recente probe-trades tonen zwakke uitkomsten; rollback of strakkere gating is verstandig."
           : "Paper-probation loopt nog; verzamel extra gesloten probe-trades."
@@ -8667,6 +8779,18 @@ export class TradingBot {
     const performanceReport = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     const paperReportTrades = arr(performanceReport.recentTrades || []).filter((trade) => (trade.brokerMode || "paper") === "paper");
     const paperTradeQualityReviews = paperReportTrades.map((trade) => ({ trade, review: buildTradeQualityReview(trade) }));
+    const topExecutionDragTrade = paperTradeQualityReviews
+      .filter((item) => buildPaperOutcomeSignal(item.trade).executionDrag)
+      .sort((left, right) => (left.review.executionScore || 0) - (right.review.executionScore || 0))[0]?.trade || null;
+    const topQualityTrapTrade = paperTradeQualityReviews
+      .filter((item) => buildPaperOutcomeSignal(item.trade).qualityTrap)
+      .sort((left, right) => (right.trade.mfePct || 0) - (left.trade.mfePct || 0))[0]?.trade || null;
+    reviewPacks = {
+      ...reviewPacks,
+      topExecutionDrag: topExecutionDragTrade?.symbol || null,
+      topQualityTrap: topQualityTrapTrade?.symbol || null,
+      topProbationRisk: topQualityTrapTrade?.symbol || topExecutionDragTrade?.symbol || null
+    };
     const averageSetupReviewScore = average(paperTradeQualityReviews.map((item) => item.review.setupScore || 0), 0);
     const averageExecutionReviewScore = average(paperTradeQualityReviews.map((item) => item.review.executionScore || 0), 0);
     const averageOutcomeReviewScore = average(paperTradeQualityReviews.map((item) => item.review.outcomeScore || 0), 0);
@@ -9242,7 +9366,7 @@ export class TradingBot {
       if ((trade.executionQualityScore || 0) < 0.42 && (trade.pnlQuote || 0) <= 0) {
         failureCounts.execution_drag = (failureCounts.execution_drag || 0) + 1;
       }
-      if ((trade.captureEfficiency || 0) < 0.25 && (trade.mfePct || 0) > 0.012) {
+      if (isPaperQualityTrapTrade(trade)) {
         failureCounts.quality_trap = (failureCounts.quality_trap || 0) + 1;
       }
     }
@@ -9287,7 +9411,7 @@ export class TradingBot {
         ? `${titleize(failureLibrary[0].id)} is nu de grootste foutcluster en vraagt strakkere gating.`
         : "Nog geen duidelijke te-losse paperzone zichtbaar.",
       nextReview: reviewPacks.topMissedSetup
-        ? `Bekijk ${reviewPacks.topMissedSetup} als gemiste setup en ${reviewPacks.weakestProbe || "de zwakste probe"} als volgend reviewpunt.`
+        ? `Bekijk ${reviewPacks.topMissedSetup} als gemiste setup en ${reviewPacks.topProbationRisk || reviewPacks.weakestProbe || "de zwakste probe"} als eerstvolgende kwaliteitsreview.`
         : experimentScopes[0]
           ? `Volgende focus: ${experimentScopes[0].id} via ${experimentScopes[0].action}.`
           : "Nog geen duidelijke volgende reviewfocus beschikbaar."
@@ -10697,11 +10821,44 @@ export class TradingBot {
       }
     }
 
+    const adjacentScopePressure = clamp(
+      scopeMatches
+        .filter((item) => (item.status || "") === "tighten" || (item.cautionPenalty || 0) >= 0.05 || (item.executionDragRate || 0) >= 0.18 || (item.qualityTrapRate || 0) >= 0.16)
+        .reduce((total, item) => total + (item.matchWeight || 0), 0),
+      0,
+      1.8
+    );
+    const repeatedWeakFeaturePressure = impactedFeatures.length >= 2 ? Math.min(0.03, impactedFeatures.length * 0.008) : 0;
+    const featureTrustPenalty = clamp(featurePenalty + repeatedWeakFeaturePressure + adjacentScopePressure * 0.012, 0, 0.12);
+    const executionCautionBase = weightedConfidence
+      ? scopeMatches.reduce(
+          (total, item) => total + (
+            ((item.executionDragRate || 0) * 0.72) +
+            ((item.qualityTrapRate || 0) * 0.68) +
+            ((item.earlyExitRate || 0) * 0.24) +
+            ((item.lateExitRate || 0) * 0.16)
+          ) * Math.max(0.15, (item.confidence || 0)) * (item.matchWeight || 0),
+          0
+        ) / weightedConfidence
+      : 0;
+    let executionCaution = executionCautionBase;
+    if (benchmarkLead === "simple_exit") {
+      executionCaution += 0.045;
+    } else if (benchmarkLead === "always_skip") {
+      executionCaution += 0.03;
+    }
+    executionCaution = clamp(executionCaution + adjacentScopePressure * 0.018, 0, 0.18);
+
     featurePenalty = clamp(featurePenalty, 0, 0.08);
-    if (featurePenalty > 0) {
-      thresholdShift += Math.min(0.006, featurePenalty * 0.08);
-      sizeMultiplier *= (1 - featurePenalty * 0.85);
-      cautionPenalty += featurePenalty;
+    if (featureTrustPenalty > 0) {
+      thresholdShift += Math.min(0.008, featureTrustPenalty * 0.09);
+      sizeMultiplier *= (1 - featureTrustPenalty * 0.9);
+      cautionPenalty += featureTrustPenalty;
+    }
+    if (executionCaution > 0) {
+      thresholdShift += Math.min(0.006, executionCaution * 0.05);
+      sizeMultiplier *= (1 - executionCaution * 0.7);
+      cautionPenalty += executionCaution * 0.65;
     }
 
     thresholdShift = num(clamp(thresholdShift, -0.018, 0.018), 4);
@@ -10709,7 +10866,7 @@ export class TradingBot {
     cautionPenalty = num(clamp(cautionPenalty, 0, 0.14), 4);
     const confidence = num(clamp(
       weightedConfidence * 0.72 +
-        Math.min(0.28, featurePenalty * 1.8) +
+        Math.min(0.28, featureTrustPenalty * 1.8) +
         (benchmarkLead === "always_skip" || benchmarkLead === "simple_exit" ? 0.08 : 0),
       0,
       1
@@ -10735,15 +10892,22 @@ export class TradingBot {
     if (impactedFeatures.length) {
       noteParts.push(`Feature pressure op ${impactedFeatures.slice(0, 3).join(", ")}.`);
     }
+    if (executionCaution >= 0.06) {
+      noteParts.push("Execution drag of quality traps duwen nu extra cost-caution.");
+    }
 
     return {
-      active: Boolean(scopeMatches.length || featurePenalty > 0 || ["always_skip", "simple_exit", "safe_lane"].includes(benchmarkLead || "")),
+      active: Boolean(scopeMatches.length || featureTrustPenalty > 0 || executionCaution > 0 || ["always_skip", "simple_exit", "safe_lane"].includes(benchmarkLead || "")),
       sourceStatus: outcomeScopeLearning.status || featureGovernance.status || "warmup",
       thresholdShift,
       sizeMultiplier,
       cautionPenalty,
       confidence,
       featurePenalty: num(featurePenalty, 4),
+      featureTrustPenalty: num(featureTrustPenalty, 4),
+      adjacentScopePressure: num(adjacentScopePressure, 4),
+      executionCaution: num(executionCaution, 4),
+      executionCostBufferBps: num(clamp(executionCaution * 8, 0, 2.6), 2),
       benchmarkLead,
       focusReason,
       impactedFeatures: [...new Set(impactedFeatures)].slice(0, 6),

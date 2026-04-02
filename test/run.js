@@ -6768,6 +6768,69 @@ await runCheck("risk manager applies offline learning guidance to threshold and 
   assert.equal(guided.offlineLearningGuidance.applied, true);
 });
 
+await runCheck("risk manager turns execution-heavy offline learning into explicit cost caution", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "paper" }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.68,
+      calibrationConfidence: 0.79,
+      disagreement: 0.03,
+      confidence: 0.66,
+      shouldAbstain: false,
+      transformer: { probability: 0.69, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.6, bookPressure: 0.22, microPriceEdgeBps: 0.52, depthConfidence: 0.88 },
+      market: { realizedVolPct: 0.012, atrPct: 0.006, bearishPatternScore: 0.02, bullishPatternScore: 0.16 }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.08, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.02, socialRisk: 0.01 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0.01 },
+    marketStructureSummary: { riskScore: 0.09, signalScore: 0.16, crowdingBias: 0.02, fundingRate: 0, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { contrarianScore: 0.03, riskScore: 0.14 },
+    volatilitySummary: { riskScore: 0.14, ivPremium: 1.8 },
+    calendarSummary: { riskScore: 0.02, bullishScore: 0, urgencyScore: 0 },
+    committeeSummary: { agreement: 0.7, probability: 0.66, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.45, expectedReward: 0.024 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.72, confidence: 0.64, blockers: [], agreementGap: 0.02 },
+    executionCostSummary: {
+      status: "observe",
+      averageTotalCostBps: 4.2,
+      averageBudgetCostBps: 3.1,
+      averageExcessFeeBps: 1,
+      averageSlippageDeltaBps: 1.9,
+      strategies: [{ id: "ema_trend", tradeCount: 4, status: "caution", averageTotalCostBps: 4.2, averageBudgetCostBps: 3.1, averageExcessFeeBps: 1, averageSlippageDeltaBps: 1.9 }],
+      regimes: [{ id: "trend", tradeCount: 4, status: "caution", averageTotalCostBps: 4.1, averageBudgetCostBps: 3, averageExcessFeeBps: 1, averageSlippageDeltaBps: 1.8 }]
+    },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 2000 },
+    symbolStats: { avgPnlPct: 0.013 },
+    portfolioSummary: { sizeMultiplier: 1, allocatorScore: 0.76, diversificationScore: 0.74, maxCorrelation: 0.04, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.82 },
+    sessionSummary: { session: "europe", blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.79, conditionRisk: 0.14, conditionTransitionState: "stable" },
+    offlineLearningGuidance: {
+      active: true,
+      thresholdShift: -0.008,
+      sizeMultiplier: 0.98,
+      cautionPenalty: 0.03,
+      executionCaution: 0.12,
+      executionCostBufferBps: 1.8,
+      featureTrustPenalty: 0.04,
+      focusReason: "execution_drag_scope"
+    },
+    exchangeCapabilitiesSummary: resolveExchangeCapabilities({ userRegion: "BE" }),
+    nowIso: "2026-03-10T10:30:00.000Z"
+  });
+  assert.equal(decision.allow, true);
+  assert.ok(decision.offlineLearningGuidance.executionCautionApplied >= 0.12);
+  assert.ok(decision.sizingSummary.offlineLearningExecutionCaution >= 0.12);
+  assert.ok(decision.executionCostBudgetApplied.learningCaution.executionCostBufferBps >= 1.8);
+  assert.ok(decision.offlineLearningGuidance.sizeMultiplierApplied < 0.98);
+});
+
 await runCheck("risk manager never lets offline learning guidance loosen live entries", async () => {
   const manager = new RiskManager(makeConfig({ botMode: "live" }));
   const decision = manager.evaluateEntry({
@@ -15870,10 +15933,10 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
       outcomeScopeScorecards: {
         status: "active",
         family: [
-          { id: "trend_following", scopeType: "family", thresholdShift: -0.014, sizeMultiplier: 1.04, cautionPenalty: 0.015, confidence: 0.74, status: "relax", note: "family strong" }
+          { id: "trend_following", scopeType: "family", thresholdShift: -0.014, sizeMultiplier: 1.04, cautionPenalty: 0.015, confidence: 0.74, status: "relax", note: "family strong", executionDragRate: 0.22, qualityTrapRate: 0.12 }
         ],
         condition: [
-          { id: "trend_continuation", scopeType: "condition", thresholdShift: -0.016, sizeMultiplier: 1.05, cautionPenalty: 0.018, confidence: 0.82, status: "relax", note: "condition strong" }
+          { id: "trend_continuation", scopeType: "condition", thresholdShift: -0.016, sizeMultiplier: 1.05, cautionPenalty: 0.018, confidence: 0.82, status: "relax", note: "condition strong", executionDragRate: 0.18, qualityTrapRate: 0.2 }
         ]
       },
       featureGovernance: {
@@ -15902,8 +15965,65 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
   assert.equal(guidance.active, true);
   assert.equal(guidance.benchmarkLead, "always_skip");
   assert.ok(guidance.cautionPenalty >= 0.08);
+  assert.ok(guidance.executionCaution >= 0.08);
+  assert.ok(guidance.featureTrustPenalty >= guidance.featurePenalty);
+  assert.ok(guidance.adjacentScopePressure > 0);
   assert.ok(guidance.impactedFeatures.includes("stoch_cross"));
   assert.ok(guidance.matchedOutcomeScopes.length >= 2);
+});
+
+await runCheck("trading bot paper learning summary surfaces execution and quality-trap review focus", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = { latestDecisions: [], offlineTrainer: {}, ops: { replayChaos: { replayPacks: {} } } };
+  bot.journal = {
+    trades: [
+      {
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-11T10:00:00.000Z",
+        netPnlPct: 0.002,
+        executionQualityScore: 0.35,
+        paperLearningOutcome: { outcome: "execution_drag" }
+      },
+      {
+        symbol: "ETHUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-11T11:00:00.000Z",
+        netPnlPct: 0.003,
+        mfePct: 0.024,
+        captureEfficiency: 0.16,
+        executionQualityScore: 0.57,
+        paperLearningOutcome: { outcome: "quality_trap" }
+      },
+      {
+        symbol: "SOLUSDT",
+        brokerMode: "paper",
+        learningLane: "probe",
+        strategyFamily: "trend_following",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-11T12:00:00.000Z",
+        netPnlPct: 0.008,
+        executionQualityScore: 0.64,
+        paperLearningOutcome: { outcome: "good_trade" }
+      }
+    ],
+    counterfactuals: []
+  };
+  const summary = bot.buildPaperLearningSummary([], "2026-03-11T13:00:00.000Z");
+  assert.equal(summary.reviewPacks.topExecutionDrag, "BTCUSDT");
+  assert.equal(summary.reviewPacks.topQualityTrap, "ETHUSDT");
+  assert.equal(summary.reviewPacks.topProbationRisk, "ETHUSDT");
+  assert.ok(["execution_drag", "quality_trap"].includes(summary.probation.dominantWeakness));
 });
 
 await runCheck("trading bot queues richer counterfactual branch scenarios for paper review", async () => {
@@ -16555,6 +16675,72 @@ await runCheck("promotion probations track sample targets expiry and rollback gu
   assert.equal(state.history[0].action, "guardrail_live_rollback_recommended");
   assert.equal(state.history[0].status, "rollback_recommended");
   assert.equal(state.history[0].verdict, "rollback");
+});
+
+await runCheck("promotion probations react harder to execution drag and quality traps", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    ops: {
+      promotionState: {
+        active: [
+          {
+            scope: "trend_following | trend | asia",
+            id: "ema_trend",
+            stage: "guarded_scope_probation",
+            approvedAt: "2026-03-12T10:00:00.000Z",
+            expiresAt: "2026-03-15T10:00:00.000Z",
+            targetSampleCount: 3,
+            weakLossLimit: 2,
+            governanceScore: 0.76
+          }
+        ],
+        history: []
+      }
+    }
+  };
+  bot.journal = {
+    trades: [
+      {
+        symbol: "BTCUSDT",
+        strategyFamily: "trend_following",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-12T11:00:00.000Z",
+        netPnlPct: 0.002,
+        executionQualityScore: 0.34,
+        paperLearningOutcome: { outcome: "execution_drag" }
+      },
+      {
+        symbol: "ETHUSDT",
+        strategyFamily: "trend_following",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-12T12:00:00.000Z",
+        netPnlPct: 0.001,
+        mfePct: 0.021,
+        captureEfficiency: 0.14,
+        executionQualityScore: 0.56,
+        paperLearningOutcome: { outcome: "quality_trap" }
+      },
+      {
+        symbol: "SOLUSDT",
+        strategyFamily: "trend_following",
+        strategyAtEntry: "ema_trend",
+        regimeAtEntry: "trend",
+        sessionAtEntry: "asia",
+        exitAt: "2026-03-12T13:00:00.000Z",
+        netPnlPct: 0.004,
+        executionQualityScore: 0.61,
+        paperLearningOutcome: { outcome: "acceptable_trade" }
+      }
+    ]
+  };
+  const state = bot.evaluatePromotionProbations("2026-03-12T14:00:00.000Z");
+  assert.equal(state.active.length, 0);
+  assert.equal(state.history[0].verdict, "rollback");
+  assert.ok(["execution_drag", "quality_trap"].includes(state.history[0].dominantWeakness));
 });
 
 await runCheck("promotion probations build go verdict when samples and quality stay healthy", async () => {

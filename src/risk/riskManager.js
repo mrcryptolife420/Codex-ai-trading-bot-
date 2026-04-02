@@ -902,6 +902,8 @@ function applyOfflineLearningGuidance({
       thresholdShift: 0,
       sizeMultiplier: 1,
       cautionPenalty: 0,
+      executionCaution: 0,
+      featureTrustPenalty: 0,
       opportunityShift: 0,
       learningValueScore,
       activeLearningState,
@@ -911,17 +913,27 @@ function applyOfflineLearningGuidance({
 
   const rawThresholdShift = clamp(safeValue(guidance.thresholdShift, 0), -0.018, 0.018);
   const rawSizeMultiplier = clamp(safeValue(guidance.sizeMultiplier, 1), 0.84, 1.08);
-  const cautionPenalty = clamp(safeValue(guidance.cautionPenalty, 0), 0, 0.14);
+  const baseCautionPenalty = clamp(safeValue(guidance.cautionPenalty, 0), 0, 0.14);
+  const executionCaution = clamp(safeValue(guidance.executionCaution, 0), 0, 0.18);
+  const featureTrustPenalty = clamp(safeValue(guidance.featureTrustPenalty, guidance.featurePenalty || 0), 0, 0.12);
+  const cautionPenalty = clamp(baseCautionPenalty + executionCaution * 0.55 + featureTrustPenalty * 0.4, 0, 0.18);
   const thresholdShift = botMode === "paper"
     ? rawThresholdShift
     : Math.max(0, rawThresholdShift);
-  const sizeMultiplier = botMode === "paper"
+  const baseSizeMultiplier = botMode === "paper"
     ? rawSizeMultiplier
     : Math.min(1, rawSizeMultiplier);
+  const executionAwareSizeMultiplier = clamp(
+    baseSizeMultiplier *
+      (1 - executionCaution * (botMode === "paper" ? 0.72 : 0.88)) *
+      (1 - featureTrustPenalty * 0.42),
+    0.78,
+    botMode === "paper" ? 1.08 : 1
+  );
   const learningBias = botMode === "paper"
     ? clamp(
         Math.max(0, -thresholdShift) * 1.5 +
-          Math.max(0, sizeMultiplier - 1) * 0.18 -
+          Math.max(0, executionAwareSizeMultiplier - 1) * 0.18 -
           cautionPenalty * 0.45,
         -0.04,
         0.06
@@ -931,14 +943,14 @@ function applyOfflineLearningGuidance({
   const nextActiveLearningScore = clamp(
     safeValue(activeLearningState.activeLearningScore, 0) +
       Math.max(0, -thresholdShift) * 0.55 +
-      Math.max(0, sizeMultiplier - 1) * 0.14 -
+      Math.max(0, executionAwareSizeMultiplier - 1) * 0.14 -
       cautionPenalty * 0.24,
     0,
     1
   );
   const opportunityShift = num(clamp(
     (thresholdShift < 0 ? Math.abs(thresholdShift) * 1.9 : -thresholdShift * 1.6) +
-      (sizeMultiplier - 1) * 0.42 -
+      (executionAwareSizeMultiplier - 1) * 0.42 -
       cautionPenalty * 0.42,
     -0.08,
     0.08
@@ -946,8 +958,10 @@ function applyOfflineLearningGuidance({
 
   return {
     thresholdShift: num(thresholdShift, 4),
-    sizeMultiplier: num(sizeMultiplier, 4),
+    sizeMultiplier: num(executionAwareSizeMultiplier, 4),
     cautionPenalty: num(cautionPenalty, 4),
+    executionCaution: num(executionCaution, 4),
+    featureTrustPenalty: num(featureTrustPenalty, 4),
     opportunityShift,
     learningValueScore: nextLearningValueScore,
     activeLearningState: {
@@ -957,8 +971,10 @@ function applyOfflineLearningGuidance({
     },
     applied:
       thresholdShift !== 0 ||
-      sizeMultiplier !== 1 ||
+      executionAwareSizeMultiplier !== 1 ||
       cautionPenalty !== 0 ||
+      executionCaution !== 0 ||
+      featureTrustPenalty !== 0 ||
       opportunityShift !== 0 ||
       nextLearningValueScore !== learningValueScore ||
       nextActiveLearningScore !== safeValue(activeLearningState.activeLearningScore, 0)
@@ -2548,6 +2564,8 @@ export class RiskManager {
         thresholdShiftApplied: offlineLearningGuidanceApplied.thresholdShift,
         sizeMultiplierApplied: offlineLearningGuidanceApplied.sizeMultiplier,
         cautionPenaltyApplied: offlineLearningGuidanceApplied.cautionPenalty,
+        executionCautionApplied: offlineLearningGuidanceApplied.executionCaution,
+        featureTrustPenaltyApplied: offlineLearningGuidanceApplied.featureTrustPenalty,
         opportunityShift: offlineLearningGuidanceApplied.opportunityShift
       },
       paperThresholdSandbox: {
@@ -2572,7 +2590,14 @@ export class RiskManager {
       parameterGovernorApplied: parameterGovernorAdjustment,
       trendStateTuningApplied: trendStateTuning,
       strategyRetirementApplied: strategyRetirementPolicy,
-      executionCostBudgetApplied: executionCostBudget,
+      executionCostBudgetApplied: {
+        ...executionCostBudget,
+        learningCaution: {
+          executionCaution: offlineLearningGuidanceApplied.executionCaution,
+          featureTrustPenalty: offlineLearningGuidanceApplied.featureTrustPenalty,
+          executionCostBufferBps: safeValue(offlineLearningGuidance.executionCostBufferBps, 0)
+        }
+      },
       capitalGovernorApplied: capitalGovernor,
       exchangeCapabilitiesApplied: exchangeCapabilities,
       marketConditionApplied: marketConditionSummary,
@@ -2592,6 +2617,8 @@ export class RiskManager {
         minTradeUsdt: num(this.config.minTradeUsdt || 0, 2),
         invalidQuoteAmount,
         offlineLearningSizeMultiplier: num(offlineLearningGuidanceApplied.sizeMultiplier, 4),
+        offlineLearningExecutionCaution: num(offlineLearningGuidanceApplied.executionCaution, 4),
+        offlineLearningFeatureTrustPenalty: num(offlineLearningGuidanceApplied.featureTrustPenalty, 4),
         advisoryPortfolioReasons: [...(portfolioSummary.advisoryReasons || [])]
       },
       modelAbstainReasons: abstainReasons,
