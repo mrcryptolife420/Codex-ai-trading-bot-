@@ -891,6 +891,80 @@ function applyPaperLearningGuidance({
   };
 }
 
+function applyOfflineLearningGuidance({
+  botMode = "paper",
+  guidance = {},
+  learningValueScore = 0,
+  activeLearningState = {}
+} = {}) {
+  if (!guidance?.active) {
+    return {
+      thresholdShift: 0,
+      sizeMultiplier: 1,
+      cautionPenalty: 0,
+      opportunityShift: 0,
+      learningValueScore,
+      activeLearningState,
+      applied: false
+    };
+  }
+
+  const rawThresholdShift = clamp(safeValue(guidance.thresholdShift, 0), -0.018, 0.018);
+  const rawSizeMultiplier = clamp(safeValue(guidance.sizeMultiplier, 1), 0.84, 1.08);
+  const cautionPenalty = clamp(safeValue(guidance.cautionPenalty, 0), 0, 0.14);
+  const thresholdShift = botMode === "paper"
+    ? rawThresholdShift
+    : Math.max(0, rawThresholdShift);
+  const sizeMultiplier = botMode === "paper"
+    ? rawSizeMultiplier
+    : Math.min(1, rawSizeMultiplier);
+  const learningBias = botMode === "paper"
+    ? clamp(
+        Math.max(0, -thresholdShift) * 1.5 +
+          Math.max(0, sizeMultiplier - 1) * 0.18 -
+          cautionPenalty * 0.45,
+        -0.04,
+        0.06
+      )
+    : clamp(-cautionPenalty * 0.35, -0.04, 0.015);
+  const nextLearningValueScore = clamp(learningValueScore + learningBias, 0, 1);
+  const nextActiveLearningScore = clamp(
+    safeValue(activeLearningState.activeLearningScore, 0) +
+      Math.max(0, -thresholdShift) * 0.55 +
+      Math.max(0, sizeMultiplier - 1) * 0.14 -
+      cautionPenalty * 0.24,
+    0,
+    1
+  );
+  const opportunityShift = num(clamp(
+    (thresholdShift < 0 ? Math.abs(thresholdShift) * 1.9 : -thresholdShift * 1.6) +
+      (sizeMultiplier - 1) * 0.42 -
+      cautionPenalty * 0.42,
+    -0.08,
+    0.08
+  ), 4);
+
+  return {
+    thresholdShift: num(thresholdShift, 4),
+    sizeMultiplier: num(sizeMultiplier, 4),
+    cautionPenalty: num(cautionPenalty, 4),
+    opportunityShift,
+    learningValueScore: nextLearningValueScore,
+    activeLearningState: {
+      ...activeLearningState,
+      activeLearningScore: nextActiveLearningScore,
+      focusReason: activeLearningState.focusReason || guidance.focusReason || "offline_learning_guidance"
+    },
+    applied:
+      thresholdShift !== 0 ||
+      sizeMultiplier !== 1 ||
+      cautionPenalty !== 0 ||
+      opportunityShift !== 0 ||
+      nextLearningValueScore !== learningValueScore ||
+      nextActiveLearningScore !== safeValue(activeLearningState.activeLearningScore, 0)
+  };
+}
+
 function toBoolean(value, fallback = false) {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
@@ -1409,6 +1483,7 @@ export class RiskManager {
     strategyMetaSummary = {},
     strategyAllocationSummary = {},
     paperLearningGuidance = {},
+    offlineLearningGuidance = {},
     exchangeCapabilitiesSummary = {}
   }) {
     const reasons = [];
@@ -1500,6 +1575,21 @@ export class RiskManager {
     threshold = clamp(
       threshold +
       trendStateTuning.thresholdShift,
+      thresholdFloor,
+      0.99
+    );
+    let learningValueScore = 0;
+    let activeLearningState = { activeLearningScore: 0 };
+    const offlineLearningGuidanceApplied = applyOfflineLearningGuidance({
+      botMode: this.config.botMode,
+      guidance: offlineLearningGuidance,
+      learningValueScore,
+      activeLearningState
+    });
+    learningValueScore = offlineLearningGuidanceApplied.learningValueScore;
+    activeLearningState = offlineLearningGuidanceApplied.activeLearningState;
+    threshold = clamp(
+      threshold + offlineLearningGuidanceApplied.thresholdShift,
       thresholdFloor,
       0.99
     );
@@ -1974,7 +2064,7 @@ export class RiskManager {
       executionCostSizeMultiplier *
       spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
-    const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier;
+    const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier * offlineLearningGuidanceApplied.sizeMultiplier;
     const invalidQuoteAmount =
       !Number.isFinite(quoteAmount) ||
       !Number.isFinite(adjustedQuoteAmount) ||
@@ -2262,7 +2352,7 @@ export class RiskManager {
         paperGuardrailRelief = [];
       }
     }
-    let { lane: learningLane, learningValueScore, activeLearningState } = resolvePaperLearningLane({
+    let { lane: learningLane, learningValueScore: paperLearningValueScore, activeLearningState: paperActiveLearningState } = resolvePaperLearningLane({
       config: this.config,
       allow,
       entryMode,
@@ -2276,6 +2366,19 @@ export class RiskManager {
       botMode: this.config.botMode,
       samplingState: paperLearningSampling
     });
+    learningValueScore = clamp(Math.max(learningValueScore, paperLearningValueScore), 0, 1);
+    activeLearningState = {
+      ...paperActiveLearningState,
+      activeLearningScore: clamp(
+        Math.max(
+          safeValue(paperActiveLearningState.activeLearningScore, 0),
+          safeValue(activeLearningState.activeLearningScore, 0)
+        ),
+        0,
+        1
+      ),
+      focusReason: paperActiveLearningState.focusReason || activeLearningState.focusReason
+    };
     const learningNoveltyTooLow = this.config.botMode === "paper" &&
       ["paper_exploration", "paper_recovery_probe"].includes(entryMode) &&
       learningLane === "probe" &&
@@ -2290,7 +2393,7 @@ export class RiskManager {
       if (!reasons.includes("paper_learning_novelty_too_low")) {
         reasons.push("paper_learning_novelty_too_low");
       }
-      ({ lane: learningLane, learningValueScore, activeLearningState } = resolvePaperLearningLane({
+      ({ lane: learningLane, learningValueScore: paperLearningValueScore, activeLearningState: paperActiveLearningState } = resolvePaperLearningLane({
         config: this.config,
         allow,
         entryMode,
@@ -2304,6 +2407,19 @@ export class RiskManager {
         botMode: this.config.botMode,
         samplingState: paperLearningSampling
       }));
+      learningValueScore = clamp(Math.max(learningValueScore, paperLearningValueScore), 0, 1);
+      activeLearningState = {
+        ...paperActiveLearningState,
+        activeLearningScore: clamp(
+          Math.max(
+            safeValue(paperActiveLearningState.activeLearningScore, 0),
+            safeValue(activeLearningState.activeLearningScore, 0)
+          ),
+          0,
+          1
+        ),
+        focusReason: paperActiveLearningState.focusReason || activeLearningState.focusReason
+      };
     }
     let strategyAllocationGovernance = buildStrategyAllocationGovernanceState({
       config: this.config,
@@ -2377,6 +2493,7 @@ export class RiskManager {
     const paperLearningGuidanceOpportunityBoost = this.config.botMode === "paper"
       ? paperLearningGuidanceApplied.opportunityBoost
       : 0;
+    const offlineLearningGuidanceOpportunityShift = offlineLearningGuidanceApplied.opportunityShift;
     const paperPriorityOpportunityBoost =
       this.config.botMode === "paper"
         ? clamp(
@@ -2402,7 +2519,8 @@ export class RiskManager {
       (missedTradeTuningApplied.shadowPriority ? 0.03 : 0) +
       safeValue(strategyMetaSummary.holdMultiplier, 1) * 0.02 +
       paperPriorityOpportunityBoost +
-      paperLearningGuidanceOpportunityBoost,
+      paperLearningGuidanceOpportunityBoost +
+      offlineLearningGuidanceOpportunityShift,
       0,
       1.4
     ), 4);
@@ -2424,6 +2542,14 @@ export class RiskManager {
         applied: paperLearningGuidanceApplied.applied,
         opportunityBoost: paperLearningGuidanceApplied.opportunityBoost
       },
+      offlineLearningGuidance: {
+        ...(offlineLearningGuidance || {}),
+        applied: offlineLearningGuidanceApplied.applied,
+        thresholdShiftApplied: offlineLearningGuidanceApplied.thresholdShift,
+        sizeMultiplierApplied: offlineLearningGuidanceApplied.sizeMultiplier,
+        cautionPenaltyApplied: offlineLearningGuidanceApplied.cautionPenalty,
+        opportunityShift: offlineLearningGuidanceApplied.opportunityShift
+      },
       paperThresholdSandbox: {
         ...paperThresholdSandbox,
         thresholdBeforeSandbox,
@@ -2437,6 +2563,7 @@ export class RiskManager {
       paperExploration,
       paperPriorityOpportunityBoost,
       paperLearningGuidanceOpportunityBoost,
+      offlineLearningGuidanceOpportunityShift,
       paperGuardrailRelief,
       baseThreshold,
       threshold,
@@ -2464,6 +2591,7 @@ export class RiskManager {
         remainingExposureBudget: Number.isFinite(remainingExposureBudget) ? num(remainingExposureBudget, 2) : null,
         minTradeUsdt: num(this.config.minTradeUsdt || 0, 2),
         invalidQuoteAmount,
+        offlineLearningSizeMultiplier: num(offlineLearningGuidanceApplied.sizeMultiplier, 4),
         advisoryPortfolioReasons: [...(portfolioSummary.advisoryReasons || [])]
       },
       modelAbstainReasons: abstainReasons,
@@ -2487,6 +2615,7 @@ export class RiskManager {
         parameterGovernorThresholdShift: parameterGovernorAdjustment.thresholdShift,
         missedTradeThresholdShift: missedTradeTuningApplied.thresholdShift,
         trendStateThresholdShift: trendStateTuning.thresholdShift,
+        offlineLearningThresholdShift: offlineLearningGuidanceApplied.thresholdShift,
         globalThresholdTilt: optimizerAdjustments.globalThresholdTilt,
         familyThresholdTilt: optimizerAdjustments.familyThresholdTilt,
         strategyThresholdTilt: optimizerAdjustments.strategyThresholdTilt,

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "ONDOUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-02T19:58:09.726Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-03",
+      "startTime": 1774624500000,
+      "endTime": 1775000700000,
+      "count": 419,
+      "updatedAt": "2026-04-02T19:58:09.710Z"
+    },
+    {
+      "id": "2026-04",
+      "startTime": 1775001600000,
+      "endTime": 1775159100000,
+      "count": 176,
+      "updatedAt": "2026-04-02T19:58:09.726Z"
+    }
+  ]
+}

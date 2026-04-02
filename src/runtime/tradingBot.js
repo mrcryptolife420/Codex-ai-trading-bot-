@@ -1900,6 +1900,7 @@ function summarizeOfflineTrainer(summary = {}) {
       notes: [...(summary.thresholdPolicy?.notes || [])]
     },
     missedTradeTuning: summarizeMissedTradeTuning(summary.missedTradeTuning || {}),
+    outcomeScopeLearning: summarizeOutcomeScopeLearning(summary.outcomeScopeScorecards || {}),
     exitLearning: {
       status: summary.exitLearning?.status || "warmup",
       averageExitScore: num(summary.exitLearning?.averageExitScore || 0, 4),
@@ -2773,6 +2774,60 @@ function summarizePaperLearningGuidance(guidance = {}) {
       matchScore: num(item.matchScore || 0, 4)
     })),
     note: guidance.note || null
+  };
+}
+
+function summarizeOfflineLearningGuidance(guidance = {}) {
+  return {
+    active: Boolean(guidance.active),
+    sourceStatus: guidance.sourceStatus || "warmup",
+    thresholdShift: num(guidance.thresholdShift || 0, 4),
+    sizeMultiplier: num(guidance.sizeMultiplier || 1, 4),
+    cautionPenalty: num(guidance.cautionPenalty || 0, 4),
+    confidence: num(guidance.confidence || 0, 4),
+    featurePenalty: num(guidance.featurePenalty || 0, 4),
+    benchmarkLead: guidance.benchmarkLead || null,
+    focusReason: guidance.focusReason || null,
+    impactedFeatures: [...(guidance.impactedFeatures || [])].slice(0, 6),
+    matchedOutcomeScopes: arr(guidance.matchedOutcomeScopes || []).slice(0, 4).map((item) => ({
+      id: item.id || null,
+      scopeType: item.scopeType || null,
+      status: item.status || "observe",
+      confidence: num(item.confidence || 0, 4),
+      thresholdShift: num(item.thresholdShift || 0, 4),
+      sizeMultiplier: num(item.sizeMultiplier || 1, 4),
+      cautionPenalty: num(item.cautionPenalty || 0, 4),
+      note: item.note || null
+    })),
+    note: guidance.note || null
+  };
+}
+
+function summarizeOutcomeScopeLearning(summary = {}) {
+  const topActionable = summary.topActionable || null;
+  const mapScope = (item) => ({
+    id: item.id || null,
+    scopeType: item.scopeType || null,
+    tradeCount: item.tradeCount || 0,
+    counterfactualCount: item.counterfactualCount || 0,
+    status: item.status || "observe",
+    thresholdShift: num(item.thresholdShift || 0, 4),
+    sizeMultiplier: num(item.sizeMultiplier || 1, 4),
+    cautionPenalty: num(item.cautionPenalty || 0, 4),
+    confidence: num(item.confidence || 0, 4),
+    badVetoRate: num(item.badVetoRate || 0, 4),
+    executionDragRate: num(item.executionDragRate || 0, 4),
+    qualityTrapRate: num(item.qualityTrapRate || 0, 4),
+    note: item.note || null
+  });
+  return {
+    status: summary.status || "warmup",
+    topActionable: topActionable ? mapScope(topActionable) : null,
+    family: arr(summary.family || []).slice(0, 5).map(mapScope),
+    regime: arr(summary.regime || []).slice(0, 5).map(mapScope),
+    session: arr(summary.session || []).slice(0, 5).map(mapScope),
+    condition: arr(summary.condition || []).slice(0, 5).map(mapScope),
+    notes: [...(summary.notes || [])]
   };
 }
 
@@ -10338,6 +10393,7 @@ export class TradingBot {
     const strategyAllocation = summarizeStrategyAllocation(candidate.strategyAllocationSummary || candidate.score?.strategyAllocation || {});
     const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
     const paperLearningGuidance = summarizePaperLearningGuidance(candidate.decision?.paperLearningGuidance || {});
+    const offlineLearningGuidance = summarizeOfflineLearningGuidance(candidate.decision?.offlineLearningGuidance || {});
     const policyTransitions = arr(this.runtime?.offlineTrainer?.policyTransitionCandidatesByCondition || []);
     const adaptivePolicy = summarizeAdaptivePolicy({
       strategyAllocation,
@@ -10355,6 +10411,7 @@ export class TradingBot {
       strategyAllocation,
       adaptivePolicy,
       paperLearningGuidance,
+      offlineLearningGuidance,
       missedTradeTuning,
       exitPolicy,
       opportunityScore: num(candidate.decision?.opportunityScore || 0, 4)
@@ -10466,6 +10523,12 @@ export class TradingBot {
       preferredLane = preferredLane || "probe";
     } else if (benchmarkLead === "safe_lane") {
       cautionPenalty += 0.025;
+    } else if (benchmarkLead === "always_skip") {
+      cautionPenalty += 0.06;
+      shadowBoost += 0.02;
+      preferredLane = preferredLane || "shadow";
+    } else if (benchmarkLead === "simple_exit") {
+      cautionPenalty += 0.045;
     }
 
     if (challengerRecommendation === "sample_more_shadow") {
@@ -10481,6 +10544,8 @@ export class TradingBot {
       preferredLane = preferredLane || "probe";
     } else if (challengerRecommendation === "stabilize_execution") {
       cautionPenalty += 0.02;
+    } else if (challengerRecommendation === "compare_simple_policy") {
+      cautionPenalty += 0.03;
     }
 
     if (targetScopeMatched) {
@@ -10530,6 +10595,160 @@ export class TradingBot {
       focusCandidateSymbol: focusCandidate?.symbol || null,
       matchedScopes,
       note: noteParts.join(" ") || paperLearning.challengerPolicy?.note || paperLearning.coaching?.nextReview || "Paper learning guidance is actief."
+    };
+  }
+
+  buildOfflineLearningGuidance({
+    strategySummary = {},
+    regimeSummary = {},
+    sessionSummary = {},
+    marketConditionSummary = {},
+    rawFeatures = {}
+  } = {}) {
+    const offlineTrainer = this.runtime?.offlineTrainer || {};
+    const outcomeScopeLearning = offlineTrainer.outcomeScopeScorecards || {};
+    const featureGovernance = offlineTrainer.featureGovernance || {};
+    const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
+    const normalize = (value) => String(value || "").trim().toLowerCase();
+    const family = strategySummary.family || null;
+    const regime = regimeSummary.regime || null;
+    const session = sessionSummary.session || null;
+    const conditionId = marketConditionSummary.conditionId || null;
+
+    const scopeMatches = [
+      { scopeType: "condition", id: conditionId, weight: 1, items: arr(outcomeScopeLearning.condition || []) },
+      { scopeType: "family", id: family, weight: 0.92, items: arr(outcomeScopeLearning.family || []) },
+      { scopeType: "regime", id: regime, weight: 0.72, items: arr(outcomeScopeLearning.regime || []) },
+      { scopeType: "session", id: session, weight: 0.55, items: arr(outcomeScopeLearning.session || []) }
+    ]
+      .map((scope) => {
+        const match = scope.id
+          ? scope.items.find((item) => normalize(item.id) === normalize(scope.id))
+          : null;
+        return match ? { ...match, scopeType: scope.scopeType, matchWeight: scope.weight } : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => (right.matchWeight || 0) - (left.matchWeight || 0));
+
+    const weightedConfidence = scopeMatches.reduce(
+      (total, item) => total + Math.max(0.15, (item.confidence || 0)) * (item.matchWeight || 0),
+      0
+    );
+    let thresholdShift = weightedConfidence
+      ? scopeMatches.reduce(
+          (total, item) => total + (item.thresholdShift || 0) * Math.max(0.15, (item.confidence || 0)) * (item.matchWeight || 0),
+          0
+        ) / weightedConfidence
+      : 0;
+    let sizeMultiplier = 1 + (weightedConfidence
+      ? scopeMatches.reduce(
+          (total, item) => total + ((item.sizeMultiplier || 1) - 1) * Math.max(0.15, (item.confidence || 0)) * (item.matchWeight || 0),
+          0
+        ) / weightedConfidence
+      : 0);
+    let cautionPenalty = weightedConfidence
+      ? scopeMatches.reduce(
+          (total, item) => total + (item.cautionPenalty || 0) * Math.max(0.15, (item.confidence || 0)) * (item.matchWeight || 0),
+          0
+        ) / weightedConfidence
+      : 0;
+
+    const benchmarkLead = paperLearning.benchmarkLanes?.bestLane || paperLearning.challengerPolicy?.leadingLane || null;
+    if (benchmarkLead === "always_skip") {
+      thresholdShift += 0.005;
+      sizeMultiplier *= 0.94;
+      cautionPenalty += 0.06;
+    } else if (benchmarkLead === "simple_exit") {
+      thresholdShift += 0.0025;
+      sizeMultiplier *= 0.95;
+      cautionPenalty += 0.045;
+    } else if (benchmarkLead === "safe_lane") {
+      thresholdShift += 0.0015;
+      sizeMultiplier *= 0.98;
+      cautionPenalty += 0.02;
+    }
+
+    const impactedFeatures = [];
+    const rawFeatureMap = rawFeatures && typeof rawFeatures === "object" ? rawFeatures : {};
+    const dropCandidates = new Set(arr(featureGovernance.pruning?.dropCandidates || []));
+    const guardOnly = new Set(arr(featureGovernance.pruning?.guardOnlyFeatures || []));
+    const missingInLive = new Set(arr(featureGovernance.parityAudit?.missingInLive || []));
+    const topNegative = new Map(arr(featureGovernance.attribution?.topNegative || []).map((item) => [item.id, item]));
+    let featurePenalty = 0;
+
+    for (const [id, value] of Object.entries(rawFeatureMap)) {
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+      const absValue = Math.abs(value);
+      if (dropCandidates.has(id) && absValue >= 0.28) {
+        featurePenalty += 0.018;
+        impactedFeatures.push(id);
+      } else if (guardOnly.has(id) && absValue >= 0.22) {
+        featurePenalty += 0.016;
+        impactedFeatures.push(id);
+      } else if (missingInLive.has(id) && absValue >= 0.18) {
+        featurePenalty += 0.014;
+        impactedFeatures.push(id);
+      } else if (topNegative.has(id) && absValue >= 0.3) {
+        const weight = Math.max(0.01, Math.min(0.02, (topNegative.get(id)?.influenceScore || 0.1) * 0.1));
+        featurePenalty += weight;
+        impactedFeatures.push(id);
+      }
+    }
+
+    featurePenalty = clamp(featurePenalty, 0, 0.08);
+    if (featurePenalty > 0) {
+      thresholdShift += Math.min(0.006, featurePenalty * 0.08);
+      sizeMultiplier *= (1 - featurePenalty * 0.85);
+      cautionPenalty += featurePenalty;
+    }
+
+    thresholdShift = num(clamp(thresholdShift, -0.018, 0.018), 4);
+    sizeMultiplier = num(clamp(sizeMultiplier, 0.84, 1.08), 4);
+    cautionPenalty = num(clamp(cautionPenalty, 0, 0.14), 4);
+    const confidence = num(clamp(
+      weightedConfidence * 0.72 +
+        Math.min(0.28, featurePenalty * 1.8) +
+        (benchmarkLead === "always_skip" || benchmarkLead === "simple_exit" ? 0.08 : 0),
+      0,
+      1
+    ), 4);
+    const focusReason = benchmarkLead === "always_skip"
+      ? "benchmark_always_skip_caution"
+      : benchmarkLead === "simple_exit"
+        ? "benchmark_simple_exit_caution"
+        : impactedFeatures.length
+          ? "feature_governance_pressure"
+          : scopeMatches[0]
+            ? `${scopeMatches[0].scopeType}_outcome_scope`
+            : "offline_learning_guidance";
+    const noteParts = [];
+    if (scopeMatches[0]) {
+      noteParts.push(`${scopeMatches[0].scopeType}:${scopeMatches[0].id} geeft nu outcome-bias.`);
+    }
+    if (benchmarkLead === "always_skip") {
+      noteParts.push("Always-skip benchmark blijft opvallend sterk.");
+    } else if (benchmarkLead === "simple_exit") {
+      noteParts.push("Simple-exit benchmark blijft opvallend competitief.");
+    }
+    if (impactedFeatures.length) {
+      noteParts.push(`Feature pressure op ${impactedFeatures.slice(0, 3).join(", ")}.`);
+    }
+
+    return {
+      active: Boolean(scopeMatches.length || featurePenalty > 0 || ["always_skip", "simple_exit", "safe_lane"].includes(benchmarkLead || "")),
+      sourceStatus: outcomeScopeLearning.status || featureGovernance.status || "warmup",
+      thresholdShift,
+      sizeMultiplier,
+      cautionPenalty,
+      confidence,
+      featurePenalty: num(featurePenalty, 4),
+      benchmarkLead,
+      focusReason,
+      impactedFeatures: [...new Set(impactedFeatures)].slice(0, 6),
+      matchedOutcomeScopes: scopeMatches.slice(0, 4),
+      note: noteParts.join(" ") || outcomeScopeLearning.notes?.[0] || featureGovernance.notes?.[0] || "Offline learning guidance warmt nog op."
     };
   }
 
@@ -10618,6 +10837,7 @@ export class TradingBot {
       paperLearningBudget: candidate.decision.paperLearningBudget || null,
       paperLearningSampling: candidate.decision.paperLearningSampling || null,
       paperLearningGuidance: summarizePaperLearningGuidance(candidate.decision.paperLearningGuidance || {}),
+      offlineLearningGuidance: summarizeOfflineLearningGuidance(candidate.decision.offlineLearningGuidance || {}),
       suppressedReasons: candidate.decision.suppressedReasons || [],
       paperExploration: candidate.decision.paperExploration || null,
       paperGuardrailRelief: [...(candidate.decision.paperGuardrailRelief || [])],
@@ -11194,6 +11414,13 @@ export class TradingBot {
         regimeSummary,
         sessionSummary
       }),
+      offlineLearningGuidance: this.buildOfflineLearningGuidance({
+        strategySummary,
+        regimeSummary,
+        sessionSummary,
+        marketConditionSummary,
+        rawFeatures
+      }),
       venueConfirmationSummary,
       exchangeCapabilitiesSummary: this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {},
       strategyMetaSummary: score.strategyMeta || combinedStrategyMetaSummary,
@@ -11705,6 +11932,7 @@ export class TradingBot {
       learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
       paperLearningBudget: candidate.decision.paperLearningBudget || null,
       paperLearningGuidance: summarizePaperLearningGuidance(candidate.decision.paperLearningGuidance || {}),
+      offlineLearningGuidance: summarizeOfflineLearningGuidance(candidate.decision.offlineLearningGuidance || {}),
       spreadBps: num(candidate.marketSnapshot.book.spreadBps, 2),
       realizedVolPct: num(candidate.marketSnapshot.market.realizedVolPct, 4),
       edgeToThreshold: num(candidate.score.probability - candidate.decision.threshold, 4),

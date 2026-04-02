@@ -663,6 +663,277 @@ function buildThresholdPolicy(blockerScorecards = [], config = {}) {
   };
 }
 
+function resolvePaperLearningOutcomeId(trade = {}) {
+  if (trade.paperLearningOutcome?.outcome) {
+    return trade.paperLearningOutcome.outcome;
+  }
+  if ((trade.pnlQuote || 0) > 0 && (trade.captureEfficiency || 0) >= 0.5) {
+    return "good_trade";
+  }
+  if ((trade.pnlQuote || 0) > 0) {
+    return "acceptable_trade";
+  }
+  if ((trade.mfePct || 0) >= 0.018 && (trade.captureEfficiency || 0) < 0.32) {
+    return "early_exit";
+  }
+  if ((trade.maePct || 0) <= -0.02 && ["time_stop", "manual_exit", "stop_loss"].includes(trade.reason || "")) {
+    return "late_exit";
+  }
+  if ((trade.executionQualityScore || 0) < 0.42) {
+    return "execution_drag";
+  }
+  return "bad_trade";
+}
+
+function isQualityTrapTrade(trade = {}) {
+  return (trade.captureEfficiency || 0) < 0.25 && (trade.mfePct || 0) > 0.012;
+}
+
+function buildScopedOutcomeLearningScorecards(trades = [], counterfactuals = [], keyFn = null, scopeType = "scope") {
+  const buckets = new Map();
+  const ensureBucket = (id) => {
+    const bucketId = id || `unknown_${scopeType}`;
+    if (!buckets.has(bucketId)) {
+      buckets.set(bucketId, {
+        id: bucketId,
+        tradeCount: 0,
+        counterfactualCount: 0,
+        goodTradeCount: 0,
+        acceptableTradeCount: 0,
+        badTradeCount: 0,
+        earlyExitCount: 0,
+        lateExitCount: 0,
+        executionDragCount: 0,
+        qualityTrapCount: 0,
+        badVetoCount: 0,
+        goodVetoCount: 0,
+        moveSum: 0,
+        pnlSum: 0,
+        latestAt: null
+      });
+    }
+    return buckets.get(bucketId);
+  };
+
+  for (const trade of trades) {
+    const bucket = ensureBucket(keyFn ? keyFn(trade) : null);
+    const outcome = resolvePaperLearningOutcomeId(trade);
+    bucket.tradeCount += 1;
+    bucket.pnlSum += trade.pnlQuote || 0;
+    bucket.moveSum += trade.netPnlPct || 0;
+    const latestAt = trade.exitAt || trade.entryAt || null;
+    if (latestAt && (!bucket.latestAt || latestAt > bucket.latestAt)) {
+      bucket.latestAt = latestAt;
+    }
+    if (outcome === "good_trade") {
+      bucket.goodTradeCount += 1;
+    } else if (outcome === "acceptable_trade") {
+      bucket.acceptableTradeCount += 1;
+    } else if (outcome === "bad_trade") {
+      bucket.badTradeCount += 1;
+    } else if (outcome === "early_exit") {
+      bucket.earlyExitCount += 1;
+    } else if (outcome === "late_exit") {
+      bucket.lateExitCount += 1;
+    } else if (outcome === "execution_drag") {
+      bucket.executionDragCount += 1;
+    }
+    if ((trade.executionQualityScore || 0) < 0.42 && (trade.pnlQuote || 0) <= 0) {
+      bucket.executionDragCount += 1;
+    }
+    if (isQualityTrapTrade(trade)) {
+      bucket.qualityTrapCount += 1;
+    }
+  }
+
+  for (const item of counterfactuals) {
+    const bucket = ensureBucket(keyFn ? keyFn(item) : null);
+    bucket.counterfactualCount += 1;
+    bucket.moveSum += item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0;
+    if (["missed_winner", "bad_veto", "right_direction_wrong_timing"].includes(item.outcome)) {
+      bucket.badVetoCount += 1;
+    }
+    if (["good_veto", "blocked_correctly"].includes(item.outcome)) {
+      bucket.goodVetoCount += 1;
+    }
+  }
+
+  return [...buckets.values()]
+    .filter((bucket) => bucket.tradeCount + bucket.counterfactualCount >= 2)
+    .map((bucket) => {
+      const tradeCount = Math.max(bucket.tradeCount, 1);
+      const counterfactualCount = Math.max(bucket.counterfactualCount, 1);
+      const goodTradeRate = bucket.tradeCount ? bucket.goodTradeCount / tradeCount : 0;
+      const acceptableTradeRate = bucket.tradeCount ? bucket.acceptableTradeCount / tradeCount : 0;
+      const weakTradeRate = bucket.tradeCount
+        ? (bucket.badTradeCount + bucket.earlyExitCount + bucket.lateExitCount + bucket.executionDragCount) / tradeCount
+        : 0;
+      const earlyExitRate = bucket.tradeCount ? bucket.earlyExitCount / tradeCount : 0;
+      const lateExitRate = bucket.tradeCount ? bucket.lateExitCount / tradeCount : 0;
+      const executionDragRate = bucket.tradeCount ? bucket.executionDragCount / tradeCount : 0;
+      const qualityTrapRate = bucket.tradeCount ? bucket.qualityTrapCount / tradeCount : 0;
+      const badVetoRate = bucket.counterfactualCount ? bucket.badVetoCount / counterfactualCount : 0;
+      const goodVetoRate = bucket.counterfactualCount ? bucket.goodVetoCount / counterfactualCount : 0;
+      const relaxPressure =
+        badVetoRate * 0.95 +
+        goodTradeRate * 0.5 +
+        acceptableTradeRate * 0.22;
+      const tightenPressure =
+        weakTradeRate * 0.78 +
+        qualityTrapRate * 0.7 +
+        executionDragRate * 0.62 +
+        earlyExitRate * 0.26 +
+        lateExitRate * 0.34 +
+        goodVetoRate * 0.74;
+      const thresholdShift = clamp((tightenPressure - relaxPressure) * 0.014, -0.018, 0.018);
+      const sizeMultiplier = clamp(
+        1 +
+          goodTradeRate * 0.05 +
+          acceptableTradeRate * 0.02 +
+          badVetoRate * 0.02 -
+          weakTradeRate * 0.08 -
+          executionDragRate * 0.12 -
+          qualityTrapRate * 0.1 -
+          earlyExitRate * 0.04 -
+          lateExitRate * 0.05,
+        0.82,
+        1.08
+      );
+      const cautionPenalty = clamp(
+        goodVetoRate * 0.06 +
+          weakTradeRate * 0.08 +
+          executionDragRate * 0.1 +
+          qualityTrapRate * 0.1 +
+          earlyExitRate * 0.05 +
+          lateExitRate * 0.04 -
+          badVetoRate * 0.04 -
+          goodTradeRate * 0.03,
+        0,
+        0.14
+      );
+      const confidence = clamp(
+        Math.min(1, (bucket.tradeCount + bucket.counterfactualCount) / 10) * 0.52 +
+          Math.abs(relaxPressure - tightenPressure) * 0.48,
+        0,
+        1
+      );
+      const status = confidence >= 0.58 && thresholdShift <= -0.006
+        ? "relax"
+        : confidence >= 0.58 && (thresholdShift >= 0.006 || sizeMultiplier <= 0.94 || cautionPenalty >= 0.06)
+          ? "tighten"
+          : "observe";
+      const note = badVetoRate >= 0.26
+        ? `${bucket.id} laat relatief veel bad-veto druk zien.`
+        : qualityTrapRate >= 0.24
+          ? `${bucket.id} toont opvallend veel quality traps.`
+          : executionDragRate >= 0.24
+            ? `${bucket.id} verliest te veel via execution drag.`
+            : earlyExitRate >= 0.24
+              ? `${bucket.id} heeft te veel vroege exits.`
+              : goodTradeRate >= 0.52
+                ? `${bucket.id} levert stabiel goede paper outcomes.`
+                : `${bucket.id} bouwt nog outcome-feedback op.`;
+      return {
+        id: bucket.id,
+        scopeType,
+        tradeCount: bucket.tradeCount,
+        counterfactualCount: bucket.counterfactualCount,
+        goodTradeCount: bucket.goodTradeCount,
+        acceptableTradeCount: bucket.acceptableTradeCount,
+        badTradeCount: bucket.badTradeCount,
+        earlyExitCount: bucket.earlyExitCount,
+        lateExitCount: bucket.lateExitCount,
+        executionDragCount: bucket.executionDragCount,
+        qualityTrapCount: bucket.qualityTrapCount,
+        badVetoCount: bucket.badVetoCount,
+        goodVetoCount: bucket.goodVetoCount,
+        goodTradeRate: num(goodTradeRate),
+        acceptableTradeRate: num(acceptableTradeRate),
+        weakTradeRate: num(weakTradeRate),
+        earlyExitRate: num(earlyExitRate),
+        lateExitRate: num(lateExitRate),
+        executionDragRate: num(executionDragRate),
+        qualityTrapRate: num(qualityTrapRate),
+        badVetoRate: num(badVetoRate),
+        goodVetoRate: num(goodVetoRate),
+        thresholdShift: num(thresholdShift),
+        sizeMultiplier: num(sizeMultiplier),
+        cautionPenalty: num(cautionPenalty),
+        confidence: num(confidence),
+        averageMovePct: num((bucket.tradeCount + bucket.counterfactualCount) ? bucket.moveSum / Math.max(bucket.tradeCount + bucket.counterfactualCount, 1) : 0),
+        realizedPnl: num(bucket.pnlSum, 2),
+        status,
+        latestAt: bucket.latestAt || null,
+        note
+      };
+    })
+    .sort((left, right) => {
+      const severityDelta =
+        (Math.abs(right.thresholdShift || 0) + Math.abs(1 - (right.sizeMultiplier || 1)) + (right.cautionPenalty || 0)) -
+        (Math.abs(left.thresholdShift || 0) + Math.abs(1 - (left.sizeMultiplier || 1)) + (left.cautionPenalty || 0));
+      return Math.abs(severityDelta) > 0.001
+        ? severityDelta
+        : (right.confidence || 0) - (left.confidence || 0);
+    })
+    .slice(0, 8);
+}
+
+function buildOutcomeScopeScorecards(trades = [], counterfactuals = []) {
+  const family = buildScopedOutcomeLearningScorecards(
+    trades,
+    counterfactuals,
+    (item) => resolveTradeStrategyFamily(item),
+    "family"
+  );
+  const regime = buildScopedOutcomeLearningScorecards(
+    trades,
+    counterfactuals,
+    (item) => item.regimeAtEntry || item.regime || item.entryRationale?.regimeSummary?.regime || "unknown",
+    "regime"
+  );
+  const session = buildScopedOutcomeLearningScorecards(
+    trades,
+    counterfactuals,
+    (item) => resolveTradeSessionId(item),
+    "session"
+  );
+  const condition = buildScopedOutcomeLearningScorecards(
+    trades,
+    counterfactuals,
+    (item) => resolveTradeConditionId(item),
+    "condition"
+  );
+  const topActionable = [...family, ...regime, ...session, ...condition]
+    .sort((left, right) => {
+      const leftSeverity = Math.abs(left.thresholdShift || 0) + Math.abs(1 - (left.sizeMultiplier || 1)) + (left.cautionPenalty || 0);
+      const rightSeverity = Math.abs(right.thresholdShift || 0) + Math.abs(1 - (right.sizeMultiplier || 1)) + (right.cautionPenalty || 0);
+      return rightSeverity - leftSeverity || (right.confidence || 0) - (left.confidence || 0);
+    })[0] || null;
+  const status = topActionable
+    ? topActionable.status === "relax" || topActionable.status === "tighten"
+      ? "active"
+      : "observe"
+    : "warmup";
+  return {
+    status,
+    topActionable,
+    family,
+    regime,
+    session,
+    condition,
+    notes: [
+      topActionable
+        ? `${topActionable.scopeType}:${topActionable.id} heeft nu de sterkste outcome-gestuurde runtime bias.`
+        : "Nog te weinig outcome-data voor scope-level runtime guidance.",
+      topActionable?.badVetoRate >= 0.24
+        ? "Counterfactual bad-veto feedback duwt nu direct mee op thresholding."
+        : topActionable?.executionDragRate >= 0.2 || topActionable?.qualityTrapRate >= 0.2
+          ? "Execution drag of quality traps remmen nu direct sizing en caution."
+          : "Outcome-feedback blijft voorlopig vooral observerend."
+    ]
+  };
+}
+
 function buildExitLearning(trades = []) {
   const map = new Map();
   let prematureExitCount = 0;
@@ -1612,6 +1883,7 @@ export class OfflineTrainer {
       counterfactuals: usableCounterfactuals,
       featureScorecards: featureDecay.scorecards || []
     });
+    const outcomeScopeScorecards = buildOutcomeScopeScorecards(learningReadyTrades, usableCounterfactuals);
     const scopeRetrainReadiness = buildScopedRetrainReadiness({
       paperTrades,
       liveTrades,
@@ -1702,6 +1974,7 @@ export class OfflineTrainer {
       blockerConditionScorecards,
       thresholdPolicy,
       missedTradeTuning,
+      outcomeScopeScorecards,
       exitLearning,
       exitScorecards: exitLearning.scorecards || [],
       exitConditionScorecards,
@@ -1739,6 +2012,9 @@ export class OfflineTrainer {
         thresholdPolicy.topRecommendation
           ? `${thresholdPolicy.topRecommendation.id} geeft threshold-advies: ${thresholdPolicy.topRecommendation.action}.`
           : "Threshold-tuning ziet momenteel geen harde aanpassing nodig.",
+        outcomeScopeScorecards.topActionable
+          ? `${outcomeScopeScorecards.topActionable.scopeType}:${outcomeScopeScorecards.topActionable.id} stuurt nu direct threshold- en sizing-bias.`
+          : "Outcome-scope scorecards bouwen nog op.",
         exitLearning.topReason
           ? `${exitLearning.topReason} leidt momenteel in exit learning (${exitLearning.status}).`
           : "Nog geen volwassen exit-learning patroon zichtbaar.",
