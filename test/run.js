@@ -18694,6 +18694,113 @@ await runCheck("promotion pipeline blocks guarded live candidates when history c
   assert.ok(summary.operatorGuardrails.blockedBy.includes("history_coverage_not_ready"));
 });
 
+await runCheck("promotion pipeline folds probation weakness and review focus into guarded live readiness", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summary = bot.buildPromotionPipelineSnapshot({
+    paperLearning: {
+      promotionRoadmap: { status: "observe", allowPromotion: false, note: "collect more proof" },
+      policyTransitions: { candidates: [] },
+      probation: {
+        promotionReady: false,
+        rollbackRisk: true,
+        qualityTrapCount: 1,
+        executionDragCount: 1,
+        dominantWeakness: "quality_trap"
+      },
+      paperToLiveReadiness: {
+        score: 0.58,
+        blocker: "quality_trap",
+        topScope: "trend_following | trend | asia"
+      },
+      reviewPacks: {
+        topProbationRisk: "ETHUSDT"
+      },
+      benchmarkLanes: {
+        bestLane: "simple_exit"
+      },
+      executionInsights: {
+        executionDragCount: 2
+      }
+    },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: [] } },
+    researchRegistry: { governance: { promotionCandidates: [] } },
+    promotionState: {},
+    offlineTrainer: {
+      historyCoverage: {
+        status: "covered",
+        uncoveredSymbolCount: 0,
+        gapSymbolCount: 0,
+        staleSymbolCount: 0
+      },
+      policyTransitionCandidatesByCondition: [
+        {
+          id: "ema_trend",
+          strategyId: "ema_trend",
+          familyId: "trend_following",
+          conditionId: "trend_continuation",
+          action: "guarded_live_candidate",
+          confidence: 0.82,
+          scope: "trend_continuation | ema_trend",
+          reason: "multi-condition proof is stable"
+        }
+      ]
+    },
+    tradingFlowHealth: {
+      counters: { executed: 2, persisted: 2 }
+    },
+    executionSummary: {
+      avgExecutionQualityScore: 0.72,
+      avgSlippageDeltaBps: 1.1
+    }
+  });
+  const candidate = summary.rolloutCandidates.find((item) => item.id === "ema_trend");
+  assert.ok(candidate);
+  assert.equal(candidate.action, "paper_ready");
+  assert.ok(candidate.guardedLiveBlockers.includes("probation_rollback_risk"));
+  assert.ok(candidate.guardedLiveBlockers.includes("quality_trap_not_ready"));
+  assert.ok(candidate.guardedLiveBlockers.includes("benchmark_execution_caution_active"));
+  assert.match(candidate.note || "", /ETHUSDT/);
+  assert.ok(summary.operatorGuardrails.blockedBy.includes("probation_rollback_risk"));
+});
+
+await runCheck("promotion pipeline surfaces active probation weakness in readiness scorecards", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summary = bot.buildPromotionPipelineSnapshot({
+    paperLearning: {
+      promotionRoadmap: { status: "observe", allowPromotion: false, note: "collect more proof" },
+      policyTransitions: { candidates: [] }
+    },
+    modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: [] } },
+    researchRegistry: { governance: { promotionCandidates: [] } },
+    promotionState: {
+      active: [
+        {
+          key: "scope:trend_following|trend|asia",
+          scope: "trend_following | trend | asia",
+          id: "ema_trend",
+          stage: "guarded_live_probation",
+          status: "active",
+          targetSampleCount: 4,
+          weakLossLimit: 2,
+          completedTrades: 3,
+          goodTrades: 1,
+          weakTrades: 2,
+          executionDragCount: 1,
+          qualityTrapCount: 1,
+          dominantWeakness: "quality_trap",
+          avgExecutionQuality: 0.51,
+          avgReviewComposite: 0.46,
+          avgNetPnlPct: -0.002,
+          rollbackRecommended: true
+        }
+      ]
+    }
+  });
+  assert.equal(summary.readinessScorecards[0].dominantWeakness, "quality_trap");
+  assert.match(summary.readinessScorecards[0].note || "", /Quality Trap/i);
+  assert.match(summary.probationGuardrails[0].detail || "", /Quality Trap/i);
+});
+
 await runCheck("offline trainer builds feature governance attribution parity and pruning plans", async () => {
   const trainer = new OfflineTrainer(makeConfig());
   const summary = trainer.buildSummary({

@@ -13935,6 +13935,12 @@ export class TradingBot {
     executionSummary = {}
   } = {}) {
     const roadmap = paperLearning.promotionRoadmap || {};
+    const probation = paperLearning.probation || {};
+    const paperToLiveReadiness = paperLearning.paperToLiveReadiness || {};
+    const reviewPacks = paperLearning.reviewPacks || {};
+    const benchmarkLanes = paperLearning.benchmarkLanes || {};
+    const executionInsights = paperLearning.executionInsights || {};
+    const historyCoverage = offlineTrainer.historyCoverage || {};
     const transitions = [
       ...arr(paperLearning.policyTransitions?.candidates || []),
       ...arr(offlineTrainer.policyTransitionCandidatesByCondition || [])
@@ -13958,8 +13964,14 @@ export class TradingBot {
       completedTrades: item.completedTrades || 0,
       goodTrades: item.goodTrades || 0,
       weakTrades: item.weakTrades || 0,
+      executionDragCount: item.executionDragCount || 0,
+      qualityTrapCount: item.qualityTrapCount || 0,
+      weakSetupCount: item.weakSetupCount || 0,
+      followThroughFailedCount: item.followThroughFailedCount || 0,
       avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
       avgNetPnlPct: num(item.avgNetPnlPct || 0, 4),
+      avgReviewComposite: num(item.avgReviewComposite || 0, 4),
+      dominantWeakness: item.dominantWeakness || null,
       verdict: item.verdict || "hold",
       rollbackRecommended: Boolean(item.rollbackRecommended),
       expired: Boolean(item.expired),
@@ -14007,6 +14019,31 @@ export class TradingBot {
             if ((item.confidence || 0) < confidenceFloor) {
               guardedLiveBlockers.push("condition_confidence_not_ready");
             }
+            const readinessFloor = rawAction === "live_ready" ? 0.82 : 0.68;
+            if ((paperToLiveReadiness.score || 0) < readinessFloor) {
+              guardedLiveBlockers.push("paper_readiness_not_ready");
+            }
+            if (paperToLiveReadiness.blocker) {
+              guardedLiveBlockers.push("paper_scope_blocker_active");
+            }
+            if (probation.rollbackRisk) {
+              guardedLiveBlockers.push("probation_rollback_risk");
+            }
+            if (!probation.promotionReady) {
+              guardedLiveBlockers.push("probation_quality_not_ready");
+            }
+            if (probation.dominantWeakness === "execution_drag" || (executionInsights.executionDragCount || 0) >= 2) {
+              guardedLiveBlockers.push("execution_drag_not_ready");
+            }
+            if (probation.dominantWeakness === "quality_trap" || (probation.qualityTrapCount || 0) > 0) {
+              guardedLiveBlockers.push("quality_trap_not_ready");
+            }
+            if ((benchmarkLanes.bestLane || null) === "always_skip") {
+              guardedLiveBlockers.push("benchmark_skip_bias_active");
+            }
+            if ((benchmarkLanes.bestLane || null) === "simple_exit") {
+              guardedLiveBlockers.push("benchmark_execution_caution_active");
+            }
             if ((executionSummary.avgExecutionQualityScore || 0) < 0.55) {
               guardedLiveBlockers.push("execution_quality_not_ready");
             }
@@ -14046,7 +14083,7 @@ export class TradingBot {
             guardedLiveReady: guardedLiveBlockers.length === 0,
             guardedLiveBlockers,
             note: guardedLiveBlockers.length
-              ? `${titleize(item.id || item.scope || "scope")} wacht op ${humanizeReason(guardedLiveBlockers[0])}.`
+              ? `${titleize(item.id || item.scope || "scope")} wacht op ${humanizeReason(guardedLiveBlockers[0])}${reviewPacks.topProbationRisk ? `; review ${reviewPacks.topProbationRisk} eerst.` : ""}.`
               : item.reason || null
           };
         })
@@ -14060,12 +14097,19 @@ export class TradingBot {
         targetSampleCount: item.targetSampleCount || 0,
         goodTrades: item.goodTrades || 0,
         weakTrades: item.weakTrades || 0,
+        executionDragCount: item.executionDragCount || 0,
+        qualityTrapCount: item.qualityTrapCount || 0,
+        weakSetupCount: item.weakSetupCount || 0,
+        dominantWeakness: item.dominantWeakness || null,
         avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+        avgReviewComposite: num(item.avgReviewComposite || 0, 4),
         avgNetPnlPct: num(item.avgNetPnlPct || 0, 4),
         note: item.verdict === "go"
           ? "Probation haalde de sample-doelen en blijft kwalitatief stabiel."
           : item.verdict === "rollback"
-            ? "Probation raakte de rollback-grens door zwakke uitkomsten."
+            ? item.dominantWeakness
+              ? `Probation raakte de rollback-grens door ${humanizeReason(item.dominantWeakness)}.`
+              : "Probation raakte de rollback-grens door zwakke uitkomsten."
             : "Probation heeft nog operator-review of extra samples nodig."
       })),
       promotionHistory,
@@ -14075,12 +14119,32 @@ export class TradingBot {
         label: item.symbol || item.scope || item.id || null,
         status: item.status || "active",
         detail: item.rollbackRecommended
-          ? `${item.weakTrades}/${item.weakLossLimit} zwakke trades sinds approve.`
+          ? item.dominantWeakness
+            ? `${item.weakTrades}/${item.weakLossLimit} zwakke trades sinds approve; focus op ${humanizeReason(item.dominantWeakness)}.`
+            : `${item.weakTrades}/${item.weakLossLimit} zwakke trades sinds approve.`
           : item.expired
             ? "Probation expired."
             : `${item.completedTrades}/${item.targetSampleCount} gesloten trades verzameld.`,
         expiresAt: item.expiresAt || null
       })),
+      operatorGuardrails: {
+        status: guardrails.length || probation.rollbackRisk ? "review_required" : "observe",
+        blockedBy: [
+          ...guardrails,
+          ...(probation.rollbackRisk ? ["probation_rollback_risk"] : []),
+          ...((probation.qualityTrapCount || 0) > 0 ? ["quality_trap_not_ready"] : []),
+          ...((executionInsights.executionDragCount || 0) >= 2 ? ["execution_drag_not_ready"] : []),
+          ...((benchmarkLanes.bestLane || null) === "always_skip" ? ["benchmark_skip_bias_active"] : []),
+          ...((benchmarkLanes.bestLane || null) === "simple_exit" ? ["benchmark_execution_caution_active"] : [])
+        ].filter((item, index, all) => item && all.indexOf(item) === index).slice(0, 6),
+        note: probation.rollbackRisk
+          ? reviewPacks.topProbationRisk
+            ? `Probation guardrails blijven actief; review ${reviewPacks.topProbationRisk} eerst voor promotie.`
+            : "Probation guardrails blijven actief door zwakke paper-uitkomsten."
+          : guardrails[0]
+            ? `Promotion guardrails wachten nu vooral op ${humanizeReason(guardrails[0])}.`
+            : "Nog geen extra promotion guardrails actief."
+      },
       guardrails
     };
   }
