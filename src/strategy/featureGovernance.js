@@ -150,12 +150,32 @@ export function buildFeatureAttribution(trades = [], { minTrades = 6 } = {}) {
       const group = featureGroup(bucket.id);
       const supportFeature = isSupportFeature(bucket.id, group);
       const sampleConfidence = buildSampleConfidence(bucket.values.length, minTrades);
+      const positiveCount = bucket.positiveOutcomes.length;
+      const negativeCount = bucket.negativeOutcomes.length;
+      const signBalance = clamp(
+        Math.min(positiveCount, negativeCount) / Math.max(Math.max(positiveCount, negativeCount), 1),
+        0,
+        1
+      );
+      const positiveOutcomeScore = average(bucket.positiveOutcomes, 0.5);
+      const negativeOutcomeScore = average(bucket.negativeOutcomes, 0.5);
+      const polaritySeparation = Math.abs(positiveOutcomeScore - negativeOutcomeScore);
       const evidenceConfidence = clamp(
         sampleConfidence * 0.62 +
           Math.min(1, predictiveScore / 0.18) * 0.38,
         0,
         1
       );
+      const inverseActionability = signedEdge < 0
+        ? clamp(
+          evidenceConfidence * 0.46 +
+            Math.min(1, polaritySeparation / 0.2) * 0.28 +
+            signBalance * 0.18 +
+            Math.min(1, activationRate / 0.55) * 0.08,
+          0,
+          1
+        )
+        : 0;
       return {
         id: bucket.id,
         group,
@@ -168,25 +188,33 @@ export function buildFeatureAttribution(trades = [], { minTrades = 6 } = {}) {
         predictiveScore: num(predictiveScore),
         activationRate: num(activationRate),
         avgAbsValue: num(avgAbsValue),
-        positiveOutcomeScore: num(average(bucket.positiveOutcomes, 0.5)),
-        negativeOutcomeScore: num(average(bucket.negativeOutcomes, 0.5)),
+        signBalance: num(signBalance),
+        positiveOutcomeScore: num(positiveOutcomeScore),
+        negativeOutcomeScore: num(negativeOutcomeScore),
+        polaritySeparation: num(polaritySeparation),
+        inverseActionability: num(inverseActionability),
         influenceScore: num(Math.abs(signedEdge) * Math.max(avgAbsValue, 0.1)),
         edgeType: signedEdge >= 0 ? "pro" : "inverse"
       };
     })
     .sort((left, right) => (right.influenceScore || 0) - (left.influenceScore || 0));
 
+  const topNegative = scorecards
+    .filter((item) => item.signedEdge < 0)
+    .sort((left, right) => (right.inverseActionability || 0) - (left.inverseActionability || 0) || (right.influenceScore || 0) - (left.influenceScore || 0))
+    .slice(0, 8);
+
   return {
     trackedFeatureCount: scorecards.length,
     scorecards,
     topPositive: scorecards.filter((item) => item.signedEdge > 0).slice(0, 8),
-    topNegative: scorecards.filter((item) => item.signedEdge < 0).slice(0, 8),
+    topNegative,
     notes: [
       scorecards[0]
         ? `${scorecards[0].id} draagt momenteel het sterkst bij aan gerealiseerde uitkomsten.`
         : "Nog niet genoeg trades voor betrouwbare feature-attribution.",
-      scorecards.find((item) => item.edgeType === "inverse")
-        ? `${scorecards.find((item) => item.edgeType === "inverse").id} werkt momenteel vooral als risicosignaal of veto-feature.`
+      topNegative[0]
+        ? `${topNegative[0].id} werkt momenteel vooral als risicosignaal of veto-feature.`
         : "Nog geen duidelijke inverse feature-leider zichtbaar."
     ]
   };

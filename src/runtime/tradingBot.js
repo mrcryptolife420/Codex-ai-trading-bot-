@@ -2044,6 +2044,24 @@ function summarizeOfflineTrainer(summary = {}) {
           }), 4),
           signedEdge: num(item.signedEdge || 0, 4),
           predictiveScore: num(item.predictiveScore || 0, 4),
+          signBalance: num(item.signBalance ?? 0.5, 4),
+          polaritySeparation: num(item.polaritySeparation ?? Math.min(0.22, safeNumber(item.predictiveScore || 0, 0) * 0.58), 4),
+          inverseActionability: num(item.inverseActionability ?? inferInverseActionability({
+            evidenceConfidence: item.evidenceConfidence ?? inferFeatureEvidenceConfidence({
+              predictiveScore: item.predictiveScore || 0,
+              tradeCount: item.tradeCount || 0,
+              supportFeature: item.supportFeature == null
+                ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+                : Boolean(item.supportFeature)
+            }),
+            predictiveScore: item.predictiveScore || 0,
+            activationRate: item.activationRate,
+            signBalance: item.signBalance,
+            polaritySeparation: item.polaritySeparation,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+              : Boolean(item.supportFeature)
+          }), 4),
           influenceScore: num(item.influenceScore || 0, 4),
           status: item.status || null
         }))
@@ -3002,6 +3020,30 @@ function inferFeatureEvidenceConfidence({ predictiveScore = 0, tradeCount = 0, s
   return clamp(
     sampleConfidence * (supportFeature ? 0.72 : 0.62) +
       Math.min(1, safeNumber(predictiveScore, 0) / (supportFeature ? 0.22 : 0.18)) * (supportFeature ? 0.28 : 0.38),
+    0,
+    1
+  );
+}
+
+function inferInverseActionability({
+  evidenceConfidence = 0,
+  predictiveScore = 0,
+  activationRate = 0,
+  signBalance = null,
+  polaritySeparation = null,
+  supportFeature = false
+} = {}) {
+  const effectiveSignBalance = signBalance == null
+    ? clamp(0.32 + Math.min(0.32, safeNumber(evidenceConfidence, 0) * 0.28), 0, 1)
+    : clamp(safeNumber(signBalance, 0), 0, 1);
+  const effectivePolaritySeparation = polaritySeparation == null
+    ? clamp(Math.min(0.22, safeNumber(predictiveScore, 0) * (supportFeature ? 0.44 : 0.58)), 0, 1)
+    : clamp(safeNumber(polaritySeparation, 0), 0, 1);
+  return clamp(
+    safeNumber(evidenceConfidence, 0) * 0.46 +
+      Math.min(1, effectivePolaritySeparation / 0.2) * 0.28 +
+      effectiveSignBalance * 0.18 +
+      Math.min(1, safeNumber(activationRate, 0.35) / 0.55) * 0.08,
     0,
     1
   );
@@ -11190,6 +11232,17 @@ export class TradingBot {
         0,
         1
       );
+      const inverseActionability = clamp(
+        Math.max(
+          safeNumber(topNegative.get(id)?.inverseActionability, 0),
+          inverseEvidenceConfidence * 0.46 +
+            Math.min(1, safeNumber(topNegative.get(id)?.polaritySeparation, 0) / 0.2) * 0.28 +
+            safeNumber(topNegative.get(id)?.signBalance, 0) * 0.18 +
+            Math.min(1, safeNumber(topNegative.get(id)?.activationRate, 0) / 0.55) * 0.08
+        ),
+        0,
+        1
+      );
       const supportFeature = Boolean(topNegative.get(id)?.supportFeature || pruningRecommendation?.supportFeature);
       if (dropCandidates.has(id) && absValue >= 0.28 && pruningActionConfidence >= 0.52) {
         penalty = 0.008 + Math.min(0.01, pruningActionConfidence * 0.012);
@@ -11200,13 +11253,18 @@ export class TradingBot {
       } else if (missingInLive.has(id) && absValue >= 0.18 && paritySampleReady) {
         penalty = 0.014 * Math.max(0.45, paritySampleConfidence);
         source = "parity_missing_in_live";
-      } else if (topNegative.has(id) && absValue >= 0.3 && inverseEvidenceConfidence >= (supportFeature ? 0.68 : 0.46)) {
+      } else if (
+        topNegative.has(id) &&
+        absValue >= 0.3 &&
+        inverseEvidenceConfidence >= (supportFeature ? 0.68 : 0.46) &&
+        inverseActionability >= (supportFeature ? 0.74 : 0.52)
+      ) {
         penalty = clamp(
           0.006 +
             Math.min(
               supportFeature ? 0.006 : 0.01,
-              (topNegative.get(id)?.influenceScore || 0.1) * (supportFeature ? 0.04 : 0.08) +
-                inverseEvidenceConfidence * (supportFeature ? 0.004 : 0.008)
+              (topNegative.get(id)?.influenceScore || 0.1) * (supportFeature ? 0.035 : 0.07) +
+                inverseActionability * (supportFeature ? 0.004 : 0.008)
             ),
           0.006,
           supportFeature ? 0.012 : 0.018
@@ -11226,11 +11284,12 @@ export class TradingBot {
           penalty,
           evidenceConfidence: num(
             source === "inverse_attribution"
-              ? inverseEvidenceConfidence
+              ? inverseActionability
               : pruningActionConfidence,
             4
           ),
           supportFeature,
+          inverseActionability: num(inverseActionability, 4),
           absValue: num(absValue, 4)
         });
       }

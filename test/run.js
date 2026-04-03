@@ -16632,6 +16632,84 @@ await runCheck("trading bot softens low-confidence pruning and inverse feature p
   assert.equal(guidance.impactedFeatures.length, 0);
 });
 
+await runCheck("trading bot only applies inverse attribution pressure when inverse evidence is directionally actionable", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    paperLearning: {
+      status: "active",
+      benchmarkLanes: { bestLane: "probe_lane" },
+      challengerPolicy: {}
+    },
+    offlineTrainer: {
+      outcomeScopeScorecards: { status: "warmup" },
+      featureGovernance: {
+        status: "watch",
+        attribution: {
+          trackedFeatureCount: 8,
+          topNegative: [
+            {
+              id: "weak_inverse",
+              group: "momentum",
+              influenceScore: 0.22,
+              predictiveScore: 0.21,
+              sampleConfidence: 0.92,
+              evidenceConfidence: 0.88,
+              signBalance: 0.08,
+              polaritySeparation: 0.03,
+              activationRate: 0.62,
+              inverseActionability: 0.38
+            },
+            {
+              id: "actionable_inverse",
+              group: "market_structure",
+              influenceScore: 0.24,
+              predictiveScore: 0.23,
+              sampleConfidence: 0.94,
+              evidenceConfidence: 0.9,
+              signBalance: 0.78,
+              polaritySeparation: 0.24,
+              activationRate: 0.71,
+              inverseActionability: 0.83
+            }
+          ]
+        },
+        parityAudit: {
+          status: "aligned",
+          sampleReady: true,
+          sampleConfidence: 0.9,
+          missingInLive: []
+        },
+        pruning: {
+          dropCandidates: [],
+          guardOnlyFeatures: [],
+          recommendations: []
+        }
+      }
+    }
+  };
+
+  const weak = bot.buildOfflineLearningGuidance({
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "asia" },
+    marketConditionSummary: { conditionId: "trend_continuation" },
+    rawFeatures: { weak_inverse: 0.74 }
+  });
+  const actionable = bot.buildOfflineLearningGuidance({
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "asia" },
+    marketConditionSummary: { conditionId: "trend_continuation" },
+    rawFeatures: { actionable_inverse: 0.74 }
+  });
+
+  assert.ok(!weak.featurePressureSources.some((item) => item.source === "inverse_attribution"));
+  assert.ok(!weak.impactedFeatures.includes("weak_inverse"));
+  assert.ok(actionable.featurePressureSources.some((item) => item.source === "inverse_attribution"));
+  assert.ok(actionable.impactedFeatures.includes("actionable_inverse"));
+});
+
 await runCheck("trading bot does not over-penalize missing live parity when parity sample is not ready", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ botMode: "paper" });
