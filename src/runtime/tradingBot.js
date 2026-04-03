@@ -1980,6 +1980,25 @@ function summarizeOfflineTrainer(summary = {}) {
       strongestFeature: summary.featureDecay?.strongestFeature || null,
       weakestFeature: summary.featureDecay?.weakestFeature || null,
       averagePredictiveScore: num(summary.featureDecay?.averagePredictiveScore || 0, 4),
+      scorecards: arr(summary.featureDecay?.scorecards || []).slice(0, 8).map((item) => ({
+        id: item.id || null,
+        group: item.group || inferFeatureGovernanceGroup(item.id || ""),
+        supportFeature: item.supportFeature == null
+          ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || inferFeatureGovernanceGroup(item.id || ""))
+          : Boolean(item.supportFeature),
+        count: item.count || 0,
+        sampleConfidence: num(item.sampleConfidence ?? inferFeatureSampleConfidence({ tradeCount: item.count || 0 }), 4),
+        decayEvidenceConfidence: num(item.decayEvidenceConfidence ?? inferFeatureEvidenceConfidence({
+          predictiveScore: item.predictiveScore || 0,
+          tradeCount: item.count || 0,
+          supportFeature: item.supportFeature == null
+            ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || inferFeatureGovernanceGroup(item.id || ""))
+            : Boolean(item.supportFeature)
+        }), 4),
+        predictiveScore: num(item.predictiveScore || 0, 4),
+        meanShift: num(item.meanShift || 0, 4),
+        status: item.status || "warmup"
+      })),
       notes: [...(summary.featureDecay?.notes || [])]
     },
     featureGovernance: {
@@ -1991,8 +2010,17 @@ function summarizeOfflineTrainer(summary = {}) {
           group: item.group || "context",
           tier: item.tier || "atomic",
           tradeCount: item.tradeCount || 0,
-          sampleConfidence: num(item.sampleConfidence || 0, 4),
-          evidenceConfidence: num(item.evidenceConfidence || 0, 4),
+          supportFeature: item.supportFeature == null
+            ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+            : Boolean(item.supportFeature),
+          sampleConfidence: num(item.sampleConfidence ?? inferFeatureSampleConfidence({ tradeCount: item.tradeCount || 0 }), 4),
+          evidenceConfidence: num(item.evidenceConfidence ?? inferFeatureEvidenceConfidence({
+            predictiveScore: item.predictiveScore || 0,
+            tradeCount: item.tradeCount || 0,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+              : Boolean(item.supportFeature)
+          }), 4),
           signedEdge: num(item.signedEdge || 0, 4),
           predictiveScore: num(item.predictiveScore || 0, 4),
           influenceScore: num(item.influenceScore || 0, 4),
@@ -2003,8 +2031,17 @@ function summarizeOfflineTrainer(summary = {}) {
           group: item.group || "context",
           tier: item.tier || "atomic",
           tradeCount: item.tradeCount || 0,
-          sampleConfidence: num(item.sampleConfidence || 0, 4),
-          evidenceConfidence: num(item.evidenceConfidence || 0, 4),
+          supportFeature: item.supportFeature == null
+            ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+            : Boolean(item.supportFeature),
+          sampleConfidence: num(item.sampleConfidence ?? inferFeatureSampleConfidence({ tradeCount: item.tradeCount || 0 }), 4),
+          evidenceConfidence: num(item.evidenceConfidence ?? inferFeatureEvidenceConfidence({
+            predictiveScore: item.predictiveScore || 0,
+            tradeCount: item.tradeCount || 0,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+              : Boolean(item.supportFeature)
+          }), 4),
           signedEdge: num(item.signedEdge || 0, 4),
           predictiveScore: num(item.predictiveScore || 0, 4),
           influenceScore: num(item.influenceScore || 0, 4),
@@ -2040,10 +2077,25 @@ function summarizeOfflineTrainer(summary = {}) {
           status: item.status || "shadow",
           group: item.group || "context",
           tier: item.tier || "atomic",
+          supportFeature: item.supportFeature == null
+            ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+            : Boolean(item.supportFeature),
           tradeCount: item.tradeCount || 0,
-          sampleConfidence: num(item.sampleConfidence || 0, 4),
-          evidenceConfidence: num(item.evidenceConfidence || 0, 4),
-          actionConfidence: num(item.actionConfidence || 0, 4),
+          sampleConfidence: num(item.sampleConfidence ?? inferFeatureSampleConfidence({ tradeCount: item.tradeCount || 0 }), 4),
+          evidenceConfidence: num(item.evidenceConfidence ?? inferFeatureEvidenceConfidence({
+            predictiveScore: item.predictiveScore || 0,
+            tradeCount: item.tradeCount || 0,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+              : Boolean(item.supportFeature)
+          }), 4),
+          actionConfidence: num(item.actionConfidence ?? inferFeatureEvidenceConfidence({
+            predictiveScore: item.predictiveScore || 0,
+            tradeCount: item.tradeCount || 0,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || "context")
+              : Boolean(item.supportFeature)
+          }), 4),
           decayStatus: item.decayStatus || "warmup",
           predictiveScore: num(item.predictiveScore || 0, 4),
           influenceScore: num(item.influenceScore || 0, 4),
@@ -2051,6 +2103,46 @@ function summarizeOfflineTrainer(summary = {}) {
           redundancyScore: num(item.redundancyScore || 0, 4),
           rationale: item.rationale || null
         }))
+      },
+      pruningAudit: {
+        status: summary.featureGovernance?.pruningAudit?.status || "warmup",
+        dominantFeature: summary.featureGovernance?.pruningAudit?.dominantFeature || null,
+        candidateCount: summary.featureGovernance?.pruningAudit?.candidateCount || 0,
+        hardDropCount: summary.featureGovernance?.pruningAudit?.hardDropCount || 0,
+        downgradedDropCount: summary.featureGovernance?.pruningAudit?.downgradedDropCount || 0,
+        supportFeatureCount: summary.featureGovernance?.pruningAudit?.supportFeatureCount || 0,
+        lowEvidenceCount: summary.featureGovernance?.pruningAudit?.lowEvidenceCount || 0,
+        topFeatures: arr(summary.featureGovernance?.pruningAudit?.topFeatures || []).slice(0, 8).map((item) => ({
+          id: item.id || null,
+          group: item.group || inferFeatureGovernanceGroup(item.id || ""),
+          supportFeature: item.supportFeature == null
+            ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || inferFeatureGovernanceGroup(item.id || ""))
+            : Boolean(item.supportFeature),
+          action: item.action || "observe_only",
+          originalAction: item.originalAction || item.action || "observe_only",
+          decayStatus: item.decayStatus || "warmup",
+          tradeCount: item.tradeCount || 0,
+          sampleConfidence: num(item.sampleConfidence ?? inferFeatureSampleConfidence({ tradeCount: item.tradeCount || 0 }), 4),
+          evidenceConfidence: num(item.evidenceConfidence ?? inferFeatureEvidenceConfidence({
+            predictiveScore: item.predictiveScore || 0,
+            tradeCount: item.tradeCount || 0,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || inferFeatureGovernanceGroup(item.id || ""))
+              : Boolean(item.supportFeature)
+          }), 4),
+          actionConfidence: num(item.actionConfidence ?? inferFeatureEvidenceConfidence({
+            predictiveScore: item.predictiveScore || 0,
+            tradeCount: item.tradeCount || 0,
+            supportFeature: item.supportFeature == null
+              ? inferFeatureGovernanceSupportFeature(item.id || "", item.group || inferFeatureGovernanceGroup(item.id || ""))
+              : Boolean(item.supportFeature)
+          }), 4),
+          predictiveScore: num(item.predictiveScore || 0, 4),
+          influenceScore: num(item.influenceScore || 0, 4),
+          likelyOverclassified: Boolean(item.likelyOverclassified),
+          rationale: item.rationale || null
+        })),
+        notes: [...(summary.featureGovernance?.pruningAudit?.notes || [])]
       },
       guardEffectiveness: {
         status: summary.featureGovernance?.guardEffectiveness?.status || "warmup",
@@ -2880,6 +2972,39 @@ function inferFeatureGovernanceGroup(name = "") {
     return "risk";
   }
   return "context";
+}
+
+function inferFeatureGovernanceSupportFeature(name = "", group = "") {
+  if (["context", "regime", "risk"].includes(group)) {
+    return true;
+  }
+  return (
+    name.includes("calendar_") ||
+    name.includes("social_") ||
+    name.includes("source_") ||
+    name.includes("portfolio_") ||
+    name.includes("stablecoin_") ||
+    name.includes("btc_dominance") ||
+    name.includes("feature_completeness") ||
+    name.includes("tf_alignment") ||
+    name.includes("onchain_") ||
+    name.includes("atr_") ||
+    name.includes("compression")
+  );
+}
+
+function inferFeatureSampleConfidence({ tradeCount = 0 } = {}) {
+  return clamp(safeNumber(tradeCount, 0) / 12, 0, 1);
+}
+
+function inferFeatureEvidenceConfidence({ predictiveScore = 0, tradeCount = 0, supportFeature = false } = {}) {
+  const sampleConfidence = inferFeatureSampleConfidence({ tradeCount });
+  return clamp(
+    sampleConfidence * (supportFeature ? 0.72 : 0.62) +
+      Math.min(1, safeNumber(predictiveScore, 0) / (supportFeature ? 0.22 : 0.18)) * (supportFeature ? 0.28 : 0.38),
+    0,
+    1
+  );
 }
 
 function summarizeLowConfidencePressure(pressure = {}) {
@@ -11065,6 +11190,7 @@ export class TradingBot {
         0,
         1
       );
+      const supportFeature = Boolean(topNegative.get(id)?.supportFeature || pruningRecommendation?.supportFeature);
       if (dropCandidates.has(id) && absValue >= 0.28 && pruningActionConfidence >= 0.52) {
         penalty = 0.008 + Math.min(0.01, pruningActionConfidence * 0.012);
         source = "pruning_drop_candidate";
@@ -11074,12 +11200,16 @@ export class TradingBot {
       } else if (missingInLive.has(id) && absValue >= 0.18 && paritySampleReady) {
         penalty = 0.014 * Math.max(0.45, paritySampleConfidence);
         source = "parity_missing_in_live";
-      } else if (topNegative.has(id) && absValue >= 0.3 && inverseEvidenceConfidence >= 0.46) {
+      } else if (topNegative.has(id) && absValue >= 0.3 && inverseEvidenceConfidence >= (supportFeature ? 0.68 : 0.46)) {
         penalty = clamp(
           0.006 +
-            Math.min(0.01, (topNegative.get(id)?.influenceScore || 0.1) * 0.08 + inverseEvidenceConfidence * 0.008),
+            Math.min(
+              supportFeature ? 0.006 : 0.01,
+              (topNegative.get(id)?.influenceScore || 0.1) * (supportFeature ? 0.04 : 0.08) +
+                inverseEvidenceConfidence * (supportFeature ? 0.004 : 0.008)
+            ),
           0.006,
-          0.018
+          supportFeature ? 0.012 : 0.018
         );
         source = "inverse_attribution";
       }
@@ -11100,6 +11230,7 @@ export class TradingBot {
               : pruningActionConfidence,
             4
           ),
+          supportFeature,
           absValue: num(absValue, 4)
         });
       }
@@ -11145,6 +11276,7 @@ export class TradingBot {
           sourceCount: bucket.sources.size,
           sourceTypes: [...bucket.sources],
           topFeatures: rankedFeatures.slice(0, 3).map((item) => item.id),
+          supportFeature: rankedFeatures.every((item) => Boolean(item.supportFeature)),
           penalty: num(penalty, 4)
         };
       })
@@ -11239,6 +11371,9 @@ export class TradingBot {
     }
     if (impactedFeatureGroups[0]) {
       noteParts.push(`Sterkste zwakke featuregroep: ${impactedFeatureGroups[0].group}.`);
+    }
+    if (impactedFeatureGroups[0]?.supportFeature) {
+      noteParts.push("Dominante feature-pressure komt vooral uit context/support-features.");
     }
     if (sourcePressure.size) {
       noteParts.push(`Dominante bron: ${[...sourcePressure.values()].sort((left, right) => (right.penalty || 0) - (left.penalty || 0))[0]?.source || "feature_governance"}.`);

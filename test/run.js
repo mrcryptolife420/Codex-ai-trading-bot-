@@ -19617,8 +19617,59 @@ await runCheck("offline trainer builds feature governance attribution parity and
   assert.equal(summary.featureGovernance.pruning.recommendations[0].originalAction, "drop_candidate");
   assert.equal(summary.featureGovernance.pruning.recommendations[0].action, "observe_only");
   assert.ok(summary.featureGovernance.pruning.recommendations[0].actionConfidence < 0.62);
+  assert.equal(summary.featureGovernance.pruningAudit.hardDropCount, 0);
+  assert.ok(summary.featureGovernance.pruningAudit.downgradedDropCount >= 1);
   assert.equal(summary.featureGovernance.guardEffectiveness.topRetuneGuard, "relative_weakness_vs_market");
   assert.ok(summary.notes.some((note) => note.includes("feature")));
+});
+
+await runCheck("offline trainer does not hard-drop context support features on weak standalone decay alone", async () => {
+  const trainer = new OfflineTrainer(makeConfig());
+  const trades = Array.from({ length: 8 }, (_, index) => ({
+    symbol: `T${index}USDT`,
+    exitAt: `2026-03-1${index}T12:00:00.000Z`,
+    pnlQuote: index % 2 === 0 ? 8 : -7,
+    netPnlPct: index % 2 === 0 ? 0.01 : -0.009,
+    executionQualityScore: 0.62,
+    labelScore: index % 2 === 0 ? 0.7 : 0.3,
+    rawFeatures: {
+      atr_expansion: 0.82,
+      range_compression: 0.81,
+      feature_completeness: 1,
+      trend_quality_composite: index % 2 === 0 ? 1.1 : -0.9
+    },
+    strategyAtEntry: "ema_trend",
+    regimeAtEntry: "trend",
+    brokerMode: "paper"
+  }));
+  const summary = trainer.buildSummary({
+    journal: { trades },
+    dataRecorder: { learningFrames: 8, decisionFrames: 8 },
+    counterfactuals: [],
+    nowIso: "2026-03-20T12:00:00.000Z"
+  });
+  const atrRec = summary.featureGovernance.pruning.recommendations.find((item) => item.id === "atr_expansion");
+  const rangeRec = summary.featureGovernance.pruning.recommendations.find((item) => item.id === "range_compression");
+  assert.ok(atrRec);
+  assert.ok(rangeRec);
+  assert.equal(atrRec.supportFeature, true);
+  assert.equal(rangeRec.supportFeature, true);
+  assert.equal(atrRec.originalAction, "drop_candidate");
+  assert.equal(rangeRec.originalAction, "drop_candidate");
+  assert.equal(atrRec.action, "observe_only");
+  assert.equal(rangeRec.action, "observe_only");
+  const atrDecay = summary.featureDecay.scorecards.find((item) => item.id === "atr_expansion");
+  const rangeDecay = summary.featureDecay.scorecards.find((item) => item.id === "range_compression");
+  assert.ok(atrDecay);
+  assert.ok(rangeDecay);
+  assert.equal(atrDecay.supportFeature, true);
+  assert.equal(rangeDecay.supportFeature, true);
+  assert.notEqual(atrDecay.status, "decayed");
+  assert.notEqual(rangeDecay.status, "decayed");
+  assert.equal(summary.featureGovernance.pruning.dropCandidates.includes("atr_expansion"), false);
+  assert.equal(summary.featureGovernance.pruning.dropCandidates.includes("range_compression"), false);
+  assert.ok(summary.featureGovernance.pruningAudit.topFeatures.some((item) => item.id === "atr_expansion" && item.likelyOverclassified));
+  assert.ok(summary.featureGovernance.pruningAudit.topFeatures.some((item) => item.id === "range_compression" && item.likelyOverclassified));
 });
 
 await runCheck("adaptive model exposes expert mix and neural overlays", async () => {

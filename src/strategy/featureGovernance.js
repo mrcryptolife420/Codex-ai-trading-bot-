@@ -29,7 +29,7 @@ function correlation(values = [], outcomes = []) {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
-function featureGroup(name = "") {
+export function featureGroup(name = "") {
   if (name.includes("execution") || name.includes("book_") || name.includes("queue_") || name.includes("spread") || name.includes("depth_") || name.includes("microprice")) {
     return "execution";
   }
@@ -61,8 +61,27 @@ function featureTier(name = "") {
   return name.includes("_composite") ? "composite" : "atomic";
 }
 
-function buildSampleConfidence(count = 0, baseline = 8) {
+export function buildSampleConfidence(count = 0, baseline = 8) {
   return clamp(count / Math.max(baseline * 2, 1), 0, 1);
+}
+
+export function isSupportFeature(name = "", group = "") {
+  if (["context", "regime", "risk"].includes(group)) {
+    return true;
+  }
+  return (
+    name.includes("calendar_") ||
+    name.includes("social_") ||
+    name.includes("source_") ||
+    name.includes("portfolio_") ||
+    name.includes("stablecoin_") ||
+    name.includes("btc_dominance") ||
+    name.includes("feature_completeness") ||
+    name.includes("tf_alignment") ||
+    name.includes("onchain_") ||
+    name.includes("atr_") ||
+    name.includes("compression")
+  );
 }
 
 function classifyRegistryStatus({ predictiveScore = 0, parityStatus = "aligned", activationRate = 0, redundancyScore = 0, tier = "atomic" } = {}) {
@@ -128,6 +147,8 @@ export function buildFeatureAttribution(trades = [], { minTrades = 6 } = {}) {
       const predictiveScore = Math.abs(signedEdge);
       const avgAbsValue = average(bucket.absValues);
       const activationRate = average(bucket.absValues.map((value) => (value >= 0.35 ? 1 : 0)));
+      const group = featureGroup(bucket.id);
+      const supportFeature = isSupportFeature(bucket.id, group);
       const sampleConfidence = buildSampleConfidence(bucket.values.length, minTrades);
       const evidenceConfidence = clamp(
         sampleConfidence * 0.62 +
@@ -137,9 +158,10 @@ export function buildFeatureAttribution(trades = [], { minTrades = 6 } = {}) {
       );
       return {
         id: bucket.id,
-        group: featureGroup(bucket.id),
+        group,
         tier: featureTier(bucket.id),
         tradeCount: bucket.values.length,
+        supportFeature,
         sampleConfidence: num(sampleConfidence),
         evidenceConfidence: num(evidenceConfidence),
         signedEdge: num(signedEdge),
@@ -337,13 +359,19 @@ export function buildFeaturePruningPlan({
       0,
       1
     );
-    const downgradedDropCandidate = action === "drop_candidate" && actionConfidence < 0.62;
+    const supportFeature = Boolean(item.supportFeature) || isSupportFeature(item.id, item.group);
+    const downgradedDropCandidate =
+      action === "drop_candidate" && (
+        actionConfidence < 0.62 ||
+        (supportFeature && actionConfidence < 0.86)
+      );
     const effectiveAction = downgradedDropCandidate ? "observe_only" : action;
     const effectiveStatus = downgradedDropCandidate ? "observe" : registryStatus;
     return {
       id: item.id,
       group: item.group,
       tier: item.tier,
+      supportFeature,
       action: effectiveAction,
       originalAction: action,
       status: effectiveStatus,
@@ -359,7 +387,9 @@ export function buildFeaturePruningPlan({
       redundancyScore: num(redundancyScore),
       rationale:
         downgradedDropCandidate
-          ? "lage voorspellende waarde, maar nog onvoldoende sample-evidence voor een harde drop-candidate"
+          ? supportFeature
+            ? "lage voorspellende waarde, maar dit is vooral een context/support-feature en nog geen harde drop-candidate"
+            : "lage voorspellende waarde, maar nog onvoldoende sample-evidence voor een harde drop-candidate"
           : action === "drop_candidate"
             ? "lage voorspellende waarde met hoge activatie"
           : action === "fix_live_parity"
@@ -470,6 +500,76 @@ export function buildGuardEffectiveness(counterfactuals = []) {
   };
 }
 
+function buildPruningAudit({ pruning = {}, attribution = {}, featureScorecards = [] } = {}) {
+  const decayMap = new Map((featureScorecards || []).map((item) => [item.id, item]));
+  const topNegativeMap = new Map((attribution.topNegative || []).map((item) => [item.id, item]));
+  const candidates = (pruning.recommendations || [])
+    .filter((item) => item.originalAction === "drop_candidate" || item.action === "drop_candidate")
+    .map((item) => {
+      const topNegative = topNegativeMap.get(item.id) || {};
+      const decay = decayMap.get(item.id) || {};
+      const supportFeature = Boolean(item.supportFeature);
+      const likelyOverclassified = item.originalAction === "drop_candidate" && item.action !== "drop_candidate";
+      const evidenceConfidence = Math.max(item.evidenceConfidence || 0, topNegative.evidenceConfidence || 0, decay.decayEvidenceConfidence || 0);
+      return {
+        id: item.id,
+        group: item.group || decay.group || "context",
+        supportFeature,
+        action: item.action || "observe_only",
+        originalAction: item.originalAction || item.action || "observe_only",
+        decayStatus: item.decayStatus || decay.status || "warmup",
+        predictiveScore: num(item.predictiveScore ?? topNegative.predictiveScore ?? decay.predictiveScore ?? 0),
+        influenceScore: num(item.influenceScore ?? topNegative.influenceScore ?? 0),
+        tradeCount: item.tradeCount || topNegative.tradeCount || decay.count || 0,
+        sampleConfidence: num(Math.max(item.sampleConfidence || 0, topNegative.sampleConfidence || 0, decay.sampleConfidence || 0)),
+        evidenceConfidence: num(evidenceConfidence),
+        actionConfidence: num(item.actionConfidence || evidenceConfidence),
+        likelyOverclassified,
+        rationale: item.rationale || null
+      };
+    })
+    .sort((left, right) => {
+      const leftRank = left.action === "drop_candidate" ? 2 : left.likelyOverclassified ? 1 : 0;
+      const rightRank = right.action === "drop_candidate" ? 2 : right.likelyOverclassified ? 1 : 0;
+      return rightRank - leftRank ||
+        (right.actionConfidence || 0) - (left.actionConfidence || 0) ||
+        (left.predictiveScore || 0) - (right.predictiveScore || 0);
+    });
+
+  const hardDropCount = candidates.filter((item) => item.action === "drop_candidate").length;
+  const downgradedDropCount = candidates.filter((item) => item.likelyOverclassified).length;
+  const supportFeatureCount = candidates.filter((item) => item.supportFeature).length;
+  const lowEvidenceCount = candidates.filter((item) => (item.evidenceConfidence || 0) < 0.58).length;
+  const dominantFeature = candidates[0]?.id || null;
+
+  return {
+    status: hardDropCount
+      ? "action_required"
+      : downgradedDropCount || lowEvidenceCount
+        ? "watch"
+        : candidates.length
+          ? "healthy"
+          : "warmup",
+    dominantFeature,
+    candidateCount: candidates.length,
+    hardDropCount,
+    downgradedDropCount,
+    supportFeatureCount,
+    lowEvidenceCount,
+    topFeatures: candidates.slice(0, 8),
+    notes: [
+      dominantFeature
+        ? `${dominantFeature} blijft de sterkste pruning-driver in de huidige offline audit.`
+        : "Nog geen duidelijke pruning-driver zichtbaar.",
+      downgradedDropCount
+        ? `${downgradedDropCount} drop-candidates zijn teruggezet omdat de evidence nog te dun is.`
+        : hardDropCount
+          ? `${hardDropCount} features blijven echte hard drop-candidates met voldoende evidence.`
+          : "Geen hard drop-candidates met sterke evidence in de huidige set."
+    ]
+  };
+}
+
 export function buildFeatureGovernanceSummary({
   trades = [],
   paperTrades = [],
@@ -480,11 +580,12 @@ export function buildFeatureGovernanceSummary({
   const attribution = buildFeatureAttribution(trades);
   const parityAudit = buildFeatureParityAudit({ paperTrades, liveTrades, featureScorecards });
   const pruning = buildFeaturePruningPlan({ attribution, parityAudit, featureScorecards });
+  const pruningAudit = buildPruningAudit({ pruning, attribution, featureScorecards });
   const guardEffectiveness = buildGuardEffectiveness(counterfactuals);
   return {
-    status: [pruning.status, parityAudit.status, guardEffectiveness.status].includes("action_required") || [pruning.status, guardEffectiveness.status].includes("retune")
+    status: [pruning.status, pruningAudit.status, parityAudit.status, guardEffectiveness.status].includes("action_required") || [pruning.status, guardEffectiveness.status].includes("retune")
       ? "action_required"
-      : [pruning.status, parityAudit.status, guardEffectiveness.status].includes("watch") || parityAudit.status === "misaligned"
+      : [pruning.status, pruningAudit.status, parityAudit.status, guardEffectiveness.status].includes("watch") || parityAudit.status === "misaligned"
         ? "watch"
         : attribution.trackedFeatureCount
           ? "healthy"
@@ -492,11 +593,13 @@ export function buildFeatureGovernanceSummary({
     attribution,
     parityAudit,
     pruning,
+    pruningAudit,
     guardEffectiveness,
     notes: [
       ...(attribution.notes || []).slice(0, 2),
       ...(parityAudit.notes || []).slice(0, 2),
       ...(pruning.notes || []).slice(0, 2),
+      ...(pruningAudit.notes || []).slice(0, 2),
       ...(guardEffectiveness.notes || []).slice(0, 2)
     ].slice(0, 6)
   };

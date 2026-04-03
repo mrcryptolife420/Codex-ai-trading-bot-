@@ -1,5 +1,10 @@
 import { clamp } from "../utils/math.js";
-import { buildFeatureGovernanceSummary } from "../strategy/featureGovernance.js";
+import {
+  buildFeatureGovernanceSummary,
+  buildSampleConfidence,
+  featureGroup,
+  isSupportFeature
+} from "../strategy/featureGovernance.js";
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -1341,15 +1346,41 @@ function buildFeatureDecay(trades = [], config = {}) {
       const earlierMean = average(bucket.values.slice(0, half));
       const recentMean = average(bucket.values.slice(-half));
       const meanShift = Math.abs(recentMean - earlierMean);
+      const group = featureGroup(bucket.id);
+      const supportFeature = isSupportFeature(bucket.id, group);
+      const sampleConfidence = buildSampleConfidence(bucket.values.length, minTrades);
+      const lowPredictivePressure = clamp((Math.max(blockedScore, 0.0001) - predictiveScore) / Math.max(blockedScore, 0.0001), 0, 1);
+      const driftPressure = clamp(meanShift / (supportFeature ? 0.28 : 0.2), 0, 1);
+      const decayEvidenceConfidence = clamp(
+        sampleConfidence * (supportFeature ? 0.46 : 0.58) +
+          lowPredictivePressure * (supportFeature ? 0.18 : 0.24) +
+          driftPressure * (supportFeature ? 0.36 : 0.18),
+        0,
+        1
+      );
+      const blockedThreshold = supportFeature ? blockedScore * 0.72 : blockedScore;
+      const weakThreshold = supportFeature ? weakScore * 0.8 : weakScore;
+      const decayed = supportFeature
+        ? predictiveScore <= blockedThreshold && sampleConfidence >= 0.68 && meanShift >= 0.12 && decayEvidenceConfidence >= 0.62
+        : predictiveScore <= blockedScore && decayEvidenceConfidence >= 0.52;
+      const watch = decayed || (
+        supportFeature
+          ? predictiveScore <= weakThreshold || meanShift >= 0.14
+          : predictiveScore <= weakScore
+      );
       return {
         id: bucket.id,
+        group,
         count: bucket.values.length,
+        supportFeature,
+        sampleConfidence: num(sampleConfidence),
+        decayEvidenceConfidence: num(decayEvidenceConfidence),
         predictiveScore: num(predictiveScore),
         meanShift: num(meanShift),
         direction: correlation(bucket.values, bucket.outcomes) >= 0 ? "pro" : "inverse",
-        status: predictiveScore <= blockedScore
+        status: decayed
           ? "decayed"
-          : predictiveScore <= weakScore
+          : watch
             ? "watch"
             : "healthy"
       };
