@@ -4672,6 +4672,36 @@ await runCheck("self heal clears recovered circuit pauses in paper mode", async 
   assert.equal(state.mode, "normal");
   assert.equal(state.active, false);
   assert.ok(state.lastRecoveryAt);
+  assert.equal(state.cooldownActive, false);
+  assert.deepEqual(state.recoveryBlockedBy, []);
+});
+
+await runCheck("self heal surfaces cooldown diagnostics while low risk cooldown is still active", async () => {
+  const manager = new SelfHealManager(makeConfig({ selfHealCooldownMinutes: 180 }), { warn() {} });
+  const state = manager.evaluate({
+    previousState: {
+      ...manager.buildDefaultState(),
+      mode: "low_risk_only",
+      active: true,
+      reason: "calibration_warning",
+      issues: ["calibration_warning"],
+      cooldownUntil: "2026-03-08T06:30:00.000Z",
+      lastTriggeredAt: "2026-03-08T03:30:00.000Z"
+    },
+    report: { recentTrades: [], windows: { today: { realizedPnl: 0 } } },
+    driftSummary: { severity: 0.1 },
+    health: { circuitOpen: false },
+    calibration: { observations: 18, expectedCalibrationError: 0.22 },
+    botMode: "paper",
+    hasStableModel: false,
+    now: new Date("2026-03-08T04:00:00.000Z")
+  });
+  assert.equal(state.mode, "low_risk_only");
+  assert.equal(state.cooldownActive, true);
+  assert.ok(state.cooldownRemainingMinutes > 0);
+  assert.ok(state.warningIssues.includes("calibration_warning"));
+  assert.ok(state.recoveryBlockedBy.includes("calibration_warning"));
+  assert.ok(state.recoverableIssues.includes("calibration_warning"));
 });
 
 await runCheck("risk manager current exposure ignores invalid position values", async () => {
@@ -16524,7 +16554,7 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
       featureGovernance: {
         status: "watch",
         attribution: {
-          topNegative: [{ id: "stoch_cross", influenceScore: 0.18 }]
+          topNegative: [{ id: "stoch_cross", influenceScore: 0.18, predictiveScore: 0.16, sampleConfidence: 0.8, evidenceConfidence: 0.74 }]
         },
         parityAudit: {
           sampleReady: true,
@@ -16533,7 +16563,8 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
         },
         pruning: {
           dropCandidates: ["stoch_cross"],
-          guardOnlyFeatures: []
+          guardOnlyFeatures: [],
+          recommendations: [{ id: "stoch_cross", group: "momentum", action: "drop_candidate", originalAction: "drop_candidate", actionConfidence: 0.76, evidenceConfidence: 0.74 }]
         },
         notes: ["stoch_cross vraagt extra voorzichtigheid."]
       }
@@ -16556,6 +16587,49 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
   assert.ok(guidance.featurePressureSources.some((item) => item.source === "pruning_drop_candidate"));
   assert.ok(guidance.impactedFeatureGroups.some((item) => item.group === "momentum"));
   assert.ok(guidance.matchedOutcomeScopes.length >= 2);
+});
+
+await runCheck("trading bot softens low-confidence pruning and inverse feature pressure on near-miss setups", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    paperLearning: {
+      status: "active",
+      benchmarkLanes: { bestLane: "probe_lane" },
+      challengerPolicy: {}
+    },
+    offlineTrainer: {
+      outcomeScopeScorecards: { status: "warmup" },
+      featureGovernance: {
+        status: "watch",
+        attribution: {
+          trackedFeatureCount: 6,
+          topNegative: [{ id: "stoch_cross", influenceScore: 0.14, predictiveScore: 0.1, sampleConfidence: 0.34, evidenceConfidence: 0.32 }]
+        },
+        parityAudit: {
+          status: "aligned",
+          sampleReady: true,
+          sampleConfidence: 0.82,
+          missingInLive: []
+        },
+        pruning: {
+          dropCandidates: [],
+          guardOnlyFeatures: [],
+          recommendations: [{ id: "stoch_cross", group: "momentum", action: "observe_only", originalAction: "drop_candidate", actionConfidence: 0.34, evidenceConfidence: 0.32 }]
+        }
+      }
+    }
+  };
+  const guidance = bot.buildOfflineLearningGuidance({
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "asia" },
+    marketConditionSummary: { conditionId: "trend_continuation" },
+    rawFeatures: { stoch_cross: 0.74 }
+  });
+
+  assert.ok(!guidance.featurePressureSources.some((item) => ["pruning_drop_candidate", "inverse_attribution"].includes(item.source)));
+  assert.equal(guidance.impactedFeatures.length, 0);
 });
 
 await runCheck("trading bot does not over-penalize missing live parity when parity sample is not ready", async () => {
@@ -19538,7 +19612,11 @@ await runCheck("offline trainer builds feature governance attribution parity and
   assert.equal(summary.featureGovernance.parityAudit.sampleReady, false);
   assert.equal(summary.featureGovernance.parityAudit.liveTradeCount, 1);
   assert.equal(summary.featureGovernance.parityAudit.missingInLive.length, 0);
-  assert.ok(summary.featureGovernance.pruning.dropCandidates.includes("stoch_cross"));
+  assert.equal(summary.featureGovernance.pruning.dropCandidates.length, 0);
+  assert.equal(summary.featureGovernance.pruning.recommendations[0].id, "stoch_cross");
+  assert.equal(summary.featureGovernance.pruning.recommendations[0].originalAction, "drop_candidate");
+  assert.equal(summary.featureGovernance.pruning.recommendations[0].action, "observe_only");
+  assert.ok(summary.featureGovernance.pruning.recommendations[0].actionConfidence < 0.62);
   assert.equal(summary.featureGovernance.guardEffectiveness.topRetuneGuard, "relative_weakness_vs_market");
   assert.ok(summary.notes.some((note) => note.includes("feature")));
 });

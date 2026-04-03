@@ -58,12 +58,18 @@ export class SelfHealManager {
       active: false,
       reason: null,
       issues: [],
+      criticalIssues: [],
+      warningIssues: [],
       actions: [],
       managerAction: null,
       sizeMultiplier: 1,
       thresholdPenalty: 0,
       lowRiskOnly: false,
       learningAllowed: false,
+      cooldownActive: false,
+      cooldownRemainingMinutes: 0,
+      recoverableIssues: [],
+      recoveryBlockedBy: [],
       cooldownUntil: null,
       lastTriggeredAt: null,
       lastRecoveryAt: null,
@@ -93,6 +99,33 @@ export class SelfHealManager {
       : 0;
     const criticalIssues = [];
     const warningIssues = [];
+    const finalizeState = (nextState) => {
+      const cooldownUntilMs = nextState.cooldownUntil ? new Date(nextState.cooldownUntil).getTime() : Number.NaN;
+      const nextCooldownActive = Number.isFinite(cooldownUntilMs) && cooldownUntilMs > now.getTime();
+      const recoveryBlockedBy = [...new Set([
+        ...criticalIssues,
+        ...warningIssues,
+        ...(nextState.issues || [])
+      ])];
+      const recoverableIssues = recoveryBlockedBy.filter((issue) => [
+        "loss_streak_limit",
+        "loss_streak_warning",
+        "calibration_break",
+        "calibration_warning",
+        "cooldown_active"
+      ].includes(issue));
+      return {
+        ...nextState,
+        criticalIssues: [...criticalIssues],
+        warningIssues: [...warningIssues],
+        cooldownActive: Boolean(nextCooldownActive),
+        cooldownRemainingMinutes: nextCooldownActive
+          ? Math.max(0, Math.ceil((cooldownUntilMs - now.getTime()) / 60_000))
+          : 0,
+        recoverableIssues,
+        recoveryBlockedBy
+      };
+    };
 
     if (health.circuitOpen) {
       criticalIssues.push("health_circuit_open");
@@ -136,7 +169,7 @@ export class SelfHealManager {
         state.learningAllowed = true;
         state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
         state.lastTriggeredAt = nowIso();
-        return state;
+        return finalizeState(state);
       }
       if (canUsePaperCalibrationProbe({ botMode, criticalIssues, health })) {
         state.mode = "paper_calibration_probe";
@@ -157,7 +190,7 @@ export class SelfHealManager {
         state.learningAllowed = true;
         state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
         state.lastTriggeredAt = nowIso();
-        return state;
+        return finalizeState(state);
       }
       if (canUsePaperRecoverableCriticalFallback({ botMode, criticalIssues, health })) {
         const includesCalibrationBreak = criticalIssues.includes("calibration_break");
@@ -186,7 +219,7 @@ export class SelfHealManager {
         state.learningAllowed = true;
         state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
         state.lastTriggeredAt = nowIso();
-        return state;
+        return finalizeState(state);
       }
       state.mode = botMode === "live" && this.config.selfHealSwitchToPaper ? "paper_fallback" : "paused";
       state.active = true;
@@ -208,12 +241,12 @@ export class SelfHealManager {
       state.learningAllowed = false;
       state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
       state.lastTriggeredAt = nowIso();
-      return state;
+      return finalizeState(state);
     }
 
     if (recoveredPaperCooldown) {
       state.lastRecoveryAt = nowIso();
-      return state;
+      return finalizeState(state);
     }
 
     if (warningIssues.length || cooldownActive) {
@@ -230,11 +263,11 @@ export class SelfHealManager {
         ? previous.cooldownUntil
         : new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
       state.lastTriggeredAt = previous.lastTriggeredAt || nowIso();
-      return state;
+      return finalizeState(state);
     }
 
     state.lastRecoveryAt = previous.active ? nowIso() : previous.lastRecoveryAt || null;
-    return state;
+    return finalizeState(state);
   }
 
   summarize(state) {
@@ -244,12 +277,18 @@ export class SelfHealManager {
       active: Boolean(safe.active),
       reason: safe.reason || null,
       issues: [...(safe.issues || [])],
+      criticalIssues: [...(safe.criticalIssues || [])],
+      warningIssues: [...(safe.warningIssues || [])],
       actions: [...(safe.actions || [])],
       managerAction: safe.managerAction || null,
       sizeMultiplier: num(safe.sizeMultiplier ?? 1),
       thresholdPenalty: num(safe.thresholdPenalty || 0),
       lowRiskOnly: Boolean(safe.lowRiskOnly),
       learningAllowed: Boolean(safe.learningAllowed),
+      cooldownActive: Boolean(safe.cooldownActive),
+      cooldownRemainingMinutes: Math.max(0, Math.round(safe.cooldownRemainingMinutes || 0)),
+      recoverableIssues: [...(safe.recoverableIssues || [])],
+      recoveryBlockedBy: [...(safe.recoveryBlockedBy || [])],
       cooldownUntil: safe.cooldownUntil || null,
       lastTriggeredAt: safe.lastTriggeredAt || null,
       lastRecoveryAt: safe.lastRecoveryAt || null,

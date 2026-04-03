@@ -1550,12 +1550,18 @@ function summarizeSelfHeal(summary = {}) {
     active: Boolean(summary.active),
     reason: summary.reason || null,
     issues: [...(summary.issues || [])],
+    criticalIssues: [...(summary.criticalIssues || [])],
+    warningIssues: [...(summary.warningIssues || [])],
     actions: [...(summary.actions || [])],
     managerAction: summary.managerAction || null,
     sizeMultiplier: num(summary.sizeMultiplier ?? 1, 3),
     thresholdPenalty: num(summary.thresholdPenalty || 0, 3),
     lowRiskOnly: Boolean(summary.lowRiskOnly),
     learningAllowed: Boolean(summary.learningAllowed),
+    cooldownActive: Boolean(summary.cooldownActive),
+    cooldownRemainingMinutes: Math.max(0, Math.round(summary.cooldownRemainingMinutes || 0)),
+    recoverableIssues: [...(summary.recoverableIssues || [])],
+    recoveryBlockedBy: [...(summary.recoveryBlockedBy || [])],
     cooldownUntil: summary.cooldownUntil || null,
     lastTriggeredAt: summary.lastTriggeredAt || null,
     lastRecoveryAt: summary.lastRecoveryAt || null,
@@ -1985,6 +1991,8 @@ function summarizeOfflineTrainer(summary = {}) {
           group: item.group || "context",
           tier: item.tier || "atomic",
           tradeCount: item.tradeCount || 0,
+          sampleConfidence: num(item.sampleConfidence || 0, 4),
+          evidenceConfidence: num(item.evidenceConfidence || 0, 4),
           signedEdge: num(item.signedEdge || 0, 4),
           predictiveScore: num(item.predictiveScore || 0, 4),
           influenceScore: num(item.influenceScore || 0, 4),
@@ -1995,6 +2003,8 @@ function summarizeOfflineTrainer(summary = {}) {
           group: item.group || "context",
           tier: item.tier || "atomic",
           tradeCount: item.tradeCount || 0,
+          sampleConfidence: num(item.sampleConfidence || 0, 4),
+          evidenceConfidence: num(item.evidenceConfidence || 0, 4),
           signedEdge: num(item.signedEdge || 0, 4),
           predictiveScore: num(item.predictiveScore || 0, 4),
           influenceScore: num(item.influenceScore || 0, 4),
@@ -2026,9 +2036,15 @@ function summarizeOfflineTrainer(summary = {}) {
         recommendations: arr(summary.featureGovernance?.pruning?.recommendations || []).slice(0, 8).map((item) => ({
           id: item.id || null,
           action: item.action || "observe_only",
+          originalAction: item.originalAction || item.action || "observe_only",
           status: item.status || "shadow",
           group: item.group || "context",
           tier: item.tier || "atomic",
+          tradeCount: item.tradeCount || 0,
+          sampleConfidence: num(item.sampleConfidence || 0, 4),
+          evidenceConfidence: num(item.evidenceConfidence || 0, 4),
+          actionConfidence: num(item.actionConfidence || 0, 4),
+          decayStatus: item.decayStatus || "warmup",
           predictiveScore: num(item.predictiveScore || 0, 4),
           influenceScore: num(item.influenceScore || 0, 4),
           parityStatus: item.parityStatus || "aligned",
@@ -11031,17 +11047,40 @@ export class TradingBot {
       const absValue = Math.abs(value);
       let penalty = 0;
       let source = null;
-      if (dropCandidates.has(id) && absValue >= 0.28) {
-        penalty = 0.018;
+      const pruningRecommendation = pruningRecommendations.get(id) || null;
+      const pruningActionConfidence = clamp(
+        safeNumber(
+          pruningRecommendation?.actionConfidence,
+          dropCandidates.has(id) ? 0.72 : 0
+        ),
+        0,
+        1
+      );
+      const inverseEvidenceConfidence = clamp(
+        Math.max(
+          safeNumber(topNegative.get(id)?.evidenceConfidence, 0),
+          safeNumber(topNegative.get(id)?.sampleConfidence, 0) * 0.58 +
+            Math.min(1, Math.max(0, safeNumber(topNegative.get(id)?.predictiveScore, 0) - 0.08) / 0.1) * 0.42
+        ),
+        0,
+        1
+      );
+      if (dropCandidates.has(id) && absValue >= 0.28 && pruningActionConfidence >= 0.52) {
+        penalty = 0.008 + Math.min(0.01, pruningActionConfidence * 0.012);
         source = "pruning_drop_candidate";
       } else if (guardOnly.has(id) && absValue >= 0.22) {
-        penalty = 0.016;
+        penalty = 0.009 + Math.min(0.008, pruningActionConfidence * 0.01);
         source = "pruning_guard_only";
       } else if (missingInLive.has(id) && absValue >= 0.18 && paritySampleReady) {
         penalty = 0.014 * Math.max(0.45, paritySampleConfidence);
         source = "parity_missing_in_live";
-      } else if (topNegative.has(id) && absValue >= 0.3) {
-        penalty = Math.max(0.01, Math.min(0.02, (topNegative.get(id)?.influenceScore || 0.1) * 0.1));
+      } else if (topNegative.has(id) && absValue >= 0.3 && inverseEvidenceConfidence >= 0.46) {
+        penalty = clamp(
+          0.006 +
+            Math.min(0.01, (topNegative.get(id)?.influenceScore || 0.1) * 0.08 + inverseEvidenceConfidence * 0.008),
+          0.006,
+          0.018
+        );
         source = "inverse_attribution";
       }
       if (penalty > 0) {
@@ -11055,6 +11094,12 @@ export class TradingBot {
           group,
           source,
           penalty,
+          evidenceConfidence: num(
+            source === "inverse_attribution"
+              ? inverseEvidenceConfidence
+              : pruningActionConfidence,
+            4
+          ),
           absValue: num(absValue, 4)
         });
       }
@@ -11074,11 +11119,12 @@ export class TradingBot {
       bucket.features.push(item);
       bucket.sources.add(item.source);
       if (!sourcePressure.has(item.source)) {
-        sourcePressure.set(item.source, { source: item.source, featureCount: 0, penalty: 0 });
+        sourcePressure.set(item.source, { source: item.source, featureCount: 0, penalty: 0, evidenceConfidence: 0 });
       }
       const sourceBucket = sourcePressure.get(item.source);
       sourceBucket.featureCount += 1;
       sourceBucket.penalty += item.penalty;
+      sourceBucket.evidenceConfidence = Math.max(sourceBucket.evidenceConfidence || 0, item.evidenceConfidence || 0);
     }
 
     const impactedFeatureGroups = [...groupedFeatureEntries.values()]
@@ -11197,6 +11243,11 @@ export class TradingBot {
     if (sourcePressure.size) {
       noteParts.push(`Dominante bron: ${[...sourcePressure.values()].sort((left, right) => (right.penalty || 0) - (left.penalty || 0))[0]?.source || "feature_governance"}.`);
     }
+    const dominantSourceEvidence = [...sourcePressure.values()]
+      .sort((left, right) => (right.penalty || 0) - (left.penalty || 0))[0];
+    if (dominantSourceEvidence && (dominantSourceEvidence.evidenceConfidence || 0) < 0.58) {
+      noteParts.push("Dominante feature-governance druk draait nog op matige sample-evidence.");
+    }
     if (!paritySampleReady && arr(featureGovernance.parityAudit?.details || []).length) {
       noteParts.push("Parity-signalen tellen nog licht mee omdat live sample nog niet volwassen is.");
     }
@@ -11226,7 +11277,8 @@ export class TradingBot {
         .map((item) => ({
           source: item.source,
           featureCount: item.featureCount,
-          penalty: num(item.penalty || 0, 4)
+          penalty: num(item.penalty || 0, 4),
+          evidenceConfidence: num(item.evidenceConfidence || 0, 4)
         }))
         .sort((left, right) => (right.penalty || 0) - (left.penalty || 0) || (right.featureCount || 0) - (left.featureCount || 0))
         .slice(0, 4),

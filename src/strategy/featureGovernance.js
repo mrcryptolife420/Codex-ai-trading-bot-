@@ -61,6 +61,10 @@ function featureTier(name = "") {
   return name.includes("_composite") ? "composite" : "atomic";
 }
 
+function buildSampleConfidence(count = 0, baseline = 8) {
+  return clamp(count / Math.max(baseline * 2, 1), 0, 1);
+}
+
 function classifyRegistryStatus({ predictiveScore = 0, parityStatus = "aligned", activationRate = 0, redundancyScore = 0, tier = "atomic" } = {}) {
   if (tier === "composite" && predictiveScore >= 0.14 && parityStatus !== "misaligned") {
     return "active";
@@ -124,11 +128,20 @@ export function buildFeatureAttribution(trades = [], { minTrades = 6 } = {}) {
       const predictiveScore = Math.abs(signedEdge);
       const avgAbsValue = average(bucket.absValues);
       const activationRate = average(bucket.absValues.map((value) => (value >= 0.35 ? 1 : 0)));
+      const sampleConfidence = buildSampleConfidence(bucket.values.length, minTrades);
+      const evidenceConfidence = clamp(
+        sampleConfidence * 0.62 +
+          Math.min(1, predictiveScore / 0.18) * 0.38,
+        0,
+        1
+      );
       return {
         id: bucket.id,
         group: featureGroup(bucket.id),
         tier: featureTier(bucket.id),
         tradeCount: bucket.values.length,
+        sampleConfidence: num(sampleConfidence),
+        evidenceConfidence: num(evidenceConfidence),
         signedEdge: num(signedEdge),
         predictiveScore: num(predictiveScore),
         activationRate: num(activationRate),
@@ -297,19 +310,58 @@ export function buildFeaturePruningPlan({
           : registryStatus === "observe"
             ? "observe_only"
             : "keep_active";
+    const sampleConfidence = clamp(
+      Math.max(
+        item.sampleConfidence || 0,
+        buildSampleConfidence(decay.count || item.tradeCount || 0, 8)
+      ),
+      0,
+      1
+    );
+    const evidenceConfidence = clamp(
+      Math.max(
+        item.evidenceConfidence || 0,
+        sampleConfidence * 0.58 +
+          Math.min(1, (item.predictiveScore || 0) / 0.16) * 0.28 +
+          ((decay.status || "") === "decayed" ? 0.14 : (decay.status || "") === "watch" ? 0.07 : 0)
+      ),
+      0,
+      1
+    );
+    const actionConfidence = clamp(
+      action === "fix_live_parity"
+        ? evidenceConfidence * 0.7 + ((parity.status || "") === "misaligned" ? 0.22 : 0.1)
+        : action === "drop_candidate"
+          ? evidenceConfidence * 0.82 + ((decay.status || "") === "decayed" ? 0.12 : 0)
+          : evidenceConfidence,
+      0,
+      1
+    );
+    const downgradedDropCandidate = action === "drop_candidate" && actionConfidence < 0.62;
+    const effectiveAction = downgradedDropCandidate ? "observe_only" : action;
+    const effectiveStatus = downgradedDropCandidate ? "observe" : registryStatus;
     return {
       id: item.id,
       group: item.group,
       tier: item.tier,
-      action,
-      status: registryStatus,
+      action: effectiveAction,
+      originalAction: action,
+      status: effectiveStatus,
       predictiveScore: item.predictiveScore || 0,
       influenceScore: item.influenceScore || 0,
+      tradeCount: item.tradeCount || decay.count || 0,
+      sampleConfidence: num(sampleConfidence),
+      evidenceConfidence: num(evidenceConfidence),
+      actionConfidence: num(actionConfidence),
+      decayStatus: decay.status || "warmup",
+      meanShift: num(decay.meanShift || 0),
       parityStatus: parity.status || "aligned",
       redundancyScore: num(redundancyScore),
       rationale:
-        action === "drop_candidate"
-          ? "lage voorspellende waarde met hoge activatie"
+        downgradedDropCandidate
+          ? "lage voorspellende waarde, maar nog onvoldoende sample-evidence voor een harde drop-candidate"
+          : action === "drop_candidate"
+            ? "lage voorspellende waarde met hoge activatie"
           : action === "fix_live_parity"
             ? "paper/live parity is onvoldoende"
             : action === "shadow_only"
