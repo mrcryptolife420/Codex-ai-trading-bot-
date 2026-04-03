@@ -3115,6 +3115,44 @@ function summarizeLowConfidenceAudit(summary = {}) {
   };
 }
 
+function summarizeRawModelProbabilityAudit(summary = {}) {
+  return {
+    status: summary.status || "quiet",
+    candidateCount: summary.candidateCount || 0,
+    dominantFamily: summary.dominantFamily || null,
+    dominantRegime: summary.dominantRegime || null,
+    dominantFeatureGroup: summary.dominantFeatureGroup || null,
+    averageRawEdge: num(summary.averageRawEdge || 0, 4),
+    topBuckets: arr(summary.topBuckets || []).slice(0, 6).map((item) => ({
+      family: item.family || null,
+      regime: item.regime || null,
+      count: item.count || 0,
+      averageRawProbability: num(item.averageRawProbability || 0, 4),
+      averageBaseThreshold: num(item.averageBaseThreshold || 0, 4),
+      averageRawEdge: num(item.averageRawEdge || 0, 4),
+      dominantNegativeGroup: item.dominantNegativeGroup || null,
+      topNegativeGroups: arr(item.topNegativeGroups || []).slice(0, 3).map((group) => ({
+        id: group.id || null,
+        weight: num(group.weight || 0, 4),
+        count: group.count || 0
+      }))
+    })),
+    topFeatureGroups: arr(summary.topFeatureGroups || []).slice(0, 5).map((item) => ({
+      id: item.id || null,
+      weight: num(item.weight || 0, 4),
+      count: item.count || 0
+    })),
+    examples: arr(summary.examples || []).slice(0, 4).map((item) => ({
+      symbol: item.symbol || null,
+      family: item.family || null,
+      regime: item.regime || null,
+      rawEdge: num(item.rawEdge || 0, 4),
+      dominantNegativeGroup: item.dominantNegativeGroup || null
+    })),
+    note: summary.note || null
+  };
+}
+
 function summarizeOutcomeScopeLearning(summary = {}) {
   const topActionable = summary.topActionable || null;
   const mapScope = (item) => ({
@@ -10938,6 +10976,177 @@ export class TradingBot {
     };
   }
 
+  buildRawModelProbabilityAudit(candidates = []) {
+    const blockedCandidates = arr(candidates)
+      .filter((candidate) =>
+        !(candidate?.decision?.allow ?? candidate?.allow ?? false) &&
+        arr(candidate?.decision?.reasons || candidate?.blockerReasons || candidate?.reasons || []).includes("model_confidence_too_low")
+      )
+      .map((candidate) => {
+        const probability = safeNumber(candidate?.score?.probability, safeNumber(candidate?.probability, 0));
+        const rawProbability = safeNumber(candidate?.score?.rawProbability, probability);
+        const edgeToBaseThreshold = safeNumber(
+          candidate?.decision?.lowConfidencePressure?.edgeToBaseThreshold,
+          safeNumber(candidate?.lowConfidencePressure?.edgeToBaseThreshold, NaN)
+        );
+        const baseThreshold = Number.isFinite(candidate?.decision?.baseThreshold)
+          ? safeNumber(candidate?.decision?.baseThreshold, 0)
+          : Number.isFinite(edgeToBaseThreshold)
+            ? rawProbability - edgeToBaseThreshold
+            : safeNumber(candidate?.decision?.threshold, safeNumber(candidate?.threshold, 0));
+        const rawEdge = rawProbability - baseThreshold;
+        return {
+          ...candidate,
+          __rawModelAudit: {
+            rawProbability,
+            baseThreshold,
+            rawEdge,
+            opportunityScore: safeNumber(candidate?.decision?.opportunityScore, safeNumber(candidate?.opportunityScore, 0)),
+            signalQuality: safeNumber(candidate?.signalQualitySummary?.overallScore, safeNumber(candidate?.signalQuality?.overallScore, 0)),
+            dataQuality: safeNumber(candidate?.dataQualitySummary?.overallScore, safeNumber(candidate?.dataQuality?.overallScore, 0)),
+            primaryDriver: candidate?.decision?.lowConfidencePressure?.primaryDriver || candidate?.lowConfidencePressure?.primaryDriver || null
+          }
+        };
+      })
+      .filter((candidate) =>
+        Number.isFinite(candidate?.__rawModelAudit?.rawProbability) &&
+        Number.isFinite(candidate?.__rawModelAudit?.baseThreshold)
+      )
+      .sort((left, right) =>
+        safeNumber(right?.__rawModelAudit?.opportunityScore, 0) - safeNumber(left?.__rawModelAudit?.opportunityScore, 0) ||
+        safeNumber(right?.__rawModelAudit?.rawEdge, -1) - safeNumber(left?.__rawModelAudit?.rawEdge, -1)
+      );
+
+    const leaderOpportunityScore = safeNumber(blockedCandidates[0]?.__rawModelAudit?.opportunityScore, 0);
+    const highOpportunityFloor = leaderOpportunityScore > 0
+      ? Math.max(0.16, leaderOpportunityScore * 0.82)
+      : 0.16;
+    const rankedFocusCount = Math.min(6, Math.max(3, Math.ceil(blockedCandidates.length * 0.25)));
+    const nearMisses = blockedCandidates.filter((candidate, index) => {
+      const audit = candidate.__rawModelAudit || {};
+      const highQualitySignal =
+        audit.signalQuality >= 0.58 &&
+        audit.dataQuality >= 0.56;
+      const cycleTopOpportunity =
+        audit.opportunityScore >= highOpportunityFloor ||
+        index < rankedFocusCount;
+      const driverEligible = ["model_confidence", "feature_trust", "model_disagreement", "auxiliary_blend_drag", null].includes(audit.primaryDriver);
+      return (
+        audit.rawProbability < audit.baseThreshold + 0.035 &&
+        audit.rawEdge >= -0.42 &&
+        driverEligible &&
+        (highQualitySignal || cycleTopOpportunity)
+      );
+    });
+
+    const bucketMap = new Map();
+    const featureGroupMap = new Map();
+    for (const candidate of nearMisses) {
+      const family = candidate?.strategySummary?.family || candidate?.strategy?.family || "unknown";
+      const regime = candidate?.regimeSummary?.regime || candidate?.regime || candidate?.marketCondition?.regime || "unknown";
+      const key = `${family}::${regime}`;
+      if (!bucketMap.has(key)) {
+        bucketMap.set(key, {
+          family,
+          regime,
+          count: 0,
+          rawProbabilities: [],
+          baseThresholds: [],
+          rawEdges: [],
+          featureGroups: new Map()
+        });
+      }
+      const bucket = bucketMap.get(key);
+      bucket.count += 1;
+      const rawProbability = safeNumber(candidate?.__rawModelAudit?.rawProbability, safeNumber(candidate?.score?.rawProbability, 0));
+      const baseThreshold = safeNumber(candidate?.__rawModelAudit?.baseThreshold, safeNumber(candidate?.decision?.baseThreshold || candidate?.decision?.threshold, 0));
+      bucket.rawProbabilities.push(rawProbability);
+      bucket.baseThresholds.push(baseThreshold);
+      bucket.rawEdges.push(safeNumber(candidate?.__rawModelAudit?.rawEdge, rawProbability - baseThreshold));
+      const negativeContributions = arr(candidate?.score?.contributions || []).length
+        ? arr(candidate?.score?.contributions || [])
+        : arr(candidate?.bearishSignals || []);
+      for (const contribution of negativeContributions) {
+        if (safeNumber(contribution?.contribution, 0) >= 0) {
+          continue;
+        }
+        const group = inferFeatureGovernanceGroup(contribution?.name || "");
+        const weight = Math.abs(safeNumber(contribution?.contribution, 0));
+        const current = bucket.featureGroups.get(group) || { id: group, weight: 0, count: 0 };
+        current.weight += weight;
+        current.count += 1;
+        bucket.featureGroups.set(group, current);
+        const global = featureGroupMap.get(group) || { id: group, weight: 0, count: 0 };
+        global.weight += weight;
+        global.count += 1;
+        featureGroupMap.set(group, global);
+      }
+    }
+
+    const topBuckets = [...bucketMap.values()]
+      .map((bucket) => {
+        const topNegativeGroups = [...bucket.featureGroups.values()]
+          .sort((left, right) => (right.weight || 0) - (left.weight || 0) || (right.count || 0) - (left.count || 0));
+        return {
+          family: bucket.family,
+          regime: bucket.regime,
+          count: bucket.count,
+          averageRawProbability: num(average(bucket.rawProbabilities, 0), 4),
+          averageBaseThreshold: num(average(bucket.baseThresholds, 0), 4),
+          averageRawEdge: num(average(bucket.rawEdges, 0), 4),
+          dominantNegativeGroup: topNegativeGroups[0]?.id || null,
+          topNegativeGroups: topNegativeGroups.slice(0, 3).map((group) => ({
+            id: group.id,
+            weight: num(group.weight || 0, 4),
+            count: group.count || 0
+          }))
+        };
+      })
+      .sort((left, right) =>
+        (right.count || 0) - (left.count || 0) ||
+        (left.averageRawEdge || 0) - (right.averageRawEdge || 0)
+      );
+
+    const topFeatureGroups = [...featureGroupMap.values()]
+      .sort((left, right) => (right.weight || 0) - (left.weight || 0) || (right.count || 0) - (left.count || 0))
+      .map((group) => ({
+        id: group.id,
+        weight: num(group.weight || 0, 4),
+        count: group.count || 0
+      }));
+
+    const note = topBuckets[0]
+      ? `${topBuckets[0].family} in ${topBuckets[0].regime} blijft bij de sterkste model-confidence blokkades het vaakst onder de ruwe model-threshold; ${topBuckets[0].dominantNegativeGroup || "context"} trekt daar de champion-score het vaakst omlaag.`
+      : "Nog geen duidelijke raw model probability bottleneck in de huidige cycle-top model-confidence blokkades.";
+
+    return {
+      status: nearMisses.length >= 4 ? "priority" : nearMisses.length > 0 ? "watch" : "quiet",
+      candidateCount: nearMisses.length,
+      dominantFamily: topBuckets[0]?.family || null,
+      dominantRegime: topBuckets[0]?.regime || null,
+      dominantFeatureGroup: topFeatureGroups[0]?.id || null,
+      averageRawEdge: num(average(nearMisses.map((candidate) => safeNumber(candidate?.__rawModelAudit?.rawEdge, safeNumber(candidate?.score?.rawProbability, 0) - safeNumber(candidate?.decision?.baseThreshold || candidate?.decision?.threshold, 0))), 0), 4),
+      topBuckets: topBuckets.slice(0, 6),
+      topFeatureGroups: topFeatureGroups.slice(0, 5),
+      examples: nearMisses.slice(0, 4).map((candidate) => {
+        const negativeGroups = (arr(candidate?.score?.contributions || []).length
+          ? arr(candidate?.score?.contributions || [])
+          : arr(candidate?.bearishSignals || []))
+          .filter((item) => safeNumber(item?.contribution, 0) < 0)
+          .map((item) => ({ id: inferFeatureGovernanceGroup(item?.name || ""), weight: Math.abs(safeNumber(item?.contribution, 0)) }))
+          .sort((left, right) => (right.weight || 0) - (left.weight || 0));
+        return {
+          symbol: candidate.symbol || null,
+          family: candidate?.strategySummary?.family || candidate?.strategy?.family || null,
+          regime: candidate?.regimeSummary?.regime || candidate?.regime || candidate?.marketCondition?.regime || null,
+          rawEdge: num(safeNumber(candidate?.__rawModelAudit?.rawEdge, safeNumber(candidate?.score?.rawProbability, 0) - safeNumber(candidate?.decision?.baseThreshold || candidate?.decision?.threshold, 0)), 4),
+          dominantNegativeGroup: negativeGroups[0]?.id || null
+        };
+      }),
+      note
+    };
+  }
+
   buildPaperLearningGuidance({
     symbol = null,
     strategySummary = {},
@@ -12859,6 +13068,7 @@ export class TradingBot {
     }));
       this.runtime.ops = this.runtime.ops || {};
       this.runtime.ops.lowConfidenceAudit = summarizeLowConfidenceAudit(this.buildLowConfidenceAudit(rankedCandidates));
+      this.runtime.ops.rawModelProbabilityAudit = summarizeRawModelProbabilityAudit(this.buildRawModelProbabilityAudit(this.runtime.latestDecisions));
       const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
       blockedAt: now.toISOString()
@@ -14842,7 +15052,9 @@ export class TradingBot {
       paperLearningTransitions: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}).policyTransitions?.candidates || [],
       rolloutCandidates: promotionPipeline.rolloutCandidates || []
     });
+    const previewDecisionViews = previewCandidates.slice(0, this.config.dashboardDecisionLimit || 12).map((candidate) => this.buildDashboardDecisionView(candidate));
     const lowConfidenceAudit = summarizeLowConfidenceAudit(this.buildLowConfidenceAudit(previewCandidates));
+    const rawModelProbabilityAudit = summarizeRawModelProbabilityAudit(this.buildRawModelProbabilityAudit(previewDecisionViews));
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -14867,6 +15079,7 @@ export class TradingBot {
       opportunityRanking: opportunityRankingDigest,
       promotionByCondition: promotionByConditionDigest,
       lowConfidenceAudit,
+      rawModelProbabilityAudit,
       promotionPipeline,
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
@@ -14961,6 +15174,7 @@ export class TradingBot {
     });
     const signalFlowSummary = summarizeSignalFlow(this.runtime.signalFlow || {});
     const lowConfidenceAudit = summarizeLowConfidenceAudit(this.runtime.ops?.lowConfidenceAudit || {});
+    const rawModelProbabilityAudit = summarizeRawModelProbabilityAudit(this.buildRawModelProbabilityAudit(fullTopDecisions));
     const learningInsights = {
       missedTrades: summarizeMissedTradeLearning({
         ...paperLearningSummary,
@@ -14968,6 +15182,7 @@ export class TradingBot {
       }),
       history: summarizeHistoryCoverageDigest(offlineTrainerSummary.historyCoverage || {}),
       confidence: lowConfidenceAudit,
+      rawModelProbability: rawModelProbabilityAudit,
       exits: summarizeExitIntelligenceDigest({
         positions: fullPositions,
         recentTrades: arr(report.recentTrades || []).slice(0, 12),
@@ -15117,6 +15332,7 @@ export class TradingBot {
         opportunityRanking: opportunityRankingDigest,
         promotionByCondition: promotionByConditionDigest,
         lowConfidenceAudit,
+        rawModelProbabilityAudit,
         learningInsights,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },

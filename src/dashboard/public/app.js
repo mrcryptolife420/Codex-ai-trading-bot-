@@ -484,6 +484,7 @@ function buildLearningDigest(snapshot) {
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
   const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
+  const rawModelProbabilityAudit = snapshot?.dashboard?.ops?.rawModelProbabilityAudit || learningInsights.rawModelProbability || {};
   const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
@@ -543,6 +544,7 @@ function buildLearningDigest(snapshot) {
   );
   const nextStep =
     retrainPlan.operatorAction ||
+    (["priority", "watch"].includes(rawModelProbabilityAudit.status) ? rawModelProbabilityAudit.note : null) ||
     (["priority", "watch"].includes(lowConfidenceAudit.status) ? lowConfidenceAudit.note : null) ||
     replayPlan.operatorGoal ||
     paperLearning.probation?.note ||
@@ -1653,6 +1655,13 @@ function buildOpsEvents(snapshot) {
           title: "Confidence bottleneck",
           detail: lowConfidenceAudit.note || "High-quality near misses vallen nu te vaak onder de confidence-threshold.",
           tone: lowConfidenceAudit.status === "priority" ? "negative" : "neutral"
+        }
+      : null,
+    ["priority", "watch"].includes(rawModelProbabilityAudit.status)
+      ? {
+          title: "Raw model edge",
+          detail: rawModelProbabilityAudit.note || "De champion-score blijft in een paar families/regimes structureel te laag.",
+          tone: rawModelProbabilityAudit.status === "priority" ? "negative" : "neutral"
         }
       : null,
     marketCondition.conditionId

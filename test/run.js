@@ -13377,6 +13377,167 @@ await runCheck("trading bot builds a low confidence audit from high-quality near
   assert.equal(audit.topFeatures[0].id, "funding_rate");
 });
 
+await runCheck("trading bot builds a raw model probability audit by family and regime", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const audit = bot.buildRawModelProbabilityAudit([
+    {
+      symbol: "BTCUSDT",
+      score: {
+        probability: 0.55,
+        rawProbability: 0.49,
+        contributions: [
+          { name: "momentum_20", contribution: -0.16 },
+          { name: "ema_gap", contribution: -0.11 },
+          { name: "depth_confidence", contribution: 0.08 }
+        ]
+      },
+      decision: {
+        allow: false,
+        threshold: 0.575,
+        baseThreshold: 0.56,
+        reasons: ["model_confidence_too_low"]
+      },
+      signalQualitySummary: { overallScore: 0.72 },
+      dataQualitySummary: { overallScore: 0.68 },
+      strategySummary: { family: "trend_following", activeStrategy: "ema_trend" },
+      regimeSummary: { regime: "trend" }
+    },
+    {
+      symbol: "ETHUSDT",
+      score: {
+        probability: 0.54,
+        rawProbability: 0.5,
+        contributions: [
+          { name: "trend_quality_composite", contribution: -0.14 },
+          { name: "adx_strength", contribution: -0.09 },
+          { name: "realized_vol", contribution: 0.05 }
+        ]
+      },
+      decision: {
+        allow: false,
+        threshold: 0.57,
+        baseThreshold: 0.555,
+        reasons: ["model_confidence_too_low"]
+      },
+      signalQualitySummary: { overallScore: 0.7 },
+      dataQualitySummary: { overallScore: 0.67 },
+      strategySummary: { family: "trend_following", activeStrategy: "ema_trend" },
+      regimeSummary: { regime: "trend" }
+    },
+    {
+      symbol: "SOLUSDT",
+      score: {
+        probability: 0.53,
+        rawProbability: 0.46,
+        contributions: [
+          { name: "breakout_pct", contribution: -0.13 },
+          { name: "realized_vol", contribution: -0.12 },
+          { name: "orderbook_imbalance", contribution: 0.04 }
+        ]
+      },
+      decision: {
+        allow: false,
+        threshold: 0.6,
+        baseThreshold: 0.58,
+        reasons: ["model_confidence_too_low"]
+      },
+      signalQualitySummary: { overallScore: 0.69 },
+      dataQualitySummary: { overallScore: 0.66 },
+      strategySummary: { family: "breakout", activeStrategy: "donchian_breakout" },
+      regimeSummary: { regime: "high_vol" }
+    }
+  ]);
+
+  assert.equal(audit.status, "watch");
+  assert.equal(audit.dominantFamily, "trend_following");
+  assert.equal(audit.dominantRegime, "trend");
+  assert.equal(audit.topBuckets[0].family, "trend_following");
+  assert.equal(audit.topBuckets[0].regime, "trend");
+  assert.equal(audit.topBuckets[0].count, 2);
+  assert.equal(audit.topBuckets[0].dominantNegativeGroup, "trend");
+  assert.equal(audit.topFeatureGroups[0].id, "trend");
+});
+
+await runCheck("raw model probability audit keeps cycle-top blocked opportunities even when absolute signal quality is modest", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const audit = bot.buildRawModelProbabilityAudit([
+    {
+      symbol: "CAKEUSDT",
+      score: {
+        probability: 0.28,
+        rawProbability: 0.33,
+        contributions: [
+          { name: "basis_dislocation", contribution: -0.12 },
+          { name: "taker_sell_pressure", contribution: -0.08 }
+        ]
+      },
+      decision: {
+        allow: false,
+        threshold: 0.596,
+        baseThreshold: 0.52,
+        opportunityScore: 0.234,
+        reasons: ["model_confidence_too_low"],
+        lowConfidencePressure: { primaryDriver: "feature_trust" }
+      },
+      signalQualitySummary: { overallScore: 0.31 },
+      dataQualitySummary: { overallScore: 0.92 },
+      strategySummary: { family: "mean_reversion", activeStrategy: "zscore_reversion" },
+      regimeSummary: { regime: "range" }
+    },
+    {
+      symbol: "ALGOUSDT",
+      score: {
+        probability: 0.08,
+        rawProbability: 0.18,
+        contributions: [
+          { name: "global_longs_crowded", contribution: -0.11 },
+          { name: "basis_dislocation", contribution: -0.07 }
+        ]
+      },
+      decision: {
+        allow: false,
+        threshold: 0.65,
+        baseThreshold: 0.52,
+        opportunityScore: 0.221,
+        reasons: ["model_confidence_too_low"],
+        lowConfidencePressure: { primaryDriver: "feature_trust" }
+      },
+      signalQualitySummary: { overallScore: 0.12 },
+      dataQualitySummary: { overallScore: 0.91 },
+      strategySummary: { family: "trend_following", activeStrategy: "ema_trend" },
+      regimeSummary: { regime: "high_vol" }
+    },
+    {
+      symbol: "RANDOMUSDT",
+      score: {
+        probability: 0.11,
+        rawProbability: 0.05,
+        contributions: [
+          { name: "calendar_bearish", contribution: -0.06 }
+        ]
+      },
+      decision: {
+        allow: false,
+        threshold: 0.61,
+        baseThreshold: 0.52,
+        opportunityScore: 0.04,
+        reasons: ["model_confidence_too_low"],
+        lowConfidencePressure: { primaryDriver: "feature_trust" }
+      },
+      signalQualitySummary: { overallScore: 0.11 },
+      dataQualitySummary: { overallScore: 0.84 },
+      strategySummary: { family: "breakout", activeStrategy: "donchian_breakout" },
+      regimeSummary: { regime: "range" }
+    }
+  ]);
+
+  assert.equal(audit.status, "watch");
+  assert.equal(audit.candidateCount, 2);
+  assert.equal(audit.topBuckets[0].family, "mean_reversion");
+  assert.equal(audit.topBuckets[0].regime, "range");
+  assert.equal(audit.examples[0].symbol, "CAKEUSDT");
+});
+
 await runCheck("dashboard decision view surfaces regime kill switches and committee veto detail in paper mode", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = { botMode: "paper" };
