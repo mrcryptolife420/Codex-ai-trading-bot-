@@ -485,6 +485,7 @@ function buildLearningDigest(snapshot) {
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
   const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
   const rawModelProbabilityAudit = snapshot?.dashboard?.ops?.rawModelProbabilityAudit || learningInsights.rawModelProbability || {};
+  const blockerFrictionAudit = snapshot?.dashboard?.ops?.blockerFrictionAudit || learningInsights.blockerFriction || {};
   const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
@@ -1662,6 +1663,13 @@ function buildOpsEvents(snapshot) {
           title: "Raw model edge",
           detail: rawModelProbabilityAudit.note || "De champion-score blijft in een paar families/regimes structureel te laag.",
           tone: rawModelProbabilityAudit.status === "priority" ? "negative" : "neutral"
+        }
+      : null,
+    ["priority", "watch"].includes(blockerFrictionAudit.status)
+      ? {
+          title: "Guardrail friction",
+          detail: blockerFrictionAudit.note || "Cooldowns, timeframe-conflicten of self-heal drukken nu de flow.",
+          tone: blockerFrictionAudit.status === "priority" ? "negative" : "neutral"
         }
       : null,
     marketCondition.conditionId

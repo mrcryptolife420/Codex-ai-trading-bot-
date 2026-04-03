@@ -1545,27 +1545,100 @@ function summarizeDrift(summary = {}) {
 }
 
 function summarizeSelfHeal(summary = {}) {
+  const recoverableIssueSet = new Set([
+    "loss_streak_limit",
+    "loss_streak_warning",
+    "calibration_break",
+    "calibration_warning",
+    "cooldown_active"
+  ]);
+  const warningIssueSet = new Set([
+    "loss_streak_warning",
+    "drawdown_warning",
+    "drift_warning",
+    "calibration_warning",
+    "cooldown_active"
+  ]);
+  const issues = [...new Set(arr(summary.issues || []).filter(Boolean))];
+  const explicitCriticalIssues = [...new Set(arr(summary.criticalIssues || []).filter(Boolean))];
+  const explicitWarningIssues = [...new Set(arr(summary.warningIssues || []).filter(Boolean))];
+  const issueDerivedCritical = issues.filter((issue) => !warningIssueSet.has(issue));
+  const issueDerivedWarning = issues.filter((issue) => warningIssueSet.has(issue));
+  const criticalIssues = explicitCriticalIssues.length ? explicitCriticalIssues : issueDerivedCritical;
+  const warningIssues = explicitWarningIssues.length ? explicitWarningIssues : issueDerivedWarning;
+  const cooldownUntil = summary.cooldownUntil || null;
+  const cooldownUntilMs = cooldownUntil ? new Date(cooldownUntil).getTime() : Number.NaN;
+  const computedCooldownActive = Number.isFinite(cooldownUntilMs) && cooldownUntilMs > Date.now();
+  const cooldownActive = Boolean(summary.cooldownActive) || computedCooldownActive;
+  const cooldownRemainingMinutes = cooldownActive
+    ? Math.max(
+      0,
+      Math.max(
+        Math.round(summary.cooldownRemainingMinutes || 0),
+        Number.isFinite(cooldownUntilMs) ? Math.ceil((cooldownUntilMs - Date.now()) / 60_000) : 0
+      )
+    )
+    : 0;
+  const recoveryBlockedBy = [...new Set(
+    arr(summary.recoveryBlockedBy || []).filter(Boolean).length
+      ? arr(summary.recoveryBlockedBy || []).filter(Boolean)
+      : [
+          ...criticalIssues,
+          ...warningIssues,
+          ...issues,
+          ...(cooldownActive ? ["cooldown_active"] : [])
+        ].filter(Boolean)
+  )];
+  const recoverableIssues = [...new Set(
+    arr(summary.recoverableIssues || []).filter(Boolean).length
+      ? arr(summary.recoverableIssues || []).filter(Boolean)
+      : recoveryBlockedBy.filter((issue) => recoverableIssueSet.has(issue))
+  )];
   return {
     mode: summary.mode || "normal",
     active: Boolean(summary.active),
     reason: summary.reason || null,
-    issues: [...(summary.issues || [])],
-    criticalIssues: [...(summary.criticalIssues || [])],
-    warningIssues: [...(summary.warningIssues || [])],
+    issues,
+    criticalIssues,
+    warningIssues,
     actions: [...(summary.actions || [])],
     managerAction: summary.managerAction || null,
     sizeMultiplier: num(summary.sizeMultiplier ?? 1, 3),
     thresholdPenalty: num(summary.thresholdPenalty || 0, 3),
     lowRiskOnly: Boolean(summary.lowRiskOnly),
     learningAllowed: Boolean(summary.learningAllowed),
-    cooldownActive: Boolean(summary.cooldownActive),
-    cooldownRemainingMinutes: Math.max(0, Math.round(summary.cooldownRemainingMinutes || 0)),
-    recoverableIssues: [...(summary.recoverableIssues || [])],
-    recoveryBlockedBy: [...(summary.recoveryBlockedBy || [])],
-    cooldownUntil: summary.cooldownUntil || null,
+    cooldownActive,
+    cooldownRemainingMinutes,
+    recoverableIssues,
+    recoveryBlockedBy,
+    cooldownUntil,
     lastTriggeredAt: summary.lastTriggeredAt || null,
     lastRecoveryAt: summary.lastRecoveryAt || null,
     restoreSnapshotAt: summary.restoreSnapshotAt || null
+  };
+}
+
+function summarizeBlockerFrictionAudit(summary = {}) {
+  return {
+    status: summary.status || "clear",
+    candidateCount: summary.candidateCount || 0,
+    topBlockers: arr(summary.topBlockers || []).slice(0, 5).map((item) => ({
+      id: item.id || null,
+      count: item.count || 0,
+      category: item.category || null,
+      dominantFamily: item.dominantFamily || null,
+      dominantRegime: item.dominantRegime || null,
+      examples: arr(item.examples || []).slice(0, 3)
+    })),
+    selfHeal: summary.selfHeal ? {
+      mode: summary.selfHeal.mode || "normal",
+      reason: summary.selfHeal.reason || null,
+      issueCount: summary.selfHeal.issueCount || 0,
+      cooldownActive: Boolean(summary.selfHeal.cooldownActive),
+      cooldownRemainingMinutes: Math.max(0, Math.round(summary.selfHeal.cooldownRemainingMinutes || 0)),
+      recoveryBlockedBy: arr(summary.selfHeal.recoveryBlockedBy || []).slice(0, 4)
+    } : null,
+    note: summary.note || "Geen uitgesproken guardrail-frictie in de huidige cycle-top blokkades."
   };
 }
 
@@ -11195,6 +11268,103 @@ export class TradingBot {
     };
   }
 
+  buildBlockerFrictionAudit(candidates = [], { selfHeal = summarizeSelfHeal(this.runtime?.selfHeal || {}) } = {}) {
+    const blocked = arr(candidates)
+      .filter((candidate) => candidate && candidate.allow === false)
+      .map((candidate) => {
+        const blockers = [...new Set(arr(candidate.blockerReasons || candidate.decision?.blockers || []).filter(Boolean))];
+        return blockers.length ? {
+          symbol: candidate.symbol || null,
+          family: candidate.strategy?.family || candidate.strategySummary?.family || null,
+          regime: candidate.regimeSummary?.regime || candidate.regime || null,
+          blockers
+        } : null;
+      })
+      .filter(Boolean);
+    const blockerCategoryMap = new Map([
+      ["strategy_cooldown", "cooldown"],
+      ["entry_cooldown_active", "cooldown"],
+      ["symbol_loss_cooldown_active", "cooldown"],
+      ["higher_tf_conflict", "timeframe"],
+      ["cross_timeframe_misalignment", "timeframe"],
+      ["self_heal_low_risk_only", "self_heal"],
+      ["self_heal_pause_entries", "self_heal"]
+    ]);
+    const blockerMap = new Map();
+    for (const candidate of blocked) {
+      for (const blocker of candidate.blockers) {
+        const category = blockerCategoryMap.get(blocker);
+        if (!category) {
+          continue;
+        }
+        if (!blockerMap.has(blocker)) {
+          blockerMap.set(blocker, {
+            id: blocker,
+            category,
+            count: 0,
+            families: new Map(),
+            regimes: new Map(),
+            examples: []
+          });
+        }
+        const item = blockerMap.get(blocker);
+        item.count += 1;
+        if (candidate.family) {
+          item.families.set(candidate.family, (item.families.get(candidate.family) || 0) + 1);
+        }
+        if (candidate.regime) {
+          item.regimes.set(candidate.regime, (item.regimes.get(candidate.regime) || 0) + 1);
+        }
+        if (candidate.symbol && item.examples.length < 3) {
+          item.examples.push(candidate.symbol);
+        }
+      }
+    }
+    const topBlockers = [...blockerMap.values()]
+      .sort((left, right) => (right.count || 0) - (left.count || 0) || `${left.id}`.localeCompare(`${right.id}`))
+      .map((item) => {
+        const dominantFamily = [...item.families.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || null;
+        const dominantRegime = [...item.regimes.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || null;
+        return {
+          id: item.id,
+          category: item.category,
+          count: item.count,
+          dominantFamily,
+          dominantRegime,
+          examples: item.examples
+        };
+      });
+    const selfHealSummary = summarizeSelfHeal(selfHeal || {});
+    const status = topBlockers[0]
+      ? (topBlockers[0].count >= 4 || selfHealSummary.active ? "priority" : "watch")
+      : selfHealSummary.active
+        ? "watch"
+        : "clear";
+    const note = topBlockers[0]
+      ? `${titleize(topBlockers[0].id)} drukt nu ${topBlockers[0].count} cycle-top setups, vooral binnen ${topBlockers[0].dominantFamily || "onbekende family"}${topBlockers[0].dominantRegime ? ` / ${topBlockers[0].dominantRegime}` : ""}.`
+      : selfHealSummary.active
+        ? `Self-heal blijft actief door ${selfHealSummary.recoveryBlockedBy[0] || selfHealSummary.reason || "herstelissues"}.`
+        : "Geen uitgesproken guardrail-frictie in de huidige cycle-top blokkades.";
+    return {
+      status,
+      candidateCount: blocked.length,
+      topBlockers: topBlockers.slice(0, 5),
+      selfHeal: {
+        mode: selfHealSummary.mode,
+        reason: selfHealSummary.reason,
+        issueCount: selfHealSummary.issues.length,
+        cooldownActive: selfHealSummary.cooldownActive,
+        cooldownRemainingMinutes: selfHealSummary.cooldownRemainingMinutes,
+        recoveryBlockedBy: selfHealSummary.recoveryBlockedBy
+      },
+      note
+    };
+  }
+
+  normalizeSelfHealSummary(summary = {}) {
+    return summarizeSelfHeal(summary);
+  }
+
   buildPaperLearningGuidance({
     symbol = null,
     strategySummary = {},
@@ -13117,6 +13287,9 @@ export class TradingBot {
       this.runtime.ops = this.runtime.ops || {};
       this.runtime.ops.lowConfidenceAudit = summarizeLowConfidenceAudit(this.buildLowConfidenceAudit(rankedCandidates));
       this.runtime.ops.rawModelProbabilityAudit = summarizeRawModelProbabilityAudit(this.buildRawModelProbabilityAudit(this.runtime.latestDecisions));
+      this.runtime.ops.blockerFrictionAudit = summarizeBlockerFrictionAudit(this.buildBlockerFrictionAudit(this.runtime.latestDecisions, {
+        selfHeal: this.runtime.selfHeal || {}
+      }));
       const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
       blockedAt: now.toISOString()
@@ -15103,6 +15276,9 @@ export class TradingBot {
     const previewDecisionViews = previewCandidates.slice(0, this.config.dashboardDecisionLimit || 12).map((candidate) => this.buildDashboardDecisionView(candidate));
     const lowConfidenceAudit = summarizeLowConfidenceAudit(this.buildLowConfidenceAudit(previewCandidates));
     const rawModelProbabilityAudit = summarizeRawModelProbabilityAudit(this.buildRawModelProbabilityAudit(previewDecisionViews));
+    const blockerFrictionAudit = summarizeBlockerFrictionAudit(this.buildBlockerFrictionAudit(previewDecisionViews, {
+      selfHeal: this.runtime.selfHeal || {}
+    }));
     return {
       mode: this.config.botMode,
       validation: this.config.validation,
@@ -15128,6 +15304,7 @@ export class TradingBot {
       promotionByCondition: promotionByConditionDigest,
       lowConfidenceAudit,
       rawModelProbabilityAudit,
+      blockerFrictionAudit,
       promotionPipeline,
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
@@ -15223,6 +15400,9 @@ export class TradingBot {
     const signalFlowSummary = summarizeSignalFlow(this.runtime.signalFlow || {});
     const lowConfidenceAudit = summarizeLowConfidenceAudit(this.runtime.ops?.lowConfidenceAudit || {});
     const rawModelProbabilityAudit = summarizeRawModelProbabilityAudit(this.buildRawModelProbabilityAudit(fullTopDecisions));
+    const blockerFrictionAudit = summarizeBlockerFrictionAudit(this.buildBlockerFrictionAudit(fullTopDecisions, {
+      selfHeal: this.runtime.selfHeal || {}
+    }));
     const learningInsights = {
       missedTrades: summarizeMissedTradeLearning({
         ...paperLearningSummary,
@@ -15231,6 +15411,7 @@ export class TradingBot {
       history: summarizeHistoryCoverageDigest(offlineTrainerSummary.historyCoverage || {}),
       confidence: lowConfidenceAudit,
       rawModelProbability: rawModelProbabilityAudit,
+      blockerFriction: blockerFrictionAudit,
       exits: summarizeExitIntelligenceDigest({
         positions: fullPositions,
         recentTrades: arr(report.recentTrades || []).slice(0, 12),
@@ -15381,6 +15562,7 @@ export class TradingBot {
         promotionByCondition: promotionByConditionDigest,
         lowConfidenceAudit,
         rawModelProbabilityAudit,
+        blockerFrictionAudit,
         learningInsights,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },

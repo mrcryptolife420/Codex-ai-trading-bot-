@@ -13539,6 +13539,64 @@ await runCheck("raw model probability audit keeps cycle-top blocked opportunitie
   assert.equal(audit.examples[0].symbol, "CAKEUSDT");
 });
 
+await runCheck("self-heal summary derives cooldown and recovery blockers from persisted state", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const summarized = bot.normalizeSelfHealSummary({
+    mode: "low_risk_only",
+    active: true,
+    reason: "loss_streak_limit",
+    issues: ["loss_streak_limit", "calibration_break"],
+    lowRiskOnly: true,
+    learningAllowed: true,
+    cooldownUntil: new Date(Date.now() + 30 * 60_000).toISOString()
+  });
+  assert.equal(summarized.cooldownActive, true);
+  assert.ok(summarized.cooldownRemainingMinutes > 0);
+  assert.ok(summarized.criticalIssues.includes("loss_streak_limit"));
+  assert.ok(summarized.criticalIssues.includes("calibration_break"));
+  assert.ok(summarized.recoveryBlockedBy.includes("loss_streak_limit"));
+  assert.ok(summarized.recoverableIssues.includes("calibration_break"));
+});
+
+await runCheck("blocker friction audit prioritizes cooldown and timeframe blockers", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  const audit = TradingBot.prototype.buildBlockerFrictionAudit.call(bot, [
+    {
+      allow: false,
+      symbol: "ADAUSDT",
+      blockerReasons: ["strategy_cooldown", "model_confidence_too_low"],
+      strategy: { family: "breakout" },
+      regimeSummary: { regime: "high_vol" }
+    },
+    {
+      allow: false,
+      symbol: "DOGEUSDT",
+      blockerReasons: ["strategy_cooldown"],
+      strategy: { family: "breakout" },
+      regimeSummary: { regime: "breakout" }
+    },
+    {
+      allow: false,
+      symbol: "ALGOUSDT",
+      blockerReasons: ["higher_tf_conflict", "cross_timeframe_misalignment"],
+      strategy: { family: "trend_following" },
+      regimeSummary: { regime: "high_vol" }
+    }
+  ], {
+    selfHeal: {
+      mode: "low_risk_only",
+      active: true,
+      reason: "loss_streak_limit",
+      issues: ["loss_streak_limit"]
+    }
+  });
+  assert.equal(audit.status, "priority");
+  assert.equal(audit.topBlockers[0].id, "strategy_cooldown");
+  assert.equal(audit.topBlockers[0].count, 2);
+  assert.equal(audit.topBlockers[0].dominantFamily, "breakout");
+  assert.equal(audit.selfHeal.reason, "loss_streak_limit");
+});
+
 await runCheck("feature vector dampens execution stress in high-vol breakout when execution context is still marketable", async () => {
   const baseInput = {
     symbolStats: {},
