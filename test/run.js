@@ -13456,6 +13456,7 @@ await runCheck("trading bot builds a raw model probability audit by family and r
   assert.equal(audit.topBuckets[0].count, 2);
   assert.equal(audit.topBuckets[0].dominantNegativeGroup, "trend");
   assert.equal(audit.topFeatureGroups[0].id, "trend");
+  assert.equal(audit.topBuckets[0].topNegativeFeatures[0].id, "momentum_20");
 });
 
 await runCheck("raw model probability audit keeps cycle-top blocked opportunities even when absolute signal quality is modest", async () => {
@@ -13536,6 +13537,123 @@ await runCheck("raw model probability audit keeps cycle-top blocked opportunitie
   assert.equal(audit.topBuckets[0].family, "mean_reversion");
   assert.equal(audit.topBuckets[0].regime, "range");
   assert.equal(audit.examples[0].symbol, "CAKEUSDT");
+});
+
+await runCheck("feature vector dampens execution stress in high-vol breakout when execution context is still marketable", async () => {
+  const baseInput = {
+    symbolStats: {},
+    marketFeatures: {
+      realizedVolPct: 0.022,
+      atrPct: 0.018,
+      breakoutFollowThroughScore: 0.74,
+      volumeAcceptanceScore: 0.71,
+      structureBreakScore: 0.66,
+      closeLocationQuality: 0.69,
+      keltnerSqueezeScore: 0.62,
+      trendQualityScore: 0.58,
+      trendPersistence: 0.6,
+      trendMaturityScore: 0.57,
+      anchoredVwapAcceptanceScore: 0.64,
+      relativeStrengthVsBtc: 0.012,
+      relativeStrengthVsEth: 0.011,
+      clusterRelativeStrength: 0.009,
+      sectorRelativeStrength: 0.01,
+      momentum5: 0.004,
+      momentum20: 0.008,
+      emaGap: 0.003
+    },
+    bookFeatures: {
+      spreadBps: 10.5,
+      depthConfidence: 0.72,
+      replenishmentScore: 0.18,
+      queueRefreshScore: 0.22,
+      resilienceScore: 0.21,
+      depthImbalance: 0.18,
+      weightedDepthImbalance: 0.14,
+      microPriceEdgeBps: 0.6,
+      queueImbalance: 0.11
+    },
+    venueConfirmationSummary: { averageHealthScore: 0.78, confirmed: true },
+    newsSummary: { sentimentScore: 0, confidence: 0.5, riskScore: 0.12, reliabilityScore: 0.72, socialRisk: 0.08, providerDiversity: 2, sourceDiversity: 2, operationalReliability: 0.8, eventBullishScore: 0, eventBearishScore: 0, eventRiskScore: 0 },
+    announcementSummary: { maxSeverity: 0.2, sentimentScore: 0, riskScore: 0.08, freshnessScore: 0.7, eventBullishScore: 0, eventBearishScore: 0, eventRiskScore: 0 },
+    marketStructureSummary: {},
+    marketSentimentSummary: {},
+    volatilitySummary: {},
+    calendarSummary: {},
+    portfolioFeatures: {},
+    streamFeatures: {},
+    strategySummary: { family: "breakout", activeStrategy: "bollinger_squeeze", fitScore: 0.58, confidence: 0.55 },
+    sessionSummary: {},
+    timeframeSummary: {},
+    onChainLiteSummary: {},
+    pairHealthSummary: {},
+    now: new Date("2026-03-10T12:00:00.000Z")
+  };
+  const breakoutFeatures = buildFeatureVector({
+    ...baseInput,
+    regimeSummary: { regime: "high_vol" }
+  });
+  const controlFeatures = buildFeatureVector({
+    ...baseInput,
+    regimeSummary: { regime: "range" }
+  });
+
+  assert.ok(breakoutFeatures.spread_bps < controlFeatures.spread_bps);
+  assert.ok(Math.abs(breakoutFeatures.depth_imbalance) < Math.abs(controlFeatures.depth_imbalance));
+  assert.ok(Math.abs(breakoutFeatures.queue_imbalance) < Math.abs(controlFeatures.queue_imbalance));
+});
+
+await runCheck("feature vector keeps execution stress harsh when high-vol breakout execution context is not marketable", async () => {
+  const weakExecution = buildFeatureVector({
+    symbolStats: {},
+    marketFeatures: {
+      realizedVolPct: 0.024,
+      atrPct: 0.02,
+      breakoutFollowThroughScore: 0.61,
+      volumeAcceptanceScore: 0.58,
+      structureBreakScore: 0.55,
+      closeLocationQuality: 0.56,
+      keltnerSqueezeScore: 0.53,
+      trendQualityScore: 0.5,
+      trendPersistence: 0.48,
+      trendMaturityScore: 0.49,
+      anchoredVwapAcceptanceScore: 0.52,
+      relativeStrengthVsBtc: 0.004,
+      relativeStrengthVsEth: 0.003,
+      clusterRelativeStrength: 0.002,
+      sectorRelativeStrength: 0.002
+    },
+    bookFeatures: {
+      spreadBps: 16,
+      depthConfidence: 0.38,
+      replenishmentScore: -0.22,
+      queueRefreshScore: -0.28,
+      resilienceScore: -0.25,
+      depthImbalance: 0.22,
+      weightedDepthImbalance: 0.19,
+      microPriceEdgeBps: 0.8,
+      queueImbalance: 0.17
+    },
+    regimeSummary: { regime: "high_vol" },
+    strategySummary: { family: "breakout", activeStrategy: "bollinger_squeeze", fitScore: 0.56, confidence: 0.5 },
+    venueConfirmationSummary: { averageHealthScore: 0.55, confirmed: false, status: "watch" },
+    newsSummary: { sentimentScore: 0, confidence: 0.5, riskScore: 0.16, reliabilityScore: 0.68, socialRisk: 0.1, providerDiversity: 2, sourceDiversity: 2, operationalReliability: 0.76, eventBullishScore: 0, eventBearishScore: 0, eventRiskScore: 0 },
+    announcementSummary: { maxSeverity: 0.2, sentimentScore: 0, riskScore: 0.1, freshnessScore: 0.7, eventBullishScore: 0, eventBearishScore: 0, eventRiskScore: 0 },
+    marketStructureSummary: {},
+    marketSentimentSummary: {},
+    volatilitySummary: {},
+    calendarSummary: {},
+    portfolioFeatures: {},
+    streamFeatures: {},
+    sessionSummary: {},
+    timeframeSummary: {},
+    onChainLiteSummary: {},
+    pairHealthSummary: {},
+    now: new Date("2026-03-10T12:00:00.000Z")
+  });
+
+  assert.ok(weakExecution.spread_bps > 1.5);
+  assert.ok(Math.abs(weakExecution.depth_imbalance) > 0.7);
 });
 
 await runCheck("dashboard decision view surfaces regime kill switches and committee veto detail in paper mode", async () => {

@@ -3131,6 +3131,11 @@ function summarizeRawModelProbabilityAudit(summary = {}) {
       averageBaseThreshold: num(item.averageBaseThreshold || 0, 4),
       averageRawEdge: num(item.averageRawEdge || 0, 4),
       dominantNegativeGroup: item.dominantNegativeGroup || null,
+      topNegativeFeatures: arr(item.topNegativeFeatures || []).slice(0, 4).map((feature) => ({
+        id: feature.id || null,
+        weight: num(feature.weight || 0, 4),
+        count: feature.count || 0
+      })),
       topNegativeGroups: arr(item.topNegativeGroups || []).slice(0, 3).map((group) => ({
         id: group.id || null,
         weight: num(group.weight || 0, 4),
@@ -3141,6 +3146,12 @@ function summarizeRawModelProbabilityAudit(summary = {}) {
       id: item.id || null,
       weight: num(item.weight || 0, 4),
       count: item.count || 0
+    })),
+    topNegativeFeatures: arr(summary.topNegativeFeatures || []).slice(0, 6).map((item) => ({
+      id: item.id || null,
+      weight: num(item.weight || 0, 4),
+      count: item.count || 0,
+      group: item.group || null
     })),
     examples: arr(summary.examples || []).slice(0, 4).map((item) => ({
       symbol: item.symbol || null,
@@ -11041,6 +11052,7 @@ export class TradingBot {
 
     const bucketMap = new Map();
     const featureGroupMap = new Map();
+    const negativeFeatureMap = new Map();
     for (const candidate of nearMisses) {
       const family = candidate?.strategySummary?.family || candidate?.strategy?.family || "unknown";
       const regime = candidate?.regimeSummary?.regime || candidate?.regime || candidate?.marketCondition?.regime || "unknown";
@@ -11053,7 +11065,8 @@ export class TradingBot {
           rawProbabilities: [],
           baseThresholds: [],
           rawEdges: [],
-          featureGroups: new Map()
+          featureGroups: new Map(),
+          negativeFeatures: new Map()
         });
       }
       const bucket = bucketMap.get(key);
@@ -11076,16 +11089,36 @@ export class TradingBot {
         current.weight += weight;
         current.count += 1;
         bucket.featureGroups.set(group, current);
+        const bucketFeature = bucket.negativeFeatures.get(contribution?.name || group) || {
+          id: contribution?.name || group,
+          group,
+          weight: 0,
+          count: 0
+        };
+        bucketFeature.weight += weight;
+        bucketFeature.count += 1;
+        bucket.negativeFeatures.set(bucketFeature.id, bucketFeature);
         const global = featureGroupMap.get(group) || { id: group, weight: 0, count: 0 };
         global.weight += weight;
         global.count += 1;
         featureGroupMap.set(group, global);
+        const globalFeature = negativeFeatureMap.get(contribution?.name || group) || {
+          id: contribution?.name || group,
+          group,
+          weight: 0,
+          count: 0
+        };
+        globalFeature.weight += weight;
+        globalFeature.count += 1;
+        negativeFeatureMap.set(globalFeature.id, globalFeature);
       }
     }
 
     const topBuckets = [...bucketMap.values()]
       .map((bucket) => {
         const topNegativeGroups = [...bucket.featureGroups.values()]
+          .sort((left, right) => (right.weight || 0) - (left.weight || 0) || (right.count || 0) - (left.count || 0));
+        const topNegativeFeatures = [...bucket.negativeFeatures.values()]
           .sort((left, right) => (right.weight || 0) - (left.weight || 0) || (right.count || 0) - (left.count || 0));
         return {
           family: bucket.family,
@@ -11095,6 +11128,12 @@ export class TradingBot {
           averageBaseThreshold: num(average(bucket.baseThresholds, 0), 4),
           averageRawEdge: num(average(bucket.rawEdges, 0), 4),
           dominantNegativeGroup: topNegativeGroups[0]?.id || null,
+          topNegativeFeatures: topNegativeFeatures.slice(0, 4).map((feature) => ({
+            id: feature.id,
+            group: feature.group,
+            weight: num(feature.weight || 0, 4),
+            count: feature.count || 0
+          })),
           topNegativeGroups: topNegativeGroups.slice(0, 3).map((group) => ({
             id: group.id,
             weight: num(group.weight || 0, 4),
@@ -11114,9 +11153,17 @@ export class TradingBot {
         weight: num(group.weight || 0, 4),
         count: group.count || 0
       }));
+    const topNegativeFeatures = [...negativeFeatureMap.values()]
+      .sort((left, right) => (right.weight || 0) - (left.weight || 0) || (right.count || 0) - (left.count || 0))
+      .map((feature) => ({
+        id: feature.id,
+        group: feature.group,
+        weight: num(feature.weight || 0, 4),
+        count: feature.count || 0
+      }));
 
     const note = topBuckets[0]
-      ? `${topBuckets[0].family} in ${topBuckets[0].regime} blijft bij de sterkste model-confidence blokkades het vaakst onder de ruwe model-threshold; ${topBuckets[0].dominantNegativeGroup || "context"} trekt daar de champion-score het vaakst omlaag.`
+      ? `${topBuckets[0].family} in ${topBuckets[0].regime} blijft bij de sterkste model-confidence blokkades het vaakst onder de ruwe model-threshold; ${topBuckets[0].topNegativeFeatures?.[0]?.id || topBuckets[0].dominantNegativeGroup || "context"} trekt daar de champion-score het vaakst omlaag.`
       : "Nog geen duidelijke raw model probability bottleneck in de huidige cycle-top model-confidence blokkades.";
 
     return {
@@ -11128,6 +11175,7 @@ export class TradingBot {
       averageRawEdge: num(average(nearMisses.map((candidate) => safeNumber(candidate?.__rawModelAudit?.rawEdge, safeNumber(candidate?.score?.rawProbability, 0) - safeNumber(candidate?.decision?.baseThreshold || candidate?.decision?.threshold, 0))), 0), 4),
       topBuckets: topBuckets.slice(0, 6),
       topFeatureGroups: topFeatureGroups.slice(0, 5),
+      topNegativeFeatures: topNegativeFeatures.slice(0, 6),
       examples: nearMisses.slice(0, 4).map((candidate) => {
         const negativeGroups = (arr(candidate?.score?.contributions || []).length
           ? arr(candidate?.score?.contributions || [])

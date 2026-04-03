@@ -1,5 +1,55 @@
 import { average, clamp } from "../utils/math.js";
 
+function buildExecutionStressProfile({
+  bookFeatures = {},
+  marketFeatures = {},
+  regimeSummary = {},
+  strategySummary = {},
+  executionQualityComposite = 0,
+  breakoutQualityComposite = 0
+} = {}) {
+  const highVolBreakoutContext =
+    regimeSummary.regime === "high_vol" &&
+    strategySummary.family === "breakout";
+  const spreadBps = Number(bookFeatures.spreadBps || 0);
+  const depthConfidence = Number(bookFeatures.depthConfidence || 0);
+  const replenishmentScore = Number.isFinite(bookFeatures.replenishmentScore)
+    ? (bookFeatures.replenishmentScore + 1) / 2
+    : Number.isFinite(bookFeatures.queueRefreshScore)
+      ? (bookFeatures.queueRefreshScore + 1) / 2
+      : 0.5;
+  const relativeVolBps = Math.max(
+    Number(marketFeatures.realizedVolPct || 0) * 10_000,
+    Number(marketFeatures.atrPct || 0) * 10_000,
+    Number(marketFeatures.donchianWidthPct || 0) * 10_000,
+    1
+  );
+  const spreadToVolRatio = spreadBps / Math.max(relativeVolBps, 1);
+  const marketableExecutionContext =
+    executionQualityComposite >= 0.58 &&
+    breakoutQualityComposite >= 0.55 &&
+    depthConfidence >= 0.5 &&
+    replenishmentScore >= 0.48 &&
+    spreadBps <= 12;
+  const breakoutExecutionRelief = highVolBreakoutContext && marketableExecutionContext
+    ? clamp(
+      (executionQualityComposite - 0.58) * 0.95 +
+      (breakoutQualityComposite - 0.55) * 0.75 +
+      Math.max(0, 0.1 - spreadToVolRatio) * 2.5,
+      0,
+      0.42
+    )
+    : 0;
+  const executionFeatureDamp = 1 - breakoutExecutionRelief;
+  return {
+    highVolBreakoutContext,
+    marketableExecutionContext,
+    spreadToVolRatio,
+    breakoutExecutionRelief,
+    executionFeatureDamp
+  };
+}
+
 function regimeFlags(regime) {
   return {
     regime_trend: regime === "trend" ? 1 : 0,
@@ -118,6 +168,24 @@ export function buildFeatureVector({
     ].filter((value) => Number.isFinite(value)),
     0.5
   );
+  const executionStressProfile = buildExecutionStressProfile({
+    bookFeatures,
+    marketFeatures,
+    regimeSummary,
+    strategySummary,
+    executionQualityComposite,
+    breakoutQualityComposite
+  });
+  const dampExecutionStress = (value, { positiveOnly = false } = {}) => {
+    const numeric = Number.isFinite(value) ? value : 0;
+    if (!executionStressProfile.breakoutExecutionRelief) {
+      return numeric;
+    }
+    if (positiveOnly) {
+      return numeric * clamp(1 - executionStressProfile.breakoutExecutionRelief * 0.7, 0.62, 1);
+    }
+    return numeric * clamp(executionStressProfile.executionFeatureDamp, 0.58, 1);
+  };
   return {
     momentum_5: clamp(marketFeatures.momentum5 * 25, -3, 3),
     momentum_20: clamp(marketFeatures.momentum20 * 15, -3, 3),
@@ -187,17 +255,17 @@ export function buildFeatureVector({
     bullish_pattern: clamp((marketFeatures.bullishPatternScore || 0) * 3, 0, 3),
     bearish_pattern: clamp((marketFeatures.bearishPatternScore || 0) * 3, 0, 3),
     inside_bar: clamp((marketFeatures.insideBar || 0) * 2, 0, 2),
-    spread_bps: clamp(bookFeatures.spreadBps / 10, 0, 5),
-    depth_imbalance: clamp(bookFeatures.depthImbalance * 4, -4, 4),
-    weighted_depth_imbalance: clamp((bookFeatures.weightedDepthImbalance || 0) * 4, -4, 4),
-    microprice_edge: clamp((bookFeatures.microPriceEdgeBps || 0) / 2.5, -4, 4),
+    spread_bps: clamp(dampExecutionStress(bookFeatures.spreadBps / 10, { positiveOnly: true }), 0, 5),
+    depth_imbalance: clamp(dampExecutionStress(bookFeatures.depthImbalance * 4), -4, 4),
+    weighted_depth_imbalance: clamp(dampExecutionStress((bookFeatures.weightedDepthImbalance || 0) * 4), -4, 4),
+    microprice_edge: clamp(dampExecutionStress((bookFeatures.microPriceEdgeBps || 0) / 2.5), -4, 4),
     book_pressure: clamp((bookFeatures.bookPressure || 0) * 4, -4, 4),
     wall_imbalance: clamp((bookFeatures.wallImbalance || 0) * 4, -4, 4),
     orderbook_signal: clamp((bookFeatures.orderbookImbalanceSignal || 0) * 4, -4, 4),
-    queue_imbalance: clamp((bookFeatures.queueImbalance || 0) * 4, -4, 4),
-    queue_refresh: clamp((bookFeatures.queueRefreshScore || 0) * 4, -4, 4),
-    replenishment_quality: clamp((bookFeatures.replenishmentScore ?? bookFeatures.queueRefreshScore ?? 0) * 4, -4, 4),
-    book_resilience: clamp((bookFeatures.resilienceScore || 0) * 4, -4, 4),
+    queue_imbalance: clamp(dampExecutionStress((bookFeatures.queueImbalance || 0) * 4), -4, 4),
+    queue_refresh: clamp(dampExecutionStress((bookFeatures.queueRefreshScore || 0) * 4), -4, 4),
+    replenishment_quality: clamp(dampExecutionStress((bookFeatures.replenishmentScore ?? bookFeatures.queueRefreshScore ?? 0) * 4), -4, 4),
+    book_resilience: clamp(dampExecutionStress((bookFeatures.resilienceScore || 0) * 4), -4, 4),
     depth_confidence: clamp((bookFeatures.depthConfidence || 0) * 4, 0, 4),
     execution_quality_composite: clamp(executionQualityComposite * 3, 0, 3),
     venue_confirmation: venueConfirmationSummary.confirmed ? 1 : (venueConfirmationSummary.status || "") === "blocked" ? -1 : 0,
