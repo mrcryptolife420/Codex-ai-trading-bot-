@@ -2806,6 +2806,8 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
     adjacentFeaturePressure: num(guidance.adjacentFeaturePressure || 0, 4),
     executionCaution: num(guidance.executionCaution || 0, 4),
     executionCostBufferBps: num(guidance.executionCostBufferBps || 0, 2),
+    paritySampleReady: guidance.paritySampleReady == null ? null : Boolean(guidance.paritySampleReady),
+    paritySampleConfidence: num(guidance.paritySampleConfidence || 0, 4),
     benchmarkLead: guidance.benchmarkLead || null,
     focusReason: guidance.focusReason || null,
     impactedFeatures: [...(guidance.impactedFeatures || [])].slice(0, 6),
@@ -11011,6 +11013,14 @@ export class TradingBot {
     const topNegative = new Map(arr(featureGovernance.attribution?.topNegative || []).map((item) => [item.id, item]));
     const parityDetails = new Map(arr(featureGovernance.parityAudit?.details || []).map((item) => [item.id, item]));
     const pruningRecommendations = new Map(arr(featureGovernance.pruning?.recommendations || []).map((item) => [item.id, item]));
+    const paritySampleReady = featureGovernance.parityAudit?.sampleReady == null
+      ? true
+      : Boolean(featureGovernance.parityAudit.sampleReady);
+    const paritySampleConfidence = clamp(
+      safeNumber(featureGovernance.parityAudit?.sampleConfidence, paritySampleReady ? 1 : 0.4),
+      0,
+      1
+    );
     const impactedFeatureEntries = [];
     let featurePenalty = 0;
 
@@ -11027,8 +11037,8 @@ export class TradingBot {
       } else if (guardOnly.has(id) && absValue >= 0.22) {
         penalty = 0.016;
         source = "pruning_guard_only";
-      } else if (missingInLive.has(id) && absValue >= 0.18) {
-        penalty = 0.014;
+      } else if (missingInLive.has(id) && absValue >= 0.18 && paritySampleReady) {
+        penalty = 0.014 * Math.max(0.45, paritySampleConfidence);
         source = "parity_missing_in_live";
       } else if (topNegative.has(id) && absValue >= 0.3) {
         penalty = Math.max(0.01, Math.min(0.02, (topNegative.get(id)?.influenceScore || 0.1) * 0.1));
@@ -11187,6 +11197,9 @@ export class TradingBot {
     if (sourcePressure.size) {
       noteParts.push(`Dominante bron: ${[...sourcePressure.values()].sort((left, right) => (right.penalty || 0) - (left.penalty || 0))[0]?.source || "feature_governance"}.`);
     }
+    if (!paritySampleReady && arr(featureGovernance.parityAudit?.details || []).length) {
+      noteParts.push("Parity-signalen tellen nog licht mee omdat live sample nog niet volwassen is.");
+    }
     if (executionCaution >= 0.06) {
       noteParts.push("Execution drag of quality traps duwen nu extra cost-caution.");
     }
@@ -11217,6 +11230,8 @@ export class TradingBot {
         }))
         .sort((left, right) => (right.penalty || 0) - (left.penalty || 0) || (right.featureCount || 0) - (left.featureCount || 0))
         .slice(0, 4),
+      paritySampleReady,
+      paritySampleConfidence: num(paritySampleConfidence, 4),
       impactedFeatureGroups: impactedFeatureGroups.slice(0, 4),
       matchedOutcomeScopes: scopeMatches.slice(0, 4),
       note: noteParts.join(" ") || outcomeScopeLearning.notes?.[0] || featureGovernance.notes?.[0] || "Offline learning guidance warmt nog op."

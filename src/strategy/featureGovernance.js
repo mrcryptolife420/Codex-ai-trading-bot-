@@ -157,7 +157,24 @@ export function buildFeatureAttribution(trades = [], { minTrades = 6 } = {}) {
   };
 }
 
-export function buildFeatureParityAudit({ paperTrades = [], liveTrades = [], featureScorecards = [] } = {}) {
+export function buildFeatureParityAudit({
+  paperTrades = [],
+  liveTrades = [],
+  featureScorecards = [],
+  minPaperTrades = 8,
+  minLiveTrades = 6
+} = {}) {
+  const paperTradeCount = Array.isArray(paperTrades) ? paperTrades.length : 0;
+  const liveTradeCount = Array.isArray(liveTrades) ? liveTrades.length : 0;
+  const paperSampleReady = paperTradeCount >= minPaperTrades;
+  const liveSampleReady = liveTradeCount >= minLiveTrades;
+  const sampleReady = paperSampleReady && liveSampleReady;
+  const sampleConfidence = clamp(
+    Math.min(1, paperTradeCount / Math.max(minPaperTrades, 1)) * 0.45 +
+      Math.min(1, liveTradeCount / Math.max(minLiveTrades, 1)) * 0.55,
+    0,
+    1
+  );
   const union = new Set();
   for (const trade of [...paperTrades, ...liveTrades]) {
     for (const name of Object.keys(trade.rawFeatures || {})) {
@@ -175,11 +192,13 @@ export function buildFeatureParityAudit({ paperTrades = [], liveTrades = [], fea
       const avgPaperAbs = average(paperValues.map((value) => Math.abs(value)));
       const avgLiveAbs = average(liveValues.map((value) => Math.abs(value)));
       const magnitudeGap = Math.abs(avgPaperAbs - avgLiveAbs);
-      const status = coverageGap >= 0.35 || (liveTrades.length && !liveValues.length && paperValues.length)
-        ? "misaligned"
-        : coverageGap >= 0.18 || magnitudeGap >= 0.45
-          ? "watch"
-          : "aligned";
+      const status = !sampleReady
+        ? "warmup"
+        : coverageGap >= 0.35 || (liveTradeCount && !liveValues.length && paperValues.length)
+          ? "misaligned"
+          : coverageGap >= 0.18 || magnitudeGap >= 0.45
+            ? "watch"
+            : "aligned";
       return {
         id: name,
         group: featureGroup(name),
@@ -203,20 +222,38 @@ export function buildFeatureParityAudit({ paperTrades = [], liveTrades = [], fea
   const misaligned = details.filter((item) => item.status === "misaligned");
   const watch = details.filter((item) => item.status === "watch");
   return {
-    status: misaligned.length ? "misaligned" : watch.length ? "watch" : "aligned",
+    status: !sampleReady
+      ? "warmup"
+      : misaligned.length
+        ? "misaligned"
+        : watch.length
+          ? "watch"
+          : "aligned",
+    sampleReady,
+    sampleConfidence: num(sampleConfidence),
+    paperTradeCount,
+    liveTradeCount,
+    minPaperTrades,
+    minLiveTrades,
     trackedFeatureCount: details.length,
     alignedCount: details.filter((item) => item.status === "aligned").length,
     watchCount: watch.length,
     misalignedCount: misaligned.length,
-    missingInLive: misaligned.filter((item) => item.paperCoverage > 0 && item.liveCoverage === 0).slice(0, 8).map((item) => item.id),
+    missingInLive: sampleReady
+      ? misaligned.filter((item) => item.paperCoverage > 0 && item.liveCoverage === 0).slice(0, 8).map((item) => item.id)
+      : [],
     details: details.slice(0, 20),
     notes: [
-      misaligned[0]
-        ? `${misaligned[0].id} wijkt momenteel het sterkst af tussen paper en live feature-beschikbaarheid.`
-        : "Paper/live feature parity oogt momenteel gezond.",
+      !sampleReady
+        ? `Feature parity warmt nog op (${paperTradeCount} paper / ${liveTradeCount} live trades).`
+        : misaligned[0]
+          ? `${misaligned[0].id} wijkt momenteel het sterkst af tussen paper en live feature-beschikbaarheid.`
+          : "Paper/live feature parity oogt momenteel gezond.",
       watch[0]
         ? `${watch[0].id} verdient extra parity-monitoring.`
-        : "Geen duidelijke parity-watchers in de huidige feature set."
+        : !sampleReady
+          ? "Nog te weinig live sample voor harde parity-conclusies."
+          : "Geen duidelijke parity-watchers in de huidige feature set."
     ]
   };
 }

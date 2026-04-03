@@ -16527,6 +16527,8 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
           topNegative: [{ id: "stoch_cross", influenceScore: 0.18 }]
         },
         parityAudit: {
+          sampleReady: true,
+          sampleConfidence: 0.82,
           missingInLive: ["stoch_cross"]
         },
         pruning: {
@@ -16554,6 +16556,52 @@ await runCheck("trading bot derives offline learning guidance from scope outcome
   assert.ok(guidance.featurePressureSources.some((item) => item.source === "pruning_drop_candidate"));
   assert.ok(guidance.impactedFeatureGroups.some((item) => item.group === "momentum"));
   assert.ok(guidance.matchedOutcomeScopes.length >= 2);
+});
+
+await runCheck("trading bot does not over-penalize missing live parity when parity sample is not ready", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    paperLearning: {
+      status: "active",
+      benchmarkLanes: { bestLane: "probe_lane" },
+      challengerPolicy: {}
+    },
+    offlineTrainer: {
+      outcomeScopeScorecards: { status: "warmup" },
+      featureGovernance: {
+        status: "watch",
+        attribution: {
+          trackedFeatureCount: 8,
+          topNegative: []
+        },
+        parityAudit: {
+          status: "warmup",
+          sampleReady: false,
+          sampleConfidence: 0.28,
+          missingInLive: ["stoch_cross"],
+          details: [{ id: "stoch_cross", group: "momentum", status: "warmup" }]
+        },
+        pruning: {
+          dropCandidates: [],
+          guardOnlyFeatures: [],
+          recommendations: []
+        }
+      }
+    }
+  };
+  const guidance = bot.buildOfflineLearningGuidance({
+    strategySummary: { family: "trend_following" },
+    regimeSummary: { regime: "trend" },
+    sessionSummary: { session: "asia" },
+    marketConditionSummary: { conditionId: "trend_continuation" },
+    rawFeatures: { stoch_cross: 0.74 }
+  });
+
+  assert.equal(guidance.paritySampleReady, false);
+  assert.ok(guidance.paritySampleConfidence < 0.4);
+  assert.ok(!guidance.featurePressureSources.some((item) => item.source === "parity_missing_in_live"));
+  assert.match(guidance.note || "", /Parity-signalen tellen nog licht mee/i);
 });
 
 await runCheck("trading bot penalizes independent weak feature groups harder than correlated duplicates", async () => {
@@ -19486,8 +19534,10 @@ await runCheck("offline trainer builds feature governance attribution parity and
   });
 
   assert.equal(summary.featureGovernance.attribution.topPositive[0].id, "trend_quality_composite");
-  assert.equal(summary.featureGovernance.parityAudit.status, "misaligned");
-  assert.ok(summary.featureGovernance.parityAudit.missingInLive.includes("trend_quality_composite"));
+  assert.equal(summary.featureGovernance.parityAudit.status, "warmup");
+  assert.equal(summary.featureGovernance.parityAudit.sampleReady, false);
+  assert.equal(summary.featureGovernance.parityAudit.liveTradeCount, 1);
+  assert.equal(summary.featureGovernance.parityAudit.missingInLive.length, 0);
   assert.ok(summary.featureGovernance.pruning.dropCandidates.includes("stoch_cross"));
   assert.equal(summary.featureGovernance.guardEffectiveness.topRetuneGuard, "relative_weakness_vs_market");
   assert.ok(summary.notes.some((note) => note.includes("feature")));
