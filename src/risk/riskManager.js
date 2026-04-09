@@ -2423,7 +2423,7 @@ export class RiskManager {
       (safeValue(score.disagreement, 0) * 0.45) +
       (Math.max(0, 0.7 - safeValue(committeeSummary.agreement, 0)) * 0.35) +
       (Math.max(0, 0.62 - safeValue(signalQualitySummary.overallScore, 0)) * 0.28) +
-      (Math.max(0, 0.58 - safeValue(confidenceBreakdown.executionConfidence, 0)) * 0.22),
+      (Math.max(0, 0.58 - safeValue(preliminaryConfidenceBreakdown.executionConfidence, 0)) * 0.22),
       0,
       1
     );
