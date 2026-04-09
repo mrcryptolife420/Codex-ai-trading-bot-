@@ -4,7 +4,7 @@
   "symbol": "DASHUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T15:30:05.309Z",
+  "updatedAt": "2026-04-09T17:07:23.743Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T15:30:05.305Z"
+      "updatedAt": "2026-04-09T17:07:23.740Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775748600000,
-      "count": 831,
-      "updatedAt": "2026-04-09T15:30:05.309Z"
+      "endTime": 1775754000000,
+      "count": 837,
+      "updatedAt": "2026-04-09T17:07:23.743Z"
     }
   ]
 }

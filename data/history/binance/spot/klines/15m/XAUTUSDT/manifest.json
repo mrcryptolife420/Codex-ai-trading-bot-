@@ -4,7 +4,7 @@
   "symbol": "XAUTUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T15:15:11.468Z",
+  "updatedAt": "2026-04-09T16:45:05.630Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774624500000,
       "endTime": 1775000700000,
       "count": 419,
-      "updatedAt": "2026-04-09T15:15:11.463Z"
+      "updatedAt": "2026-04-09T16:45:05.627Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775747700000,
-      "count": 830,
-      "updatedAt": "2026-04-09T15:15:11.468Z"
+      "endTime": 1775753100000,
+      "count": 836,
+      "updatedAt": "2026-04-09T16:45:05.630Z"
     }
   ]
 }
