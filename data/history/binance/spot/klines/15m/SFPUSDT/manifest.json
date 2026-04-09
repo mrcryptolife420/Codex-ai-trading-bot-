@@ -4,15 +4,15 @@
   "symbol": "SFPUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T05:22:15.049Z",
+  "updatedAt": "2026-04-09T13:59:33.756Z",
   "partitionGranularity": "month",
   "partitions": [
     {
       "id": "2026-04",
       "startTime": 1775070900000,
-      "endTime": 1775711700000,
-      "count": 713,
-      "updatedAt": "2026-04-09T05:22:15.049Z"
+      "endTime": 1775742300000,
+      "count": 747,
+      "updatedAt": "2026-04-09T13:59:33.756Z"
     }
   ]
 }
