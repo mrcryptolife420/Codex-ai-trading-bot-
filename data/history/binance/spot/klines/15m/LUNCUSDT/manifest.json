@@ -4,7 +4,7 @@
   "symbol": "LUNCUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T15:50:39.468Z",
+  "updatedAt": "2026-04-09T17:31:35.088Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774624500000,
       "endTime": 1775000700000,
       "count": 419,
-      "updatedAt": "2026-04-09T15:50:39.465Z"
+      "updatedAt": "2026-04-09T17:31:35.085Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775749500000,
-      "count": 832,
-      "updatedAt": "2026-04-09T15:50:39.468Z"
+      "endTime": 1775755800000,
+      "count": 839,
+      "updatedAt": "2026-04-09T17:31:35.088Z"
     }
   ]
 }

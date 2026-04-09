@@ -4,7 +4,7 @@
   "symbol": "RENDERUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T15:47:13.923Z",
+  "updatedAt": "2026-04-09T17:22:29.572Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T15:47:13.920Z"
+      "updatedAt": "2026-04-09T17:22:29.570Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775749500000,
-      "count": 832,
-      "updatedAt": "2026-04-09T15:47:13.923Z"
+      "endTime": 1775754900000,
+      "count": 838,
+      "updatedAt": "2026-04-09T17:22:29.572Z"
     }
   ]
 }
