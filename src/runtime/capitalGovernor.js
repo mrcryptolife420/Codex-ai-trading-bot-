@@ -1,4 +1,5 @@
 import { clamp } from "../utils/math.js";
+import { getRuntimeTradingSource, matchesTradingSource } from "../utils/tradingSource.js";
 
 function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -29,15 +30,11 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
-function matchesBrokerMode(item, botMode = "paper") {
-  return !item?.brokerMode || (item.brokerMode === botMode);
-}
-
-function computeDrawdownPct(equitySnapshots = [], botMode = "paper") {
+function computeDrawdownPct(equitySnapshots = [], botMode = "paper", tradingSource = null) {
   let peak = 0;
   let maxDrawdown = 0;
   for (const snapshot of equitySnapshots) {
-    if (!matchesBrokerMode(snapshot, botMode)) {
+    if (!matchesTradingSource(snapshot, tradingSource, botMode)) {
       continue;
     }
     const equity = safeNumber(snapshot?.equity, 0);
@@ -53,7 +50,7 @@ function computeDrawdownPct(equitySnapshots = [], botMode = "paper") {
   return clamp(maxDrawdown, 0, 1);
 }
 
-function buildDailyLedger(journal = {}, botMode = "paper") {
+function buildDailyLedger(journal = {}, botMode = "paper", tradingSource = null) {
   const ledger = new Map();
   const add = (at, amount) => {
     const key = dayKey(at);
@@ -64,13 +61,13 @@ function buildDailyLedger(journal = {}, botMode = "paper") {
   };
 
   for (const trade of journal.trades || []) {
-    if (!matchesBrokerMode(trade, botMode)) {
+    if (!matchesTradingSource(trade, tradingSource, botMode)) {
       continue;
     }
     add(trade.exitAt || trade.entryAt, trade.pnlQuote || 0);
   }
   for (const event of journal.scaleOuts || []) {
-    if (!matchesBrokerMode(event, botMode)) {
+    if (!matchesTradingSource(event, tradingSource, botMode)) {
       continue;
     }
     add(event.at, event.realizedPnl || 0);
@@ -120,14 +117,14 @@ function computeRedDayStreak(dailyLedger = [], nowIso = new Date().toISOString()
   return streak;
 }
 
-function resolveLatestClosedTradeAt(journal = {}, botMode = "paper") {
+function resolveLatestClosedTradeAt(journal = {}, botMode = "paper", tradingSource = null) {
   const timestamps = [
     ...(journal.trades || [])
-      .filter((trade) => matchesBrokerMode(trade, botMode))
+      .filter((trade) => matchesTradingSource(trade, tradingSource, botMode))
       .map((trade) => trade.exitAt || trade.entryAt)
       .filter(Boolean),
     ...(journal.scaleOuts || [])
-      .filter((event) => matchesBrokerMode(event, botMode))
+      .filter((event) => matchesTradingSource(event, tradingSource, botMode))
       .map((event) => event.at)
       .filter(Boolean)
   ]
@@ -144,30 +141,35 @@ export function buildCapitalGovernor({
   nowIso = new Date().toISOString()
 } = {}) {
   const botMode = config.botMode || "paper";
-  const dailyLedger = buildDailyLedger(journal, botMode);
+  const tradingSource = getRuntimeTradingSource(runtime, config, botMode);
+  const dailyLedger = buildDailyLedger(journal, botMode, tradingSource);
   const recentDays = buildRecentDayWindow(dailyLedger, nowIso, config.capitalGovernorLookbackDays || 7);
   const todayPnl = recentDays.find((item) => sameUtcDay(item.day, nowIso))?.pnlQuote || 0;
   const weeklyPnl = recentDays.reduce((total, item) => total + safeNumber(item.pnlQuote, 0), 0);
   const startingCash = Math.max(config.startingCash || 1, 1);
   const dailyLossFraction = todayPnl < 0 ? Math.abs(todayPnl) / startingCash : 0;
   const weeklyLossFraction = weeklyPnl < 0 ? Math.abs(weeklyPnl) / startingCash : 0;
-  const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240), botMode);
+  const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240), botMode, tradingSource);
   const redDayStreak = computeRedDayStreak(recentDays, nowIso);
-  const latestTradeAt = resolveLatestClosedTradeAt(journal, botMode);
+  const latestTradeAt = resolveLatestClosedTradeAt(journal, botMode, tradingSource);
   const lastClosedTradeAgeHours = latestTradeAt
     ? (new Date(nowIso).getTime() - new Date(latestTradeAt).getTime()) / 3_600_000
     : Number.POSITIVE_INFINITY;
-  const recoveryTrades = (journal.trades || [])
-    .filter((trade) => matchesBrokerMode(trade, botMode))
+  const recoveryContextHours = Math.max(24, safeNumber(config.capitalGovernorRecoveryContextHours, (config.capitalGovernorLookbackDays || 7) * 24));
+  const recoveryContextFresh = lastClosedTradeAgeHours <= recoveryContextHours;
+  const recoveryTrades = recoveryContextFresh
+    ? (journal.trades || [])
+    .filter((trade) => matchesTradingSource(trade, tradingSource, botMode))
     .filter((trade) => trade.exitAt)
-    .slice(-(config.capitalGovernorRecoveryTrades || 4));
+    .slice(-(config.capitalGovernorRecoveryTrades || 4))
+    : [];
   const recoveryWinRate = recoveryTrades.length
     ? recoveryTrades.filter((trade) => (trade.pnlQuote || 0) > 0).length / recoveryTrades.length
     : 0;
   const recoveryAveragePnl = average(recoveryTrades.map((trade) => safeNumber(trade.netPnlPct, 0)), 0);
   const weeklyBlock = weeklyLossFraction >= safeNumber(config.capitalGovernorWeeklyDrawdownPct, 0.08);
   const streakBlock = redDayStreak >= safeNumber(config.capitalGovernorBadDayStreak, 3);
-  const drawdownWatch = drawdownPct >= safeNumber(config.portfolioDrawdownBudgetPct, 0.05) * 0.85;
+  const drawdownWatch = recoveryContextFresh && drawdownPct >= safeNumber(config.portfolioDrawdownBudgetPct, 0.05) * 0.85;
   const dailyBlock = dailyLossFraction >= safeNumber(config.maxDailyDrawdown, 0.04);
   const recoveryMode = dailyBlock || weeklyBlock || streakBlock || drawdownWatch;
   const allowProbeEntries = botMode === "paper" && recoveryMode;
@@ -209,6 +211,7 @@ export function buildCapitalGovernor({
     recoveryTradeCount: recoveryTrades.length,
     recoveryWinRate: num(recoveryWinRate),
     recoveryAveragePnl: num(recoveryAveragePnl),
+    tradingSource,
     blockerReasons: [
       ...(dailyBlock ? ["capital_governor_daily_loss_limit"] : []),
       ...(weeklyBlock ? ["capital_governor_weekly_drawdown_limit"] : []),
@@ -229,7 +232,9 @@ export function buildCapitalGovernor({
       latestTradeAt
         ? `Laatste gesloten trade ${num(lastClosedTradeAgeHours, 1)} uur geleden (${latestTradeAt}).`
         : "Nog geen gesloten trades beschikbaar voor capital-governor context.",
-      recoveryTrades.length
+      !recoveryContextFresh && latestTradeAt
+        ? "Recovery-context is stale; oude drawdown of verliesreeksen sturen de governor nu niet meer."
+        : recoveryTrades.length
         ? `Recovery window: ${recoveryTrades.length} trades, winrate ${num(recoveryWinRate * 100, 1)}%, avg ${num(recoveryAveragePnl * 100, 2)}%.`
         : "Nog geen recovery trades beschikbaar.",
       releaseReady

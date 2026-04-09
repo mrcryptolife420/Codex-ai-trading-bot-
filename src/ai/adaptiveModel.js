@@ -64,6 +64,7 @@ function cloneShadowMetric(metric) {
   return {
     at: metric.at,
     regime: metric.regime,
+    championProbability: metric.championProbability ?? null,
     championError: metric.championError,
     challengerError: metric.challengerError,
     transformerError: metric.transformerError ?? null,
@@ -570,7 +571,11 @@ export class AdaptiveTradingModel {
       : this.config.maxModelDisagreement + 0.08;
     const abstainBand = hasCalibrationGate
       ? this.config.abstainBand
-      : Math.max(0.01, this.config.abstainBand * 0.55);
+      : clamp(
+          this.config.abstainBand + Math.max(0, 0.4 - confidence) * 0.04,
+          this.config.abstainBand,
+          Math.max(0.03, this.config.abstainBand * 1.8)
+        );
     const abstainReasons = [];
     if (hasCalibrationGate && calibrationConfidence < this.config.minCalibrationConfidence) {
       abstainReasons.push("calibration_confidence_low");
@@ -768,6 +773,7 @@ export class AdaptiveTradingModel {
     this.state.deployment.shadowMetrics.push({
       at: atIso,
       regime,
+      championProbability: championPrediction,
       championError: (championPrediction - label.labelScore) ** 2,
       challengerError: (challengerPrediction - label.labelScore) ** 2,
       transformerError: transformerLearning ? transformerLearning.absoluteError : null,

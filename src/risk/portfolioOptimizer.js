@@ -1,4 +1,5 @@
 import { clamp } from "../utils/math.js";
+import { getRuntimeTradingSource, matchesTradingSource } from "../utils/tradingSource.js";
 
 function rollingCorrelation(left, right) {
   const length = Math.min(left.length, right.length);
@@ -91,6 +92,7 @@ function computeLossStreakStateMap(trades = [], keyFn, {
     const tradeMs = new Date(tradeAt || 0).getTime();
     const existing = states[key] || {
       streak: 0,
+      staleStreak: 0,
       latestTradeAt: null,
       lastTradeAgeHours: null,
       stale: false,
@@ -102,10 +104,15 @@ function computeLossStreakStateMap(trades = [], keyFn, {
       existing.lastTradeAgeHours = num((nowMs - tradeMs) / 3_600_000, 1);
       existing.stale = nowMs - tradeMs > maxIdleMs;
       states[key] = existing;
-      if (existing.stale) {
+    }
+    if (existing.stale) {
+      if ((trade.netPnlPct || 0) < 0) {
+        existing.staleStreak += 1;
+      } else {
         cooled.add(key);
-        continue;
       }
+      states[key] = existing;
+      continue;
     }
     if (Number.isFinite(tradeMs) && Number.isFinite(existing.previousTradeMs) && existing.previousTradeMs - tradeMs > maxIdleMs) {
       existing.gapBroken = true;
@@ -125,6 +132,7 @@ function computeLossStreakStateMap(trades = [], keyFn, {
   return Object.fromEntries(
     Object.entries(states).map(([key, state]) => [key, {
       streak: state.streak || 0,
+      staleStreak: state.staleStreak || 0,
       latestTradeAt: state.latestTradeAt || null,
       lastTradeAgeHours: Number.isFinite(state.lastTradeAgeHours) ? state.lastTradeAgeHours : null,
       stale: Boolean(state.stale),
@@ -177,8 +185,50 @@ function resolveFactorSet({ family = "", regime = "", marketStructureSummary = {
   return [...factors];
 }
 
-export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().toISOString()) {
-  const nowMs = new Date(nowIso).getTime();
+function resolveBudgetStateNowIso(journal = {}, config = {}, nowIso = null, runtime = {}) {
+  const explicitNowMs = new Date(nowIso || 0).getTime();
+  if (Number.isFinite(explicitNowMs) && explicitNowMs > 0) {
+    return new Date(explicitNowMs).toISOString();
+  }
+  const botMode = config.botMode || "paper";
+  const tradingSource = getRuntimeTradingSource(runtime, config, botMode);
+  const preferHistoricalReference = (journal.equitySnapshots || []).some(
+    (snapshot) => Number.isFinite(snapshot?.equity) && matchesTradingSource(snapshot, tradingSource, botMode)
+  );
+  if (!preferHistoricalReference) {
+    return new Date().toISOString();
+  }
+  const timestamps = [];
+  for (const trade of journal.trades || []) {
+    if (!matchesTradingSource(trade, tradingSource, botMode)) {
+      continue;
+    }
+    const tradeMs = new Date(trade.exitAt || trade.entryAt || 0).getTime();
+    if (Number.isFinite(tradeMs) && tradeMs > 0) {
+      timestamps.push(tradeMs);
+    }
+  }
+  for (const scaleOut of journal.scaleOuts || []) {
+    if (!matchesTradingSource(scaleOut, tradingSource, botMode)) {
+      continue;
+    }
+    const scaleOutMs = new Date(scaleOut.at || 0).getTime();
+    if (Number.isFinite(scaleOutMs) && scaleOutMs > 0) {
+      timestamps.push(scaleOutMs);
+    }
+  }
+  const latestMs = timestamps.length ? Math.max(...timestamps) : Date.now();
+  return new Date(latestMs).toISOString();
+}
+
+export function buildBudgetState(journal = {}, config = {}, nowIso = null, runtime = {}) {
+  const botMode = config.botMode || "paper";
+  const tradingSource = getRuntimeTradingSource(runtime, config, botMode);
+  const relevantTrades = (journal.trades || []).filter((trade) => matchesTradingSource(trade, tradingSource, botMode));
+  const relevantScaleOuts = (journal.scaleOuts || []).filter((event) => matchesTradingSource(event, tradingSource, botMode));
+  const relevantEquitySnapshots = (journal.equitySnapshots || []).filter((snapshot) => matchesTradingSource(snapshot, tradingSource, botMode));
+  const referenceNowIso = resolveBudgetStateNowIso(journal, config, nowIso, runtime);
+  const nowMs = new Date(referenceNowIso).getTime();
   const minMs = nowMs - 21 * 86_400_000;
   const strategyBuckets = new Map();
   const familyBuckets = new Map();
@@ -187,7 +237,7 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
   const sectorBuckets = new Map();
   const factorBuckets = new Map();
 
-  for (const trade of journal.trades || []) {
+  for (const trade of relevantTrades) {
     const atMs = new Date(trade.exitAt || trade.entryAt || 0).getTime();
     if (!Number.isFinite(atMs) || atMs < minMs) {
       continue;
@@ -233,15 +283,15 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
     })
   );
 
-  const dailyRealized = (journal.trades || [])
-    .filter((trade) => trade.exitAt && sameUtcDay(trade.exitAt, nowIso))
+  const dailyRealized = relevantTrades
+    .filter((trade) => trade.exitAt && sameUtcDay(trade.exitAt, referenceNowIso))
     .reduce((total, trade) => total + (trade.pnlQuote || 0), 0) +
-    (journal.scaleOuts || [])
-      .filter((event) => event.at && sameUtcDay(event.at, nowIso))
+    relevantScaleOuts
+      .filter((event) => event.at && sameUtcDay(event.at, referenceNowIso))
       .reduce((total, event) => total + (event.realizedPnl || 0), 0);
   const dailyLossFraction = dailyRealized < 0 ? Math.abs(dailyRealized) / Math.max(config.startingCash || 1, 1) : 0;
   const dailyBudgetFactor = clamp(1 - dailyLossFraction * 7.5, config.dailyRiskBudgetFloor || 0.35, 1.08);
-  const settledTrades = (journal.trades || []).filter((trade) => trade.exitAt);
+  const settledTrades = relevantTrades.filter((trade) => trade.exitAt);
   const recentReturns = settledTrades
     .slice(-(config.executionCalibrationLookbackTrades || 48))
     .map((trade) => Number(trade.netPnlPct || 0))
@@ -249,7 +299,7 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
   const tailLosses = recentReturns.filter((value) => value < 0).sort((left, right) => left - right);
   const cvarTailCount = Math.max(1, Math.floor(Math.max(1, tailLosses.length) * 0.2));
   const portfolioCvarPct = tailLosses.length ? Math.abs(average(tailLosses.slice(0, cvarTailCount))) : 0;
-  const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240));
+  const drawdownPct = computeDrawdownPct(relevantEquitySnapshots.slice(-240));
   const drawdownBudgetUsage = config.portfolioDrawdownBudgetPct
     ? clamp(drawdownPct / Math.max(config.portfolioDrawdownBudgetPct, 0.0001), 0, 3)
     : 0;
@@ -257,7 +307,7 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
     settledTrades,
     (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown",
     {
-      nowIso,
+      nowIso: referenceNowIso,
       maxIdleHours: config.portfolioRegimeKillSwitchMaxIdleHours || 96
     }
   );
@@ -266,6 +316,7 @@ export function buildBudgetState(journal = {}, config = {}, nowIso = new Date().
   );
 
   return {
+    tradingSource,
     strategyBudgetMap: scoreBucketMap(strategyBuckets),
     familyBudgetMap: scoreBucketMap(familyBuckets),
     regimeBudgetMap: scoreBucketMap(regimeBuckets),
@@ -287,7 +338,7 @@ export class PortfolioOptimizer {
     this.config = config;
   }
 
-  evaluateCandidate({ symbol, runtime, journal = {}, marketSnapshot, candidateProfile, openPositionContexts, regimeSummary, strategySummary = {}, marketStructureSummary = {}, calendarSummary = {} }) {
+  evaluateCandidate({ symbol, runtime, journal = {}, marketSnapshot, candidateProfile, openPositionContexts, regimeSummary, strategySummary = {}, marketStructureSummary = {}, calendarSummary = {}, nowIso = null }) {
     const allOpenPositionContexts = openPositionContexts || [];
     const comparableOpenPositionContexts = allOpenPositionContexts.filter((context) => context?.symbol && context.symbol !== symbol);
     const candidateCluster = candidateProfile.cluster || "other";
@@ -327,7 +378,7 @@ export class PortfolioOptimizer {
     });
 
     const candidateReturns = toReturns(marketSnapshot.candles || []);
-    const budgetState = buildBudgetState(journal, this.config, new Date().toISOString());
+    const budgetState = buildBudgetState(journal, this.config, nowIso, runtime);
     const correlations = comparableOpenPositionContexts.map((context) => ({
       symbol: context.symbol,
       correlation: rollingCorrelation(candidateReturns, toReturns(context.marketSnapshot.candles || []))
@@ -372,20 +423,35 @@ export class PortfolioOptimizer {
       event_risk: 0.45
     }[regimeSummary.regime] || 0.8;
 
-    const clusterExposureSoftenedInPaper =
+    const maxPairCorrelation = this.config.maxPairCorrelation || 0.82;
+    const maxClusterPositions = this.config.maxClusterPositions || 1;
+    const maxSectorPositions = this.config.maxSectorPositions || 2;
+    const maxFamilyPositions = this.config.maxFamilyPositions || 2;
+    const maxRegimePositions = this.config.maxRegimePositions || 2;
+
+    const singleClusterPaperSofteningEligible =
       this.config.botMode === "paper" &&
-      sameClusterPositions.length >= this.config.maxClusterPositions &&
+      sameClusterPositions.length >= maxClusterPositions &&
       sameSectorPositions.length === 0 &&
       sameFamilyPositions.length === 0 &&
       sameStrategyPositions.length === 0 &&
-      sameRegimePositions.length < this.config.maxRegimePositions &&
-      maxCorrelation <= this.config.maxPairCorrelation &&
+      sameRegimePositions.length < maxRegimePositions &&
       clusterHeat < 0.16;
-    const sameClusterPenalty = sameClusterPositions.length >= this.config.maxClusterPositions
+    const paperCorrelationSofteningLimit = Math.min(0.92, maxPairCorrelation + 0.1);
+    const pairCorrelationSoftenedInPaper =
+      singleClusterPaperSofteningEligible &&
+      maxCorrelation > maxPairCorrelation &&
+      maxCorrelation <= paperCorrelationSofteningLimit;
+    const clusterExposureSoftenedInPaper =
+      singleClusterPaperSofteningEligible &&
+      (maxCorrelation <= maxPairCorrelation || pairCorrelationSoftenedInPaper);
+    const sameClusterPenalty = sameClusterPositions.length >= maxClusterPositions
       ? (clusterExposureSoftenedInPaper ? 0.82 : 0.4)
       : 1;
-    const sameSectorPenalty = sameSectorPositions.length >= this.config.maxSectorPositions ? 0.7 : 1;
-    const correlationPenalty = maxCorrelation > this.config.maxPairCorrelation ? 0.35 : 1;
+    const sameSectorPenalty = sameSectorPositions.length >= maxSectorPositions ? 0.7 : 1;
+    const correlationPenalty = maxCorrelation > maxPairCorrelation
+      ? (pairCorrelationSoftenedInPaper ? 0.82 : 0.35)
+      : 1;
     const strategyBudgetFactor = budgetState.strategyBudgetMap[activeStrategy] || 1;
     const familyBudgetFactor = budgetState.familyBudgetMap[activeFamily] || 1;
     const regimeBudgetFactor = budgetState.regimeBudgetMap[activeRegime] || 1;
@@ -395,20 +461,18 @@ export class PortfolioOptimizer {
       ? average(candidateFactors.map((factor) => budgetState.factorBudgetMap[factor] || 1))
       : 1;
     const dailyBudgetFactor = budgetState.dailyBudgetFactor || 1;
-    const familyExposurePenalty = sameFamilyPositions.length >= this.config.maxFamilyPositions ? 0.58 : 1;
+    const familyExposurePenalty = sameFamilyPositions.length >= maxFamilyPositions ? 0.58 : 1;
+    const strategyPositionCap = Math.max(1, Math.min(2, maxFamilyPositions));
     const regimeExposureSoftenedInPaper =
       this.config.botMode === "paper" &&
-      sameRegimePositions.length >= this.config.maxRegimePositions &&
-      sameClusterPositions.length < this.config.maxClusterPositions &&
-      sameSectorPositions.length < this.config.maxSectorPositions &&
-      sameFamilyPositions.length < this.config.maxFamilyPositions &&
-      sameStrategyPositions.length === 0 &&
-      maxCorrelation <= this.config.maxPairCorrelation &&
-      regimeHeat < 0.18;
-    const regimeExposurePenalty = sameRegimePositions.length >= this.config.maxRegimePositions
+      sameRegimePositions.length >= maxRegimePositions &&
+      sameStrategyPositions.length < strategyPositionCap &&
+      maxCorrelation <= maxPairCorrelation &&
+      regimeHeat <= 0.22;
+    const regimeExposurePenalty = sameRegimePositions.length >= maxRegimePositions
       ? (regimeExposureSoftenedInPaper ? 0.84 : 0.7)
       : 1;
-    const strategyExposurePenalty = sameStrategyPositions.length >= Math.max(1, Math.min(2, this.config.maxFamilyPositions || 2)) ? 0.78 : 1;
+    const strategyExposurePenalty = sameStrategyPositions.length >= strategyPositionCap ? 0.78 : 1;
     const clusterHeatPenalty = clamp(1 - Math.max(0, clusterHeat - 0.18) * 1.8, 0.58, 1);
     const sectorHeatPenalty = clamp(1 - Math.max(0, sectorHeat - 0.28) * 1.4, 0.62, 1);
     const factorHeatPenalty = clamp(1 - Math.max(0, factorHeat - 0.22) * 1.6, 0.58, 1);
@@ -426,7 +490,20 @@ export class PortfolioOptimizer {
     const regimeLossStreakMeta = budgetState.regimeLossStreakMetaMap?.[activeRegime] || null;
     const regimeLossStreak = regimeLossStreakMeta?.streak ?? budgetState.regimeLossStreakMap?.[activeRegime] ?? 0;
     const regimeKillSwitchStale = Boolean(regimeLossStreakMeta?.stale);
-    const regimeKillSwitchActive = !regimeKillSwitchStale && regimeLossStreak >= (this.config.portfolioRegimeKillSwitchLossStreak || 3);
+    const effectiveRegimeLossStreak = regimeKillSwitchStale
+      ? Math.max(regimeLossStreak, regimeLossStreakMeta?.staleStreak || 0)
+      : regimeLossStreak;
+    const regimeKillSwitchThreshold = this.config.portfolioRegimeKillSwitchLossStreak || 3;
+    const regimeKillSwitchPaperGrace =
+      this.config.botMode === "paper" &&
+      (regimeLossStreakMeta?.lastTradeAgeHours || Number.POSITIVE_INFINITY) <=
+        (this.config.portfolioPaperRegimeKillSwitchMaxIdleHours || 336);
+    const regimeKillSwitchPersistentPressure =
+      (budgetState.portfolioCvarPct || 0) >= (this.config.portfolioMaxCvarPct || 0.028) ||
+      (budgetState.drawdownBudgetUsage || 0) >= 1;
+    const regimeKillSwitchActive =
+      effectiveRegimeLossStreak >= regimeKillSwitchThreshold &&
+      (!regimeKillSwitchStale || regimeKillSwitchPaperGrace || regimeKillSwitchPersistentPressure);
     const regimeKillSwitchSoftenedInPaper = this.config.botMode === "paper" && regimeKillSwitchActive;
 
     const sizeMultiplier = clamp(
@@ -478,27 +555,29 @@ export class PortfolioOptimizer {
 
     const reasons = [];
     const hardReasons = [];
-    if (sameClusterPositions.length >= this.config.maxClusterPositions && !clusterExposureSoftenedInPaper) {
+    if (sameClusterPositions.length >= maxClusterPositions && !clusterExposureSoftenedInPaper) {
       reasons.push("cluster_exposure_limit_hit");
       hardReasons.push("cluster_exposure_limit_hit");
     }
-    if (sameSectorPositions.length >= this.config.maxSectorPositions) {
+    if (sameSectorPositions.length >= maxSectorPositions) {
       reasons.push("sector_exposure_limit_hit");
       hardReasons.push("sector_exposure_limit_hit");
     }
-    if (maxCorrelation > this.config.maxPairCorrelation) {
+    if (maxCorrelation > maxPairCorrelation) {
       reasons.push("pair_correlation_too_high");
-      hardReasons.push("pair_correlation_too_high");
+      if (!pairCorrelationSoftenedInPaper) {
+        hardReasons.push("pair_correlation_too_high");
+      }
     }
-    if (sameFamilyPositions.length >= this.config.maxFamilyPositions) {
+    if (sameFamilyPositions.length >= maxFamilyPositions) {
       reasons.push("family_exposure_limit_hit");
       hardReasons.push("family_exposure_limit_hit");
     }
-    if (sameRegimePositions.length >= this.config.maxRegimePositions && !regimeExposureSoftenedInPaper) {
+    if (sameRegimePositions.length >= maxRegimePositions && !regimeExposureSoftenedInPaper) {
       reasons.push("regime_exposure_limit_hit");
       hardReasons.push("regime_exposure_limit_hit");
     }
-    if (sameStrategyPositions.length >= Math.max(1, Math.min(2, this.config.maxFamilyPositions || 2))) {
+    if (sameStrategyPositions.length >= strategyPositionCap) {
       reasons.push("strategy_exposure_limit_hit");
       hardReasons.push("strategy_exposure_limit_hit");
     }
@@ -603,12 +682,14 @@ export class PortfolioOptimizer {
       drawdownPct: budgetState.drawdownPct,
       drawdownBudgetUsage: budgetState.drawdownBudgetUsage,
       regimeLossStreak,
+      regimeStaleLossStreak: regimeLossStreakMeta?.staleStreak || 0,
       regimeLatestTradeAt: regimeLossStreakMeta?.latestTradeAt || null,
       regimeLastTradeAgeHours: Number.isFinite(regimeLossStreakMeta?.lastTradeAgeHours) ? regimeLossStreakMeta.lastTradeAgeHours : null,
       regimeKillSwitchActive,
       regimeKillSwitchStale,
       regimeKillSwitchSoftenedInPaper,
       clusterExposureSoftenedInPaper,
+      pairCorrelationSoftenedInPaper,
       regimeExposureSoftenedInPaper,
       cvarPenalty,
       drawdownBudgetPenalty,

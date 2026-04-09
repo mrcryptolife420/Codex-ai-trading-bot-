@@ -11,6 +11,7 @@ function assertRange(name, value, min, max, errors) {
 export function validateConfig(config) {
   const errors = [];
   const warnings = [];
+  const allowedPaperExecutionVenues = new Set(["internal", "binance_demo_spot"]);
 
   if (!Array.isArray(config.watchlist) || config.watchlist.length === 0) {
     errors.push("WATCHLIST must contain at least one symbol.");
@@ -406,6 +407,29 @@ export function validateConfig(config) {
     if (!config.enableExchangeProtection) {
       errors.push("Live mode requires ENABLE_EXCHANGE_PROTECTION=true.");
     }
+  }
+  const demoSpotConfigured = `${config.binanceApiBaseUrl || ""}`.toLowerCase().includes("demo-api.binance.com");
+  const hasLiveCredentials = Boolean(config.binanceApiKey && config.binanceApiSecret);
+  const liveAckPresent = config.liveTradingAcknowledged === "I_UNDERSTAND_LIVE_TRADING_RISK";
+  if (!allowedPaperExecutionVenues.has(config.paperExecutionVenue || "internal")) {
+    errors.push("PAPER_EXECUTION_VENUE must be one of: internal, binance_demo_spot.");
+  }
+  if (config.paperExecutionVenue === "binance_demo_spot") {
+    if (config.botMode !== "paper") {
+      errors.push("PAPER_EXECUTION_VENUE=binance_demo_spot requires BOT_MODE=paper.");
+    }
+    if (!demoSpotConfigured) {
+      errors.push("PAPER_EXECUTION_VENUE=binance_demo_spot requires BINANCE_API_BASE_URL to point to Binance Spot Demo.");
+    }
+    if (!hasLiveCredentials) {
+      errors.push("PAPER_EXECUTION_VENUE=binance_demo_spot requires BINANCE_API_KEY and BINANCE_API_SECRET.");
+    }
+    if (liveAckPresent) {
+      warnings.push("LIVE_TRADING_ACKNOWLEDGED is not used for PAPER_EXECUTION_VENUE=binance_demo_spot; keep live acknowledgement empty until you intentionally switch to real live trading.");
+    }
+  }
+  if (config.botMode !== "live" && demoSpotConfigured && hasLiveCredentials && liveAckPresent && config.paperExecutionVenue !== "binance_demo_spot") {
+    warnings.push("Demo Spot credentials and live acknowledgement are configured, but BOT_MODE is still paper; status/dashboard will continue to show paper balances until the manager switches to live.");
   }
 
   return {

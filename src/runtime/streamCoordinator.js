@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { LocalOrderBookEngine } from "../market/localOrderBook.js";
 import { mapWithConcurrency } from "../utils/async.js";
 
@@ -110,6 +111,20 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isDemoSpotEnvironment(client) {
+  return `${client?.baseUrl || ""}`.includes("demo-api.binance.com");
+}
+
+function isUserStreamListenKeyUnsupported(error) {
+  return error?.status === 410;
+}
+
+function toUserStreamError(message, payload = null) {
+  const error = new Error(message);
+  error.payload = payload;
+  return error;
+}
+
 function shutdownSocket(socket) {
   if (!socket) {
     return;
@@ -125,6 +140,13 @@ function shutdownSocket(socket) {
   } catch {
     // ignore local websocket shutdown failures
   }
+}
+
+function shouldUsePrivateUserStream(config = {}) {
+  return Boolean(config?.binanceApiKey) && (
+    config?.botMode === "live" ||
+    config?.paperExecutionVenue === "binance_demo_spot"
+  );
 }
 
 function toEventTimeMs(value) {
@@ -186,6 +208,8 @@ export class StreamCoordinator {
       lastUserMessageAt: null,
       lastError: null,
       listenKey: null,
+      userStreamTransport: null,
+      userStreamSubscriptionId: null,
       localBook: this.orderBook.getSummary(),
       symbols: {}
     };
@@ -310,7 +334,8 @@ export class StreamCoordinator {
       lastFuturesMessageAt: this.state.lastFuturesMessageAt,
       lastUserMessageAt: this.state.lastUserMessageAt,
       lastError: this.state.lastError,
-      userStreamSessionActive: Boolean(this.state.listenKey),
+      userStreamSessionActive: Boolean(this.state.listenKey || this.state.userStreamSubscriptionId != null),
+      userStreamTransport: this.state.userStreamTransport,
       localBook: this.state.localBook
     };
   }
@@ -481,7 +506,7 @@ export class StreamCoordinator {
       });
     }
     await this.startFuturesStream();
-    if (this.config.botMode === "live" && this.config.binanceApiKey) {
+    if (shouldUsePrivateUserStream(this.config)) {
       try {
         await this.startUserStream();
       } catch (error) {
@@ -660,6 +685,30 @@ export class StreamCoordinator {
   }
 
   async startUserStream() {
+    if (isDemoSpotEnvironment(this.client)) {
+      return this.startUserStreamViaWsApi();
+    }
+    try {
+      return await this.startUserStreamViaListenKey();
+    } catch (error) {
+      if (isUserStreamListenKeyUnsupported(error)) {
+        this.logger?.info?.("User data stream listenKey unsupported; falling back to WebSocket API subscription", {
+          status: error.status
+        });
+        return this.startUserStreamViaWsApi();
+      }
+      throw error;
+    }
+  }
+
+  resetUserStreamState() {
+    this.state.userStreamConnected = false;
+    this.state.listenKey = null;
+    this.state.userStreamTransport = null;
+    this.state.userStreamSubscriptionId = null;
+  }
+
+  closeExistingUserSocket() {
     this.clearRestartTimer("user");
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);
@@ -674,8 +723,14 @@ export class StreamCoordinator {
         // ignore local websocket close errors before reconnecting
       }
     }
+  }
+
+  async startUserStreamViaListenKey() {
+    this.closeExistingUserSocket();
+    this.resetUserStreamState();
     const listenKey = await this.client.createUserDataListenKey();
     this.state.listenKey = listenKey;
+    this.state.userStreamTransport = "listen_key";
     const socket = new WebSocket(`${this.client.getStreamBaseUrl()}/ws/${listenKey}`);
     this.userSocket = socket;
     socket.addEventListener("open", () => {
@@ -701,14 +756,14 @@ export class StreamCoordinator {
       }
       this.state.userStreamConnected = false;
       if (this.state.listenKey === listenKey) {
-        this.state.listenKey = null;
+        this.resetUserStreamState();
       }
       if (this.keepAliveTimer) {
         clearInterval(this.keepAliveTimer);
         this.keepAliveTimer = null;
       }
       this.userSocket = null;
-      if (this.config.botMode === "live" && this.config.binanceApiKey) {
+      if (shouldUsePrivateUserStream(this.config)) {
         void this.scheduleRestart("user", () => this.startUserStream(), "socket_close");
       }
     });
@@ -719,14 +774,14 @@ export class StreamCoordinator {
       this.state.lastError = error.message || "user_stream_error";
       this.state.userStreamConnected = false;
       if (this.state.listenKey === listenKey) {
-        this.state.listenKey = null;
+        this.resetUserStreamState();
       }
       if (this.keepAliveTimer) {
         clearInterval(this.keepAliveTimer);
         this.keepAliveTimer = null;
       }
       this.userSocket = null;
-      if (this.config.botMode === "live" && this.config.binanceApiKey) {
+      if (shouldUsePrivateUserStream(this.config)) {
         void this.scheduleRestart("user", () => this.startUserStream(), "socket_error");
       }
     });
@@ -735,6 +790,119 @@ export class StreamCoordinator {
         this.state.lastError = error.message;
       });
     }, 30 * 60 * 1000);
+  }
+
+  async startUserStreamViaWsApi() {
+    this.closeExistingUserSocket();
+    this.resetUserStreamState();
+    const requestId = crypto.randomUUID();
+    const timestamp = Date.now();
+    const params = {
+      apiKey: this.client.apiKey,
+      timestamp,
+      recvWindow: this.client.recvWindow
+    };
+    const socket = new WebSocket(this.client.getWsApiBaseUrl());
+    this.userSocket = socket;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (handler, value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        handler(value);
+      };
+      const timeout = setTimeout(() => {
+        settle(reject, toUserStreamError("Timed out starting Binance WebSocket API user data stream."));
+      }, 10_000);
+      const cleanupPending = () => clearTimeout(timeout);
+      const failAndReset = (error) => {
+        this.state.lastError = error.message;
+        this.resetUserStreamState();
+        if (this.userSocket === socket) {
+          this.userSocket = null;
+        }
+        cleanupPending();
+        settle(reject, error);
+      };
+
+      socket.addEventListener("open", () => {
+        if (this.userSocket !== socket) {
+          return;
+        }
+        const signature = this.client.signWebSocketParams(params);
+        socket.send(JSON.stringify({
+          id: requestId,
+          method: "userDataStream.subscribe.signature",
+          params: {
+            ...params,
+            signature
+          }
+        }));
+      });
+      socket.addEventListener("message", (event) => {
+        if (this.userSocket !== socket) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload?.id === requestId) {
+            if (Number(payload?.status || 0) !== 200) {
+              throw toUserStreamError(payload?.error?.msg || payload?.msg || "Binance WebSocket API user stream subscription failed.", payload);
+            }
+            this.state.userStreamConnected = true;
+            this.state.userStreamTransport = "ws_api";
+            this.state.userStreamSubscriptionId = payload?.result?.subscriptionId ?? null;
+            cleanupPending();
+            this.logger?.info?.("User data stream connected via WebSocket API", {
+              subscriptionId: this.state.userStreamSubscriptionId
+            });
+            settle(resolve, this.getStatus());
+            return;
+          }
+          if (payload?.event || payload?.subscriptionId != null) {
+            this.handleUserMessage(payload);
+          }
+        } catch (error) {
+          failAndReset(error);
+        }
+      });
+      socket.addEventListener("close", () => {
+        if (this.userSocket !== socket) {
+          return;
+        }
+        cleanupPending();
+        const wasActive = this.state.userStreamConnected || this.state.userStreamSubscriptionId != null;
+        this.resetUserStreamState();
+        this.userSocket = null;
+        if (!settled) {
+          settle(reject, toUserStreamError("Binance WebSocket API user data stream closed before subscription completed."));
+          return;
+        }
+        if (wasActive && shouldUsePrivateUserStream(this.config)) {
+          void this.scheduleRestart("user", () => this.startUserStream(), "socket_close");
+        }
+      });
+      socket.addEventListener("error", (eventError) => {
+        if (this.userSocket !== socket) {
+          return;
+        }
+        const error = toUserStreamError(eventError?.message || "user_stream_error");
+        cleanupPending();
+        if (!settled) {
+          failAndReset(error);
+          return;
+        }
+        this.state.lastError = error.message;
+        this.resetUserStreamState();
+        this.userSocket = null;
+        if (shouldUsePrivateUserStream(this.config)) {
+          void this.scheduleRestart("user", () => this.startUserStream(), "socket_error");
+        }
+      });
+    });
   }
 
   async stopPublicStream() {
@@ -779,26 +947,22 @@ export class StreamCoordinator {
     this.publicSocket = null;
     this.futuresSocket = null;
     this.userSocket = null;
+    const listenKey = this.state.listenKey;
     shutdownSocket(publicSocket);
     shutdownSocket(futuresSocket);
     shutdownSocket(userSocket);
     this.state.publicStreamConnected = false;
     this.state.futuresStreamConnected = false;
-    this.state.userStreamConnected = false;
+    this.resetUserStreamState();
     this.clearPublicBookTickers();
-    if (this.state.listenKey) {
+    if (listenKey) {
       try {
-        await this.client.closeUserDataListenKey(this.state.listenKey);
+        await this.client.closeUserDataListenKey(listenKey);
       } catch {
         // ignore cleanup failures
       }
-      this.state.listenKey = null;
     }
   }
 }
-
-
-
-
 
 

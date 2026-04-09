@@ -445,8 +445,41 @@ function buildMissedTradeMetricTags(analysis = {}, { compact = false } = {}) {
       ? makeTag(`Terecht ${formatPct(analysis.goodVetoRate, 0)}`, `tag ${analysis.goodVetoRate >= (analysis.badVetoRate || 0) ? "positive" : ""}`.trim())
       : null,
     analysis.averageMissedMovePct != null ? makeTag(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`) : null,
+    analysis.recentBadVetoCount ? makeTag(`${analysis.recentBadVetoCount} te streng recent`, "tag negative") : null,
+    analysis.recentGoodVetoCount ? makeTag(`${analysis.recentGoodVetoCount} terecht recent`, "tag positive") : null,
+    analysis.recentLateVetoCount ? makeTag(`${analysis.recentLateVetoCount} timing-case recent`) : null,
+    analysis.recentTimingIssueCount ? makeTag(`${analysis.recentTimingIssueCount} timing issue recent`) : null,
     analysis.recentMatches ? makeTag(`${analysis.recentMatches}${suffix}`) : null
   ].filter(Boolean);
+}
+
+function shadowOutcomeTone(outcome) {
+  if (outcome === "bad_veto") {
+    return "negative";
+  }
+  if (["good_veto", "small_winner"].includes(outcome)) {
+    return "positive";
+  }
+  return "neutral";
+}
+
+function shadowOutcomeText(review = {}) {
+  if (review.bestBranch?.outcome === "pending_review" || !review.resolvedAt) {
+    return "Review loopt nog";
+  }
+  if (review.outcome === "bad_veto") {
+    return "Blokkade te streng";
+  }
+  if (review.outcome === "good_veto") {
+    return "Blokkade terecht";
+  }
+  if (review.outcome === "right_direction_wrong_timing") {
+    return "Richting goed, timing zwak";
+  }
+  if (review.outcome === "late_veto") {
+    return "Te laat op gang";
+  }
+  return titleize(review.outcome || "observe");
 }
 
 function makeLearningEmptyCard(label, note) {
@@ -702,7 +735,12 @@ function whyTradeable(decision) {
   }
   const style = decision.executionStyle ? titleize(decision.executionStyle) : "Standaard entry";
   const market = decision.marketState?.phase ? titleize(decision.marketState.phase) : titleize(decision.regime || "regime");
-  return `${formatDecisionType(decision)} in ${market} met ${style.toLowerCase()}.`;
+  const qualityTier = decision.setupQuality?.tier ? titleize(decision.setupQuality.tier) : null;
+  const approvalLead = decision.approvalReasons?.[0] ? titleize(decision.approvalReasons[0]) : null;
+  return [formatDecisionType(decision), "in", market, "met", style.toLowerCase(), qualityTier ? `· ${qualityTier} quality` : "", approvalLead ? `· ${approvalLead}` : ""]
+    .join(" ")
+    .replace(/\s+·/g, " ·")
+    .trim() + ".";
 }
 
 function whyBlocked(decision) {
@@ -741,7 +779,13 @@ function signalStatusText(decision) {
 
 function signalSupportText(decision) {
   if (decision.allow) {
+    if (decision.entryDiagnostics?.strongestConfirmingFactors?.length) {
+      return `Bevestigd door ${decision.entryDiagnostics.strongestConfirmingFactors.map((reason) => titleize(reason)).join(", ")}.`;
+    }
     return actionText(decision);
+  }
+  if (decision.entryDiagnostics?.strongestRejectingFactors?.length) {
+    return `Afgewezen door ${decision.entryDiagnostics.strongestRejectingFactors.map((reason) => titleize(reason)).join(", ")}.`;
   }
   return decision.autoRecovery || "Wacht op betere marktdata, minder blokkades of een sterkere score.";
 }
@@ -829,12 +873,47 @@ function topBlocker(snapshot) {
   return blocked?.operatorAction || blocked?.blockerReasons?.[0] || null;
 }
 
+function buildPerformanceSegmentationView(snapshot) {
+  const performanceDiagnosis = snapshot?.dashboard?.report?.performanceDiagnosis || {};
+  const segmentation = performanceDiagnosis.segmentation || {};
+  const baseline = segmentation.baseline || {};
+  const legacy = segmentation.legacy || {};
+  const baselineTrades = baseline.tradeCount || 0;
+  const legacyTrades = legacy.tradeCount || 0;
+  const dominantLossSegment = segmentation.dominantLossSegment || null;
+  const hasClosedSample = baselineTrades > 0 || legacyTrades > 0;
+  const tone = !hasClosedSample
+    ? "neutral"
+    : dominantLossSegment
+      ? "negative"
+      : baselineTrades > 0 && (baseline.realizedPnl || 0) >= 0
+        ? "positive"
+        : "neutral";
+  const value = !hasClosedSample
+    ? "Nog geen gesloten sample"
+    : dominantLossSegment
+      ? `${titleize(dominantLossSegment)} domineert`
+      : titleize(segmentation.coverageStatus || "mixed");
+  const foot = !hasClosedSample
+    ? "Nog geen baseline-versus-legacy vergelijking beschikbaar."
+    : `Baseline ${baselineTrades} · ${formatMoney(baseline.realizedPnl || 0)} | Legacy ${legacyTrades} · ${formatMoney(legacy.realizedPnl || 0)}`;
+  return {
+    tone,
+    value,
+    foot,
+    note: segmentation.note || null,
+    baselineTrades,
+    legacyTrades
+  };
+}
+
 function buildHeroSummary(snapshot) {
   const manager = snapshot?.manager || {};
   const dashboard = snapshot?.dashboard || {};
   const readiness = dashboard.ops?.readiness || {};
   const leadDecision = dashboard.topDecisions?.[0] || null;
   const topReason = topBlocker(snapshot);
+  const performanceSegmentation = buildPerformanceSegmentationView(snapshot);
   const unresolvedCritical = unresolvedAlerts(snapshot).filter((item) => !item.acknowledgedAt && ["critical", "negative"].includes(item.severity));
   const freezeEntries = Boolean(dashboard.safety?.exchangeTruth?.freezeEntries);
   const probeOnly = Boolean(dashboard.safety?.orderLifecycle?.probeOnly?.enabled || dashboard.ops?.readiness?.reasons?.includes("probe_only"));
@@ -862,9 +941,18 @@ function buildHeroSummary(snapshot) {
     },
     {
       label: "Effectief budget",
-      value: formatMoney(effectiveBudget.deployableBudget || 0),
+      value: (effectiveBudget.deployableBudget || 0) > 0 || !effectiveBudget.constraintLabel
+        ? formatMoney(effectiveBudget.deployableBudget || 0)
+        : `${formatMoney(effectiveBudget.deployableBudget || 0)} · ${effectiveBudget.constraintLabel}`,
       tone: (effectiveBudget.deployableBudget || 0) > 0 ? "positive" : "neutral"
     },
+    performanceSegmentation.baselineTrades || performanceSegmentation.legacyTrades
+      ? {
+          label: "PnL split",
+          value: compactOperatorText(performanceSegmentation.foot, "Nog geen gesloten sample"),
+          tone: performanceSegmentation.tone
+        }
+      : null,
     {
       label: "Focus",
       value: focusText,
@@ -1020,14 +1108,17 @@ function buildSignalCard(decision) {
   quickGrid.append(
     makeMetricStat("Prob", formatPct(decision.probability, 0)),
     makeMetricStat("Conf", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
-    makeMetricStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal"))
+    makeMetricStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal")),
+    makeMetricStat("Quality", decision.setupQuality?.tier ? titleize(decision.setupQuality.tier) : "-")
   );
 
   const overview = makeNode("div", { className: "signal-overview" });
   const tags = [
     makeTag(titleize(decision.marketState?.phase || decision.regime || "setup")),
+    decision.entryDiagnostics?.marketCondition?.id ? makeTag(titleize(decision.entryDiagnostics.marketCondition.id)) : null,
     decision.strategy?.strategyLabel ? makeTag(decision.strategy.strategyLabel) : null,
     decision.executionStyle ? makeTag(titleize(decision.executionStyle)) : null,
+    decision.setupQuality?.tier ? makeTag(`${titleize(decision.setupQuality.tier)} quality`, `tag ${statusTone(decision.setupQuality.tier === "elite" ? "ready" : decision.setupQuality.tier === "good" ? "positive" : decision.setupQuality.tier === "watch" ? "watch" : "negative")}`.trim()) : null,
     decision.dataQuality?.status ? makeTag(titleize(decision.dataQuality.status), `tag ${statusTone(decision.dataQuality.status)}`.trim()) : null
   ].filter(Boolean);
   overview.append(...tags);
@@ -1035,7 +1126,8 @@ function buildSignalCard(decision) {
   const reasons = makeReasonRows([
     ["Setup", compactBodyText(whyTradeable(decision) || formatDecisionType(decision), 84, formatDecisionType(decision))],
     ["Focus", compactBodyText(signalPrimaryReason(decision), 120)],
-    ["Next", compactBodyText(signalSupportText(decision), 92)]
+    ["Gate", compactBodyText(signalSupportText(decision), 112)],
+    ["Next", compactBodyText(actionText(decision), 92)]
   ]);
 
   summary.append(
@@ -1218,19 +1310,23 @@ function renderShadowReviewNodes(reviews = []) {
     return [makeLearningEmptyCard("Shadow review", "Nog geen recente shadow-cases om te tonen.")];
   }
   return reviews.map((review) => {
+    const branchMoveText = Number.isFinite(review.bestBranch?.adjustedMovePct)
+      ? formatPct(review.bestBranch.adjustedMovePct, 1)
+      : "Nog in review";
     const branchText = review.bestBranch?.id
       ? review.bestBranch.outcome === "pending_review"
         ? `${titleize(review.bestBranch.id)} · Review loopt nog`
-        : `${titleize(review.bestBranch.id)} · ${titleize(review.bestBranch.outcome || "observe")} · ${formatPct(review.bestBranch.adjustedMovePct || 0, 1)}`
+        : `${titleize(review.bestBranch.id)} · ${titleize(review.bestBranch.outcome || "observe")} · ${branchMoveText}`
       : "Nog geen beste alternatieve branch.";
     const moveText = Number.isFinite(review.realizedMovePct)
-      ? `Move ${formatPct(review.realizedMovePct || 0, 1)}`
+      ? `Gemist ${formatPct(review.realizedMovePct, 1)}`
       : "Nog in review";
     return makeLearningReviewCard({
       title: review.symbol || "Shadow",
       outcome: review.outcome || "observe",
       metrics: [
         { text: moveText, className: "tag" },
+        { text: shadowOutcomeText(review), className: `tag ${shadowOutcomeTone(review.outcome)}`.trim() },
         { text: titleize(review.blocker || "geen blocker"), className: "tag" }
       ],
       note: review.lesson || "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.",
@@ -1273,6 +1369,7 @@ function renderLearning(snapshot) {
     exitDigest,
     adaptation,
     retrainPlan,
+    replayPlan,
     topScope,
     topBlocker,
     topOutcome,
@@ -1504,7 +1601,20 @@ function buildOpsCards(snapshot) {
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
   const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
+  const performanceSegmentation = buildPerformanceSegmentationView(snapshot);
   const externalFeeds = externalFeedHeadline(snapshot);
+  const lastEntryAttempt = snapshot?.dashboard?.ops?.lastEntryAttempt || {};
+  const entryBottleneck = compactJoin([
+    lastEntryAttempt.blockedReasonDetails?.featurePressureSources?.[0]
+      ? titleize(lastEntryAttempt.blockedReasonDetails.featurePressureSources[0].id)
+      : null,
+    lastEntryAttempt.blockedReasonDetails?.lowConfidenceDrivers?.[0]
+      ? titleize(lastEntryAttempt.blockedReasonDetails.lowConfidenceDrivers[0].id)
+      : null,
+    lastEntryAttempt.blockedReasonDetails?.strategyBlockers?.[0]
+      ? titleize(lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].id)
+      : null
+  ], " | ");
   return [
     {
       label: "Trading flow",
@@ -1551,6 +1661,12 @@ function buildOpsCards(snapshot) {
       tone: (sizingGuide.minTradeDominates || false) ? "neutral" : "positive"
     },
     {
+      label: "PnL split",
+      value: performanceSegmentation.value,
+      foot: performanceSegmentation.note || performanceSegmentation.foot,
+      tone: performanceSegmentation.tone
+    },
+    {
       label: "External feeds",
       value: externalFeeds.value,
       foot: externalFeeds.foot,
@@ -1574,6 +1690,8 @@ function buildOpsEvents(snapshot) {
   const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
   const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
   const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
+  const rawModelProbabilityAudit = snapshot?.dashboard?.ops?.rawModelProbabilityAudit || learningInsights.rawModelProbability || {};
+  const blockerFrictionAudit = snapshot?.dashboard?.ops?.blockerFrictionAudit || learningInsights.blockerFriction || {};
   const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
   const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
   const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
@@ -1584,6 +1702,7 @@ function buildOpsEvents(snapshot) {
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
   const externalFeeds = snapshot?.dashboard?.sourceReliability?.externalFeeds || {};
+  const lastEntryAttempt = snapshot?.dashboard?.ops?.lastEntryAttempt || {};
   const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
     title: titleize(item.type || item.severity || "alert"),
     detail: item.note || item.message || item.reason || "Alert vereist aandacht.",
@@ -1670,6 +1789,23 @@ function buildOpsEvents(snapshot) {
           title: "Guardrail friction",
           detail: blockerFrictionAudit.note || "Cooldowns, timeframe-conflicten of self-heal drukken nu de flow.",
           tone: blockerFrictionAudit.status === "priority" ? "negative" : "neutral"
+        }
+      : null,
+    lastEntryAttempt.status === "no_allowed_candidates"
+      ? {
+          title: "Entry bottleneck",
+          detail: compactJoin([
+            lastEntryAttempt.blockedReasonDetails?.featurePressureSources?.[0]
+              ? `${titleize(lastEntryAttempt.blockedReasonDetails.featurePressureSources[0].id)} ${lastEntryAttempt.blockedReasonDetails.featurePressureSources[0].count}x`
+              : null,
+            lastEntryAttempt.blockedReasonDetails?.lowConfidenceDrivers?.[0]
+              ? `${titleize(lastEntryAttempt.blockedReasonDetails.lowConfidenceDrivers[0].id)} ${lastEntryAttempt.blockedReasonDetails.lowConfidenceDrivers[0].count}x`
+              : null,
+            lastEntryAttempt.blockedReasonDetails?.strategyBlockers?.[0]
+              ? `${titleize(lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].id)} ${lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].count}x`
+              : null
+          ], " Â· ") || "De laatste entry-poging liep vast zonder extra detail.",
+          tone: "negative"
         }
       : null,
     marketCondition.conditionId

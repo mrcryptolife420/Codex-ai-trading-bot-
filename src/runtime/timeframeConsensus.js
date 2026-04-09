@@ -222,7 +222,12 @@ export function buildTimeframeConsensus({ marketSnapshot = {}, regimeSummary = {
   if (hardHigherTfConflict) {
     blockers.push("higher_tf_conflict");
   } else if (lowerDirectional && higherDirectional && Math.sign(lowerBias || 0) !== Math.sign(higherBias || 0)) {
-    reasons.push(strategyProfile.pendingReason || (lowerTriggerConfirmed ? "higher_tf_bias_against_entry" : "higher_tf_bias_without_confirmed_trigger"));
+    const softConflictReason = strategyProfile.pendingReason && !lowerTriggerConfirmed
+      ? strategyProfile.pendingReason
+      : (lowerTriggerConfirmed || !strategyProfile.hardConflict)
+        ? "higher_tf_bias_against_entry"
+        : "higher_tf_bias_without_confirmed_trigger";
+    reasons.push(softConflictReason);
   } else if (!lowerDirectional && higherDirectional) {
     reasons.push("higher_tf_bias_without_lower_trigger");
   }

@@ -16,6 +16,85 @@ function average(values = [], fallback = 0) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : fallback;
 }
 
+function buildStatusTriggers({
+  provisionalStatus = "active",
+  governanceScore = 0,
+  cooldownFloor = 0.47,
+  retireFloor = 0.33,
+  negativePnl = false,
+  falseNegativeHeavy = false,
+  falsePositiveHeavy = false,
+  lowReview = false,
+  hasCooldownHint = false
+} = {}) {
+  const triggers = [];
+  if (provisionalStatus === "retire") {
+    if (governanceScore <= retireFloor) {
+      triggers.push("governance_score_below_retire_floor");
+    }
+    if (negativePnl && falsePositiveHeavy && lowReview) {
+      triggers.push("negative_pnl_false_positive_bias_low_review");
+    }
+    return triggers;
+  }
+  if (provisionalStatus === "cooldown") {
+    if (governanceScore <= cooldownFloor) {
+      triggers.push("governance_score_below_cooldown_floor");
+    }
+    if (hasCooldownHint) {
+      triggers.push("offline_trainer_cooldown_hint");
+    }
+    if (negativePnl) {
+      triggers.push("negative_realized_pnl");
+    }
+    if (falseNegativeHeavy) {
+      triggers.push("false_negative_rate_high");
+    }
+  }
+  return triggers;
+}
+
+function buildPolicyNote({
+  stale = false,
+  status = "active",
+  triggers = [],
+  policy = {},
+  cooldownFloor = 0.47,
+  retireFloor = 0.33
+} = {}) {
+  if (stale) {
+    return "Historische strategy-governance is stale; cooldown telt nu alleen nog als observatie.";
+  }
+  if (status === "retire") {
+    if (triggers.includes("negative_pnl_false_positive_bias_low_review")) {
+      return `Retire actief: realized PnL ${num(policy.realizedPnl, 2)} met false-positive rate ${num(policy.falsePositiveRate)} en reviewscore ${num(policy.avgReviewScore)}.`;
+    }
+    if (triggers.includes("governance_score_below_retire_floor")) {
+      return `Retire actief: governance ${num(average(policy.governanceScores, 0), 4)} ligt onder retire-floor ${num(retireFloor, 2)}.`;
+    }
+    return "Governance score zakte te ver weg voor nieuwe allocatie.";
+  }
+  if (status === "cooldown") {
+    const details = [];
+    if (triggers.includes("governance_score_below_cooldown_floor")) {
+      details.push(`governance ${num(average(policy.governanceScores, 0), 4)} < ${num(cooldownFloor, 2)}`);
+    }
+    if (triggers.includes("negative_realized_pnl")) {
+      details.push(`realized PnL ${num(policy.realizedPnl, 2)}`);
+    }
+    if (triggers.includes("false_negative_rate_high")) {
+      details.push(`false-negative rate ${num(policy.falseNegativeRate)}`);
+    }
+    if (triggers.includes("offline_trainer_cooldown_hint")) {
+      details.push("offline trainer hint cooldown");
+    }
+    return details.length
+      ? `Cooldown actief: ${details.join(" | ")}.`
+      : "Strategie blijft actief maar met lagere prioriteit.";
+  }
+  return policy.noteSeeds?.[0] || "Geen retirement-actie nodig.";
+}
+
 function buildLatestTradeMap(journal = {}) {
   const latest = new Map();
   for (const trade of arr(journal.trades || [])) {
@@ -128,9 +207,20 @@ export function buildStrategyRetirementSnapshot({
         ? "observe"
         : governanceScore <= retireFloor || (negativePnl && falsePositiveHeavy && lowReview)
           ? "retire"
-          : governanceScore <= cooldownFloor || hasCooldownHint || negativePnl || falseNegativeHeavy
+          : governanceScore <= cooldownFloor || hasCooldownHint || falseNegativeHeavy
             ? "cooldown"
             : "active";
+      const statusTriggers = buildStatusTriggers({
+        provisionalStatus,
+        governanceScore,
+        cooldownFloor,
+        retireFloor,
+        negativePnl,
+        falseNegativeHeavy,
+        falsePositiveHeavy,
+        lowReview,
+        hasCooldownHint
+      });
       const status = stale && ["cooldown", "retire"].includes(provisionalStatus)
         ? "observe"
         : provisionalStatus;
@@ -151,16 +241,16 @@ export function buildStrategyRetirementSnapshot({
         latestTradeAt: latestTrade?.tradeAt || null,
         lastTradeAgeHours: Number.isFinite(lastTradeAgeHours) ? num(lastTradeAgeHours, 1) : null,
         status,
+        statusTriggers,
         sizeMultiplier: num(sizeMultiplier, 3),
-        note: stale
-          ? "Historische strategy-governance is stale; cooldown telt nu alleen nog als observatie."
-          : policy.noteSeeds[0] || (
-            status === "retire"
-              ? "Governance score zakte te ver weg voor nieuwe allocatie."
-              : status === "cooldown"
-                ? "Strategie blijft actief maar met lagere prioriteit."
-                : "Geen retirement-actie nodig."
-          )
+        note: buildPolicyNote({
+          stale,
+          status,
+          triggers: statusTriggers,
+          policy,
+          cooldownFloor,
+          retireFloor
+        })
       };
     })
     .sort((left, right) => {

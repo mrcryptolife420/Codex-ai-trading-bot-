@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "TRXUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-09T03:00:31.625Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-03",
+      "startTime": 1774625400000,
+      "endTime": 1775000700000,
+      "count": 418,
+      "updatedAt": "2026-04-09T03:00:31.623Z"
+    },
+    {
+      "id": "2026-04",
+      "startTime": 1775001600000,
+      "endTime": 1775703600000,
+      "count": 781,
+      "updatedAt": "2026-04-09T03:00:31.625Z"
+    }
+  ]
+}

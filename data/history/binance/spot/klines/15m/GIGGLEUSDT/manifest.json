@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "GIGGLEUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-08T23:14:13.501Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-04",
+      "startTime": 1775419200000,
+      "endTime": 1775689200000,
+      "count": 301,
+      "updatedAt": "2026-04-08T23:14:13.501Z"
+    }
+  ]
+}

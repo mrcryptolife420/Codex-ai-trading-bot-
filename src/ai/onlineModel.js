@@ -98,6 +98,7 @@ const PRIOR_WEIGHTS = {
   bearish_pattern: -0.18,
   inside_bar: 0.05,
   spread_bps: -0.28,
+  venue_divergence: -0.16,
   depth_imbalance: 0.17,
   weighted_depth_imbalance: 0.16,
   microprice_edge: 0.14,

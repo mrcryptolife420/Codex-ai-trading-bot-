@@ -35,6 +35,23 @@ function requiresOperatorAck(alert = {}, mode = "paper") {
   return !["capital_governor_blocked", "capital_governor_recovery", "execution_cost_budget_blocked", "readiness_degraded"].includes(alert.id || "");
 }
 
+function isDemoSpotEnvironment(config = {}) {
+  return `${config?.binanceApiBaseUrl || ""}`.toLowerCase().includes("demo-api.binance.com");
+}
+
+function buildConfigRuntimeSignature(config = {}) {
+  return JSON.stringify({
+    botMode: config?.botMode || "paper",
+    binanceApiBaseUrl: config?.binanceApiBaseUrl || "",
+    binanceFuturesApiBaseUrl: config?.binanceFuturesApiBaseUrl || "",
+    binanceApiKey: config?.binanceApiKey || "",
+    binanceApiSecret: config?.binanceApiSecret || "",
+    paperExecutionVenue: config?.paperExecutionVenue || "internal",
+    liveTradingAcknowledged: config?.liveTradingAcknowledged || "",
+    enableExchangeProtection: Boolean(config?.enableExchangeProtection)
+  });
+}
+
 export class BotManager {
   constructor({ projectRoot = process.cwd(), logger }) {
     this.projectRoot = projectRoot;
@@ -48,6 +65,11 @@ export class BotManager {
     this.lastStartAt = null;
     this.lastStopAt = null;
     this.lastModeSwitchAt = null;
+    this.externalConfigMode = null;
+    this.externalConfigSignature = null;
+    this.externalConfigCheckedAt = null;
+    this.externalModeDrift = null;
+    this.externalConfigDrift = null;
     this.stopReason = null;
     this.botNeedsReinitialize = false;
     this.serial = Promise.resolve();
@@ -76,6 +98,7 @@ export class BotManager {
     const bot = new TradingBot({ config, logger: this.logger });
     await bot.init();
     this.config = config;
+    this.configRuntimeSignature = buildConfigRuntimeSignature(config);
     this.bot = bot;
     this.botNeedsReinitialize = false;
     return bot;
@@ -85,6 +108,49 @@ export class BotManager {
     if (!this.bot || (!allowClosed && this.botNeedsReinitialize)) {
       await this.reinitializeBot();
     }
+    if (allowClosed && this.botNeedsReinitialize) {
+      return;
+    }
+    await this.syncStoppedModeFromEnv();
+  }
+
+  async inspectExternalMode() {
+    const latestConfig = await loadConfig(this.projectRoot);
+    this.externalConfigMode = latestConfig.botMode;
+    this.externalConfigSignature = buildConfigRuntimeSignature(latestConfig);
+    this.externalConfigCheckedAt = nowIso();
+    this.externalModeDrift = latestConfig.botMode !== (this.config?.botMode || null)
+      ? {
+          currentMode: this.config?.botMode || null,
+          externalMode: latestConfig.botMode
+        }
+      : null;
+    this.externalConfigDrift = this.externalConfigSignature !== (this.configRuntimeSignature || null)
+      ? {
+          currentMode: this.config?.botMode || null,
+          externalMode: latestConfig.botMode
+        }
+      : null;
+    return latestConfig.botMode;
+  }
+
+  async syncStoppedModeFromEnv() {
+    if (typeof this.bot?.refreshAnalysis !== "function") {
+      return false;
+    }
+    const externalMode = await this.inspectExternalMode();
+    const signatureDrift = this.externalConfigSignature !== (this.configRuntimeSignature || null);
+    if (!this.config || !externalMode || this.runState === "running") {
+      return false;
+    }
+    if (externalMode === this.config.botMode && !signatureDrift) {
+      return false;
+    }
+    await this.reinitializeBot();
+    await this.bot.refreshAnalysis?.();
+    this.lastModeSwitchAt = nowIso();
+    await this.inspectExternalMode();
+    return true;
   }
 
   buildSnapshotFromDashboard(dashboard) {
@@ -92,6 +158,10 @@ export class BotManager {
       manager: {
         runState: this.runState,
         currentMode: this.config.botMode,
+        externalConfigMode: this.externalConfigMode,
+        externalConfigDrift: this.externalConfigDrift,
+        externalConfigCheckedAt: this.externalConfigCheckedAt,
+        externalModeDrift: this.externalModeDrift,
         lastStartAt: this.lastStartAt,
         lastStopAt: this.lastStopAt,
         lastModeSwitchAt: this.lastModeSwitchAt,
@@ -140,6 +210,12 @@ export class BotManager {
       return null;
     }
     if (action === "switch_to_paper" && this.config?.botMode === "live") {
+      if (isDemoSpotEnvironment(this.config)) {
+        this.logger?.warn?.("Self-heal retained Binance Demo Spot mode instead of switching to paper", {
+          reason: selfHeal.reason
+        });
+        return "retained_demo_live_mode";
+      }
       const openPositions = this.bot?.runtime?.openPositions || [];
       if (openPositions.length) {
         const message = `Self-heal requested paper fallback while ${openPositions.length} live position(s) remain open; stopping manager instead.`;
@@ -378,6 +454,9 @@ export class BotManager {
       addReason("service_restart_backoff_active", "degraded");
     }
     const mode = snapshot?.manager?.currentMode || this.config?.botMode || "paper";
+    if (snapshot?.manager?.externalModeDrift?.externalMode && this.runState === "running") {
+      addReason("external_mode_mismatch", "degraded");
+    }
     if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, mode))) {
       addReason("operator_ack_required", "degraded");
     }

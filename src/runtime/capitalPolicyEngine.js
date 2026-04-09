@@ -24,7 +24,7 @@ export function buildCapitalPolicySnapshot({
   config = {},
   nowIso = new Date().toISOString()
 } = {}) {
-  const budgetState = buildBudgetState(journal, config, nowIso);
+  const budgetState = buildBudgetState(journal, config, nowIso, runtime);
   const worstFactors = topEntries(budgetState.factorBudgetMap, 4);
   const worstClusters = topEntries(budgetState.clusterBudgetMap, 4);
   const worstRegimes = topEntries(budgetState.regimeBudgetMap, 4);
@@ -81,6 +81,7 @@ export function buildCapitalPolicySnapshot({
       drawdownBudgetUsage: num(budgetState.drawdownBudgetUsage || 0, 4),
       portfolioCvarPct: num(budgetState.portfolioCvarPct || 0, 4)
     },
+    tradingSource: budgetState.tradingSource || null,
     factorBudgets: worstFactors,
     clusterBudgets: worstClusters,
     regimeBudgets: worstRegimes,

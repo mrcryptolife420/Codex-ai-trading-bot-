@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "BCHUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-08T07:48:15.147Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-03",
+      "startTime": 1774625400000,
+      "endTime": 1775000700000,
+      "count": 418,
+      "updatedAt": "2026-04-08T07:48:15.142Z"
+    },
+    {
+      "id": "2026-04",
+      "startTime": 1775001600000,
+      "endTime": 1775634300000,
+      "count": 704,
+      "updatedAt": "2026-04-08T07:48:15.147Z"
+    }
+  ]
+}

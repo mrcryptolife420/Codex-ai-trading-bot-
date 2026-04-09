@@ -165,13 +165,16 @@ export class PaperBroker {
     };
   }
 
-  async getEquity(runtime, midPrices = {}) {
+  async getEquity(runtime, midPrices = {}, balanceSnapshot = null) {
     ensurePaperState(runtime, this.config.startingCash);
+    const quoteFree = Number.isFinite(balanceSnapshot?.quoteFree)
+      ? balanceSnapshot.quoteFree
+      : runtime.paperPortfolio.quoteFree;
     const positionsValue = (runtime.openPositions || []).reduce((total, position) => {
       const mid = midPrices[position.symbol] || position.lastMarkedPrice || position.entryPrice;
       return total + position.quantity * mid;
     }, 0);
-    return runtime.paperPortfolio.quoteFree + positionsValue;
+    return quoteFree + positionsValue;
   }
 
   async reconcileRuntime() {
@@ -294,6 +297,7 @@ export class PaperBroker {
       scaleOutCompletedAt: null,
       scaleOutCount: 0,
       brokerMode: "paper",
+      executionVenue: "internal",
       learningLane: decision.learningLane || null,
       learningValueScore: Number.isFinite(decision.learningValueScore) ? decision.learningValueScore : null,
       paperLearningBudget: decision.paperLearningBudget || null
@@ -377,6 +381,7 @@ export class PaperBroker {
       realizedPnl,
       reason,
       brokerMode: "paper",
+      executionVenue: "internal",
       learningLane: position.learningLane || null,
       learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
       sessionAtEntry: position.sessionAtEntry || null,
@@ -490,6 +495,7 @@ export class PaperBroker {
       executionPolicyDecision: position.executionPolicyDecision || position.entryRationale?.rlPolicy || null,
       exitSource: "paper_market_exit",
       brokerMode: "paper",
+      executionVenue: "internal",
       learningLane: position.learningLane || null,
       learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
       sessionAtEntry: position.sessionAtEntry || null,

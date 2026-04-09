@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "XUSDUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-08T23:20:28.384Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-04",
+      "startTime": 1775405700000,
+      "endTime": 1775690100000,
+      "count": 317,
+      "updatedAt": "2026-04-08T23:20:28.384Z"
+    }
+  ]
+}

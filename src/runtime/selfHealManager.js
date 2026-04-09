@@ -7,6 +7,13 @@ function recentLossStreak(trades = [], { now = new Date(), lookbackMinutes = 0 }
   for (const trade of trades) {
     const exitAt = trade.exitAt || trade.at || null;
     if (!exitAt) {
+      if ((trade.pnlQuote || 0) < 0) {
+        streak += 1;
+        continue;
+      }
+      if ((trade.pnlQuote || 0) > 0) {
+        break;
+      }
       continue;
     }
     const exitMs = new Date(exitAt).getTime();
@@ -44,6 +51,48 @@ function canUsePaperRecoverableCriticalFallback({ botMode, criticalIssues = [], 
   }
   const recoverableIssues = new Set(["loss_streak_limit", "calibration_break"]);
   return criticalIssues.every((issue) => recoverableIssues.has(issue));
+}
+
+function canSwitchLiveModeToPaperFallback({ botMode, config = {} }) {
+  if (botMode !== "live" || !config.selfHealSwitchToPaper) {
+    return false;
+  }
+  const baseUrl = `${config.binanceApiBaseUrl || ""}`.toLowerCase();
+  return !baseUrl.includes("demo-api.binance.com");
+}
+
+function toIso(now = new Date()) {
+  return now instanceof Date && Number.isFinite(now.getTime())
+    ? now.toISOString()
+    : nowIso();
+}
+
+function buildTriggerWindow(
+  previous = {},
+  now = new Date(),
+  { mode = null, reason = null, issues = [], cooldownMinutes = 0 } = {}
+) {
+  const nextTriggeredAt =
+    now instanceof Date && Number.isFinite(now.getTime())
+      ? now.toISOString()
+      : nowIso();
+  const cooldownUntil = new Date(now.getTime() + Math.max(0, cooldownMinutes) * 60_000).toISOString();
+  const previousIssues = new Set((previous.issues || []).filter(Boolean));
+  const preservePreviousTrigger =
+    Boolean(previous.active) &&
+    previous.mode === mode &&
+    (previous.reason || null) === reason &&
+    previousIssues.size === issues.length &&
+    issues.every((issue) => previousIssues.has(issue));
+
+  return {
+    cooldownUntil: preservePreviousTrigger && previous.cooldownUntil
+      ? previous.cooldownUntil
+      : cooldownUntil,
+    lastTriggeredAt: preservePreviousTrigger && previous.lastTriggeredAt
+      ? previous.lastTriggeredAt
+      : nextTriggeredAt
+  };
 }
 
 export class SelfHealManager {
@@ -155,8 +204,15 @@ export class SelfHealManager {
 
     const cooldownActive = previous.cooldownUntil && new Date(previous.cooldownUntil).getTime() > now.getTime();
     const recoveredPaperCooldown = botMode === "paper" && cooldownActive && !health.circuitOpen && !criticalIssues.length && !warningIssues.length;
+    const allowPaperFallbackSwitch = canSwitchLiveModeToPaperFallback({ botMode, config: this.config });
     if (criticalIssues.length) {
       if (canUsePaperLossStreakFallback({ botMode, criticalIssues, health })) {
+        const triggerWindow = buildTriggerWindow(previous, now, {
+          mode: "low_risk_only",
+          reason: "loss_streak_limit",
+          issues: criticalIssues,
+          cooldownMinutes: this.config.selfHealCooldownMinutes
+        });
         state.mode = "low_risk_only";
         state.active = true;
         state.reason = "loss_streak_limit";
@@ -167,11 +223,17 @@ export class SelfHealManager {
         state.thresholdPenalty = 0.08;
         state.lowRiskOnly = true;
         state.learningAllowed = true;
-        state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
-        state.lastTriggeredAt = nowIso();
+        state.cooldownUntil = triggerWindow.cooldownUntil;
+        state.lastTriggeredAt = triggerWindow.lastTriggeredAt;
         return finalizeState(state);
       }
       if (canUsePaperCalibrationProbe({ botMode, criticalIssues, health })) {
+        const triggerWindow = buildTriggerWindow(previous, now, {
+          mode: "paper_calibration_probe",
+          reason: "calibration_break",
+          issues: criticalIssues,
+          cooldownMinutes: this.config.selfHealCooldownMinutes
+        });
         state.mode = "paper_calibration_probe";
         state.active = true;
         state.reason = "calibration_break";
@@ -188,12 +250,18 @@ export class SelfHealManager {
         state.thresholdPenalty = this.config.selfHealPaperCalibrationProbeThresholdPenalty;
         state.lowRiskOnly = true;
         state.learningAllowed = true;
-        state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
-        state.lastTriggeredAt = nowIso();
+        state.cooldownUntil = triggerWindow.cooldownUntil;
+        state.lastTriggeredAt = triggerWindow.lastTriggeredAt;
         return finalizeState(state);
       }
       if (canUsePaperRecoverableCriticalFallback({ botMode, criticalIssues, health })) {
         const includesCalibrationBreak = criticalIssues.includes("calibration_break");
+        const triggerWindow = buildTriggerWindow(previous, now, {
+          mode: "low_risk_only",
+          reason: criticalIssues.includes("loss_streak_limit") ? "loss_streak_limit" : criticalIssues[0],
+          issues: criticalIssues,
+          cooldownMinutes: this.config.selfHealCooldownMinutes
+        });
         state.mode = "low_risk_only";
         state.active = true;
         state.reason = criticalIssues.includes("loss_streak_limit") ? "loss_streak_limit" : criticalIssues[0];
@@ -217,16 +285,22 @@ export class SelfHealManager {
           : 0.08;
         state.lowRiskOnly = true;
         state.learningAllowed = true;
-        state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
-        state.lastTriggeredAt = nowIso();
+        state.cooldownUntil = triggerWindow.cooldownUntil;
+        state.lastTriggeredAt = triggerWindow.lastTriggeredAt;
         return finalizeState(state);
       }
-      state.mode = botMode === "live" && this.config.selfHealSwitchToPaper ? "paper_fallback" : "paused";
+      const triggerWindow = buildTriggerWindow(previous, now, {
+        mode: allowPaperFallbackSwitch ? "paper_fallback" : "paused",
+        reason: criticalIssues[0],
+        issues: criticalIssues,
+        cooldownMinutes: this.config.selfHealCooldownMinutes
+      });
+      state.mode = allowPaperFallbackSwitch ? "paper_fallback" : "paused";
       state.active = true;
       state.reason = criticalIssues[0];
       state.issues = criticalIssues;
       state.actions = [
-        botMode === "live" && this.config.selfHealSwitchToPaper ? "switch_to_paper" : "pause_entries"
+        allowPaperFallbackSwitch ? "switch_to_paper" : "pause_entries"
       ];
       if (this.config.selfHealResetRlOnTrigger) {
         state.actions.push("reset_rl_policy");
@@ -234,18 +308,18 @@ export class SelfHealManager {
       if (this.config.selfHealRestoreStableModel && hasStableModel) {
         state.actions.push("restore_stable_model");
       }
-      state.managerAction = botMode === "live" && this.config.selfHealSwitchToPaper ? "switch_to_paper" : null;
+      state.managerAction = allowPaperFallbackSwitch ? "switch_to_paper" : null;
       state.sizeMultiplier = 0;
       state.thresholdPenalty = 0.12;
       state.lowRiskOnly = true;
       state.learningAllowed = false;
-      state.cooldownUntil = new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
-      state.lastTriggeredAt = nowIso();
+      state.cooldownUntil = triggerWindow.cooldownUntil;
+      state.lastTriggeredAt = triggerWindow.lastTriggeredAt;
       return finalizeState(state);
     }
 
     if (recoveredPaperCooldown) {
-      state.lastRecoveryAt = nowIso();
+      state.lastRecoveryAt = toIso(now);
       return finalizeState(state);
     }
 
@@ -262,11 +336,11 @@ export class SelfHealManager {
       state.cooldownUntil = previous.cooldownUntil && cooldownActive
         ? previous.cooldownUntil
         : new Date(now.getTime() + this.config.selfHealCooldownMinutes * 60_000).toISOString();
-      state.lastTriggeredAt = previous.lastTriggeredAt || nowIso();
+      state.lastTriggeredAt = previous.lastTriggeredAt || toIso(now);
       return finalizeState(state);
     }
 
-    state.lastRecoveryAt = previous.active ? nowIso() : previous.lastRecoveryAt || null;
+    state.lastRecoveryAt = previous.active ? toIso(now) : previous.lastRecoveryAt || null;
     return finalizeState(state);
   }
 

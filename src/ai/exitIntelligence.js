@@ -68,11 +68,6 @@ export class ExitIntelligence {
     const strategyFamily = strategySummary.family || position.strategyFamily || position.strategyDecision?.family || position.entryRationale?.strategy?.family || "unknown_family";
     const entrySlipDelta = safeNumber(position.entryExecutionAttribution?.slippageDeltaBps);
     const executionRegretScore = clamp(Math.max(0, entrySlipDelta) / 8 + Math.max(0, -bookPressure) * 0.18, 0, 1);
-    const holdingPhase = heldMinutes <= Math.max(15, (this.config.maxHoldMinutes || 1) * 0.18)
-      ? "early"
-      : heldMinutes >= Math.max(45, (this.config.maxHoldMinutes || 1) * 0.72)
-        ? "late"
-        : "mature";
     const winnerState = pnlPct >= 0.02
       ? "strong_winner"
       : pnlPct >= 0.006
@@ -84,6 +79,32 @@ export class ExitIntelligence {
           : "neutral";
     const continuationFriendly = ["trend_continuation", "breakout_release"].includes(conditionId);
     const failureProne = ["trend_exhaustion", "failed_breakout", "high_vol_event", "low_liquidity_caution"].includes(conditionId);
+    const maxHoldMinutes = Math.max(this.config.maxHoldMinutes || 1, 1);
+    const earlyHoldWindowMinutes = Math.max(
+      15,
+      maxHoldMinutes * (
+        continuationFriendly
+          ? (winnerState === "strong_winner" ? 0.42 : 0.34)
+          : failureProne
+            ? 0.16
+            : 0.18
+      )
+    );
+    const lateHoldWindowMinutes = Math.max(
+      45,
+      maxHoldMinutes * (
+        continuationFriendly
+          ? (winnerState === "strong_winner" ? 0.84 : 0.78)
+          : failureProne
+            ? 0.62
+            : 0.72
+      )
+    );
+    const holdingPhase = heldMinutes <= earlyHoldWindowMinutes
+      ? "early"
+      : heldMinutes >= lateHoldWindowMinutes
+        ? "late"
+        : "mature";
     const preferredExitStyle = continuationFriendly
       ? "trail"
       : failureProne
@@ -263,6 +284,8 @@ export class ExitIntelligence {
       conditionRisk: num(conditionRisk),
       conditionTransitionState,
       holdingPhase,
+      earlyHoldWindowMinutes: num(earlyHoldWindowMinutes, 1),
+      lateHoldWindowMinutes: num(lateHoldWindowMinutes, 1),
       winnerState,
       preferredExitStyle,
       trailTightnessBias: num(trailTightnessBias),

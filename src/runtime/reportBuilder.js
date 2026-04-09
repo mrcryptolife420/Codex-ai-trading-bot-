@@ -1,3 +1,5 @@
+import { getRuntimeTradingSource, matchesBrokerMode, matchesTradingSource } from "../utils/tradingSource.js";
+
 function safeDivide(numerator, denominator, fallback = 0) {
   return denominator ? numerator / denominator : fallback;
 }
@@ -139,6 +141,310 @@ function average(values = []) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : 0;
 }
 
+function buildGroupedPerformance(trades = [], keyFn = () => "unknown") {
+  const buckets = new Map();
+  for (const trade of trades) {
+    const id = keyFn(trade) || "unknown";
+    if (!buckets.has(id)) {
+      buckets.set(id, {
+        id,
+        count: 0,
+        realizedPnl: 0,
+        grossMovePnl: 0,
+        totalFees: 0,
+        winCount: 0,
+        totalPnlPct: 0,
+        executionQuality: 0,
+        captureEfficiency: 0
+      });
+    }
+    const bucket = buckets.get(id);
+    bucket.count += 1;
+    bucket.realizedPnl += safeNumber(trade.pnlQuote, 0);
+    bucket.grossMovePnl += safeNumber(trade.grossMovePnl, 0);
+    bucket.totalFees += safeNumber(trade.totalFees, 0);
+    bucket.winCount += safeNumber(trade.pnlQuote, 0) > 0 ? 1 : 0;
+    bucket.totalPnlPct += safeNumber(trade.netPnlPct, 0);
+    bucket.executionQuality += safeNumber(trade.executionQualityScore, 0);
+    bucket.captureEfficiency += safeNumber(trade.captureEfficiency, 0);
+  }
+  return [...buckets.values()]
+    .map((bucket) => ({
+      id: bucket.id,
+      tradeCount: bucket.count,
+      realizedPnl: bucket.realizedPnl,
+      grossMovePnl: bucket.grossMovePnl,
+      totalFees: bucket.totalFees,
+      winRate: safeDivide(bucket.winCount, bucket.count),
+      averagePnlPct: safeDivide(bucket.totalPnlPct, bucket.count),
+      averageExecutionQuality: safeDivide(bucket.executionQuality, bucket.count),
+      averageCaptureEfficiency: safeDivide(bucket.captureEfficiency, bucket.count)
+    }))
+    .sort((left, right) => left.realizedPnl - right.realizedPnl);
+}
+
+function resolveExitReasonBucket(trade = {}) {
+  const rawReason = trade.reason || trade.exitReason || "unknown";
+  if (rawReason === "stop_loss" && safeNumber(trade.exitPrice, 0) > safeNumber(trade.entryPrice, 0)) {
+    return "protective_stop";
+  }
+  return rawReason;
+}
+
+function buildBaselineCorePolicy({
+  groupedStrategies = [],
+  groupedRegimes = [],
+  groupedSessions = [],
+  reportStats = {},
+  config = {}
+} = {}) {
+  const minTradeCount = Math.max(1, Math.round(safeNumber(config.baselineCoreMinTradeCount, 8)));
+  const minPreferredTrades = Math.max(1, Math.round(safeNumber(config.baselineCoreMinPreferredTrades, 4)));
+  const minSuspendTrades = Math.max(1, Math.round(safeNumber(config.baselineCoreMinSuspendTrades, 3)));
+  const preferredStrategyCount = Math.max(1, Math.round(safeNumber(config.baselineCorePreferredStrategyCount, 3)));
+  const lossCutoff = safeNumber(config.baselineCoreStrategyLossCutoff, -0.5);
+  const catastrophicLossCutoff = safeNumber(config.baselineCoreCatastrophicStrategyLossCutoff, -5);
+  const maxSuspendWinRate = safeNumber(config.baselineCoreMaxSuspendWinRate, 0.2);
+  const severeNegativeEdge =
+    (reportStats.tradeCount || 0) >= minTradeCount &&
+    safeNumber(reportStats.realizedPnl, 0) < 0 &&
+    safeNumber(reportStats.winRate, 0) <= 0.22 &&
+    safeNumber(reportStats.profitFactor, 0) < 0.75;
+  const preferredStrategies = groupedStrategies
+    .filter((item) =>
+      item.tradeCount >= minPreferredTrades &&
+      item.realizedPnl >= 0 &&
+      item.winRate >= 0.25
+    )
+    .sort((left, right) => right.realizedPnl - left.realizedPnl || right.winRate - left.winRate)
+    .slice(0, preferredStrategyCount)
+    .map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount,
+      realizedPnl: Number(item.realizedPnl.toFixed(2)),
+      winRate: Number(item.winRate.toFixed(4))
+    }));
+  const suspendedStrategies = groupedStrategies
+    .filter((item) =>
+      item.id !== "unknown" && (
+        item.realizedPnl <= catastrophicLossCutoff ||
+        (
+          item.tradeCount >= minSuspendTrades &&
+          item.realizedPnl <= lossCutoff &&
+          item.winRate <= maxSuspendWinRate
+        )
+      )
+    )
+    .sort((left, right) => left.realizedPnl - right.realizedPnl)
+    .slice(0, 8)
+    .map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount,
+      realizedPnl: Number(item.realizedPnl.toFixed(2)),
+      winRate: Number(item.winRate.toFixed(4))
+    }));
+  const watchRegimes = groupedRegimes
+    .filter((item) => item.tradeCount >= Math.max(4, Math.floor(minTradeCount / 2)))
+    .slice(0, 4)
+    .map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount,
+      realizedPnl: Number(item.realizedPnl.toFixed(2)),
+      winRate: Number(item.winRate.toFixed(4))
+    }));
+  const weakestSessions = groupedSessions
+    .filter((item) => item.tradeCount >= 3)
+    .slice(0, 4)
+    .map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount,
+      realizedPnl: Number(item.realizedPnl.toFixed(2)),
+      winRate: Number(item.winRate.toFixed(4))
+    }));
+  const enforce = Boolean(config.baselineCoreEnabled !== false) && severeNegativeEdge && preferredStrategies.length > 0;
+  return {
+    active: Boolean(config.baselineCoreEnabled !== false) && severeNegativeEdge,
+    enforce,
+    reason: severeNegativeEdge ? "recent_negative_edge" : "monitor_only",
+    preferredStrategies,
+    suspendedStrategies,
+    watchRegimes,
+    weakestSessions,
+    note: enforce
+      ? `Baseline core dwingt nu ${preferredStrategies.map((item) => item.id).join(", ")} af en houdt ${suspendedStrategies.map((item) => item.id).join(", ")} buiten de paper-kern.`
+      : severeNegativeEdge
+        ? "Baseline core ziet negatieve edge, maar er is nog geen kleine voorkeursset met genoeg positief bewijs."
+        : "Baseline core blijft observerend; de recente sample is niet negatief genoeg voor harde reductie."
+  };
+}
+
+function resolveBaselineCoreTradeState(trade = {}) {
+  const baseline = trade.entryRationale?.baselineCore || trade.baselineCore || {};
+  const hasMetadata = Object.keys(baseline || {}).length > 0;
+  const active = Boolean(baseline.active);
+  const enforce = Boolean(baseline.enforce);
+  return {
+    hasMetadata,
+    active,
+    enforce,
+    isBaselineCore: active && enforce,
+    matchedPreferred: baseline.matchedPreferred !== false,
+    selectedStrategy: baseline.selectedStrategy || trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null,
+    originalStrategy: baseline.originalStrategy || null
+  };
+}
+
+function buildSegmentPerformanceWindow(trades = []) {
+  const reportStats = buildTradeStats(trades);
+  const pnlDecomposition = buildPnlDecomposition(trades);
+  const groupedStrategies = buildGroupedPerformance(trades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown");
+  const topLoser = groupedStrategies[0] || null;
+  const alphaNegativeBeforeCosts = safeNumber(pnlDecomposition.grossMovePnl, 0) < 0;
+  const realizedPnl = safeNumber(reportStats.realizedPnl, 0);
+  const status = !trades.length
+    ? "empty"
+    : alphaNegativeBeforeCosts && realizedPnl < 0
+      ? "negative"
+      : realizedPnl < 0
+        ? "warning"
+        : "stable";
+  return {
+    tradeCount: reportStats.tradeCount || 0,
+    realizedPnl: Number(realizedPnl.toFixed(2)),
+    winRate: Number(safeNumber(reportStats.winRate, 0).toFixed(4)),
+    profitFactor: Number.isFinite(reportStats.profitFactor)
+      ? Number(reportStats.profitFactor.toFixed(3))
+      : null,
+    grossMovePnl: Number(safeNumber(pnlDecomposition.grossMovePnl, 0).toFixed(2)),
+    totalFees: Number(safeNumber(pnlDecomposition.totalFees, 0).toFixed(2)),
+    executionDragEstimate: Number(safeNumber(pnlDecomposition.executionDragEstimate, 0).toFixed(2)),
+    alphaNegativeBeforeCosts,
+    latestTradeAt: resolveLatestTradeAt(trades),
+    weakestStrategy: topLoser
+      ? {
+          id: topLoser.id,
+          tradeCount: topLoser.tradeCount,
+          realizedPnl: Number(safeNumber(topLoser.realizedPnl, 0).toFixed(2)),
+          winRate: Number(safeNumber(topLoser.winRate, 0).toFixed(4))
+        }
+      : null,
+    status
+  };
+}
+
+function buildBaselineSegmentation(trades = []) {
+  const taggedStates = trades.map((trade) => ({ trade, state: resolveBaselineCoreTradeState(trade) }));
+  const taggedTradeCount = taggedStates.filter(({ state }) => state.hasMetadata).length;
+  const baselineTrades = taggedStates.filter(({ state }) => state.isBaselineCore).map(({ trade }) => trade);
+  const legacyTrades = taggedStates.filter(({ state }) => !state.isBaselineCore).map(({ trade }) => trade);
+  const baseline = buildSegmentPerformanceWindow(baselineTrades);
+  const legacy = buildSegmentPerformanceWindow(legacyTrades);
+  const taggedTradeShare = safeDivide(taggedTradeCount, trades.length);
+  const mixedWindow = baseline.tradeCount > 0 && legacy.tradeCount > 0;
+  const negativeSegments = [
+    { id: "baseline", realizedPnl: baseline.realizedPnl },
+    { id: "legacy", realizedPnl: legacy.realizedPnl }
+  ].filter((item) => item.realizedPnl < 0);
+  const dominantLossSegment = negativeSegments
+    .sort((left, right) => Math.abs(right.realizedPnl) - Math.abs(left.realizedPnl))[0]?.id || null;
+  const coverageStatus = !trades.length
+    ? "empty"
+    : taggedTradeCount === 0
+      ? "untagged"
+      : taggedTradeCount < trades.length
+        ? "mixed"
+        : "complete";
+  const note = baseline.tradeCount === 0
+    ? "Er zijn nog geen gesloten baseline-core trades in de rapport-window; legacy-PnL domineert de huidige waarheid."
+    : mixedWindow
+      ? `De rapport-window mengt ${baseline.tradeCount} baseline-core trade(s) met ${legacy.tradeCount} legacy trade(s); beoordeel de simplificatie dus apart.`
+      : "De huidige rapport-window bestaat volledig uit baseline-core trades.";
+  return {
+    coverageStatus,
+    taggedTradeCount,
+    taggedTradeShare: Number(taggedTradeShare.toFixed(4)),
+    mixedWindow,
+    dominantLossSegment,
+    baseline,
+    legacy,
+    note
+  };
+}
+
+function buildPerformanceDiagnosis({
+  trades = [],
+  reportStats = {},
+  pnlDecomposition = {},
+  executionCostSummary = {},
+  config = {}
+} = {}) {
+  const groupedStrategies = buildGroupedPerformance(trades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown");
+  const groupedFamilies = buildGroupedPerformance(trades, (trade) => trade.strategyDecision?.family || trade.entryRationale?.strategy?.family || "unknown");
+  const groupedRegimes = buildGroupedPerformance(trades, (trade) => trade.regimeAtEntry || "unknown");
+  const groupedSessions = buildGroupedPerformance(trades, (trade) => trade.entryRationale?.session?.session || trade.sessionAtEntry || "unknown");
+  const groupedExits = buildGroupedPerformance(trades, resolveExitReasonBucket);
+  const grossMovePnl = safeNumber(pnlDecomposition.grossMovePnl, 0);
+  const totalFees = safeNumber(pnlDecomposition.totalFees, 0);
+  const executionDragEstimate = safeNumber(pnlDecomposition.executionDragEstimate, 0);
+  const realizedPnl = safeNumber(reportStats.realizedPnl, 0);
+  const alphaNegativeBeforeCosts = grossMovePnl < 0;
+  const costShare = Math.abs(realizedPnl) > 0 ? (totalFees + executionDragEstimate) / Math.abs(realizedPnl) : 0;
+  const mainLossDriver = alphaNegativeBeforeCosts
+    ? "weak_trade_alpha"
+    : costShare >= 0.45
+      ? "execution_and_fee_drag"
+      : "mixed";
+  const segmentation = buildBaselineSegmentation(trades);
+  const baselineCore = buildBaselineCorePolicy({
+    groupedStrategies,
+    groupedRegimes,
+    groupedSessions,
+    reportStats,
+    config
+  });
+  const status = alphaNegativeBeforeCosts && safeNumber(reportStats.winRate, 0) <= 0.22
+    ? "critical"
+    : safeNumber(reportStats.realizedPnl, 0) < 0
+      ? "warning"
+      : "stable";
+  return {
+    status,
+    edgeStatus: alphaNegativeBeforeCosts ? "negative_before_costs" : "not_proven_positive",
+    mainLossDriver,
+    alphaNegativeBeforeCosts,
+    costShare: Number(costShare.toFixed(4)),
+    realizedPnl: Number(realizedPnl.toFixed(2)),
+    grossMovePnl: Number(grossMovePnl.toFixed(2)),
+    totalFees: Number(totalFees.toFixed(2)),
+    executionDragEstimate: Number(executionDragEstimate.toFixed(2)),
+    averageTotalCostBps: Number(safeNumber(executionCostSummary.averageTotalCostBps, 0).toFixed(2)),
+    topLosers: {
+      strategies: groupedStrategies.slice(0, 5),
+      families: groupedFamilies.slice(0, 5),
+      regimes: groupedRegimes.slice(0, 4),
+      sessions: groupedSessions.slice(0, 4),
+      exitReasons: groupedExits.slice(0, 4)
+    },
+    segmentation,
+    baselineCore,
+    notes: [
+      alphaNegativeBeforeCosts
+        ? "De recente sample verliest al geld voor fees en execution drag; de trading core heeft dus geen bewezen edge."
+        : "De recente sample heeft nog geen overtuigende positieve edge voor kosten.",
+      groupedStrategies[0]
+        ? `${groupedStrategies[0].id} is momenteel de grootste strategieverliezer in de rapport-window.`
+        : "Nog geen duidelijke strategieverliezer zichtbaar.",
+      groupedRegimes[0]
+        ? `${groupedRegimes[0].id} is momenteel het zwakste regime in de rapport-window.`
+        : "Nog geen duidelijke regimeverliezer zichtbaar.",
+      groupedExits[0]
+        ? `${groupedExits[0].id} is momenteel de duurste exit-reason in gerealiseerde PnL.`
+        : "Nog geen duidelijke exit-concentratie zichtbaar.",
+      segmentation.note
+    ]
+  };
+}
+
 function buildScaleOutSummary(scaleOuts = []) {
   return {
     count: scaleOuts.length,
@@ -192,6 +498,28 @@ function resolveLatestTradeAt(trades = []) {
     .filter((value) => Number.isFinite(value))
     .sort((left, right) => right - left)[0];
   return Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null;
+}
+
+function resolveReportReferenceNow({ providedNow = null, runtime = {}, journal = {} } = {}) {
+  if (providedNow instanceof Date && Number.isFinite(providedNow.getTime())) {
+    return providedNow;
+  }
+  const explicitNowMs = parseTimestampMs(providedNow);
+  if (Number.isFinite(explicitNowMs)) {
+    return new Date(explicitNowMs);
+  }
+  const candidateMs = [
+    parseTimestampMs(runtime.lastCycleAt),
+    parseTimestampMs(runtime.lastAnalysisAt),
+    parseTimestampMs(runtime.lastPortfolioUpdateAt),
+    parseTimestampMs(runtime.health?.lastSuccessAt),
+    ...[...(journal.trades || [])].map((trade) => parseTimestampMs(trade.exitAt || trade.entryAt)),
+    ...[...(journal.scaleOuts || [])].map((item) => parseTimestampMs(item.at || item.exitAt || item.createdAt)),
+    ...[...(journal.equitySnapshots || [])].map((item) => parseTimestampMs(item.at || item.timestamp || item.createdAt))
+  ]
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left);
+  return candidateMs.length ? new Date(candidateMs[0]) : new Date();
 }
 
 function clamp(value, min, max) {
@@ -366,12 +694,32 @@ function resolveExpectedRoundTripFeeBps(trade = {}, config = {}) {
   return 0;
 }
 
+function resolveExpectedPaperFeeQuote(trade = {}, config = {}, side = "entry") {
+  const brokerMode = trade.brokerMode || config.botMode || "paper";
+  if (brokerMode !== "paper") {
+    return 0;
+  }
+  const feeRate = Math.max(0, safeNumber(config.paperFeeBps, 0)) / 10_000;
+  const quantity = Math.max(0, safeNumber(trade.quantity, 0));
+  const price = side === "exit"
+    ? safeNumber(trade.exitPrice, 0)
+    : safeNumber(trade.entryPrice, 0);
+  return Math.max(0, quantity * price * feeRate);
+}
+
 export function buildExecutionCostBreakdown(trade = {}, config = {}) {
   const entry = trade.entryExecutionAttribution || {};
   const exit = trade.exitExecutionAttribution || {};
   const notional = Math.max(trade.totalCost || trade.quantity * trade.entryPrice || 0, 1);
-  const entryFee = estimateEntryFee(trade);
-  const exitFee = estimateExitFee(trade);
+  const brokerMode = trade.brokerMode || config.botMode || "paper";
+  const observedEntryFee = estimateEntryFee(trade);
+  const observedExitFee = estimateExitFee(trade);
+  const entryFee = brokerMode === "paper"
+    ? Math.max(observedEntryFee, resolveExpectedPaperFeeQuote(trade, config, "entry"))
+    : observedEntryFee;
+  const exitFee = brokerMode === "paper"
+    ? Math.max(observedExitFee, resolveExpectedPaperFeeQuote(trade, config, "exit"))
+    : observedExitFee;
   const feeBps = safeDivide(entryFee + exitFee, notional) * 10_000;
   const feeBudgetBps = resolveExpectedRoundTripFeeBps(trade, config);
   const excessFeeBps = Math.max(0, feeBps - feeBudgetBps);
@@ -798,13 +1146,20 @@ function buildTradeQualitySummary(trades = [], counterfactuals = []) {
   };
 }
 
-export function buildPerformanceReport({ journal, runtime, config, now = new Date() }) {
+export function buildPerformanceReport({ journal, runtime, config, now = null }) {
+  const referenceNow = resolveReportReferenceNow({ providedNow: now, runtime, journal });
+  const botMode = config.botMode || "paper";
+  const currentTradingSource = getRuntimeTradingSource(runtime, config, botMode);
   const trades = [...(journal.trades || [])];
   const scaleOuts = [...(journal.scaleOuts || [])];
   const blockedSetups = [...(journal.blockedSetups || [])];
   const researchRuns = [...(journal.researchRuns || [])];
   const equitySnapshots = [...(journal.equitySnapshots || [])];
+  const sourceScopedTrades = trades.filter((trade) => matchesTradingSource(trade, currentTradingSource, botMode));
+  const sourceScopedScaleOuts = scaleOuts.filter((item) => matchesTradingSource(item, currentTradingSource, botMode));
+  const sourceScopedEquitySnapshots = equitySnapshots.filter((item) => matchesTradingSource(item, currentTradingSource, botMode));
   const lookbackTrades = trades.slice(-config.reportLookbackTrades);
+  const sourceScopedLookbackTrades = sourceScopedTrades.slice(-config.reportLookbackTrades);
   const openExposure = (runtime.openPositions || []).reduce(
     (total, position) => {
       const notional = safeNumber(position?.notional, Number.NaN);
@@ -815,8 +1170,8 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     },
     0
   );
-  const nowMs = now.getTime();
-  const localDayStartMs = startOfLocalDay(now);
+  const nowMs = referenceNow.getTime();
+  const localDayStartMs = startOfLocalDay(referenceNow);
   const scaleOutPnlSummary = buildScaleOutPnlSummary(scaleOuts, {
     today: localDayStartMs,
     days7: nowMs - 7 * 86_400_000,
@@ -825,9 +1180,20 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   });
   const lookbackScaleOuts = buildRecentScaleOuts(scaleOuts, lookbackTrades, config.reportLookbackTrades || 0);
   const lookbackScaleOutPnl = lookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
+  const sourceScopedLookbackScaleOuts = buildRecentScaleOuts(sourceScopedScaleOuts, sourceScopedLookbackTrades, config.reportLookbackTrades || 0);
+  const sourceScopedLookbackScaleOutPnl = sourceScopedLookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
   const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
-  const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config, now.toISOString());
+  const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config, referenceNow.toISOString());
   const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
+  const reportStats = buildTradeStats(lookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl });
+  const sourceScopedStats = buildTradeStats(sourceScopedLookbackTrades, { realizedPnlAdjustment: sourceScopedLookbackScaleOutPnl });
+  const performanceDiagnosis = buildPerformanceDiagnosis({
+    trades: lookbackTrades,
+    reportStats,
+    pnlDecomposition,
+    executionCostSummary,
+    config
+  });
   const openExposureReview = buildOpenExposureReview(runtime.openPositions || []);
   const windowSummaries = buildWindowSummaries(trades, {
     today: localDayStartMs,
@@ -837,10 +1203,42 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
   }, {
     scaleOutPnlSummary
   });
+  const sourceMixActive = botMode === "paper" && currentTradingSource !== "paper:internal" && (
+    trades.some((trade) => !matchesTradingSource(trade, currentTradingSource, botMode) && matchesBrokerMode(trade, botMode)) ||
+    equitySnapshots.some((snapshot) => !matchesTradingSource(snapshot, currentTradingSource, botMode) && matchesBrokerMode(snapshot, botMode))
+  );
 
   return {
-    ...buildTradeStats(lookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl }),
+    ...reportStats,
+    currentTradingSource,
     maxDrawdownPct: buildDrawdown(equitySnapshots),
+    sourceScoped: {
+      tradingSource: currentTradingSource,
+      tradeCount: sourceScopedStats.tradeCount || 0,
+      realizedPnl: sourceScopedStats.realizedPnl,
+      winRate: sourceScopedStats.winRate,
+      averagePnlPct: sourceScopedStats.averagePnlPct,
+      profitFactor: sourceScopedStats.profitFactor,
+      maxDrawdownPct: buildDrawdown(sourceScopedEquitySnapshots),
+      recentTradeCount: sourceScopedLookbackTrades.length,
+      latestTradeAt: resolveLatestTradeAt(sourceScopedTrades),
+      notes: sourceMixActive
+        ? [
+            `Current paper source ${currentTradingSource} wordt apart gerapporteerd naast legacy paper-history.`,
+            `Source-scoped report gebruikt ${sourceScopedTrades.length} trade(s) en ${sourceScopedEquitySnapshots.length} equity snapshot(s).`
+          ]
+        : []
+    },
+    sourceMix: {
+      active: sourceMixActive,
+      tradingSource: currentTradingSource,
+      aggregateTradeCount: trades.length,
+      sourceScopedTradeCount: sourceScopedTrades.length,
+      aggregateEquitySnapshotCount: equitySnapshots.length,
+      sourceScopedEquitySnapshotCount: sourceScopedEquitySnapshots.length,
+      aggregateMaxDrawdownPct: buildDrawdown(equitySnapshots),
+      sourceScopedMaxDrawdownPct: buildDrawdown(sourceScopedEquitySnapshots)
+    },
     openExposure,
     openPositions: (runtime.openPositions || []).length,
     openExposureReview,
@@ -848,6 +1246,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     executionSummary: buildExecutionSummary(lookbackTrades),
     executionCostSummary,
     pnlDecomposition,
+    performanceDiagnosis,
     attribution: buildAttributionSummary(trades),
     tradeQualityReview,
     recentReviews: lookbackTrades.slice(-20).reverse().map((trade) => ({
@@ -872,7 +1271,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = new Dat
     },
     equitySeries: equitySnapshots.slice(-(config.dashboardEquityPointLimit || 240)),
     cycleSeries: [...(journal.cycles || [])].slice(-(config.dashboardCyclePointLimit || 120)),
-    recentEvents: buildRecentEvents(journal.events || [], runtime, now),
+    recentEvents: buildRecentEvents(journal.events || [], runtime, referenceNow),
     recentScaleOuts: scaleOuts.slice(-20).reverse(),
     recentBlockedSetups: blockedSetups.slice(-20).reverse(),
     recentResearchRuns: researchRuns.slice(-8).reverse()

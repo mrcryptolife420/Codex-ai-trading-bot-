@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "KERNELUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-08T23:36:52.785Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-04",
+      "startTime": 1775405700000,
+      "endTime": 1775691000000,
+      "count": 318,
+      "updatedAt": "2026-04-08T23:36:52.785Z"
+    }
+  ]
+}

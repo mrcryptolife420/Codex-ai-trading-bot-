@@ -188,6 +188,22 @@ export class UniverseSelector {
         : 0.42;
     const spreadStabilityScore = clamp(0.45 + spreadScore * 0.4 + depthConfidence * 0.18 - Math.abs(book.microPriceEdgeBps || 0) / 8, 0, 1);
     const executionScore = clamp(0.42 + resilienceScore * 0.26 + queueRefreshScore * 0.18 + depthConfidence * 0.14, 0, 1);
+    const lightweightExecutionSupportScore = isLightweight
+      ? clamp(
+          0.08 +
+            spreadScore * 0.2 +
+            liquidityScore * 0.24 +
+            activityScore * 0.16 +
+            spreadStabilityScore * 0.12 +
+            freshnessScore * 0.1,
+          0,
+          0.78
+        )
+      : 0;
+    const executionGuardScore = isLightweight
+      ? Math.max(executionScore, lightweightExecutionSupportScore)
+      : executionScore;
+    const executionTelemetryWeak = isLightweight && executionScore + 0.08 < executionGuardScore;
     const carryScore = clamp(
       (hasOpenPosition ? 0.15 : 0) +
         (previousDecision?.allow ? 0.08 : 0) +
@@ -227,7 +243,7 @@ export class UniverseSelector {
     if (!hasOpenPosition && recentTradeCount < 2 && spreadBps > this.config.maxSpreadBps * 0.65) {
       blockers.push("universe_low_activity");
     }
-    if (!hasOpenPosition && executionScore < 0.32) {
+    if (!hasOpenPosition && executionGuardScore < 0.32) {
       blockers.push("universe_execution_quality_weak");
     }
 
@@ -253,8 +269,8 @@ export class UniverseSelector {
     if (spreadStabilityScore >= 0.58) {
       reasons.push("stable_spread_profile");
     }
-    if (executionScore >= 0.56) {
-      reasons.push("execution_ready_book");
+    if (executionGuardScore >= 0.56) {
+      reasons.push(executionTelemetryWeak ? "execution_ready_prefilter" : "execution_ready_book");
     }
     if (focusClusters.includes(profile.cluster)) {
       reasons.push(`cluster_rotation_${profile.cluster}`);
@@ -277,7 +293,7 @@ export class UniverseSelector {
         trendScore * 0.13 +
         freshnessScore * 0.05 +
         spreadStabilityScore * 0.06 +
-        executionScore * 0.05 +
+        executionGuardScore * 0.05 +
         rotationScore * (this.config.universeRotationBoost || 0.08) +
         carryScore,
       0,
@@ -305,6 +321,9 @@ export class UniverseSelector {
       trendScore: num(trendScore),
       spreadStabilityScore: num(spreadStabilityScore),
       executionScore: num(executionScore),
+      executionGuardScore: num(executionGuardScore),
+      lightweightExecutionSupportScore: num(lightweightExecutionSupportScore),
+      executionTelemetryWeak,
       rotationScore: num(rotationScore),
       carryScore: num(carryScore),
       reasons,
@@ -429,6 +448,9 @@ export class UniverseSelector {
         trendScore: entry.trendScore,
         spreadStabilityScore: entry.spreadStabilityScore,
         executionScore: entry.executionScore,
+        executionGuardScore: entry.executionGuardScore,
+        lightweightExecutionSupportScore: entry.lightweightExecutionSupportScore,
+        executionTelemetryWeak: entry.executionTelemetryWeak,
         rotationScore: entry.rotationScore,
         carryScore: entry.carryScore
       })),
@@ -447,7 +469,11 @@ export class UniverseSelector {
           recentTradeCount: entry.recentTradeCount,
           realizedVolPct: entry.realizedVolPct,
           reasons: [...entry.reasons],
-          blockers: [...entry.blockers]
+          blockers: [...entry.blockers],
+          executionScore: entry.executionScore,
+          executionGuardScore: entry.executionGuardScore,
+          lightweightExecutionSupportScore: entry.lightweightExecutionSupportScore,
+          executionTelemetryWeak: entry.executionTelemetryWeak
         })),
       suggestions
     };

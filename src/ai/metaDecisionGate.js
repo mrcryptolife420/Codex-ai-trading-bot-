@@ -62,6 +62,8 @@ export class MetaDecisionGate {
     const todayTradeCount = todayTrades.length;
     const liveTrades = (journal?.trades || []).filter((trade) => trade.exitAt && trade.brokerMode === "live");
     const canaryActive = this.config.botMode === "live" && this.config.enableCanaryLiveMode && liveTrades.length < this.config.canaryLiveTradeCount;
+    const tradeQualityMinScore = safeNumber(this.config.tradeQualityMinScore, 0.47);
+    const tradeQualityCautionScore = safeNumber(this.config.tradeQualityCautionScore, 0.58);
 
     const historicalEdge =
       avg(symbolTrades.map((trade) => safeNumber(trade.netPnlPct, 0))) * 8 +
@@ -135,7 +137,10 @@ export class MetaDecisionGate {
       0,
       1
     );
-    const qualityBand = qualityScore >= 0.68 ? "prime" : qualityScore >= this.config.tradeQualityCautionScore ? "good" : qualityScore >= this.config.tradeQualityMinScore ? "watch" : "weak";
+    const qualityBand = qualityScore >= 0.68 ? "prime" : qualityScore >= tradeQualityCautionScore ? "good" : qualityScore >= tradeQualityMinScore ? "watch" : "weak";
+    const lowTimeframeAlignmentCaution =
+      timeframeSummary.enabled &&
+      safeNumber(timeframeSummary.alignmentScore, 1) < 0.42;
 
     const budgetPressure = clamp(todayTradeCount / Math.max(this.config.maxEntriesPerDay || 1, 1), 0, 1.4);
     const dailyBudgetFactor = clamp(
@@ -168,7 +173,7 @@ export class MetaDecisionGate {
     const reasons = [];
     if (metaConfidence >= this.config.metaMinConfidence && metaScore < this.config.metaBlockScore) {
       reasons.push("meta_gate_reject");
-    } else if (metaScore < this.config.metaCautionScore) {
+    } else if (metaScore < this.config.metaCautionScore || lowTimeframeAlignmentCaution) {
       reasons.push("meta_gate_caution");
     }
     if (safeNumber(metaNeuralSummary.confidence, 0) >= this.config.metaMinConfidence && safeNumber(metaNeuralSummary.probability, 0.5) < this.config.metaBlockScore) {
@@ -176,9 +181,9 @@ export class MetaDecisionGate {
     } else if (safeNumber(metaNeuralSummary.confidence, 0) >= this.config.metaMinConfidence - 0.06 && safeNumber(metaNeuralSummary.probability, 0.5) < this.config.metaCautionScore) {
       reasons.push("meta_neural_caution");
     }
-    if (qualityScore < this.config.tradeQualityMinScore) {
+    if (qualityScore < tradeQualityMinScore) {
       reasons.push("trade_quality_reject");
-    } else if (qualityScore < this.config.tradeQualityCautionScore) {
+    } else if (qualityScore < tradeQualityCautionScore) {
       reasons.push("trade_quality_caution");
     }
     if ((pairHealthSummary.quarantined || false)) {
@@ -211,12 +216,12 @@ export class MetaDecisionGate {
 
     const thresholdPenalty =
       action === "block"
-        ? 0.055 + Math.max(0, this.config.tradeQualityMinScore - qualityScore) * 0.03
+        ? 0.055 + Math.max(0, tradeQualityMinScore - qualityScore) * 0.03
         : action === "caution"
           ? (
             hasNeuralOnlyCaution
               ? safeNumber(this.config.metaNeuralCautionThresholdPenalty, 0.008)
-              : 0.018 + Math.max(0, this.config.tradeQualityCautionScore - qualityScore) * 0.03
+              : 0.018 + Math.max(0, tradeQualityCautionScore - qualityScore) * 0.03
           )
           : 0;
 

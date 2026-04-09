@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "AEURUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-09T00:46:27.763Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-04",
+      "startTime": 1775405700000,
+      "endTime": 1775695500000,
+      "count": 323,
+      "updatedAt": "2026-04-09T00:46:27.763Z"
+    }
+  ]
+}

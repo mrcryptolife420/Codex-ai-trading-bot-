@@ -5,6 +5,7 @@ import {
   featureGroup,
   isSupportFeature
 } from "../strategy/featureGovernance.js";
+import { getConfiguredTradingSource, matchesTradingSource } from "../utils/tradingSource.js";
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -16,6 +17,27 @@ function average(values = [], fallback = 0) {
 
 function safeNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
+}
+
+function arr(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function resolveEvidenceTimestampMs(item = {}) {
+  const at = item.exitAt || item.resolvedAt || item.closedAt || item.entryAt || item.queuedAt || item.dueAt || item.createdAt || null;
+  const timestampMs = new Date(at || 0).getTime();
+  return Number.isFinite(timestampMs) ? timestampMs : Number.NaN;
+}
+
+function computeEvidenceWeight(item = {}, { nowIso = new Date().toISOString(), halfLifeHours = 24 * 7, minWeight = 0.2 } = {}) {
+  const nowMs = new Date(nowIso).getTime();
+  const evidenceMs = resolveEvidenceTimestampMs(item);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(evidenceMs)) {
+    return 1;
+  }
+  const ageHours = Math.max(0, (nowMs - evidenceMs) / 3_600_000);
+  const decay = Math.pow(0.5, ageHours / Math.max(halfLifeHours, 1));
+  return clamp(decay, minWeight, 1);
 }
 
 function computeFreshnessScore(trades = [], nowIso = new Date().toISOString(), horizonHours = 24 * 21) {
@@ -93,9 +115,14 @@ function buildDecisionScorecards({
   falseNegatives = [],
   keyFn = null,
   falseNegativeKeyFn = null,
-  fallbackId = "unknown"
+  fallbackId = "unknown",
+  config = {},
+  nowIso = new Date().toISOString()
 } = {}) {
   const map = new Map();
+  const halfLifeHours = safeNumber(config.offlineTrainerScorecardHalfLifeHours, 24 * 7);
+  const priorTrades = safeNumber(config.offlineTrainerScorecardPriorTrades, 3);
+  const minEffectiveSample = safeNumber(config.offlineTrainerMinEffectiveSample, 2.4);
   const getBucket = (id) => {
     const key = id || fallbackId;
     if (!map.has(key)) {
@@ -110,7 +137,19 @@ function buildDecisionScorecards({
         labelScore: 0,
         falsePositiveCount: 0,
         falseNegativeCount: 0,
-        moveSum: 0
+        moveSum: 0,
+        weightedTradeCount: 0,
+        weightedFalsePositiveCount: 0,
+        weightedFalseNegativeCount: 0,
+        weightedWinSum: 0,
+        weightedPnl: 0,
+        weightedExecutionQuality: 0,
+        weightedLabelScore: 0,
+        weightedTradeMoveSum: 0,
+        weightedFalseNegativeMoveSum: 0,
+        evidenceWeightSum: 0,
+        evidenceCount: 0,
+        latestEvidenceMs: Number.NaN
       });
     }
     return map.get(key);
@@ -119,6 +158,8 @@ function buildDecisionScorecards({
   for (const trade of trades) {
     const id = keyFn ? keyFn(trade) : fallbackId;
     const bucket = getBucket(id);
+    const weight = computeEvidenceWeight(trade, { nowIso, halfLifeHours });
+    const evidenceMs = resolveEvidenceTimestampMs(trade);
     bucket.tradeCount += 1;
     bucket.paperTradeCount += (trade.brokerMode || "paper") === "paper" ? 1 : 0;
     bucket.liveTradeCount += (trade.brokerMode || "paper") === "live" ? 1 : 0;
@@ -127,31 +168,77 @@ function buildDecisionScorecards({
     bucket.executionQuality += trade.executionQualityScore || 0;
     bucket.labelScore += trade.labelScore || 0;
     bucket.moveSum += trade.netPnlPct || 0;
+    bucket.weightedTradeCount += weight;
+    bucket.weightedWinSum += ((trade.pnlQuote || 0) > 0 ? 1 : 0) * weight;
+    bucket.weightedPnl += (trade.pnlQuote || 0) * weight;
+    bucket.weightedExecutionQuality += (trade.executionQualityScore || 0) * weight;
+    bucket.weightedLabelScore += (trade.labelScore || 0) * weight;
+    bucket.weightedTradeMoveSum += (trade.netPnlPct || 0) * weight;
+    bucket.evidenceWeightSum += weight;
+    bucket.evidenceCount += 1;
+    if (Number.isFinite(evidenceMs)) {
+      bucket.latestEvidenceMs = Number.isFinite(bucket.latestEvidenceMs)
+        ? Math.max(bucket.latestEvidenceMs, evidenceMs)
+        : evidenceMs;
+    }
   }
 
   for (const trade of falsePositives) {
     const id = keyFn ? keyFn(trade) : fallbackId;
     const bucket = getBucket(id);
+    const weight = computeEvidenceWeight(trade, { nowIso, halfLifeHours });
+    const evidenceMs = resolveEvidenceTimestampMs(trade);
     bucket.falsePositiveCount += 1;
+    bucket.weightedFalsePositiveCount += weight;
+    bucket.evidenceWeightSum += weight;
+    bucket.evidenceCount += 1;
+    if (Number.isFinite(evidenceMs)) {
+      bucket.latestEvidenceMs = Number.isFinite(bucket.latestEvidenceMs)
+        ? Math.max(bucket.latestEvidenceMs, evidenceMs)
+        : evidenceMs;
+    }
   }
 
   for (const item of falseNegatives) {
     const id = falseNegativeKeyFn ? falseNegativeKeyFn(item) : fallbackId;
     const bucket = getBucket(id);
+    const weight = computeEvidenceWeight(item, { nowIso, halfLifeHours });
+    const evidenceMs = resolveEvidenceTimestampMs(item);
     bucket.falseNegativeCount += 1;
     bucket.moveSum += item.realizedMovePct || 0;
+    bucket.weightedFalseNegativeCount += weight;
+    bucket.weightedFalseNegativeMoveSum += (item.realizedMovePct || 0) * weight;
+    bucket.evidenceWeightSum += weight;
+    bucket.evidenceCount += 1;
+    if (Number.isFinite(evidenceMs)) {
+      bucket.latestEvidenceMs = Number.isFinite(bucket.latestEvidenceMs)
+        ? Math.max(bucket.latestEvidenceMs, evidenceMs)
+        : evidenceMs;
+    }
   }
 
   return [...map.values()]
     .map((bucket) => {
       const tradeCount = bucket.tradeCount || 0;
-      const winRate = tradeCount ? bucket.winCount / tradeCount : 0;
-      const avgExecutionQuality = tradeCount ? bucket.executionQuality / tradeCount : 0;
-      const avgLabelScore = tradeCount ? bucket.labelScore / tradeCount : 0;
-      const avgMovePct = tradeCount ? bucket.moveSum / tradeCount : 0;
-      const falsePositiveRate = tradeCount ? bucket.falsePositiveCount / tradeCount : 0;
-      const falseNegativeRate = (tradeCount + bucket.falseNegativeCount) ? bucket.falseNegativeCount / (tradeCount + bucket.falseNegativeCount) : 0;
-      const pnlScore = clamp(0.5 + bucket.pnl / Math.max(tradeCount * 60, 60), 0, 1);
+      const weightedTradeCount = bucket.weightedTradeCount || 0;
+      const weightedFalsePositiveCount = bucket.weightedFalsePositiveCount || 0;
+      const weightedFalseNegativeCount = bucket.weightedFalseNegativeCount || 0;
+      const weightedOutcomeSample = weightedTradeCount + weightedFalseNegativeCount * 0.72;
+      const effectiveSampleSize = weightedTradeCount + weightedFalseNegativeCount * 0.72 + weightedFalsePositiveCount * 0.38;
+      const denominator = weightedTradeCount + priorTrades;
+      const winRate = (bucket.weightedWinSum + 0.5 * priorTrades) / Math.max(denominator, 1);
+      const avgExecutionQuality = (bucket.weightedExecutionQuality + 0.56 * priorTrades) / Math.max(denominator, 1);
+      const avgLabelScore = (bucket.weightedLabelScore + 0.52 * priorTrades) / Math.max(denominator, 1);
+      const avgMovePct = (bucket.weightedTradeMoveSum + bucket.weightedFalseNegativeMoveSum * 0.72) / Math.max(weightedOutcomeSample + priorTrades * 0.5, 1);
+      const falsePositiveRate = weightedFalsePositiveCount / Math.max(weightedTradeCount + priorTrades * 0.5, 1);
+      const falseNegativeRate = weightedFalseNegativeCount / Math.max(weightedTradeCount + weightedFalseNegativeCount + priorTrades, 1);
+      const pnlScore = clamp(0.5 + bucket.weightedPnl / Math.max((weightedTradeCount + priorTrades) * 60, 60), 0, 1);
+      const freshnessScore = bucket.evidenceCount ? bucket.evidenceWeightSum / bucket.evidenceCount : 0;
+      const latestEvidenceAt = Number.isFinite(bucket.latestEvidenceMs) ? new Date(bucket.latestEvidenceMs).toISOString() : null;
+      const sampleConfidence = buildSampleConfidence(
+        effectiveSampleSize,
+        Math.max(2, safeNumber(config.strategyAttributionMinTrades, 6))
+      );
       const governanceScore = clamp(
         0.34 +
           (winRate - 0.5) * 0.26 +
@@ -159,15 +246,17 @@ function buildDecisionScorecards({
           avgLabelScore * 0.16 +
           pnlScore * 0.18 -
           falsePositiveRate * 0.18 -
-          falseNegativeRate * 0.1,
+          falseNegativeRate * 0.1 +
+          sampleConfidence * 0.08 +
+          (freshnessScore - 0.5) * 0.04,
         0,
         1
       );
-      const status = governanceScore >= 0.62 && tradeCount >= 4
+      const status = governanceScore >= 0.62 && effectiveSampleSize >= minEffectiveSample + 1
         ? "prime"
-        : governanceScore <= 0.42 && tradeCount >= 4
+        : governanceScore <= 0.42 && effectiveSampleSize >= minEffectiveSample
           ? "cooldown"
-          : tradeCount >= 2 || bucket.falseNegativeCount > 0
+          : effectiveSampleSize >= 0.8 || weightedFalseNegativeCount > 0.2
             ? "observe"
             : "warmup";
       return {
@@ -184,6 +273,13 @@ function buildDecisionScorecards({
         falseNegativeCount: bucket.falseNegativeCount,
         falsePositiveRate: num(falsePositiveRate),
         falseNegativeRate: num(falseNegativeRate),
+        effectiveSampleSize: num(effectiveSampleSize, 4),
+        weightedTradeCount: num(weightedTradeCount, 4),
+        weightedFalsePositiveCount: num(weightedFalsePositiveCount, 4),
+        weightedFalseNegativeCount: num(weightedFalseNegativeCount, 4),
+        freshnessScore: num(freshnessScore, 4),
+        sampleConfidence: num(sampleConfidence, 4),
+        latestEvidenceAt,
         governanceScore: num(governanceScore),
         dominantError: bucket.falsePositiveCount > bucket.falseNegativeCount
           ? "false_positive_bias"
@@ -197,25 +293,29 @@ function buildDecisionScorecards({
     .slice(0, 10);
 }
 
-function buildStrategyScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+function buildStrategyScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
   return buildDecisionScorecards({
     trades,
     falsePositives,
     falseNegatives,
     keyFn: (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || "unknown",
     falseNegativeKeyFn: (item) => item.strategy || item.strategyAtEntry || "blocked_setup",
-    fallbackId: "unknown"
+    fallbackId: "unknown",
+    config,
+    nowIso
   });
 }
 
-function buildRegimeScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+function buildRegimeScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
   return buildDecisionScorecards({
     trades,
     falsePositives,
     falseNegatives,
     keyFn: (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown",
     falseNegativeKeyFn: (item) => item.regime || item.regimeAtEntry || "blocked_setup",
-    fallbackId: "unknown"
+    fallbackId: "unknown",
+    config,
+    nowIso
   });
 }
 
@@ -260,7 +360,7 @@ function resolveCounterfactualConditionId(item = {}) {
 }
 
 function resolveCounterfactualStrategyFamily(item = {}) {
-  return item.strategyFamily || item.paperLearning?.scope?.family || "unknown_family";
+  return item.strategyFamily || item.family || item.paperLearning?.scope?.family || "unknown_family";
 }
 
 function resolveTradeSessionId(trade = {}) {
@@ -288,25 +388,64 @@ function resolveCounterfactualStrategyId(item = {}) {
   );
 }
 
-function buildConditionScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+function resolveCounterfactualBlockerReasons(item = {}) {
+  const reasons = arr(item.blockerReasons || []).filter(Boolean);
+  if (reasons.length) {
+    return reasons.slice(0, 4);
+  }
+  return [item.blocker || item.reason || "no_explicit_blocker"];
+}
+
+function resolveCounterfactualMarginalBlocker(item = {}) {
+  if (item.marginalBlocker) {
+    return item.marginalBlocker;
+  }
+  const reasons = resolveCounterfactualBlockerReasons(item);
+  return reasons.length === 1 ? reasons[0] : null;
+}
+
+function resolveCounterfactualBlockerMode(item = {}, blockerId = null) {
+  const marginalBlocker = resolveCounterfactualMarginalBlocker(item);
+  if (blockerId && marginalBlocker === blockerId) {
+    return "marginal";
+  }
+  const sharedBlockers = arr(item.sharedBlockers || []).filter(Boolean);
+  if (blockerId && sharedBlockers.includes(blockerId)) {
+    return "shared";
+  }
+  const reasons = resolveCounterfactualBlockerReasons(item);
+  if (blockerId && reasons.includes(blockerId)) {
+    return reasons.length === 1 ? "marginal" : "shared";
+  }
+  if (item.blockerMode) {
+    return item.blockerMode;
+  }
+  return marginalBlocker ? "marginal" : reasons.length ? "shared" : "none";
+}
+
+function buildConditionScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
   return buildDecisionScorecards({
     trades,
     falsePositives,
     falseNegatives,
     keyFn: (trade) => resolveTradeConditionId(trade),
     falseNegativeKeyFn: (item) => resolveCounterfactualConditionId(item),
-    fallbackId: "unknown_condition"
+    fallbackId: "unknown_condition",
+    config,
+    nowIso
   });
 }
 
-function buildConditionStrategyScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+function buildConditionStrategyScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
   return buildDecisionScorecards({
     trades,
     falsePositives,
     falseNegatives,
     keyFn: (trade) => `${resolveTradeConditionId(trade)}::${resolveTradeStrategyId(trade)}`,
     falseNegativeKeyFn: (item) => `${resolveCounterfactualConditionId(item)}::${item.strategy || item.strategyAtEntry || "blocked_setup"}`,
-    fallbackId: "unknown_condition::unknown_strategy"
+    fallbackId: "unknown_condition::unknown_strategy",
+    config,
+    nowIso
   }).map((item) => {
     const [conditionId, strategyId] = String(item.id || "").split("::");
     return {
@@ -320,14 +459,16 @@ function buildConditionStrategyScorecards(trades = [], falsePositives = [], fals
   });
 }
 
-function buildConditionFamilyScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+function buildConditionFamilyScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
   return buildDecisionScorecards({
     trades,
     falsePositives,
     falseNegatives,
     keyFn: (trade) => `${resolveTradeConditionId(trade)}::${resolveTradeStrategyFamily(trade)}`,
     falseNegativeKeyFn: (item) => `${resolveCounterfactualConditionId(item)}::${resolveCounterfactualStrategyFamily(item)}`,
-    fallbackId: "unknown_condition::unknown_family"
+    fallbackId: "unknown_condition::unknown_family",
+    config,
+    nowIso
   }).map((item) => {
     const [conditionId, familyId] = String(item.id || "").split("::");
     return {
@@ -338,14 +479,16 @@ function buildConditionFamilyScorecards(trades = [], falsePositives = [], falseN
   });
 }
 
-function buildConditionSessionFamilyScorecards(trades = [], falsePositives = [], falseNegatives = []) {
+function buildConditionSessionFamilyScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
   return buildDecisionScorecards({
     trades,
     falsePositives,
     falseNegatives,
     keyFn: (trade) => `${resolveTradeConditionId(trade)}::${resolveTradeSessionId(trade)}::${resolveTradeStrategyFamily(trade)}`,
     falseNegativeKeyFn: (item) => `${resolveCounterfactualConditionId(item)}::${resolveCounterfactualSessionId(item)}::${resolveCounterfactualStrategyFamily(item)}`,
-    fallbackId: "unknown_condition::unknown_session::unknown_family"
+    fallbackId: "unknown_condition::unknown_session::unknown_family",
+    config,
+    nowIso
   }).map((item) => {
     const [conditionId, sessionId, familyId] = String(item.id || "").split("::");
     return {
@@ -374,9 +517,7 @@ const HARD_TUNING_BLOCKERS = new Set([
 function buildBlockerConditionScorecards(counterfactuals = []) {
   const buckets = new Map();
   for (const item of counterfactuals || []) {
-    const reasons = Array.isArray(item.blockerReasons) && item.blockerReasons.length
-      ? item.blockerReasons.slice(0, 4)
-      : [item.reason || "no_explicit_blocker"];
+    const reasons = resolveCounterfactualBlockerReasons(item);
     const conditionId = resolveCounterfactualConditionId(item);
     const familyId = resolveCounterfactualStrategyFamily(item);
     const strategyId = resolveCounterfactualStrategyId(item);
@@ -389,20 +530,42 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
           familyId,
           strategyId,
           count: 0,
+          marginalCount: 0,
+          sharedCount: 0,
           missedWinnerCount: 0,
+          marginalMissedWinnerCount: 0,
+          sharedMissedWinnerCount: 0,
           goodVetoCount: 0,
+          marginalGoodVetoCount: 0,
+          sharedGoodVetoCount: 0,
           lateVetoCount: 0,
           averageMovePctSum: 0
         });
       }
       const bucket = buckets.get(key);
+      const blockerMode = resolveCounterfactualBlockerMode(item, blockerId);
       bucket.count += 1;
+      if (blockerMode === "marginal") {
+        bucket.marginalCount += 1;
+      } else if (blockerMode === "shared") {
+        bucket.sharedCount += 1;
+      }
       bucket.averageMovePctSum += item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0;
       if (["missed_winner", "bad_veto", "right_direction_wrong_timing"].includes(item.outcome)) {
         bucket.missedWinnerCount += 1;
+        if (blockerMode === "marginal") {
+          bucket.marginalMissedWinnerCount += 1;
+        } else if (blockerMode === "shared") {
+          bucket.sharedMissedWinnerCount += 1;
+        }
       }
       if (["good_veto", "blocked_correctly"].includes(item.outcome)) {
         bucket.goodVetoCount += 1;
+        if (blockerMode === "marginal") {
+          bucket.marginalGoodVetoCount += 1;
+        } else if (blockerMode === "shared") {
+          bucket.sharedGoodVetoCount += 1;
+        }
       }
       if (item.outcome === "late_veto") {
         bucket.lateVetoCount += 1;
@@ -411,12 +574,15 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
   }
   return [...buckets.values()]
     .map((bucket) => {
-      const missedWinnerRate = bucket.count ? bucket.missedWinnerCount / bucket.count : 0;
-      const goodVetoRate = bucket.count ? bucket.goodVetoCount / bucket.count : 0;
+      const weightedCount = bucket.marginalCount + bucket.sharedCount * 0.55;
+      const weightedMissedWinnerCount = bucket.marginalMissedWinnerCount + bucket.sharedMissedWinnerCount * 0.45;
+      const weightedGoodVetoCount = bucket.marginalGoodVetoCount + bucket.sharedGoodVetoCount * 0.65;
+      const missedWinnerRate = weightedCount ? weightedMissedWinnerCount / weightedCount : 0;
+      const goodVetoRate = weightedCount ? weightedGoodVetoCount / weightedCount : 0;
       const lateVetoRate = bucket.count ? bucket.lateVetoCount / bucket.count : 0;
       const averageMovePct = bucket.count ? bucket.averageMovePctSum / bucket.count : 0;
       const confidence = clamp(
-        Math.min(0.68, bucket.count / 10) +
+        Math.min(0.68, weightedCount / 10) +
         Math.abs(missedWinnerRate - goodVetoRate) * 0.26 +
         lateVetoRate * 0.06,
         0,
@@ -431,9 +597,16 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
         familyId: bucket.familyId,
         strategyId: bucket.strategyId,
         count: bucket.count,
+        marginalCount: bucket.marginalCount,
+        sharedCount: bucket.sharedCount,
         missedWinnerCount: bucket.missedWinnerCount,
+        marginalMissedWinnerCount: bucket.marginalMissedWinnerCount,
+        sharedMissedWinnerCount: bucket.sharedMissedWinnerCount,
         goodVetoCount: bucket.goodVetoCount,
+        marginalGoodVetoCount: bucket.marginalGoodVetoCount,
+        sharedGoodVetoCount: bucket.sharedGoodVetoCount,
         lateVetoCount: bucket.lateVetoCount,
+        weightedCount: num(weightedCount, 4),
         missedWinnerRate: num(missedWinnerRate),
         goodVetoRate: num(goodVetoRate),
         lateVetoRate: num(lateVetoRate),
@@ -470,8 +643,14 @@ function buildBlockerScorecards(counterfactuals = []) {
       map.set(key, {
         id: key,
         total: 0,
+        marginalCount: 0,
+        sharedCount: 0,
         goodVetoCount: 0,
+        marginalGoodVetoCount: 0,
+        sharedGoodVetoCount: 0,
         badVetoCount: 0,
+        marginalBadVetoCount: 0,
+        sharedBadVetoCount: 0,
         lateVetoCount: 0,
         timingIssueCount: 0,
         moveSum: 0,
@@ -484,17 +663,31 @@ function buildBlockerScorecards(counterfactuals = []) {
   };
 
   for (const item of counterfactuals || []) {
-    const reasons = Array.isArray(item.blockerReasons) && item.blockerReasons.length
-      ? item.blockerReasons.slice(0, 4)
-      : [item.reason || "no_explicit_blocker"];
+    const reasons = resolveCounterfactualBlockerReasons(item);
     for (const reason of reasons) {
       const bucket = getBucket(reason);
+      const blockerMode = resolveCounterfactualBlockerMode(item, reason);
       bucket.total += 1;
+      if (blockerMode === "marginal") {
+        bucket.marginalCount += 1;
+      } else if (blockerMode === "shared") {
+        bucket.sharedCount += 1;
+      }
       bucket.moveSum += item.realizedMovePct || 0;
       if (["blocked_correctly", "good_veto"].includes(item.outcome)) {
         bucket.goodVetoCount += 1;
+        if (blockerMode === "marginal") {
+          bucket.marginalGoodVetoCount += 1;
+        } else if (blockerMode === "shared") {
+          bucket.sharedGoodVetoCount += 1;
+        }
       } else if (["missed_winner", "bad_veto"].includes(item.outcome)) {
         bucket.badVetoCount += 1;
+        if (blockerMode === "marginal") {
+          bucket.marginalBadVetoCount += 1;
+        } else if (blockerMode === "shared") {
+          bucket.sharedBadVetoCount += 1;
+        }
       } else if (item.outcome === "late_veto") {
         bucket.lateVetoCount += 1;
       } else if (item.outcome === "right_direction_wrong_timing") {
@@ -514,15 +707,20 @@ function buildBlockerScorecards(counterfactuals = []) {
 
   return [...map.values()]
     .map((bucket) => {
+      const weightedTotal = bucket.marginalCount + bucket.sharedCount * 0.55;
+      const weightedGoodVetoCount = bucket.marginalGoodVetoCount + bucket.sharedGoodVetoCount * 0.65;
+      const weightedBadVetoCount = bucket.marginalBadVetoCount + bucket.sharedBadVetoCount * 0.45;
       const goodVetoRate = bucket.total ? bucket.goodVetoCount / bucket.total : 0;
       const badVetoRate = bucket.total ? bucket.badVetoCount / bucket.total : 0;
+      const weightedGoodVetoRate = weightedTotal ? weightedGoodVetoCount / weightedTotal : goodVetoRate;
+      const weightedBadVetoRate = weightedTotal ? weightedBadVetoCount / weightedTotal : badVetoRate;
       const lateVetoRate = bucket.total ? bucket.lateVetoCount / bucket.total : 0;
       const timingIssueRate = bucket.total ? bucket.timingIssueCount / bucket.total : 0;
       const averageMovePct = bucket.total ? bucket.moveSum / bucket.total : 0;
       const governanceScore = clamp(
         0.5 +
-          goodVetoRate * 0.24 -
-          badVetoRate * 0.28 -
+          weightedGoodVetoRate * 0.24 -
+          weightedBadVetoRate * 0.28 -
           lateVetoRate * 0.12 -
           timingIssueRate * 0.08 -
           Math.max(0, averageMovePct) * 4.5,
@@ -532,12 +730,20 @@ function buildBlockerScorecards(counterfactuals = []) {
       return {
         id: bucket.id,
         total: bucket.total,
+        marginalCount: bucket.marginalCount,
+        sharedCount: bucket.sharedCount,
         goodVetoCount: bucket.goodVetoCount,
+        marginalGoodVetoCount: bucket.marginalGoodVetoCount,
+        sharedGoodVetoCount: bucket.sharedGoodVetoCount,
         badVetoCount: bucket.badVetoCount,
+        marginalBadVetoCount: bucket.marginalBadVetoCount,
+        sharedBadVetoCount: bucket.sharedBadVetoCount,
         lateVetoCount: bucket.lateVetoCount,
         timingIssueCount: bucket.timingIssueCount,
         goodVetoRate: num(goodVetoRate),
         badVetoRate: num(badVetoRate),
+        weightedGoodVetoRate: num(weightedGoodVetoRate),
+        weightedBadVetoRate: num(weightedBadVetoRate),
         lateVetoRate: num(lateVetoRate),
         timingIssueRate: num(timingIssueRate),
         averageMovePct: num(averageMovePct),
@@ -545,15 +751,15 @@ function buildBlockerScorecards(counterfactuals = []) {
         affectedStrategies: [...bucket.strategyIds].slice(0, 4),
         affectedRegimes: [...bucket.regimeIds].slice(0, 4),
         affectedPhases: [...bucket.phaseIds].slice(0, 4),
-        status: badVetoRate >= 0.45 && bucket.badVetoCount >= 2
+        status: weightedBadVetoRate >= 0.45 && weightedBadVetoCount >= 2
           ? "relax"
-          : goodVetoRate >= 0.55 && bucket.goodVetoCount >= 2
+          : weightedGoodVetoRate >= 0.55 && weightedGoodVetoCount >= 2
             ? "keep"
             : "observe"
       };
     })
     .sort((left, right) => {
-      const badEdge = right.badVetoRate - left.badVetoRate;
+      const badEdge = (right.weightedBadVetoRate || 0) - (left.weightedBadVetoRate || 0);
       return Math.abs(badEdge) > 0.001 ? badEdge : right.total - left.total;
     })
     .slice(0, 10);
@@ -588,21 +794,23 @@ function buildThresholdPolicy(blockerScorecards = [], config = {}) {
   const recommendations = blockerScorecards
     .filter((item) => (item.total || 0) >= 2)
     .map((item) => {
+      const relaxSignal = item.weightedBadVetoRate ?? item.badVetoRate ?? 0;
+      const tightenSignal = item.weightedGoodVetoRate ?? item.goodVetoRate ?? 0;
       const action = item.status === "relax"
         ? "relax"
-        : item.status === "keep" && (item.goodVetoRate || 0) >= 0.58
+        : item.status === "keep" && tightenSignal >= 0.58
           ? "tighten"
           : "observe";
       const baseStep = action === "relax"
         ? config.thresholdRelaxStep || 0.012
         : config.thresholdTightenStep || 0.01;
-      const signalStrength = Math.max(item.badVetoRate || 0, item.goodVetoRate || 0);
+      const signalStrength = Math.max(relaxSignal, tightenSignal);
       const adjustment = action === "observe"
         ? 0
         : (action === "relax" ? -1 : 1) * Math.min(baseStep, Math.max(baseStep * 0.4, signalStrength * baseStep));
       const confidence = clamp(
         Math.min(1, (item.total || 0) / 8) * 0.44 +
-          Math.abs((item.badVetoRate || 0) - (item.goodVetoRate || 0)) * 0.56,
+          Math.abs(relaxSignal - tightenSignal) * 0.56,
         0,
         1
       );
@@ -1209,25 +1417,30 @@ function buildPolicyTransitionCandidatesByCondition(
   for (const item of conditionStrategyScorecards) {
     const key = item.strategyId || "unknown_strategy";
     if (!strategyAggregate.has(key)) {
-      strategyAggregate.set(key, {
-        strategyId: key,
-        familyId: item.familyId || null,
-        conditionCount: 0,
-        stableConditionCount: 0,
-        weakConditionCount: 0,
-        falseSignalCount: 0,
-        totalGovernance: 0
-      });
-    }
-    const bucket = strategyAggregate.get(key);
-    bucket.conditionCount += 1;
-    bucket.totalGovernance += safeNumber(item.governanceScore, 0);
-    if ((item.governanceScore || 0) >= 0.62 && item.status === "prime") {
-      bucket.stableConditionCount += 1;
-    }
-    if (item.status === "cooldown" || (item.governanceScore || 0) <= 0.4) {
-      bucket.weakConditionCount += 1;
-    }
+        strategyAggregate.set(key, {
+          strategyId: key,
+          familyId: item.familyId || null,
+          conditionCount: 0,
+          stableConditionCount: 0,
+          supportiveConditionCount: 0,
+          weakConditionCount: 0,
+          falseSignalCount: 0,
+          totalGovernance: 0
+        });
+      }
+      const bucket = strategyAggregate.get(key);
+      bucket.conditionCount += 1;
+      bucket.totalGovernance += safeNumber(item.governanceScore, 0);
+      const lowFalsePositivePressure = (item.falsePositiveRate || 0) <= 0.18;
+      if ((item.governanceScore || 0) >= 0.62 && item.status === "prime") {
+        bucket.stableConditionCount += 1;
+      }
+      if ((item.governanceScore || 0) >= 0.68 && ["prime", "observe"].includes(item.status) && lowFalsePositivePressure) {
+        bucket.supportiveConditionCount += 1;
+      }
+      if (item.status === "cooldown" || (item.governanceScore || 0) <= 0.4) {
+        bucket.weakConditionCount += 1;
+      }
     if ((item.falsePositiveRate || 0) >= 0.26) {
       bucket.falseSignalCount += 1;
     }
@@ -1247,7 +1460,7 @@ function buildPolicyTransitionCandidatesByCondition(
         : safeNumber(item.governanceScore, 0);
       let action = "observe";
       if (
-        aggregate.stableConditionCount >= 2 &&
+        Math.max(aggregate.stableConditionCount || 0, aggregate.supportiveConditionCount || 0) >= 2 &&
         averageGovernance >= 0.72 &&
         (item.falsePositiveRate || 0) <= 0.16 &&
         (familyScope?.governanceScore || 0) >= 0.58 &&
@@ -1255,7 +1468,7 @@ function buildPolicyTransitionCandidatesByCondition(
       ) {
         action = "guarded_live_candidate";
       } else if (
-        aggregate.stableConditionCount >= 1 &&
+        Math.max(aggregate.stableConditionCount || 0, aggregate.supportiveConditionCount || 0) >= 1 &&
         averageGovernance >= 0.66 &&
         (item.falsePositiveRate || 0) <= 0.18
       ) {
@@ -1289,6 +1502,7 @@ function buildPolicyTransitionCandidatesByCondition(
         scope: `${item.conditionId} | ${item.strategyId}`,
         conditionCount: aggregate.conditionCount || 1,
         stableConditionCount: aggregate.stableConditionCount || 0,
+        supportiveConditionCount: aggregate.supportiveConditionCount || 0,
         weakConditionCount: aggregate.weakConditionCount || 0,
         preferredExitStyle: exitScope?.preferredExitStyle || "balanced",
         reason: action === "guarded_live_candidate"
@@ -1868,32 +2082,41 @@ export class OfflineTrainer {
   }
 
   buildSummary({ journal = {}, dataRecorder = {}, counterfactuals = [], historySummary = {}, nowIso = new Date().toISOString() } = {}) {
+    const botMode = this.config?.botMode || "paper";
+    const tradingSource = getConfiguredTradingSource(this.config, botMode);
     const usableCounterfactuals = (counterfactuals || []).filter((item) => !item?.resolutionFailed && item?.outcome !== "resolution_failed");
     const trades = (journal.trades || []).filter((trade) => trade.exitAt);
     const learningReadyTrades = trades.filter((trade) => Number.isFinite(trade.labelScore) && trade.rawFeatures && Object.keys(trade.rawFeatures).length > 0);
-    const paperTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "paper");
+    const paperTrades = learningReadyTrades.filter((trade) => matchesTradingSource(trade, tradingSource, "paper"));
     const liveTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "live");
-    const missedWinners = usableCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome));
-    const blockedCorrectly = usableCounterfactuals.filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome));
-    const lateVetoes = usableCounterfactuals.filter((item) => item.outcome === "late_veto");
-    const timingIssues = usableCounterfactuals.filter((item) => item.outcome === "right_direction_wrong_timing");
-    const falsePositives = learningReadyTrades.filter((trade) => (trade.labelScore || 0.5) < 0.45 && (trade.pnlQuote || 0) < 0);
+    const modeScopedTrades = botMode === "paper" ? paperTrades : liveTrades;
+    const modeScopedCounterfactuals = botMode === "paper"
+      ? usableCounterfactuals.filter((item) => matchesTradingSource(item, tradingSource, "paper"))
+      : usableCounterfactuals.filter((item) => (item?.brokerMode || "paper") === "live");
+    const missedWinners = modeScopedCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome));
+    const blockedCorrectly = modeScopedCounterfactuals.filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome));
+    const lateVetoes = modeScopedCounterfactuals.filter((item) => item.outcome === "late_veto");
+    const timingIssues = modeScopedCounterfactuals.filter((item) => item.outcome === "right_direction_wrong_timing");
+    const falsePositives = modeScopedTrades.filter((trade) => (trade.labelScore || 0.5) < 0.45 && (trade.pnlQuote || 0) < 0);
     const falseNegatives = missedWinners.filter((item) => (item.realizedMovePct || 0) > 0.01);
-    const strategies = buildBucketMap(learningReadyTrades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy);
-    const regimes = buildBucketMap(learningReadyTrades, (trade) => trade.regimeAtEntry || "unknown");
+    const marginalFalseNegatives = falseNegatives.filter((item) => resolveCounterfactualBlockerMode(item) === "marginal");
+    const sharedFalseNegatives = falseNegatives.filter((item) => resolveCounterfactualBlockerMode(item) === "shared");
+    const timingFalseNegatives = timingIssues.filter((item) => (item.realizedMovePct || 0) > 0.01);
+    const strategies = buildBucketMap(modeScopedTrades, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy);
+    const regimes = buildBucketMap(modeScopedTrades, (trade) => trade.regimeAtEntry || "unknown");
     const falsePositiveByStrategy = buildBucketMap(falsePositives, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy);
     const falseNegativeByStrategy = buildBucketMap(falseNegatives, (item) => item.strategy || "blocked_setup", (item) => ({ pnl: 0, win: 1, quality: 0.5, label: 0.8, move: item.realizedMovePct || 0, mode: "paper" }));
-    const strategyScorecards = buildStrategyScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const regimeScorecards = buildRegimeScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const conditionScorecards = buildConditionScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const conditionStrategyScorecards = buildConditionStrategyScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const conditionFamilyScorecards = buildConditionFamilyScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const conditionSessionFamilyScorecards = buildConditionSessionFamilyScorecards(learningReadyTrades, falsePositives, falseNegatives);
-    const blockerScorecards = buildBlockerScorecards(usableCounterfactuals);
-    const blockerConditionScorecards = buildBlockerConditionScorecards(usableCounterfactuals);
+    const strategyScorecards = buildStrategyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const regimeScorecards = buildRegimeScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const conditionScorecards = buildConditionScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const conditionStrategyScorecards = buildConditionStrategyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const conditionFamilyScorecards = buildConditionFamilyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const conditionSessionFamilyScorecards = buildConditionSessionFamilyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const blockerScorecards = buildBlockerScorecards(modeScopedCounterfactuals);
+    const blockerConditionScorecards = buildBlockerConditionScorecards(modeScopedCounterfactuals);
     const readinessScore = clamp(
       0.24 +
-        Math.min(0.3, learningReadyTrades.length / 80) +
+        Math.min(0.3, modeScopedTrades.length / 80) +
         Math.min(0.16, (dataRecorder.learningFrames || 0) / 60) +
         Math.min(0.1, missedWinners.length / 20) +
         Math.min(0.1, blockedCorrectly.length / 20) +
@@ -1903,18 +2126,18 @@ export class OfflineTrainer {
       1
     );
     const thresholdPolicy = buildThresholdPolicy(blockerScorecards, this.config);
-    const exitLearning = buildExitLearning(learningReadyTrades);
+    const exitLearning = buildExitLearning(modeScopedTrades);
     const exitConditionScorecards = exitLearning.conditionPolicies || [];
     const missedTradeTuning = buildMissedTradeTuning(blockerConditionScorecards);
-    const featureDecay = buildFeatureDecay(learningReadyTrades, this.config);
+    const featureDecay = buildFeatureDecay(modeScopedTrades, this.config);
     const featureGovernance = buildFeatureGovernanceSummary({
-      trades: learningReadyTrades,
+      trades: modeScopedTrades,
       paperTrades,
       liveTrades,
-      counterfactuals: usableCounterfactuals,
+      counterfactuals: modeScopedCounterfactuals,
       featureScorecards: featureDecay.scorecards || []
     });
-    const outcomeScopeScorecards = buildOutcomeScopeScorecards(learningReadyTrades, usableCounterfactuals);
+    const outcomeScopeScorecards = buildOutcomeScopeScorecards(modeScopedTrades, modeScopedCounterfactuals);
     const scopeRetrainReadiness = buildScopedRetrainReadiness({
       paperTrades,
       liveTrades,
@@ -1940,7 +2163,7 @@ export class OfflineTrainer {
       notes: [...(historySummary?.notes || [])].slice(0, 4)
     };
     const calibrationGovernance = buildCalibrationGovernance({
-      tradeCount: learningReadyTrades.length,
+      tradeCount: modeScopedTrades.length,
       falsePositiveCount: falsePositives.length,
       falseNegativeCount: falseNegatives.length,
       readinessScore
@@ -1968,22 +2191,28 @@ export class OfflineTrainer {
 
     const summary = {
       generatedAt: nowIso,
-      learningReadyTrades: learningReadyTrades.length,
+      tradingSource,
+      learningReadyTrades: modeScopedTrades.length,
+      modeScopedTradeCount: modeScopedTrades.length,
+      modeScopedCounterfactualCount: modeScopedCounterfactuals.length,
       paperTrades: paperTrades.length,
       liveTrades: liveTrades.length,
       learningFrames: dataRecorder.learningFrames || 0,
       decisionFrames: dataRecorder.decisionFrames || 0,
       counterfactuals: {
-        total: usableCounterfactuals.length,
+        total: modeScopedCounterfactuals.length,
         missedWinners: missedWinners.length,
         blockedCorrectly: blockedCorrectly.length,
         lateVetoes: lateVetoes.length,
         timingIssues: timingIssues.length,
         falseNegatives: falseNegatives.length,
+        marginalFalseNegatives: marginalFalseNegatives.length,
+        sharedFalseNegatives: sharedFalseNegatives.length,
+        timingFalseNegatives: timingFalseNegatives.length,
         averageMissedMovePct: num(average(missedWinners.map((item) => item.realizedMovePct || 0), 0))
       },
       vetoFeedback: {
-        total: usableCounterfactuals.length,
+        total: modeScopedCounterfactuals.length,
         blockerCount: blockerScorecards.length,
         goodVetoCount: blockedCorrectly.length,
         badVetoCount: missedWinners.length,
@@ -2025,11 +2254,14 @@ export class OfflineTrainer {
       readinessScore: num(readinessScore),
       status: readinessScore >= 0.72 ? "ready" : readinessScore >= 0.52 ? "building" : "warmup",
       notes: [
-        learningReadyTrades.length >= 20
+        modeScopedTrades.length >= 20
           ? "Er is genoeg gesloten trade-data voor regelmatige offline evaluatie."
           : "Nog extra gesloten trades verzamelen voor sterkere offline training.",
+        botMode === "paper"
+          ? `Offline trainer gebruikt nu alleen ${tradingSource} voor paper-governance en feature learning.`
+          : "Offline trainer gebruikt nu alleen live gesloten trades voor live-governance.",
         falseNegatives.length
-          ? `${falseNegatives.length} gemiste winnaars zijn bruikbaar voor counterfactual training.`
+          ? `${falseNegatives.length} gemiste winnaars zijn bruikbaar voor counterfactual training (${marginalFalseNegatives.length} marginaal, ${sharedFalseNegatives.length} gedeeld).`
           : "Nog geen duidelijke false negatives in de counterfactual set.",
         falsePositives.length
           ? `${falsePositives.length} false positives tonen waar de meta-gate strenger mag worden.`
@@ -2044,8 +2276,8 @@ export class OfflineTrainer {
           ? `${thresholdPolicy.topRecommendation.id} geeft threshold-advies: ${thresholdPolicy.topRecommendation.action}.`
           : "Threshold-tuning ziet momenteel geen harde aanpassing nodig.",
         outcomeScopeScorecards.topActionable
-          ? `${outcomeScopeScorecards.topActionable.scopeType}:${outcomeScopeScorecards.topActionable.id} stuurt nu direct threshold- en sizing-bias.`
-          : "Outcome-scope scorecards bouwen nog op.",
+          ? `outcome-scope ${outcomeScopeScorecards.topActionable.scopeType}:${outcomeScopeScorecards.topActionable.id} stuurt nu direct threshold- en sizing-bias.`
+          : "outcome-scope scorecards bouwen nog op.",
         exitLearning.topReason
           ? `${exitLearning.topReason} leidt momenteel in exit learning (${exitLearning.status}).`
           : "Nog geen volwassen exit-learning patroon zichtbaar.",

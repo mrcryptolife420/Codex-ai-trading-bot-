@@ -11,6 +11,17 @@ function createQueryString(params = {}) {
   return search.toString();
 }
 
+function createSortedQueryString(params = {}) {
+  const pairs = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .sort(([left], [right]) => `${left}`.localeCompare(`${right}`))
+    .map(([key, value]) => {
+      const normalized = Array.isArray(value) ? JSON.stringify(value) : `${value}`;
+      return `${key}=${normalized}`;
+    });
+  return pairs.join("&");
+}
+
 function isRetriableStatus(status) {
   return status >= 500 || status === 429;
 }
@@ -68,6 +79,18 @@ function buildUserDataHeaders(apiKey) {
   };
 }
 
+function normalizeBaseUrl(baseUrl, apiPrefix = "") {
+  const trimmed = `${baseUrl || ""}`.trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  if (!apiPrefix) {
+    return trimmed;
+  }
+  const normalizedPrefix = `${apiPrefix}`.replace(/^\/+/, "");
+  return trimmed.replace(new RegExp(`/${normalizedPrefix}$`, "i"), "");
+}
+
 export class BinanceClient {
   constructor({
     apiKey,
@@ -84,8 +107,8 @@ export class BinanceClient {
   }) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.futuresBaseUrl = futuresBaseUrl.replace(/\/$/, "");
+    this.baseUrl = normalizeBaseUrl(baseUrl, "api");
+    this.futuresBaseUrl = normalizeBaseUrl(futuresBaseUrl, "fapi");
     this.recvWindow = recvWindow;
     this.logger = logger;
     this.fetchImpl = fetchImpl || fetch;
@@ -111,21 +134,38 @@ export class BinanceClient {
   }
 
   getStreamBaseUrl() {
+    if (this.baseUrl.includes("demo-api.binance.com")) {
+      return "wss://demo-stream.binance.com";
+    }
     if (this.baseUrl.includes("testnet.binance.vision")) {
       return "wss://stream.testnet.binance.vision";
     }
     return "wss://stream.binance.com:9443";
   }
 
+  getWsApiBaseUrl() {
+    if (this.baseUrl.includes("demo-api.binance.com")) {
+      return "wss://demo-ws-api.binance.com/ws-api/v3";
+    }
+    if (this.baseUrl.includes("testnet.binance.vision")) {
+      return "wss://ws-api.testnet.binance.vision/ws-api/v3";
+    }
+    return "wss://ws-api.binance.com/ws-api/v3";
+  }
+
   getFuturesStreamBaseUrl() {
-    if (this.futuresBaseUrl.includes("testnet")) {
-      return "wss://stream.binancefuture.com";
+    if (this.futuresBaseUrl.includes("demo-fapi.binance.com") || this.futuresBaseUrl.includes("testnet")) {
+      return "wss://fstream.binancefuture.com";
     }
     return "wss://fstream.binance.com";
   }
 
   sign(queryString) {
     return crypto.createHmac("sha256", this.apiSecret).update(queryString).digest("hex");
+  }
+
+  signWebSocketParams(params = {}) {
+    return this.sign(createSortedQueryString(params));
   }
 
   getClockOffsetMs() {

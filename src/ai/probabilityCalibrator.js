@@ -3,6 +3,7 @@ import { clamp } from "../utils/math.js";
 function buildBin() {
   return {
     count: 0,
+    predictionTotal: null,
     targetTotal: 0,
     squaredErrorTotal: 0
   };
@@ -14,7 +15,16 @@ export class ProbabilityCalibrator {
     this.minObservations = config.calibrationMinObservations || 12;
     this.priorStrength = config.calibrationPriorStrength || 4;
     this.state = {
-      bins: Array.from({ length: this.binCount }, (_, index) => state.bins?.[index] || buildBin()),
+      bins: Array.from({ length: this.binCount }, (_, index) => {
+        const rawBin = state.bins?.[index] || {};
+        return {
+          ...buildBin(),
+          ...rawBin,
+          predictionTotal: Object.prototype.hasOwnProperty.call(rawBin, "predictionTotal") && Number.isFinite(rawBin.predictionTotal)
+            ? rawBin.predictionTotal
+            : null
+        };
+      }),
       observations: state.observations || 0,
       lastUpdatedAt: state.lastUpdatedAt || null
     };
@@ -56,6 +66,8 @@ export class ProbabilityCalibrator {
     const index = this.getBinIndex(probability);
     const bin = this.state.bins[index];
     bin.count += 1;
+    bin.predictionTotal = Number.isFinite(bin.predictionTotal) ? bin.predictionTotal : 0;
+    bin.predictionTotal += clamp(probability, 0, 1);
     bin.targetTotal += target;
     bin.squaredErrorTotal += (probability - target) ** 2;
     this.state.observations += 1;
@@ -63,13 +75,20 @@ export class ProbabilityCalibrator {
   }
 
   getSummary() {
-    const nonEmptyBins = this.state.bins.filter((bin) => bin.count > 0);
-    const ece = nonEmptyBins.reduce((total, bin, index) => {
+    const ece = this.state.bins.reduce((total, bin, index) => {
+      if (!(bin.count > 0)) {
+        return total;
+      }
       const avgTarget = bin.targetTotal / bin.count;
-      const avgPrediction = (index + 0.5) / this.binCount;
+      const avgPrediction = Number.isFinite(bin.predictionTotal)
+        ? bin.predictionTotal / bin.count
+        : (index + 0.5) / this.binCount;
       return total + Math.abs(avgPrediction - avgTarget) * (bin.count / Math.max(this.state.observations, 1));
     }, 0);
-    const brier = nonEmptyBins.reduce((total, bin) => total + bin.squaredErrorTotal, 0) / Math.max(this.state.observations, 1);
+    const brier = this.state.bins.reduce(
+      (total, bin) => total + (bin.count > 0 ? bin.squaredErrorTotal : 0),
+      0
+    ) / Math.max(this.state.observations, 1);
     return {
       observations: this.state.observations,
       expectedCalibrationError: clamp(ece, 0, 1),

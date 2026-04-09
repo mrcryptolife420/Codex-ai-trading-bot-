@@ -122,8 +122,14 @@ export function buildFeatureVector({
     ].filter((value) => Number.isFinite(value)),
     0
   );
-  const upsideRealizedVolPct = Number.isFinite(marketFeatures.upsideRealizedVolPct) ? marketFeatures.upsideRealizedVolPct : 0;
-  const downsideRealizedVolPct = Number.isFinite(marketFeatures.downsideRealizedVolPct) ? marketFeatures.downsideRealizedVolPct : 0;
+  const realizedVolPct = Number.isFinite(marketFeatures.realizedVolPct) ? marketFeatures.realizedVolPct : 0;
+  const upsideAcceleration = Math.max(0, Number.isFinite(marketFeatures.upsideAccelerationScore) ? marketFeatures.upsideAccelerationScore : 0);
+  const downsideAcceleration = Math.max(0, Number.isFinite(marketFeatures.downsideAccelerationScore) ? marketFeatures.downsideAccelerationScore : 0);
+  const accelerationSum = upsideAcceleration + downsideAcceleration;
+  const fallbackUpsideVolPct = accelerationSum > 0 ? realizedVolPct * (upsideAcceleration / accelerationSum) : 0;
+  const fallbackDownsideVolPct = accelerationSum > 0 ? realizedVolPct * (downsideAcceleration / accelerationSum) : 0;
+  const upsideRealizedVolPct = Number.isFinite(marketFeatures.upsideRealizedVolPct) ? marketFeatures.upsideRealizedVolPct : fallbackUpsideVolPct;
+  const downsideRealizedVolPct = Number.isFinite(marketFeatures.downsideRealizedVolPct) ? marketFeatures.downsideRealizedVolPct : fallbackDownsideVolPct;
   const downsideVolDominance = (downsideRealizedVolPct - upsideRealizedVolPct) / Math.max(upsideRealizedVolPct + downsideRealizedVolPct, 1e-9);
   const acceptanceQuality = average(
     [

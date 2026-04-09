@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "DYDXUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-08T07:37:12.364Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-04",
+      "startTime": 1775418300000,
+      "endTime": 1775633400000,
+      "count": 240,
+      "updatedAt": "2026-04-08T07:37:12.364Z"
+    }
+  ]
+}

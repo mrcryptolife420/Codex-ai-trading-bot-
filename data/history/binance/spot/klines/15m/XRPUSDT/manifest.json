@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "XRPUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-09T03:46:20.269Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-03",
+      "startTime": 1774624500000,
+      "endTime": 1775000700000,
+      "count": 419,
+      "updatedAt": "2026-04-09T03:46:20.266Z"
+    },
+    {
+      "id": "2026-04",
+      "startTime": 1775001600000,
+      "endTime": 1775706300000,
+      "count": 784,
+      "updatedAt": "2026-04-09T03:46:20.269Z"
+    }
+  ]
+}

@@ -128,6 +128,7 @@ function summarizeCandidateSnapshot(candidate = {}) {
       capitalGovernor: candidate.decision?.capitalGovernorApplied?.status || null,
       allocatorPosture: candidate.decision?.adaptivePolicy?.posture || candidate.strategyAllocationSummary?.posture || null
     },
+    counterfactualContext: summarizeCounterfactualContext(candidate),
     missedTradeTuning: candidate.decision?.missedTradeTuningApplied
       ? {
           blocker: candidate.decision.missedTradeTuningApplied.blocker || null,
@@ -138,6 +139,61 @@ function summarizeCandidateSnapshot(candidate = {}) {
     dataQuality: summarizeDataQualitySnapshot(candidate.dataQualitySummary || {}),
     confidenceBreakdown: summarizeConfidenceBreakdown(candidate.confidenceBreakdown || {}),
     topRawFeatures: pickTopNumericMap(candidate.rawFeatures || {}, 8, 4)
+  };
+}
+
+function buildRunnerUpStrategySnapshot(candidate = {}) {
+  const strategySummary = candidate.strategySummary || {};
+  const activeStrategy = strategySummary.activeStrategy || null;
+  const rankedStrategies = arr(strategySummary.strategies || []);
+  const runnerUp = rankedStrategies.find((item) => (item?.id || null) && (item?.id || null) !== activeStrategy);
+  if (runnerUp) {
+    return {
+      id: runnerUp.id || null,
+      label: runnerUp.label || runnerUp.id || null,
+      family: runnerUp.family || null,
+      familyLabel: runnerUp.familyLabel || runnerUp.family || null,
+      score: num(runnerUp.score || 0, 4),
+      confidence: num(runnerUp.confidence || 0, 4),
+      fitScore: num(runnerUp.fitScore || 0, 4)
+    };
+  }
+  const familyRunnerUp = arr(strategySummary.familyRankings || []).find((item) => (item?.strategyId || null) && (item?.strategyId || null) !== activeStrategy);
+  if (!familyRunnerUp) {
+    return null;
+  }
+  return {
+    id: familyRunnerUp.strategyId || null,
+    label: familyRunnerUp.strategyLabel || familyRunnerUp.strategyId || null,
+    family: familyRunnerUp.family || null,
+    familyLabel: familyRunnerUp.familyLabel || familyRunnerUp.family || null,
+    score: null,
+    confidence: num(familyRunnerUp.confidence || 0, 4),
+    fitScore: num(familyRunnerUp.fitScore || 0, 4)
+  };
+}
+
+function summarizeCounterfactualContext(candidate = {}) {
+  const context = candidate.decision?.counterfactualContext || candidate.counterfactualContext || {};
+  const blockerReasons = [...new Set(arr(context.blockerReasons || candidate.blockerReasons || candidate.decision?.reasons || []).filter(Boolean))].slice(0, 6);
+  const marginalBlocker = context.marginalBlocker || (blockerReasons.length === 1 ? blockerReasons[0] : null);
+  const sharedBlockers = arr(
+    context.sharedBlockers || (blockerReasons.length > 1 ? blockerReasons : [])
+  ).filter(Boolean).slice(0, 6);
+  return {
+    blockerMode: context.blockerMode || (marginalBlocker ? "marginal" : blockerReasons.length ? "shared" : "none"),
+    dominantBlocker: context.dominantBlocker || blockerReasons[0] || null,
+    marginalBlocker,
+    sharedBlockers,
+    edgeToThreshold: num(
+      context.edgeToThreshold ?? ((candidate.score?.probability || 0) - (candidate.decision?.threshold || 0)),
+      4
+    ),
+    runnerUpStrategy: context.runnerUpStrategy || buildRunnerUpStrategySnapshot(candidate),
+    strategyRetirementStatus: context.strategyRetirementStatus || candidate.decision?.strategyRetirementApplied?.status || null,
+    strategyRetirementStatusTriggers: arr(
+      context.strategyRetirementStatusTriggers || candidate.decision?.strategyRetirementApplied?.statusTriggers || []
+    ).slice(0, 6)
   };
 }
 
@@ -538,6 +594,7 @@ function makeDecisionFrame(candidate = {}) {
     blockerCategory: classifyBlockerCategory(dominantBlocker),
     reasons: [...(candidate.decision?.reasons || [])].slice(0, 8),
     blockers: [...(candidate.blockerReasons || candidate.decision?.reasons || [])].slice(0, 8),
+    counterfactualContext: summarizeCounterfactualContext(candidate),
     marketCondition: candidate.marketConditionSummary ? {
       conditionId: candidate.marketConditionSummary.conditionId || null,
       confidence: num(candidate.marketConditionSummary.conditionConfidence || 0, 4),
@@ -1155,7 +1212,10 @@ export class DataRecorder {
       alertStatus: ops.alerts?.status || null,
       exchangeSafety: ops.exchangeSafety?.status || null,
       capitalGovernor: ops.capitalGovernor?.status || null,
-      signalFlowStatus: (ops.signalFlow?.consecutiveCyclesWithSignalsNoPaperTrade || 0) >= 3 ? "stalled" : "normal",
+      signalFlowStatus:
+        (ops.signalFlow?.consecutiveCyclesWithSignalsNoPaperTrade || 0) >= (this.config.paperSilentFailureCycleThreshold || 3)
+          ? "stalled"
+          : "normal",
       executionCost: report.executionCostSummary?.status || null,
       dataRecorder: {
         lineageCoverage: num(this.state.lineageCoverage || 0, 4),
@@ -1413,7 +1473,7 @@ export class DataRecorder {
     return payload;
   }
 
-  async loadHistoricalBootstrap({ maxFilesPerBucket = 14, maxRecordsPerBucket = 160 } = {}) {
+  async loadHistoricalBootstrap({ maxFilesPerBucket = 14, maxRecordsPerBucket = 160, referenceNow = null } = {}) {
     if (!this.config.dataRecorderEnabled) {
       return null;
     }
@@ -1436,9 +1496,10 @@ export class DataRecorder {
     const latestDatasetRecord = datasetRecords[0] || null;
     const latestDataset = latestDatasetRecord?.datasets || null;
     const latestDatasetAt = latestDatasetRecord?.at || null;
+    const effectiveNow = referenceNow || new Date().toISOString();
     const warmStartMaxAgeHours = Math.max(24, Number(this.config.dataRecorderWarmStartMaxAgeHours || 72));
     const warmStartAgeHours = latestDatasetAt
-      ? Math.max(0, (new Date().getTime() - new Date(latestDatasetAt).getTime()) / 36e5)
+      ? Math.max(0, (new Date(effectiveNow).getTime() - new Date(latestDatasetAt).getTime()) / 36e5)
       : null;
     const warmStartFresh = latestDatasetAt == null
       ? true
@@ -1446,8 +1507,8 @@ export class DataRecorder {
         ? warmStartAgeHours <= warmStartMaxAgeHours
         : false;
     const bootstrap = {
-      generatedAt: new Date().toISOString(),
-      status: decisionRecords.length || tradeRecords.length || learningRecords.length || newsRecords.length || contextRecords.length
+      generatedAt: effectiveNow,
+      status: decisionRecords.length || tradeRecords.length || learningRecords.length || newsRecords.length || contextRecords.length || datasetRecords.length
         ? warmStartFresh
           ? "ready"
           : "stale"

@@ -26,6 +26,14 @@ function hoursBetween(start, end) {
   return minutesBetween(start, end) / 60;
 }
 
+function latestTradeTimestamp(trades = []) {
+  const latestMs = trades
+    .map((trade) => new Date(trade.exitAt || trade.entryAt || 0).getTime())
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left)[0];
+  return Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null;
+}
+
 function buildBucket(id, scopeType) {
   return {
     id,
@@ -122,7 +130,7 @@ export class ParameterGovernor {
   buildSnapshot({ journal = {}, nowIso = new Date().toISOString() } = {}) {
     const trades = (journal.trades || []).filter((trade) => trade.exitAt);
     const lookbackHours = safeNumber(this.config.parameterGovernorLookbackHours, 24 * 7);
-    const latestTradeAt = [...trades].reverse().map((trade) => trade.exitAt || trade.entryAt || null).find(Boolean) || null;
+    const latestTradeAt = latestTradeTimestamp(trades);
     const freshnessHours = latestTradeAt ? hoursBetween(latestTradeAt, nowIso) : null;
     const recentTrades = trades.filter((trade) => {
       if (!trade.exitAt) {

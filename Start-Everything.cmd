@@ -26,6 +26,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
+for /f "usebackq delims=" %%M in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$envPath=Join-Path '%~dp0' '.env'; if (Test-Path $envPath) { $line = Get-Content $envPath | Where-Object { $_ -match '^BOT_MODE=' } | Select-Object -First 1; if ($line) { ($line -split '=',2)[1].Trim().ToLower() } else { 'paper' } } else { 'paper' }"`) do set "TARGET_MODE=%%M"
+if not defined TARGET_MODE set "TARGET_MODE=paper"
+echo Dashboard mode wordt gesynchroniseerd naar %TARGET_MODE%...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$modeUri='%DASHBOARD_URL%/api/mode';" ^
+  "$headers=@{ 'X-Dashboard-Request'='1'; 'Content-Type'='application/json' };" ^
+  "$body=@{ mode='%TARGET_MODE%' } | ConvertTo-Json -Compress;" ^
+  "Invoke-RestMethod -Uri $modeUri -Method Post -Headers $headers -Body $body -TimeoutSec 20 | Out-Null"
+if errorlevel 1 (
+  echo Dashboard draaide, maar mode-sync naar %TARGET_MODE% mislukte.
+  exit /b 1
+)
+
 echo Bot wordt gestart met de actuele code...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$startUri='%DASHBOARD_URL%/api/start';" ^

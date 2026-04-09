@@ -35,6 +35,16 @@ function sumTradeCommissionsToQuote(trades, baseAsset, quoteAsset) {
   }, 0);
 }
 
+function sumTradeCommissionsInAsset(trades, asset) {
+  return (trades || []).reduce((total, trade) => {
+    const commission = Number(trade.commission || 0);
+    if (!commission || trade.commissionAsset !== asset) {
+      return total;
+    }
+    return total + commission;
+  }, 0);
+}
+
 function toAssetMap(account) {
   return Object.fromEntries(
     (account.balances || []).map((asset) => [
@@ -120,7 +130,9 @@ function sumTradeQuoteQuantity(trades = []) {
 
 function normalizeExecution(execution) {
   const order = execution.order || {};
-  const trades = mergeTrades(execution.trades || [], order.fills || []);
+  const providedTrades = Array.isArray(execution.trades) ? execution.trades.filter(Boolean) : [];
+  const fallbackTrades = Array.isArray(order.fills) ? order.fills.filter(Boolean) : [];
+  const trades = providedTrades.length ? providedTrades : fallbackTrades;
   const tradeExecutedQty = sumTradeExecutedQuantity(trades);
   const tradeQuoteQty = sumTradeQuoteQuantity(trades);
   return {
@@ -289,8 +301,10 @@ export class LiveBroker {
     return { quoteFree: Number(quoteBalance?.free || 0) };
   }
 
-  async getEquity(runtime, midPrices = {}) {
-    const balance = await this.getBalance();
+  async getEquity(runtime, midPrices = {}, balanceSnapshot = null) {
+    const balance = balanceSnapshot && Number.isFinite(balanceSnapshot.quoteFree)
+      ? balanceSnapshot
+      : await this.getBalance();
     const positionsValue = (runtime.openPositions || []).reduce((total, position) => {
       const mid = midPrices[position.symbol] || position.lastMarkedPrice || position.entryPrice;
       return total + position.quantity * mid;
@@ -825,11 +839,12 @@ export class LiveBroker {
       }
     }
 
-    let trades = Array.isArray(defaultTrades) ? [...defaultTrades] : [];
+    const fallbackTrades = Array.isArray(defaultTrades) ? [...defaultTrades] : [];
+    let trades = fallbackTrades;
     if (this.client.getMyTrades && latestOrder?.orderId) {
       try {
         const fetchedTrades = await this.client.getMyTrades(symbol, { orderId: latestOrder.orderId, limit: 50 });
-        trades = mergeTrades(trades, fetchedTrades);
+        trades = Array.isArray(fetchedTrades) && fetchedTrades.length ? fetchedTrades : fallbackTrades;
       } catch (error) {
         this.logger?.warn?.("Terminal order trade fetch failed", { symbol, orderId: latestOrder.orderId, error: error.message });
       }
@@ -844,8 +859,10 @@ export class LiveBroker {
 
   buildEntryFromExecutions({ symbol, executions, rules, marketSnapshot, decision, score, rawFeatures, newsSummary, entryRationale, plan, orderResponses = [], orderTelemetry = {}, amendmentCount = 0, cancelReplaceCount = 0, keepPriorityCount = 0, requestedQuoteAmount = 0 }) {
     const normalized = executions.map(normalizeExecution);
-    const quantity = normalized.reduce((total, item) => total + Number(item.order.executedQty || 0), 0);
+    const grossQuantity = normalized.reduce((total, item) => total + Number(item.order.executedQty || 0), 0);
     const quoteSpent = normalized.reduce((total, item) => total + Number(item.order.cummulativeQuoteQty || 0), 0);
+    const baseFeeQuantity = normalized.reduce((total, item) => total + sumTradeCommissionsInAsset(item.trades, rules.baseAsset), 0);
+    const quantity = Math.max(0, grossQuantity - baseFeeQuantity);
     if (!quantity || !quoteSpent) {
       throw new Error("Live buy returned empty fills.");
     }
@@ -878,6 +895,8 @@ export class LiveBroker {
       entryAt: nowIso(),
       entryPrice: averagePrice,
       quantity,
+      grossQuantity,
+      baseFeeQuantity,
       notional: quoteSpent,
       totalCost: quoteSpent + fee,
       entryFee: fee,
@@ -1517,6 +1536,7 @@ export class LiveBroker {
       const closedTrades = [];
       const recoveredPositions = [];
       const warnings = [];
+      const ignoredDustSymbols = new Set();
 
     for (const position of [...runtime.openPositions]) {
       try {
@@ -1628,6 +1648,20 @@ export class LiveBroker {
       if (assetBalance < Math.max(rules.minQty || 0, 0)) {
         continue;
       }
+      const marketSnapshot = await getMarketSnapshot(symbol);
+      const normalizedQuantity = normalizeQuantity(assetBalance, rules, "floor", false) || 0;
+      const unmanagedNotional = normalizedQuantity * Math.max(Number(marketSnapshot?.book?.mid || 0), 0);
+      if (!normalizedQuantity || this.isDustRemainder({ quantity: normalizedQuantity, notional: unmanagedNotional, rules })) {
+        ignoredDustSymbols.add(symbol);
+        warnings.push({
+          symbol,
+          issue: "ignored_dust_balance",
+          quantity: assetBalance,
+          normalizedQuantity,
+          notional: unmanagedNotional
+        });
+        continue;
+      }
       if (openSellOrders.length) {
         warnings.push({
           symbol,
@@ -1641,15 +1675,14 @@ export class LiveBroker {
         warnings.push({ symbol, issue: "unmanaged_balance_detected", quantity: assetBalance });
         continue;
       }
-      const marketSnapshot = await getMarketSnapshot(symbol);
       const recoveredPosition = {
         id: crypto.randomUUID(),
         symbol,
         entryAt: nowIso(),
         entryPrice: marketSnapshot.book.mid,
-        quantity: normalizeQuantity(assetBalance, rules, "floor", false),
-        notional: assetBalance * marketSnapshot.book.mid,
-        totalCost: assetBalance * marketSnapshot.book.mid,
+        quantity: normalizedQuantity,
+        notional: normalizedQuantity * marketSnapshot.book.mid,
+        totalCost: normalizedQuantity * marketSnapshot.book.mid,
         entryFee: 0,
         highestPrice: marketSnapshot.book.mid,
         lowestPrice: marketSnapshot.book.mid,
@@ -1719,7 +1752,7 @@ export class LiveBroker {
 
       const runtimeSymbols = new Set((runtime.openPositions || []).map((position) => position.symbol));
       const exchangeSymbols = Object.entries(this.symbolRules)
-        .filter(([, rules]) => (assetMap[rules.baseAsset]?.total || 0) >= Math.max(rules.minQty || 0, 0))
+        .filter(([symbol, rules]) => !ignoredDustSymbols.has(symbol) && (assetMap[rules.baseAsset]?.total || 0) >= Math.max(rules.minQty || 0, 0))
         .map(([symbol]) => symbol);
       const trackedTruthSymbols = [...new Set([...runtimeSymbols, ...exchangeSymbols, ...trackedOpenOrders.map((order) => order.symbol).filter(Boolean)])].slice(0, 12);
       const unmatchedOrderSymbols = [...new Set(trackedOpenOrders.map((order) => order.symbol).filter((symbol) => symbol && !runtimeSymbols.has(symbol)))];
@@ -2102,6 +2135,3 @@ export class LiveBroker {
     }
   }
 }
-
-
-

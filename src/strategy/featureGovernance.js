@@ -344,8 +344,15 @@ export function buildFeaturePruningPlan({
     const redundancyScore = groupLeader && groupLeader.id !== item.id && item.group === groupLeader.group
       ? clamp((groupLeader.influenceScore || 0) > 0 ? (item.influenceScore || 0) / (groupLeader.influenceScore || 1) : 0, 0, 1)
       : 0;
-    const registryStatus = classifyRegistryStatus({
-      predictiveScore: item.predictiveScore || decay.predictiveScore || 0,
+    const inverseActionability = item.inverseActionability || 0;
+    const predictiveScore = item.predictiveScore || decay.predictiveScore || 0;
+    const inverseDropCandidate = item.edgeType === "inverse" &&
+      inverseActionability >= 0.44 &&
+      (item.activationRate || 0) >= 0.55;
+    const registryStatus = inverseDropCandidate
+      ? "drop_candidate"
+      : classifyRegistryStatus({
+      predictiveScore,
       parityStatus: parity.status || "aligned",
       activationRate: item.activationRate || 0,
       redundancyScore,
@@ -372,9 +379,16 @@ export function buildFeaturePruningPlan({
       Math.max(
         item.evidenceConfidence || 0,
         sampleConfidence * 0.58 +
-          Math.min(1, (item.predictiveScore || 0) / 0.16) * 0.28 +
+          Math.min(1, predictiveScore / 0.16) * 0.28 +
           ((decay.status || "") === "decayed" ? 0.14 : (decay.status || "") === "watch" ? 0.07 : 0)
       ),
+      0,
+      1
+    );
+    const inverseDropConfidence = clamp(
+      inverseActionability * 0.74 +
+        sampleConfidence * 0.16 +
+        ((decay.status || "") === "decayed" ? 0.08 : (decay.status || "") === "watch" ? 0.04 : 0),
       0,
       1
     );
@@ -382,7 +396,9 @@ export function buildFeaturePruningPlan({
       action === "fix_live_parity"
         ? evidenceConfidence * 0.7 + ((parity.status || "") === "misaligned" ? 0.22 : 0.1)
         : action === "drop_candidate"
-          ? evidenceConfidence * 0.82 + ((decay.status || "") === "decayed" ? 0.12 : 0)
+          ? inverseDropCandidate
+            ? inverseDropConfidence
+            : evidenceConfidence * 0.82 + ((decay.status || "") === "decayed" ? 0.12 : 0)
           : evidenceConfidence,
       0,
       1
@@ -419,7 +435,9 @@ export function buildFeaturePruningPlan({
             ? "lage voorspellende waarde, maar dit is vooral een context/support-feature en nog geen harde drop-candidate"
             : "lage voorspellende waarde, maar nog onvoldoende sample-evidence voor een harde drop-candidate"
           : action === "drop_candidate"
-            ? "lage voorspellende waarde met hoge activatie"
+            ? inverseDropCandidate
+              ? "feature werkt vooral als inverse risico- of anti-signal, maar pruning-evidence is nog niet volwassen"
+              : "lage voorspellende waarde met hoge activatie"
           : action === "fix_live_parity"
             ? "paper/live parity is onvoldoende"
             : action === "shadow_only"

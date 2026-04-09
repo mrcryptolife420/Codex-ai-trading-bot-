@@ -6,6 +6,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function shouldUseReadOnlyInit(command) {
+  return ["status", "doctor", "report"].includes(command);
+}
+
 async function runContinuousBot({ bot, config, logger, sleepFn = sleep, signalSource = process }) {
   let stopRequested = false;
   let stopWaiter = null;
@@ -117,7 +121,11 @@ export default async function runCli({
   }
 
   const bot = botFactory({ config, logger });
-  await bot.init();
+  await bot.init({
+    command,
+    readOnly: shouldUseReadOnlyInit(command),
+    enableStreams: !shouldUseReadOnlyInit(command)
+  });
 
   try {
     if (command === "run") {

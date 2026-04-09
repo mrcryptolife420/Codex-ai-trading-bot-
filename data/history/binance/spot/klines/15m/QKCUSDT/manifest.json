@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "source": "binance_spot",
+  "symbol": "QKCUSDT",
+  "interval": "15m",
+  "intervalMs": 900000,
+  "updatedAt": "2026-04-08T23:13:26.020Z",
+  "partitionGranularity": "month",
+  "partitions": [
+    {
+      "id": "2026-04",
+      "startTime": 1775405700000,
+      "endTime": 1775689200000,
+      "count": 316,
+      "updatedAt": "2026-04-08T23:13:26.020Z"
+    }
+  ]
+}
