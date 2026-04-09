@@ -319,6 +319,14 @@ function safeRenderSection(section, renderFn) {
     return null;
   } catch (error) {
     showDashboardRenderIssue(section, error);
+    if (section === "learning" && elements.learningList) {
+      replaceChildren(elements.learningList, [
+        makeLearningEmptyCard(
+          "Learning en tuning",
+          `Learning renderde niet volledig: ${truncate(error?.message || "onbekende fout", 160)}`
+        )
+      ]);
+    }
     return {
       section,
       message: error?.message || "Onbekende renderfout"
