@@ -4,7 +4,7 @@
   "symbol": "NIGHTUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T14:18:07.102Z",
+  "updatedAt": "2026-04-09T15:48:07.304Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T14:18:07.099Z"
+      "updatedAt": "2026-04-09T15:48:07.300Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775744100000,
-      "count": 826,
-      "updatedAt": "2026-04-09T14:18:07.102Z"
+      "endTime": 1775749500000,
+      "count": 832,
+      "updatedAt": "2026-04-09T15:48:07.304Z"
     }
   ]
 }

@@ -4,7 +4,7 @@
   "symbol": "ASTERUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T14:16:54.720Z",
+  "updatedAt": "2026-04-09T15:46:47.732Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T14:16:54.717Z"
+      "updatedAt": "2026-04-09T15:46:47.729Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775744100000,
-      "count": 826,
-      "updatedAt": "2026-04-09T14:16:54.720Z"
+      "endTime": 1775749500000,
+      "count": 832,
+      "updatedAt": "2026-04-09T15:46:47.732Z"
     }
   ]
 }

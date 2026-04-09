@@ -4,7 +4,7 @@
   "symbol": "PAXGUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T14:15:54.618Z",
+  "updatedAt": "2026-04-09T15:45:43.523Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774624500000,
       "endTime": 1775000700000,
       "count": 419,
-      "updatedAt": "2026-04-09T14:15:54.614Z"
+      "updatedAt": "2026-04-09T15:45:43.519Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775744100000,
-      "count": 826,
-      "updatedAt": "2026-04-09T14:15:54.618Z"
+      "endTime": 1775749500000,
+      "count": 832,
+      "updatedAt": "2026-04-09T15:45:43.523Z"
     }
   ]
 }

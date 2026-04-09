@@ -4,7 +4,7 @@
   "interval": "15m",
   "partitionId": "2026-04",
   "partitionGranularity": "month",
-  "updatedAt": "2026-04-09T14:15:26.306Z",
+  "updatedAt": "2026-04-09T15:48:27.430Z",
   "candles": [
     {
       "openTime": 1775001600000,
@@ -7439,6 +7439,60 @@
       "low": 0.2403,
       "close": 0.2404,
       "volume": 500
+    },
+    {
+      "openTime": 1775745000000,
+      "closeTime": 1775745899999,
+      "open": 0.2392,
+      "high": 0.2425,
+      "low": 0.2391,
+      "close": 0.2424,
+      "volume": 406282.3
+    },
+    {
+      "openTime": 1775745900000,
+      "closeTime": 1775746799999,
+      "open": 0.2425,
+      "high": 0.2452,
+      "low": 0.2423,
+      "close": 0.2438,
+      "volume": 1641427.9
+    },
+    {
+      "openTime": 1775746800000,
+      "closeTime": 1775747699999,
+      "open": 0.2438,
+      "high": 0.2447,
+      "low": 0.2416,
+      "close": 0.244,
+      "volume": 919113.7
+    },
+    {
+      "openTime": 1775747700000,
+      "closeTime": 1775748599999,
+      "open": 0.2439,
+      "high": 0.2446,
+      "low": 0.2422,
+      "close": 0.2427,
+      "volume": 858307.8
+    },
+    {
+      "openTime": 1775748600000,
+      "closeTime": 1775749499999,
+      "open": 0.2427,
+      "high": 0.2467,
+      "low": 0.2424,
+      "close": 0.2463,
+      "volume": 2930559.7
+    },
+    {
+      "openTime": 1775749500000,
+      "closeTime": 1775750399999,
+      "open": 0.2463,
+      "high": 0.2471,
+      "low": 0.2461,
+      "close": 0.2471,
+      "volume": 377663.3
     }
   ]
 }

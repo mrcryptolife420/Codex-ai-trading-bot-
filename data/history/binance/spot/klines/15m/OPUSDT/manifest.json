@@ -4,7 +4,7 @@
   "symbol": "OPUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T14:20:21.509Z",
+  "updatedAt": "2026-04-09T15:50:18.248Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T14:20:21.506Z"
+      "updatedAt": "2026-04-09T15:50:18.244Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775744100000,
-      "count": 826,
-      "updatedAt": "2026-04-09T14:20:21.509Z"
+      "endTime": 1775749500000,
+      "count": 832,
+      "updatedAt": "2026-04-09T15:50:18.248Z"
     }
   ]
 }

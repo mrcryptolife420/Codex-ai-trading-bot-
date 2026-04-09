@@ -4,15 +4,15 @@
   "symbol": "UUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T14:15:59.840Z",
+  "updatedAt": "2026-04-09T15:45:48.647Z",
   "partitionGranularity": "month",
   "partitions": [
     {
       "id": "2026-04",
       "startTime": 1775403900000,
-      "endTime": 1775744100000,
-      "count": 379,
-      "updatedAt": "2026-04-09T14:15:59.840Z"
+      "endTime": 1775749500000,
+      "count": 385,
+      "updatedAt": "2026-04-09T15:45:48.646Z"
     }
   ]
 }

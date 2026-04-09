@@ -4,7 +4,7 @@
   "symbol": "XPLUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T14:19:37.846Z",
+  "updatedAt": "2026-04-09T15:45:58.890Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T14:19:37.840Z"
+      "updatedAt": "2026-04-09T15:45:58.885Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775744100000,
-      "count": 826,
-      "updatedAt": "2026-04-09T14:19:37.846Z"
+      "endTime": 1775749500000,
+      "count": 832,
+      "updatedAt": "2026-04-09T15:45:58.890Z"
     }
   ]
 }
