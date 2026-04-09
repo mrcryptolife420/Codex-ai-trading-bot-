@@ -1600,6 +1600,8 @@ function buildOpsCards(snapshot) {
   const strategyAllocation = snapshot?.dashboard?.ai?.strategyAllocation || {};
   const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
+  const contextHealth = snapshot?.dashboard?.ops?.contextHealth || {};
+  const globalMarket = snapshot?.dashboard?.globalMarketContext || {};
   const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
   const performanceSegmentation = buildPerformanceSegmentationView(snapshot);
   const externalFeeds = externalFeedHeadline(snapshot);
@@ -1679,6 +1681,22 @@ function buildOpsCards(snapshot) {
         ? `${titleize(primaryDashboardFeed.id)} | ${titleize(primaryDashboardFeed.status)}`
         : "Geen feed issues zichtbaar",
       tone: ["failed", "degraded"].includes(dashboardFeeds.status || "") ? "negative" : statusTone(dashboardFeeds.status || "idle")
+    },
+    {
+      label: "Context health",
+      value: titleize(contextHealth.overallStatus || "unknown"),
+      foot: `${contextHealth.staleCount || 0} stale · ${contextHealth.unavailableCount || 0} unavailable`,
+      tone: statusTone(contextHealth.overallStatus || "unknown")
+    },
+    {
+      label: "Global context",
+      value: titleize(globalMarket.riskRegime || "unknown"),
+      foot: compactJoin([
+        globalMarket.btcDominance == null ? null : `BTC dom ${formatNumber(globalMarket.btcDominance, 1)}%`,
+        globalMarket.marketMomentum ? titleize(globalMarket.marketMomentum) : null,
+        globalMarket.dataQuality ? titleize(globalMarket.dataQuality) : null
+      ], " | "),
+      tone: globalMarket.riskRegime === "defensive" ? "negative" : globalMarket.riskRegime === "risk_on" ? "positive" : "neutral"
     }
   ];
 }
@@ -1702,6 +1720,8 @@ function buildOpsEvents(snapshot) {
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
   const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
   const externalFeeds = snapshot?.dashboard?.sourceReliability?.externalFeeds || {};
+  const contextHealth = snapshot?.dashboard?.ops?.contextHealth || {};
+  const contextSources = contextHealth.sources || {};
   const lastEntryAttempt = snapshot?.dashboard?.ops?.lastEntryAttempt || {};
   const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
     title: titleize(item.type || item.severity || "alert"),
@@ -1746,6 +1766,17 @@ function buildOpsEvents(snapshot) {
           title: "Dashboard feed",
           detail: `${titleize(dashboardFeeds.degradedFeeds[0].id)} | ${titleize(dashboardFeeds.degradedFeeds[0].status)}${dashboardFeeds.degradedFeeds[0].lastError ? ` | ${dashboardFeeds.degradedFeeds[0].lastError}` : ""}`,
           tone: dashboardFeeds.degradedFeeds[0].status === "failed" ? "negative" : "neutral"
+        }
+      : null,
+    contextHealth.overallStatus && contextHealth.overallStatus !== "healthy"
+      ? {
+          title: "Context health",
+          detail: compactJoin([
+            `${contextHealth.staleCount || 0} stale`,
+            `${contextHealth.unavailableCount || 0} unavailable`,
+            contextSources.globalMarket?.status ? `global ${titleize(contextSources.globalMarket.status)}` : null
+          ], " · "),
+          tone: contextHealth.overallStatus === "degraded" ? "negative" : "neutral"
         }
       : null,
     ...alerts,

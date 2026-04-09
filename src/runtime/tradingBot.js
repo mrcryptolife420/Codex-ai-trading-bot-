@@ -2016,6 +2016,22 @@ function summarizeOnChainLite(summary = {}) {
   };
 }
 
+function summarizeGlobalMarketContext(summary = {}) {
+  return {
+    btcDominance: summary.btcDominance == null ? null : num(summary.btcDominance, 2),
+    ethDominance: summary.ethDominance == null ? null : num(summary.ethDominance, 2),
+    stablecoinDominance: summary.stablecoinDominance == null ? null : num(summary.stablecoinDominance, 2),
+    totalMarketCapUsd: summary.totalMarketCapUsd == null ? null : num(summary.totalMarketCapUsd, 2),
+    marketCapChangePercent24h: summary.marketCapChangePercent24h == null ? null : num(summary.marketCapChangePercent24h, 2),
+    btcDominanceSignal: summary.btcDominanceSignal || "unknown",
+    stablecoinSignal: summary.stablecoinSignal || "unknown",
+    marketMomentum: summary.marketMomentum || "unknown",
+    riskRegime: summary.riskRegime || "unknown",
+    dataQuality: summary.dataQuality || "unavailable",
+    fetchedAt: summary.fetchedAt || null
+  };
+}
+
 function summarizeSourceReliability(summary = {}) {
   return {
     generatedAt: summary.generatedAt || null,
@@ -16699,6 +16715,55 @@ export class TradingBot {
     return summarizeSourceReliability(this.news?.reliability?.buildSummary(this.runtime) || this.runtime.sourceReliability || {});
   }
 
+  buildContextHealthSummary(referenceNow = nowIso()) {
+    const nowMs = new Date(referenceNow).getTime();
+    const toStatus = (updatedAt, ttlMinutes = 15) => {
+      const updatedMs = updatedAt ? new Date(updatedAt).getTime() : Number.NaN;
+      if (!Number.isFinite(updatedMs)) {
+        return {
+          status: "unavailable",
+          ageMinutes: null,
+          stale: true,
+          updatedAt: null
+        };
+      }
+      const ageMinutes = Math.max(0, (nowMs - updatedMs) / 60_000);
+      const stale = ageMinutes > Math.max(1, Number(ttlMinutes || 15));
+      return {
+        status: stale ? "stale" : "active",
+        ageMinutes: num(ageMinutes, 1),
+        stale,
+        updatedAt
+      };
+    };
+
+    const marketSentiment = summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT);
+    const volatility = summarizeVolatility(this.runtime.volatilityContext || EMPTY_VOLATILITY_CONTEXT);
+    const onChainLite = summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN);
+    const globalMarketContext = summarizeGlobalMarketContext(this.runtime.globalMarketContext || EMPTY_GLOBAL_MARKET_CONTEXT);
+    const stream = this.stream.getStatus?.() || {};
+
+    const sources = {
+      marketSentiment: toStatus(marketSentiment.lastUpdatedAt, this.config.marketSentimentCacheMinutes || 15),
+      volatility: toStatus(volatility.lastUpdatedAt, this.config.volatilityCacheMinutes || 20),
+      onChainLite: toStatus(onChainLite.lastUpdatedAt, this.config.onChainLiteCacheMinutes || 30),
+      globalMarket: toStatus(globalMarketContext.fetchedAt, this.config.globalMarketCacheMinutes || 20),
+      streamPublic: toStatus(stream.lastPublicMessageAt, 2)
+    };
+    const staleCount = Object.values(sources).filter((source) => source.status === "stale").length;
+    const unavailableCount = Object.values(sources).filter((source) => source.status === "unavailable").length;
+    return {
+      overallStatus: unavailableCount >= 2
+        ? "degraded"
+        : staleCount > 0
+          ? "watch"
+          : "healthy",
+      staleCount,
+      unavailableCount,
+      sources
+    };
+  }
+
   buildPortfolioView() {
     const clusters = {};
     const sectors = {};
@@ -16745,6 +16810,7 @@ export class TradingBot {
     const missedTradeTuningDigest = summarizeMissedTradeTuning(offlineTrainerSummary.missedTradeTuning || {});
     const exitPolicyDigest = summarizeExitPolicyDigest(leadManagedPosition?.latestExitPolicy || {});
     const opportunityRankingDigest = summarizeOpportunityRanking(previewTopCandidates);
+    const contextHealth = this.buildContextHealthSummary(referenceNow);
     const promotionPipeline = this.buildPromotionPipelineSnapshot({
       paperLearning: summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {}),
       modelRegistry: summarizeModelRegistry(this.runtime.modelRegistry || {}),
@@ -16795,6 +16861,7 @@ export class TradingBot {
       marketHistory: marketHistorySummary,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
       sourceReliability: this.buildSourceReliabilitySnapshot(),
+      contextHealth,
       exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       session: summarizeSession(this.runtime.session || {}),
       marketSentiment: summarizeMarketSentiment(this.runtime.marketSentiment || EMPTY_MARKET_SENTIMENT),
@@ -16905,6 +16972,7 @@ export class TradingBot {
         exitLearning: offlineTrainerSummary.exitLearning || {}
       })
     };
+    const contextHealth = this.buildContextHealthSummary(referenceNow);
     const marketConditionDigest = summarizeMarketCondition(
       topDecision.marketCondition ||
       leadPosition?.latestMarketConditionSummary ||
@@ -17053,6 +17121,7 @@ export class TradingBot {
         rawModelProbabilityAudit,
         blockerFrictionAudit,
         learningInsights,
+        contextHealth,
         signalFlow: summarizeSignalFlow(this.runtime.signalFlow || {})
       },
       portfolio: this.buildPortfolioView(),
@@ -17061,6 +17130,7 @@ export class TradingBot {
       marketSentiment: marketSentimentOverview,
       volatility: volatilityOverview,
       onChainLite: summarizeOnChainLite(this.runtime.onChainLite || EMPTY_ONCHAIN),
+      globalMarketContext: summarizeGlobalMarketContext(this.runtime.globalMarketContext || EMPTY_GLOBAL_MARKET_CONTEXT),
       calendar: calendarOverview,
       sourceReliability: this.buildSourceReliabilitySnapshot(),
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
@@ -17194,6 +17264,7 @@ export class TradingBot {
       promotionPipeline: dashboard.promotionPipeline,
       operatorDiagnostics: dashboard.operatorDiagnostics,
       calendar: dashboard.calendar,
+      contextHealth: dashboard.ops?.contextHealth || null,
       safety: dashboard.safety,
       signalFlow: dashboard.ops?.signalFlow || null,
       ops: dashboard.ops,
