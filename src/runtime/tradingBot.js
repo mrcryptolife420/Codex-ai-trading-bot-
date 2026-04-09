@@ -10233,6 +10233,53 @@ export class TradingBot {
       .sort((left, right) => (right.suspicionScore || 0) - (left.suspicionScore || 0))
       .slice(0, 6);
     const topSuspiciousBlocker = blockerQuality[0] || null;
+    const rankedBadPatterns = (() => {
+      const buckets = new Map();
+      for (const item of counterfactuals) {
+        const outcomeLabel = item.outcomeLabel || item.outcome || "neutral";
+        if (!isBadVetoOutcomeLabel(outcomeLabel)) {
+          continue;
+        }
+        const blocker = pickCounterfactualBlocker(item) || "unknown_blocker";
+        const family = item.strategyFamily || "na_family";
+        const regime = item.regime || "na_regime";
+        const session = item.sessionAtEntry || "na_session";
+        const key = `${blocker}::${family}::${regime}::${session}`;
+        if (!buckets.has(key)) {
+          buckets.set(key, {
+            blocker,
+            family,
+            regime,
+            session,
+            count: 0,
+            avgMovePctSum: 0
+          });
+        }
+        const bucket = buckets.get(key);
+        bucket.count += 1;
+        bucket.avgMovePctSum += Number(item.realizedMovePct || 0);
+      }
+      return [...buckets.values()]
+        .map((item) => ({
+          ...item,
+          averageMovePct: item.count ? item.avgMovePctSum / item.count : 0,
+          patternId: [item.blocker, item.family, item.regime, item.session].join(" | ")
+        }))
+        .sort((left, right) => {
+          const countDelta = (right.count || 0) - (left.count || 0);
+          return countDelta !== 0 ? countDelta : (right.averageMovePct || 0) - (left.averageMovePct || 0);
+        });
+    })();
+    const overblockedScopes = rankedBadPatterns.slice(0, 4).map((item) => ({
+      id: item.patternId,
+      blocker: item.blocker,
+      family: item.family,
+      regime: item.regime,
+      session: item.session,
+      badVetoCount: item.count,
+      averageMovePct: num(item.averageMovePct || 0, 4),
+      status: item.count >= 3 ? "priority" : "watch"
+    }));
     const shadowCaseSummary = {
       status: resolvedShadowCount || arr(this.runtime?.counterfactualQueue || []).length ? "active" : "warmup",
       resolvedCount: resolvedShadowCount,
@@ -10594,54 +10641,7 @@ export class TradingBot {
         .filter((item) => pickCounterfactualBlocker(item) === topSuspiciousBlocker.id)
         .slice(-8)
       : [];
-    const rankedBadPatterns = (() => {
-      const buckets = new Map();
-      for (const item of counterfactuals) {
-        const outcomeLabel = item.outcomeLabel || item.outcome || "neutral";
-        if (!isBadVetoOutcomeLabel(outcomeLabel)) {
-          continue;
-        }
-        const blocker = pickCounterfactualBlocker(item) || "unknown_blocker";
-        const family = item.strategyFamily || "na_family";
-        const regime = item.regime || "na_regime";
-        const session = item.sessionAtEntry || "na_session";
-        const key = `${blocker}::${family}::${regime}::${session}`;
-        if (!buckets.has(key)) {
-          buckets.set(key, {
-            blocker,
-            family,
-            regime,
-            session,
-            count: 0,
-            avgMovePctSum: 0
-          });
-        }
-        const bucket = buckets.get(key);
-        bucket.count += 1;
-        bucket.avgMovePctSum += Number(item.realizedMovePct || 0);
-      }
-      return [...buckets.values()]
-        .map((item) => ({
-          ...item,
-          averageMovePct: item.count ? item.avgMovePctSum / item.count : 0,
-          patternId: [item.blocker, item.family, item.regime, item.session].join(" | ")
-        }))
-        .sort((left, right) => {
-          const countDelta = (right.count || 0) - (left.count || 0);
-          return countDelta !== 0 ? countDelta : (right.averageMovePct || 0) - (left.averageMovePct || 0);
-        });
-    })();
     const repeatedBadPattern = rankedBadPatterns[0] || null;
-    const overblockedScopes = rankedBadPatterns.slice(0, 4).map((item) => ({
-      id: item.patternId,
-      blocker: item.blocker,
-      family: item.family,
-      regime: item.regime,
-      session: item.session,
-      badVetoCount: item.count,
-      averageMovePct: num(item.averageMovePct || 0, 4),
-      status: item.count >= 3 ? "priority" : "watch"
-    }));
     reviewPacks = {
       ...reviewPacks,
       topSuspiciousBlocker: topSuspiciousBlocker?.id || null,

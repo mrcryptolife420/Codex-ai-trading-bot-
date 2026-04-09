@@ -1214,15 +1214,15 @@ function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals =
     failed,
     verdictCounts,
     topSuspiciousBlocker: topSuspiciousBlocker?.id || null,
-    topSuspiciousBlockerBadVetoRate: num(topSuspiciousBlocker?.badVetoRate || 0),
+    topSuspiciousBlockerBadVetoRate: safeNumber(topSuspiciousBlocker?.badVetoRate, 0),
     topOverblockedScopes: topOverblockedScopes.map((item) => ({
       id: item.id,
       family: item.family,
       regime: item.regime,
       session: item.session,
       total: item.total,
-      badVetoRate: num(item.badVetoRate),
-      goodVetoRate: num(item.goodVetoRate)
+      badVetoRate: safeNumber(item.badVetoRate, 0),
+      goodVetoRate: safeNumber(item.goodVetoRate, 0)
     }))
   };
 }
