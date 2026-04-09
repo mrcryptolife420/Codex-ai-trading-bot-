@@ -2,6 +2,7 @@ import { clamp } from "../utils/math.js";
 import { minutesBetween, sameUtcDay } from "../utils/time.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
+import { matchesBrokerMode } from "../utils/tradingSource.js";
 
 function safeValue(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -468,10 +469,6 @@ function isRedundantPaperCommitteeConfidence({ committeeSummary = {}, score = {}
     committeeProbability >= modelProbability - 0.03 &&
     committeeProbability >= threshold - 0.1
   );
-}
-
-function matchesBrokerMode(item, botMode = "paper") {
-  return (item?.brokerMode || "paper") === botMode;
 }
 
 function getPaperLearningBudgetState({ journal = {}, runtime = {}, nowIso, config = {} } = {}) {

@@ -1160,6 +1160,11 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
   const sourceScopedEquitySnapshots = equitySnapshots.filter((item) => matchesTradingSource(item, currentTradingSource, botMode));
   const lookbackTrades = trades.slice(-config.reportLookbackTrades);
   const sourceScopedLookbackTrades = sourceScopedTrades.slice(-config.reportLookbackTrades);
+  const shouldScopePrimary = botMode === "paper" && currentTradingSource !== "paper:internal";
+  const primaryTrades = shouldScopePrimary ? sourceScopedTrades : trades;
+  const primaryLookbackTrades = shouldScopePrimary ? sourceScopedLookbackTrades : lookbackTrades;
+  const primaryScaleOuts = shouldScopePrimary ? sourceScopedScaleOuts : scaleOuts;
+  const primaryEquitySnapshots = shouldScopePrimary ? sourceScopedEquitySnapshots : equitySnapshots;
   const openExposure = (runtime.openPositions || []).reduce(
     (total, position) => {
       const notional = safeNumber(position?.notional, Number.NaN);
@@ -1172,36 +1177,36 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
   );
   const nowMs = referenceNow.getTime();
   const localDayStartMs = startOfLocalDay(referenceNow);
-  const scaleOutPnlSummary = buildScaleOutPnlSummary(scaleOuts, {
+  const primaryScaleOutPnlSummary = buildScaleOutPnlSummary(primaryScaleOuts, {
     today: localDayStartMs,
     days7: nowMs - 7 * 86_400_000,
     days15: nowMs - 15 * 86_400_000,
     days30: nowMs - 30 * 86_400_000
   });
-  const lookbackScaleOuts = buildRecentScaleOuts(scaleOuts, lookbackTrades, config.reportLookbackTrades || 0);
+  const lookbackScaleOuts = buildRecentScaleOuts(primaryScaleOuts, primaryLookbackTrades, config.reportLookbackTrades || 0);
   const lookbackScaleOutPnl = lookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
   const sourceScopedLookbackScaleOuts = buildRecentScaleOuts(sourceScopedScaleOuts, sourceScopedLookbackTrades, config.reportLookbackTrades || 0);
   const sourceScopedLookbackScaleOutPnl = sourceScopedLookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
-  const tradeQualityReview = buildTradeQualitySummary(trades, journal.counterfactuals || []);
-  const executionCostSummary = buildExecutionCostSummary(lookbackTrades, config, referenceNow.toISOString());
-  const pnlDecomposition = buildPnlDecomposition(lookbackTrades);
-  const reportStats = buildTradeStats(lookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl });
+  const tradeQualityReview = buildTradeQualitySummary(primaryTrades, journal.counterfactuals || []);
+  const executionCostSummary = buildExecutionCostSummary(primaryLookbackTrades, config, referenceNow.toISOString());
+  const pnlDecomposition = buildPnlDecomposition(primaryLookbackTrades);
+  const reportStats = buildTradeStats(primaryLookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl });
   const sourceScopedStats = buildTradeStats(sourceScopedLookbackTrades, { realizedPnlAdjustment: sourceScopedLookbackScaleOutPnl });
   const performanceDiagnosis = buildPerformanceDiagnosis({
-    trades: lookbackTrades,
+    trades: primaryLookbackTrades,
     reportStats,
     pnlDecomposition,
     executionCostSummary,
     config
   });
   const openExposureReview = buildOpenExposureReview(runtime.openPositions || []);
-  const windowSummaries = buildWindowSummaries(trades, {
+  const windowSummaries = buildWindowSummaries(primaryTrades, {
     today: localDayStartMs,
     days7: nowMs - 7 * 86_400_000,
     days15: nowMs - 15 * 86_400_000,
     days30: nowMs - 30 * 86_400_000
   }, {
-    scaleOutPnlSummary
+    scaleOutPnlSummary: primaryScaleOutPnlSummary
   });
   const sourceMixActive = botMode === "paper" && currentTradingSource !== "paper:internal" && (
     trades.some((trade) => !matchesTradingSource(trade, currentTradingSource, botMode) && matchesBrokerMode(trade, botMode)) ||
@@ -1210,8 +1215,9 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
 
   return {
     ...reportStats,
+    reportScope: shouldScopePrimary ? "source_scoped" : "aggregate",
     currentTradingSource,
-    maxDrawdownPct: buildDrawdown(equitySnapshots),
+    maxDrawdownPct: buildDrawdown(primaryEquitySnapshots),
     sourceScoped: {
       tradingSource: currentTradingSource,
       tradeCount: sourceScopedStats.tradeCount || 0,
@@ -1242,14 +1248,14 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
     openExposure,
     openPositions: (runtime.openPositions || []).length,
     openExposureReview,
-    recentTrades: lookbackTrades.slice(-25).reverse(),
-    executionSummary: buildExecutionSummary(lookbackTrades),
+    recentTrades: primaryLookbackTrades.slice(-25).reverse(),
+    executionSummary: buildExecutionSummary(primaryLookbackTrades),
     executionCostSummary,
     pnlDecomposition,
     performanceDiagnosis,
-    attribution: buildAttributionSummary(trades),
+    attribution: buildAttributionSummary(primaryTrades),
     tradeQualityReview,
-    recentReviews: lookbackTrades.slice(-20).reverse().map((trade) => ({
+    recentReviews: primaryLookbackTrades.slice(-20).reverse().map((trade) => ({
       id: trade.id,
       symbol: trade.symbol,
       strategy: trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy || null,
@@ -1257,22 +1263,22 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
       netPnlPct: trade.netPnlPct || 0,
       ...buildTradeQualityReview(trade)
     })),
-    scaleOutSummary: buildScaleOutSummary(scaleOuts),
+    scaleOutSummary: buildScaleOutSummary(primaryScaleOuts),
     windows: {
       today: windowSummaries.today,
       days7: windowSummaries.days7,
       days15: windowSummaries.days15,
       days30: windowSummaries.days30,
-      allTime: buildTradeStats(trades, { realizedPnlAdjustment: scaleOutPnlSummary.allTime })
+      allTime: buildTradeStats(primaryTrades, { realizedPnlAdjustment: primaryScaleOutPnlSummary.allTime })
     },
     modes: {
       paper: buildModeStats(trades, "paper", scaleOuts),
       live: buildModeStats(trades, "live", scaleOuts)
     },
-    equitySeries: equitySnapshots.slice(-(config.dashboardEquityPointLimit || 240)),
+    equitySeries: primaryEquitySnapshots.slice(-(config.dashboardEquityPointLimit || 240)),
     cycleSeries: [...(journal.cycles || [])].slice(-(config.dashboardCyclePointLimit || 120)),
     recentEvents: buildRecentEvents(journal.events || [], runtime, referenceNow),
-    recentScaleOuts: scaleOuts.slice(-20).reverse(),
+    recentScaleOuts: primaryScaleOuts.slice(-20).reverse(),
     recentBlockedSetups: blockedSetups.slice(-20).reverse(),
     recentResearchRuns: researchRuns.slice(-8).reverse()
   };

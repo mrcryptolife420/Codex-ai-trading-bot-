@@ -1,3 +1,5 @@
+import { resolveStatusTone as statusTone } from "../../shared/statusTone.js";
+
 const POLL_MS = 5000;
 const SIGNAL_LIMIT = 3;
 const POSITION_LIMIT = 4;
@@ -390,17 +392,6 @@ function toneClass(value) {
     return "positive";
   }
   if (numeric < 0) {
-    return "negative";
-  }
-  return "neutral";
-}
-
-function statusTone(value) {
-  const normalized = `${value || ""}`.toLowerCase();
-  if (["healthy", "ready", "running", "positive", "clear", "paper", "eligible", "active"].includes(normalized)) {
-    return "positive";
-  }
-  if (["blocked", "critical", "failed", "negative", "stopped", "live", "manual_review"].includes(normalized)) {
     return "negative";
   }
   return "neutral";

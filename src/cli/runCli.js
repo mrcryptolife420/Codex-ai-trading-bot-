@@ -1,16 +1,16 @@
 ﻿import { runBacktest } from "../runtime/backtestRunner.js";
 import { runHistoryCommand } from "../runtime/marketHistory.js";
 import { TradingBot } from "../runtime/tradingBot.js";
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { BotManager } from "../runtime/botManager.js";
 
 function shouldUseReadOnlyInit(command) {
   return ["status", "doctor", "report"].includes(command);
 }
 
-async function runContinuousBot({ bot, config, logger, sleepFn = sleep, signalSource = process }) {
+const BOT_COMMANDS = new Set(["run", "once", "status", "doctor", "report", "research"]);
+
+async function runContinuousManagedBot({ config, logger, signalSource = process }) {
+  const manager = new BotManager({ projectRoot: config.projectRoot, logger });
   let stopRequested = false;
   let stopWaiter = null;
   const signalHandlers = [];
@@ -19,7 +19,7 @@ async function runContinuousBot({ bot, config, logger, sleepFn = sleep, signalSo
       return;
     }
     stopRequested = true;
-    logger?.warn?.("Stopping run loop", { reason });
+    logger?.warn?.("Stopping managed run loop", { reason });
     if (stopWaiter) {
       const resolve = stopWaiter;
       stopWaiter = null;
@@ -41,35 +41,19 @@ async function runContinuousBot({ bot, config, logger, sleepFn = sleep, signalSo
       signalSource.off(signal, handler);
     }
   };
+
   installSignalHandlers();
   try {
+    await manager.init();
+    await manager.start();
     while (!stopRequested) {
-      try {
-        const result = await bot.runCycle();
-        logger.info("Cycle complete", {
-          equity: result.equity.toFixed(2),
-          quoteFree: result.quoteFree.toFixed(2),
-          openPositions: result.openPositions,
-          circuitOpen: result.health.circuitOpen
-        });
-      } catch (error) {
-        logger.error("Cycle failed", {
-          error: error.message
-        });
-      }
-      if (stopRequested) {
-        break;
-      }
-      await Promise.race([
-        sleepFn(config.tradingIntervalSeconds * 1000),
-        new Promise((resolve) => {
-          stopWaiter = resolve;
-        })
-      ]);
-      stopWaiter = null;
+      await new Promise((resolve) => {
+        stopWaiter = resolve;
+      });
     }
   } finally {
     removeSignalHandlers();
+    await manager.stop("cli_signal").catch(() => {});
   }
 }
 
@@ -83,7 +67,6 @@ export default async function runCli({
     const { startDashboardServer } = await import("../dashboard/server.js");
     return startDashboardServer({ projectRoot, logger: log, port });
   },
-  sleepFn = sleep,
   signalSource = process
 }) {
   if (command === "dashboard") {
@@ -134,6 +117,15 @@ export default async function runCli({
     return;
   }
 
+  if (!BOT_COMMANDS.has(command)) {
+    throw new Error(`Unknown command: ${command}`);
+  }
+
+  if (command === "run") {
+    await runContinuousManagedBot({ config, logger, signalSource });
+    return;
+  }
+
   const bot = botFactory({ config, logger });
   await bot.init({
     command,
@@ -142,11 +134,6 @@ export default async function runCli({
   });
 
   try {
-    if (command === "run") {
-      await runContinuousBot({ bot, config, logger, sleepFn, signalSource });
-      return;
-    }
-
     if (command === "once") {
       const result = await bot.runCycle();
       console.log(JSON.stringify(result, null, 2));

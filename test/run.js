@@ -93,6 +93,8 @@ import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
 import { normalizeSymbolList, readRequestBody } from "../src/dashboard/server.js";
 import { createLogger } from "../src/utils/logger.js";
+import { matchesBrokerMode as matchesTradingSourceBrokerMode } from "../src/utils/tradingSource.js";
+import { resolveStatusTone } from "../src/shared/statusTone.js";
 
 async function runCheck(name, fn) {
   await fn();
@@ -10410,11 +10412,12 @@ await runCheck("trading bot report surfaces source-scoped paper metrics alongsid
   const report = await bot.getReport();
   assert.equal(report.currentTradingSource, "paper:binance_demo_spot");
   assert.equal(report.sourceMix.active, true);
-  assert.equal(report.tradeCount, 2);
+  assert.equal(report.reportScope, "source_scoped");
+  assert.equal(report.tradeCount, 1);
   assert.equal(report.sourceScoped.tradeCount, 1);
   assert.equal(report.sourceScoped.realizedPnl, 25);
   assert.equal(report.sourceScoped.maxDrawdownPct, 0);
-  assert.ok(report.maxDrawdownPct > report.sourceScoped.maxDrawdownPct);
+  assert.equal(report.maxDrawdownPct, report.sourceScoped.maxDrawdownPct);
 });
 
 await runCheck("trading bot report normalizes internal paper snapshot aliases to canonical source-scoped history", async () => {
@@ -10472,7 +10475,9 @@ await runCheck("trading bot report normalizes internal paper snapshot aliases to
 
   const report = await bot.getReport();
   assert.equal(report.currentTradingSource, "paper:internal");
+  assert.equal(report.reportScope, "aggregate");
   assert.equal(report.sourceMix.active, false);
+  assert.equal(report.tradeCount, 2);
   assert.equal(report.sourceScoped.tradeCount, 1);
   assert.equal(report.sourceScoped.realizedPnl, -40);
   assert.ok(report.sourceScoped.maxDrawdownPct > 0);
@@ -10789,46 +10794,48 @@ await runCheck("logger supports stderr-safe custom writers", async () => {
   assert.ok(lines[0].includes("mode=paper"));
 });
 
-await runCheck("run cli closes the bot after SIGINT and removes signal handlers", async () => {
+await runCheck("run cli uses managed loop for run command and stops on SIGINT", async () => {
   const signalSource = new EventEmitter();
-  let cycleCount = 0;
-  let closeCount = 0;
+  const calls = [];
   let stopWarnings = 0;
-  await runCli({
-    command: "run",
-    args: [],
-    config: makeConfig({ tradingIntervalSeconds: 60 }),
-    logger: {
-      info() {},
-      error() {},
-      warn(message, meta) {
-        if (message === "Stopping run loop" && meta?.reason === "SIGINT") {
-          stopWarnings += 1;
+  const originalInit = BotManager.prototype.init;
+  const originalStart = BotManager.prototype.start;
+  const originalStop = BotManager.prototype.stop;
+  try {
+    BotManager.prototype.init = async function initStub() {
+      calls.push("init");
+      return {};
+    };
+    BotManager.prototype.start = async function startStub() {
+      calls.push("start");
+      setTimeout(() => signalSource.emit("SIGINT"), 0);
+      return {};
+    };
+    BotManager.prototype.stop = async function stopStub(reason) {
+      calls.push(`stop:${reason}`);
+      return {};
+    };
+    await runCli({
+      command: "run",
+      args: [],
+      config: makeConfig({ tradingIntervalSeconds: 60 }),
+      logger: {
+        info() {},
+        error() {},
+        warn(message, meta) {
+          if (message === "Stopping managed run loop" && meta?.reason === "SIGINT") {
+            stopWarnings += 1;
+          }
         }
-      }
-    },
-    botFactory: () => ({
-      async init() {},
-      async close() {
-        closeCount += 1;
       },
-      async runCycle() {
-        cycleCount += 1;
-        return {
-          equity: 100,
-          quoteFree: 50,
-          openPositions: 0,
-          health: { circuitOpen: false }
-        };
-      }
-    }),
-    sleepFn: async () => {
-      signalSource.emit("SIGINT");
-    },
-    signalSource
-  });
-  assert.equal(cycleCount, 1);
-  assert.equal(closeCount, 1);
+      signalSource
+    });
+  } finally {
+    BotManager.prototype.init = originalInit;
+    BotManager.prototype.start = originalStart;
+    BotManager.prototype.stop = originalStop;
+  }
+  assert.deepEqual(calls, ["init", "start", "stop:cli_signal"]);
   assert.equal(stopWarnings, 1);
   assert.equal(signalSource.listenerCount("SIGINT"), 0);
   assert.equal(signalSource.listenerCount("SIGTERM"), 0);
@@ -10910,6 +10917,39 @@ await runCheck("run cli uses read-only init for status doctor and report command
       { command: "report", readOnly: true, enableStreams: false }
     ]
   );
+});
+
+await runCheck("run cli rejects unknown commands before bot init", async () => {
+  let initCalled = false;
+  await assert.rejects(
+    runCli({
+      command: "wat-is-dit",
+      args: [],
+      config: makeConfig(),
+      logger: { info() {}, error() {}, warn() {} },
+      botFactory: () => ({
+        async init() {
+          initCalled = true;
+        },
+        async close() {}
+      })
+    }),
+    /Unknown command/
+  );
+  assert.equal(initCalled, false);
+});
+
+await runCheck("trading source broker-mode matching keeps legacy entries in paper mode", async () => {
+  assert.equal(matchesTradingSourceBrokerMode({}, "paper"), true);
+  assert.equal(matchesTradingSourceBrokerMode({ brokerMode: "paper" }, "paper"), true);
+  assert.equal(matchesTradingSourceBrokerMode({ brokerMode: "live" }, "paper"), false);
+});
+
+await runCheck("shared status tone keeps runtime and dashboard semantics aligned", async () => {
+  assert.equal(resolveStatusTone("live"), "positive");
+  assert.equal(resolveStatusTone("paper"), "positive");
+  assert.equal(resolveStatusTone("blocked"), "negative");
+  assert.equal(resolveStatusTone("unknown_state"), "neutral");
 });
 
 await runCheck("bot manager stops instead of switching live positions to paper", async () => {

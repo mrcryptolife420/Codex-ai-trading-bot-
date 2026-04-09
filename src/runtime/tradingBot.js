@@ -67,6 +67,7 @@ import { minutesBetween, nowIso, sameUtcDay } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
 import { average, clamp } from "../utils/math.js";
 import { getConfiguredTradingSource } from "../utils/tradingSource.js";
+import { resolveStatusTone } from "../shared/statusTone.js";
 
 const EMPTY_NEWS = {
   coverage: 0,
@@ -521,17 +522,6 @@ function classifySignalRejectionCategory(reason = "") {
     return "execution";
   }
   return "other";
-}
-
-function resolveStatusTone(value) {
-  const normalized = `${value || ""}`.toLowerCase();
-  if (["healthy", "ready", "running", "positive", "clear", "paper", "eligible", "active"].includes(normalized)) {
-    return "positive";
-  }
-  if (["blocked", "critical", "failed", "negative", "stopped", "live", "manual_review"].includes(normalized)) {
-    return "negative";
-  }
-  return "neutral";
 }
 
 function isUsableCounterfactual(item = {}) {
@@ -15224,7 +15214,6 @@ export class TradingBot {
       equity: portfolio.equity,
       quoteFree: portfolio.balance.quoteFree,
       openPositions: this.runtime.openPositions.length,
-      openedSymbol: openedPosition?.symbol || null,
       topSymbol: this.runtime.latestDecisions[0]?.symbol || null,
       activeRegime: this.runtime.latestDecisions[0]?.regime || null,
       activeStrategy: this.runtime.latestDecisions[0]?.strategy?.activeStrategy || null,

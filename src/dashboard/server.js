@@ -222,6 +222,7 @@ export async function startDashboardServer({
   const manager = new BotManager({ projectRoot, logger });
   const initial = await manager.init();
   const publicDir = path.join(projectRoot, "src", "dashboard", "public");
+  const sharedDir = path.join(projectRoot, "src", "shared");
   const listenPort = port || initial.manager.dashboardPort || 3011;
 
   const server = http.createServer(async (request, response) => {
@@ -229,6 +230,11 @@ export async function startDashboardServer({
       const url = new URL(request.url, "http://127.0.0.1");
       if (url.pathname.startsWith("/api/")) {
         await handleApi(request, response, manager);
+        return;
+      }
+      if (url.pathname.startsWith("/shared/")) {
+        const sharedPath = url.pathname.replace(/^\/shared/, "");
+        await serveStatic(sharedDir, sharedPath, response);
         return;
       }
       await serveStatic(publicDir, url.pathname, response);
