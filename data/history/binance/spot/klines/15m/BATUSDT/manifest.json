@@ -4,7 +4,7 @@
   "symbol": "BATUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T02:22:20.407Z",
+  "updatedAt": "2026-04-09T12:52:06.463Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774635300000,
       "endTime": 1775000700000,
       "count": 407,
-      "updatedAt": "2026-04-09T02:22:20.404Z"
+      "updatedAt": "2026-04-09T12:52:06.460Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775700900000,
-      "count": 778,
-      "updatedAt": "2026-04-09T02:22:20.407Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:52:06.463Z"
     }
   ]
 }

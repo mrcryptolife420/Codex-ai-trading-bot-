@@ -4,7 +4,7 @@
   "symbol": "ZROUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T03:01:12.832Z",
+  "updatedAt": "2026-04-09T13:31:03.710Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T03:01:12.823Z"
+      "updatedAt": "2026-04-09T13:31:03.706Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775703600000,
-      "count": 781,
-      "updatedAt": "2026-04-09T03:01:12.832Z"
+      "endTime": 1775741400000,
+      "count": 823,
+      "updatedAt": "2026-04-09T13:31:03.710Z"
     }
   ]
 }

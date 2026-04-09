@@ -4,7 +4,7 @@
   "symbol": "KITEUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T02:20:43.091Z",
+  "updatedAt": "2026-04-09T12:50:28.788Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T02:20:43.089Z"
+      "updatedAt": "2026-04-09T12:50:28.785Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775700900000,
-      "count": 778,
-      "updatedAt": "2026-04-09T02:20:43.091Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:50:28.788Z"
     }
   ]
 }

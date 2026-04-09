@@ -4,15 +4,15 @@
   "symbol": "GALAUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-08T08:43:39.019Z",
+  "updatedAt": "2026-04-09T13:00:01.799Z",
   "partitionGranularity": "month",
   "partitions": [
     {
       "id": "2026-04",
       "startTime": 1775421900000,
-      "endTime": 1775637000000,
-      "count": 240,
-      "updatedAt": "2026-04-08T08:43:39.019Z"
+      "endTime": 1775739600000,
+      "count": 354,
+      "updatedAt": "2026-04-09T13:00:01.799Z"
     }
   ]
 }

@@ -4,7 +4,7 @@
   "symbol": "ENSUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T02:20:47.710Z",
+  "updatedAt": "2026-04-09T12:50:39.102Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T02:20:47.707Z"
+      "updatedAt": "2026-04-09T12:50:39.099Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775700900000,
-      "count": 778,
-      "updatedAt": "2026-04-09T02:20:47.710Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:50:39.101Z"
     }
   ]
 }

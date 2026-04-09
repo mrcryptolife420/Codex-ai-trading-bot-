@@ -120,6 +120,20 @@ export default async function runCli({
     return;
   }
 
+  if (command === "download-history") {
+    const symbol = (args[0] || "BTCUSDT").toUpperCase();
+    const interval = args[1] || "15m";
+    const days = Number(args[2]) || 90;
+    const {
+      loadHistoricalKlines,
+      summarizeHistoricalData
+    } = await import("../market/historicalDataLoader.js");
+    const historical = await loadHistoricalKlines(symbol, interval, days);
+    const summary = summarizeHistoricalData({ [symbol]: historical });
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+
   const bot = botFactory({ config, logger });
   await bot.init({
     command,

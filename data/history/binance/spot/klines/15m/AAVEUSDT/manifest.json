@@ -4,7 +4,7 @@
   "symbol": "AAVEUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T02:45:02.826Z",
+  "updatedAt": "2026-04-09T13:15:10.035Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T02:45:02.823Z"
+      "updatedAt": "2026-04-09T13:15:10.032Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775702700000,
-      "count": 780,
-      "updatedAt": "2026-04-09T02:45:02.826Z"
+      "endTime": 1775740500000,
+      "count": 822,
+      "updatedAt": "2026-04-09T13:15:10.035Z"
     }
   ]
 }

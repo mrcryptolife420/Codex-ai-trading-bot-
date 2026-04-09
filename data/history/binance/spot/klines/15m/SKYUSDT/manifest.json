@@ -4,7 +4,7 @@
   "symbol": "SKYUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T03:47:02.898Z",
+  "updatedAt": "2026-04-09T12:46:53.018Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T03:47:02.895Z"
+      "updatedAt": "2026-04-09T12:46:53.015Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775706300000,
-      "count": 784,
-      "updatedAt": "2026-04-09T03:47:02.898Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:46:53.018Z"
     }
   ]
 }

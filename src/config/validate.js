@@ -93,6 +93,14 @@ export function validateConfig(config) {
   assertRange("LOCAL_BOOK_WARMUP_MS", config.localBookWarmupMs, 0, 30_000, errors);
   assertRange("LOWER_TIMEFRAME_LIMIT", config.lowerTimeframeLimit, 20, 500, errors);
   assertRange("HIGHER_TIMEFRAME_LIMIT", config.higherTimeframeLimit, 20, 500, errors);
+  assertRange("HIGHER_TIMEFRAME_LIMIT_DAILY", config.higherTimeframeLimitDaily, 20, 2000, errors);
+  assertRange("FUNDING_RATE_HISTORY_LIMIT", config.fundingRateHistoryLimit, 20, 5000, errors);
+  assertRange("AGGTRADE_WINDOW_SECONDS", config.aggtradeWindowSeconds, 5, 3600, errors);
+  assertRange("AGGTRADE_BUFFER_SIZE", config.aggtradeBufferSize, 50, 10000, errors);
+  assertRange("BTC_DOMINANCE_CACHE_MINUTES", config.btcDominanceCacheMinutes, 1, 240, errors);
+  assertRange("VOLUME_PROFILE_BINS", config.volumeProfileBins, 8, 240, errors);
+  assertRange("VWAP_LOOKBACK_CANDLES", config.vwapLookbackCandles, 10, 2000, errors);
+  assertRange("GLOBAL_MARKET_CACHE_MINUTES", config.globalMarketCacheMinutes, 1, 240, errors);
   assertRange("CROSS_TIMEFRAME_MIN_ALIGNMENT_SCORE", config.crossTimeframeMinAlignmentScore, 0, 1, errors);
   assertRange("CROSS_TIMEFRAME_MAX_VOL_GAP_PCT", config.crossTimeframeMaxVolGapPct, 0.001, 0.25, errors);
   assertRange("MAKER_MIN_SPREAD_BPS", config.makerMinSpreadBps, 0, 100, errors);

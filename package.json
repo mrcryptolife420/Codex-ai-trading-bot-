@@ -9,6 +9,7 @@
     "status": "node src/cli.js status",
     "doctor": "node src/cli.js doctor",
     "report": "node src/cli.js report",
+    "download-history": "node src/cli.js download-history",
     "backtest": "node src/cli.js backtest",
     "dashboard": "node src/cli.js dashboard",
     "service:windows": ".\\Start-BotService.cmd",

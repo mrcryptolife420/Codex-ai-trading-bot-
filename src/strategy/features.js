@@ -108,6 +108,9 @@ export function buildFeatureVector({
   sessionSummary = {},
   timeframeSummary = {},
   onChainLiteSummary = {},
+  orderflowSummary = {},
+  volumeProfileSummary = {},
+  globalMarketContextSummary = {},
   pairHealthSummary = {},
   now = new Date()
 }) {
@@ -330,7 +333,27 @@ export function buildFeatureVector({
     calendar_bearish: clamp((calendarSummary.bearishScore || 0) * 3, 0, 3),
     calendar_proximity: clamp((calendarSummary.urgencyScore || 0) * 3, 0, 3),
     trade_flow: clamp((streamFeatures.tradeFlowImbalance || 0) * 4, -4, 4),
+    orderflow_delta: clamp((orderflowSummary.delta || 0) * 0.5, -4, 4),
+    orderflow_delta_ratio: clamp((orderflowSummary.deltaRatio || 0) * 6, -4, 4),
+    orderflow_pressure_buy: orderflowSummary.pressure === "buy" ? 1 : 0,
+    orderflow_pressure_sell: orderflowSummary.pressure === "sell" ? 1 : 0,
+    orderflow_quality: clamp(
+      orderflowSummary.dataQuality === "high"
+        ? 1
+        : orderflowSummary.dataQuality === "medium"
+          ? 0.6
+          : orderflowSummary.dataQuality === "low"
+            ? 0.3
+            : 0,
+      0,
+      1
+    ),
     micro_trend: clamp((streamFeatures.microTrend || 0) * 800, -4, 4),
+    volume_poc_distance: clamp((volumeProfileSummary.context?.distanceToPocPct || 0) * 80, -4, 4),
+    volume_value_area_bias: volumeProfileSummary.context?.inValueArea == null ? 0 : (volumeProfileSummary.context?.inValueArea ? 1 : -1),
+    vwap_deviation: clamp((volumeProfileSummary.vwap?.deviationPct || 0) * 100, -4, 4),
+    vwap_context_above: volumeProfileSummary.context?.vwapContext === "above_vwap" ? 1 : 0,
+    vwap_context_below: volumeProfileSummary.context?.vwapContext === "below_vwap" ? 1 : 0,
     portfolio_heat: clamp((portfolioFeatures.heat || 0) * 3, 0, 3),
     correlation_pressure: clamp((portfolioFeatures.maxCorrelation || 0) * 3, 0, 3),
     portfolio_family_budget: clamp((portfolioFeatures.familyBudgetFactor || 1) * 2 - 1, -2, 2),
@@ -354,6 +377,9 @@ export function buildFeatureVector({
     stablecoin_stress: clamp((onChainLiteSummary.stressScore || 0) * 3, 0, 3),
     stablecoin_dominance: clamp(((onChainLiteSummary.stablecoinDominancePct || 8) - 8) / 3, -3, 3),
     stablecoin_concentration: clamp(((onChainLiteSummary.stablecoinConcentrationPct || 55) - 55) / 8, -3, 3),
+    global_btc_dominance: clamp(((globalMarketContextSummary.btcDominance || 52) - 52) / 6, -3, 3),
+    global_stablecoin_dominance: clamp(((globalMarketContextSummary.stablecoinDominance || 8) - 8) / 3, -3, 3),
+    global_market_momentum: clamp((globalMarketContextSummary.marketCapChangePercent24h || 0) / 2, -4, 4),
     onchain_breadth: clamp((onChainLiteSummary.marketBreadthScore || 0.5) * 4 - 2, -2, 2),
     onchain_majors_momentum: clamp((onChainLiteSummary.majorsMomentumScore || 0.5) * 4 - 2, -2, 2),
     onchain_alt_liquidity: clamp((onChainLiteSummary.altLiquidityScore || 0.5) * 4 - 2, -2, 2),

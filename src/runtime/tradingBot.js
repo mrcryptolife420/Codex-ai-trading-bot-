@@ -19,6 +19,8 @@ import { MarketStructureService } from "../market/marketStructureService.js";
 import { MarketSentimentService, EMPTY_MARKET_SENTIMENT } from "../market/marketSentimentService.js";
 import { VolatilityService, EMPTY_VOLATILITY_CONTEXT } from "../market/volatilityService.js";
 import { OnChainLiteService, EMPTY_ONCHAIN } from "../market/onChainLiteService.js";
+import { getGlobalMarketContext } from "../market/globalMarketContext.js";
+import { analyzeVolumeContext } from "../market/volumeProfile.js";
 import { ReferenceVenueService } from "../market/referenceVenueService.js";
 import { PortfolioOptimizer } from "../risk/portfolioOptimizer.js";
 import { RiskManager } from "../risk/riskManager.js";
@@ -174,6 +176,41 @@ const EMPTY_CALENDAR = {
   blockerReasons: [],
   items: []
 };
+
+const EMPTY_GLOBAL_MARKET_CONTEXT = {
+  btcDominance: null,
+  ethDominance: null,
+  stablecoinDominance: null,
+  totalMarketCapUsd: null,
+  marketCapChangePercent24h: null,
+  btcDominanceSignal: "unknown",
+  stablecoinSignal: "unknown",
+  marketMomentum: "unknown",
+  riskRegime: "unknown",
+  dataQuality: "unavailable",
+  fetchedAt: null
+};
+
+const EMPTY_VOLUME_CONTEXT = {
+  profile: { poc: null, valueArea: null, totalVolume: 0, dataQuality: "empty" },
+  vwap: { vwap: null, deviationPct: null, dataQuality: "empty" },
+  context: { lastClose: null, inValueArea: null, distanceToPocPct: null, vwapContext: "neutral" },
+  dataQuality: "empty"
+};
+
+function mergeMarketSentimentWithGlobalContext(marketSentimentSummary = {}, globalMarketContextSummary = {}, enableBtcDominance = true) {
+  if (!enableBtcDominance) {
+    return marketSentimentSummary;
+  }
+  const btcDominanceFromGlobal = Number(globalMarketContextSummary?.btcDominance);
+  if (!Number.isFinite(btcDominanceFromGlobal)) {
+    return marketSentimentSummary;
+  }
+  return {
+    ...marketSentimentSummary,
+    btcDominancePct: btcDominanceFromGlobal
+  };
+}
 
 
 function safeNumber(value, fallback = 0) {
@@ -6599,6 +6636,7 @@ export class TradingBot {
     this.runtime.marketSentiment = this.runtime.marketSentiment || {};
     this.runtime.volatilityContext = this.runtime.volatilityContext || {};
     this.runtime.onChainLite = this.runtime.onChainLite || summarizeOnChainLite(EMPTY_ONCHAIN);
+    this.runtime.globalMarketContext = this.runtime.globalMarketContext || { ...EMPTY_GLOBAL_MARKET_CONTEXT };
     this.runtime.sourceReliability = this.runtime.sourceReliability || summarizeSourceReliability({});
     this.runtime.pairHealth = this.runtime.pairHealth || summarizePairHealth({});
     this.runtime.divergence = this.runtime.divergence || summarizeDivergenceSummary({});
@@ -11589,19 +11627,21 @@ export class TradingBot {
         localBookSnapshot?.synced &&
         (localBookSnapshot.depthAgeMs || Number.MAX_SAFE_INTEGER) <= this.config.maxDepthEventAgeMs
       );
-      const [rawKlines, restBookTicker, restOrderBook, lowerTimeframeSnapshot, higherTimeframeSnapshot] = await Promise.all([
+      const [rawKlines, restBookTicker, restOrderBook, lowerTimeframeSnapshot, higherTimeframeSnapshot, dailyTimeframeSnapshot] = await Promise.all([
         this.client.getKlines(symbol, this.config.klineInterval, this.config.klineLimit),
         streamFeatures.latestBookTicker?.bid && streamFeatures.latestBookTicker?.ask
           ? Promise.resolve(null)
           : this.client.getBookTicker(symbol),
         useLocalBook ? Promise.resolve(null) : this.client.getOrderBook(symbol, Math.max(10, this.config.streamDepthLevels || 20)),
         this.config.enableCrossTimeframeConsensus ? this.getTimeframeSnapshot(symbol, this.config.lowerTimeframeInterval, this.config.lowerTimeframeLimit).catch(() => null) : Promise.resolve(null),
-        this.config.enableCrossTimeframeConsensus ? this.getTimeframeSnapshot(symbol, this.config.higherTimeframeInterval, this.config.higherTimeframeLimit).catch(() => null) : Promise.resolve(null)
+        this.config.enableCrossTimeframeConsensus ? this.getTimeframeSnapshot(symbol, this.config.higherTimeframeInterval, this.config.higherTimeframeLimit).catch(() => null) : Promise.resolve(null),
+        this.config.enableDailyTimeframe ? this.getTimeframeSnapshot(symbol, this.config.higherTimeframeIntervalDaily || "1d", this.config.higherTimeframeLimitDaily || 120).catch(() => null) : Promise.resolve(null)
       ]);
       const candles = normalizeKlines(rawKlines);
       const timeframes = {
         lower: lowerTimeframeSnapshot,
-        higher: higherTimeframeSnapshot
+        higher: higherTimeframeSnapshot,
+        daily: dailyTimeframeSnapshot
       };
       const effectiveBookTicker = streamFeatures.latestBookTicker?.bid && streamFeatures.latestBookTicker?.ask
         ? {
@@ -11628,6 +11668,7 @@ export class TradingBot {
       book.tradeFlowImbalance = streamFeatures.tradeFlowImbalance || 0;
       book.microTrend = streamFeatures.microTrend || 0;
       book.recentTradeCount = streamFeatures.recentTradeCount || 0;
+      book.orderflowDelta = streamFeatures.orderflowDelta || null;
       book.localBook = localBookSnapshot;
       book.queueImbalance = localBookSnapshot?.queueImbalance || 0;
       book.queueRefreshScore = localBookSnapshot?.queueRefreshScore || 0;
@@ -11646,10 +11687,18 @@ export class TradingBot {
       book.totalDepthNotional = orderBookQuality.totalDepthNotional;
       book.bookSource = orderBookQuality.bookSource;
       book.bookFallbackReady = orderBookQuality.bookFallbackReady;
+      const volumeContext = this.config.enableVolumeProfile
+        ? analyzeVolumeContext(
+            candles,
+            this.config.volumeProfileBins,
+            this.config.vwapLookbackCandles
+          )
+        : EMPTY_VOLUME_CONTEXT;
       const snapshot = {
         symbol,
         candles,
         market: computeMarketFeatures(candles),
+        volumeContext,
         timeframes,
         book,
         stream: streamFeatures,
@@ -13261,7 +13310,9 @@ export class TradingBot {
       announcementFreshnessHours: candidate.exchangeSummary.noticeFreshnessHours == null ? null : num(candidate.exchangeSummary.noticeFreshnessHours, 1),
       marketStructure: summarizeMarketStructureSummary(candidate.marketStructureSummary),
       marketSentiment: summarizeMarketSentiment(candidate.marketSentimentSummary),
+      globalMarketContext: candidate.globalMarketContextSummary || null,
       volatility: summarizeVolatility(candidate.volatilitySummary),
+      volumeProfile: candidate.volumeProfileSummary || null,
       calendar: summarizeCalendarSummary(candidate.calendarSummary),
       exchange: summarizeExchange(candidate.exchangeSummary),
       session: summarizeSession(candidate.sessionSummary),
@@ -13366,9 +13417,17 @@ export class TradingBot {
     const exchangeSummary = context.exchangeSummary || (await this.exchangeNotices.getSymbolSummary(symbol, aliases));
     const calendarSummary = context.calendarSummary || (await this.calendar.getSymbolSummary(symbol, aliases));
     const marketStructureSummary = context.marketStructureSummary || (await this.marketStructure.getSymbolSummary(symbol, streamFeatures));
-    const marketSentimentSummary = context.marketSentimentSummary || (this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT);
+    const globalMarketContextSummary = context.globalMarketContextSummary || (this.config.enableGlobalMarketContext ? await getGlobalMarketContext() : EMPTY_GLOBAL_MARKET_CONTEXT);
+    const baseMarketSentimentSummary = context.marketSentimentSummary || (this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT);
+    const marketSentimentSummary = mergeMarketSentimentWithGlobalContext(
+      baseMarketSentimentSummary,
+      globalMarketContextSummary,
+      this.config.enableBtcDominance
+    );
     const volatilitySummary = context.volatilitySummary || (this.config.enableVolatilityContext ? await this.volatility.getSummary() : EMPTY_VOLATILITY_CONTEXT);
     const onChainLiteSummary = context.onChainLiteSummary || (this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(marketSentimentSummary) : EMPTY_ONCHAIN);
+    const volumeProfileSummary = context.volumeProfileSummary || marketSnapshot.volumeContext || EMPTY_VOLUME_CONTEXT;
+    const orderflowSummary = streamFeatures.orderflowDelta || marketSnapshot.book.orderflowDelta || null;
     const sessionSummary = this.config.enableSessionLogic
       ? buildSessionSummary({ now, marketSnapshot, marketStructureSummary, config: this.config })
       : { session: "disabled", sessionLabel: "Disabled", sizeMultiplier: 1, thresholdPenalty: 0, reasons: [], blockerReasons: [] };
@@ -13639,6 +13698,9 @@ export class TradingBot {
       strategySummary,
       timeframeSummary,
       onChainLiteSummary,
+      orderflowSummary,
+      volumeProfileSummary,
+      globalMarketContextSummary,
       pairHealthSummary,
       sessionSummary,
       now
@@ -13653,6 +13715,9 @@ export class TradingBot {
       marketStructureSummary,
       marketSentimentSummary,
       volatilitySummary,
+      globalMarketContextSummary,
+      volumeProfileSummary,
+      orderflowSummary,
       announcementSummary: exchangeSummary,
       calendarSummary,
       strategySummary,
@@ -13802,6 +13867,7 @@ export class TradingBot {
       pairHealthSummary,
       qualityQuorumSummary,
       onChainLiteSummary,
+      globalMarketContextSummary,
       divergenceSummary,
       trendStateSummary,
       marketStateSummary,
@@ -13907,6 +13973,9 @@ export class TradingBot {
       marketSentimentSummary,
       volatilitySummary,
       onChainLiteSummary,
+      globalMarketContextSummary,
+      volumeProfileSummary,
+      orderflowSummary,
       calendarSummary,
       timeframeSummary,
       pairHealthSummary,
@@ -14225,7 +14294,13 @@ export class TradingBot {
     const openPositionContexts = this.buildOpenPositionContexts(snapshotMap);
     const optimizerSnapshot = this.strategyOptimizer.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
     const attributionSnapshot = this.strategyAttribution.buildSnapshot({ journal: this.journal, nowIso: now.toISOString() });
-    const sharedMarketSentimentSummary = this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT;
+    const sharedGlobalMarketContextSummary = this.config.enableGlobalMarketContext ? await getGlobalMarketContext() : EMPTY_GLOBAL_MARKET_CONTEXT;
+    const sharedMarketSentimentSummaryRaw = this.config.enableMarketSentimentContext ? await this.marketSentiment.getSummary() : EMPTY_MARKET_SENTIMENT;
+    const sharedMarketSentimentSummary = mergeMarketSentimentWithGlobalContext(
+      sharedMarketSentimentSummaryRaw,
+      sharedGlobalMarketContextSummary,
+      this.config.enableBtcDominance
+    );
     const sharedVolatilitySummary = this.config.enableVolatilityContext ? await this.volatility.getSummary() : EMPTY_VOLATILITY_CONTEXT;
     const sharedOnChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(sharedMarketSentimentSummary) : EMPTY_ONCHAIN;
     const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: this.config.watchlist, nowIso: now.toISOString() });
@@ -14238,6 +14313,7 @@ export class TradingBot {
       this.runtime.marketSentiment = summarizeMarketSentiment(sharedMarketSentimentSummary);
       this.runtime.volatilityContext = summarizeVolatility(sharedVolatilitySummary);
       this.runtime.onChainLite = summarizeOnChainLite(sharedOnChainLiteSummary);
+      this.runtime.globalMarketContext = { ...sharedGlobalMarketContextSummary };
       this.runtime.divergence = summarizeDivergenceSummary(divergenceSummary);
       this.runtime.offlineTrainer = summarizeOfflineTrainer(offlineTrainerSummary);
       this.runtime.baselineCore = summarizeBaselineCore(this.getPerformanceReport().performanceDiagnosis?.baselineCore || {});
@@ -14274,6 +14350,7 @@ export class TradingBot {
             marketSentimentSummary: sharedMarketSentimentSummary,
             volatilitySummary: sharedVolatilitySummary,
             onChainLiteSummary: sharedOnChainLiteSummary,
+            globalMarketContextSummary: sharedGlobalMarketContextSummary,
             pairHealthSnapshot,
             divergenceSummary,
             sourceReliabilitySummary,

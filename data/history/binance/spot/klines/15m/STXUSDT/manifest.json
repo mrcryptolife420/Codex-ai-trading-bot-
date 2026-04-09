@@ -4,7 +4,7 @@
   "symbol": "STXUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T02:19:00.299Z",
+  "updatedAt": "2026-04-09T12:48:51.474Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T02:19:00.296Z"
+      "updatedAt": "2026-04-09T12:48:51.465Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775700900000,
-      "count": 778,
-      "updatedAt": "2026-04-09T02:19:00.299Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:48:51.474Z"
     }
   ]
 }

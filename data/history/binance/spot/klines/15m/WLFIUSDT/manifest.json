@@ -4,7 +4,7 @@
   "symbol": "WLFIUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T03:46:57.854Z",
+  "updatedAt": "2026-04-09T12:46:47.684Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T03:46:57.851Z"
+      "updatedAt": "2026-04-09T12:46:47.681Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775706300000,
-      "count": 784,
-      "updatedAt": "2026-04-09T03:46:57.854Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:46:47.684Z"
     }
   ]
 }

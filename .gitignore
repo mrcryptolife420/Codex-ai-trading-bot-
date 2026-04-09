@@ -8,3 +8,6 @@ doctor-latest.json
 *-feed.xml
 binance-announcements.html
 src/news/tmp-test.js
+data/historical/
+data/*.csv
+data/*.zip

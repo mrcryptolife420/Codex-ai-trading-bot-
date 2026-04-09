@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { LocalOrderBookEngine } from "../market/localOrderBook.js";
+import { getOrderflowDelta, recordAggTrade } from "../market/orderbookDelta.js";
 import { mapWithConcurrency } from "../utils/async.js";
 
 function toCombinedStreamPath(streams) {
@@ -407,6 +408,7 @@ export class StreamCoordinator {
       return {
         tradeFlowImbalance: 0,
         microTrend: 0,
+        orderflowDelta: null,
         latestBookTicker,
         recentTradeCount: 0,
         liquidationCount: 0,
@@ -430,10 +432,14 @@ export class StreamCoordinator {
     const bullishLiquidations = liquidations.reduce((total, item) => total + (item.side === "BUY" ? item.notional : 0), 0);
     const bearishLiquidations = liquidations.reduce((total, item) => total + (item.side === "SELL" ? item.notional : 0), 0);
     const liquidationTotal = bullishLiquidations + bearishLiquidations;
+    const orderflowDelta = this.config.enableAggtradeOrderflow
+      ? getOrderflowDelta(symbol, this.config.aggtradeWindowSeconds)
+      : null;
 
     return {
       tradeFlowImbalance: totalVolume ? (buyVolume - sellVolume) / totalVolume : 0,
       microTrend: firstPrice ? (lastPrice - firstPrice) / firstPrice : 0,
+      orderflowDelta,
       latestBookTicker,
       recentTradeCount: trades.length,
       liquidationCount: liquidations.length,
@@ -548,6 +554,14 @@ export class StreamCoordinator {
     }
 
     if (stream.includes("@trade")) {
+      if (this.config.enableAggtradeOrderflow) {
+        recordAggTrade(symbol, {
+          p: data.p || 0,
+          q: data.q || 0,
+          m: data.m,
+          E: data.E || Date.now()
+        });
+      }
       this.state.symbols[symbol].trades.push({
         price: Number(data.p || 0),
         quantity: Number(data.q || 0),

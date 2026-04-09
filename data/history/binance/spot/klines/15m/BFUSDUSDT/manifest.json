@@ -4,7 +4,7 @@
   "symbol": "BFUSDUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T03:45:02.663Z",
+  "updatedAt": "2026-04-09T12:45:04.921Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774624500000,
       "endTime": 1775000700000,
       "count": 419,
-      "updatedAt": "2026-04-09T03:45:02.660Z"
+      "updatedAt": "2026-04-09T12:45:04.918Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775706300000,
-      "count": 784,
-      "updatedAt": "2026-04-09T03:45:02.663Z"
+      "endTime": 1775738700000,
+      "count": 820,
+      "updatedAt": "2026-04-09T12:45:04.921Z"
     }
   ]
 }
