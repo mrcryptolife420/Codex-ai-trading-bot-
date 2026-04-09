@@ -26,6 +26,21 @@ function isDemoSpotEnvironment(config = {}) {
   return `${config?.binanceApiBaseUrl || ""}`.toLowerCase().includes("demo-api.binance.com");
 }
 
+function assertLiveModeGuardrails(config = {}) {
+  if ((config?.botMode || "paper") !== "live") {
+    return;
+  }
+  if (config?.liveTradingAcknowledged !== "I_UNDERSTAND_LIVE_TRADING_RISK") {
+    throw new Error("Live mode vereist LIVE_TRADING_ACKNOWLEDGED=I_UNDERSTAND_LIVE_TRADING_RISK.");
+  }
+  if ((config?.paperExecutionVenue || "internal") === "binance_demo_spot") {
+    throw new Error("Live mode mag niet gecombineerd worden met PAPER_EXECUTION_VENUE=binance_demo_spot.");
+  }
+  if (isDemoSpotEnvironment(config)) {
+    throw new Error("Live mode vereist een echte Binance API endpoint, niet demo-api.binance.com.");
+  }
+}
+
 function buildConfigRuntimeSignature(config = {}) {
   return JSON.stringify({
     botMode: config?.botMode || "paper",
@@ -83,6 +98,7 @@ export class BotManager {
       await this.bot.close();
     }
     const config = await loadConfig(this.projectRoot);
+    assertLiveModeGuardrails(config);
     const bot = new TradingBot({ config, logger: this.logger });
     await bot.init();
     this.config = config;
@@ -142,9 +158,10 @@ export class BotManager {
   }
 
   buildSnapshotFromDashboard(dashboard) {
+    const sourceTruthMode = dashboard?.sourceOfTruth?.mode || "paper";
     const manager = {
       runState: this.runState,
-      currentMode: this.config.botMode,
+      currentMode: sourceTruthMode,
       externalConfigMode: this.externalConfigMode,
       externalConfigDrift: this.externalConfigDrift,
       externalConfigCheckedAt: this.externalConfigCheckedAt,
@@ -402,6 +419,13 @@ export class BotManager {
       const wasRunning = this.runState === "running";
       const envPath = this.config.envPath;
 
+      if (normalized === "live") {
+        assertLiveModeGuardrails({
+          ...this.config,
+          botMode: "live"
+        });
+      }
+
       await this.stopUnlocked("mode_switch");
       await updateEnvFile(envPath, { BOT_MODE: normalized });
 
@@ -458,41 +482,44 @@ export class BotManager {
 
   async getStatus() {
     await this.ensureBotReady();
+    const status = await this.bot.getStatus();
     return this.buildApiEnvelope("status", {
       manager: {
         runState: this.runState,
-        currentMode: this.config.botMode,
+        currentMode: status?.sourceOfTruth?.mode || "paper",
         lastStartAt: this.lastStartAt,
         lastStopAt: this.lastStopAt,
         lastModeSwitchAt: this.lastModeSwitchAt,
         stopReason: this.stopReason || null,
         lastError: publicError(this.lastError)
       },
-      status: await this.bot.getStatus()
+      status
     });
   }
 
   async getDoctor() {
     await this.ensureBotReady();
+    const doctor = await this.bot.runDoctor();
     return this.buildApiEnvelope("doctor", {
       manager: {
         runState: this.runState,
-        currentMode: this.config.botMode,
+        currentMode: doctor?.sourceOfTruth?.mode || "paper",
         lastError: publicError(this.lastError)
       },
-      doctor: await this.bot.runDoctor()
+      doctor
     });
   }
 
   async getReport() {
     await this.ensureBotReady();
+    const report = await this.bot.getReport();
     return this.buildApiEnvelope("report", {
       manager: {
         runState: this.runState,
-        currentMode: this.config.botMode,
+        currentMode: report?.sourceOfTruth?.mode || "paper",
         lastError: publicError(this.lastError)
       },
-      report: await this.bot.getReport()
+      report
     });
   }
 

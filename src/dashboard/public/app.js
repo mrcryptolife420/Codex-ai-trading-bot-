@@ -1,6 +1,6 @@
 import { resolveStatusTone as statusTone } from "../../shared/statusTone.js";
 
-const POLL_MS = 5000;
+const POLL_MS = 15000;
 const SIGNAL_LIMIT = 3;
 const POSITION_LIMIT = 4;
 const TRADE_LIMIT = 6;
@@ -1082,7 +1082,7 @@ function renderBadges(snapshot) {
   elements.modeBadge.textContent = titleize(mode);
   elements.runStateBadge.textContent = titleize(runState);
   elements.healthBadge.textContent = titleize(readiness);
-  const updatedAt = snapshot?.dashboard?.ops?.lastUpdatedAt || snapshot?.dashboard?.overview?.lastCycleAt || snapshot?.manager?.lastStartAt || null;
+  const updatedAt = snapshot?.dashboard?.generatedAt || snapshot?.dashboard?.ops?.lastUpdatedAt || snapshot?.dashboard?.overview?.lastCycleAt || snapshot?.manager?.lastStartAt || null;
   const receivedLabel = lastSnapshotReceivedAt ? `Refresh ${formatDate(lastSnapshotReceivedAt)}` : "Refresh -";
   const dataLabel = updatedAt ? `data ${formatDate(updatedAt)}` : "data -";
   const pingLabel = `${receivedLabel} · ${dataLabel}`;
@@ -1690,6 +1690,7 @@ function buildOpsCards(snapshot) {
   const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
   const contextHealth = snapshot?.dashboard?.ops?.contextHealth || {};
   const globalMarket = snapshot?.dashboard?.globalMarketContext || {};
+  const sourceOfTruth = snapshot?.dashboard?.sourceOfTruth || {};
   const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
   const performanceSegmentation = buildPerformanceSegmentationView(snapshot);
   const externalFeeds = externalFeedHeadline(snapshot);
@@ -1775,6 +1776,16 @@ function buildOpsCards(snapshot) {
       value: titleize(contextHealth.overallStatus || "unknown"),
       foot: `${contextHealth.staleCount || 0} stale · ${contextHealth.unavailableCount || 0} unavailable`,
       tone: statusTone(contextHealth.overallStatus || "unknown")
+    },
+    {
+      label: "Account source",
+      value: `${titleize(sourceOfTruth.mode || "paper")} · ${sourceOfTruth.tradingSource || "paper:internal"}`,
+      foot: compactJoin([
+        sourceOfTruth.equitySource ? `Equity: ${sourceOfTruth.equitySource}` : null,
+        sourceOfTruth.openExposureSubtracted ? "Open exposure afgetrokken" : "Geen exposure aftrek",
+        sourceOfTruth.restoredStateInfluence ? "Restore invloed: ja" : "Restore invloed: nee"
+      ], " | "),
+      tone: sourceOfTruth.restoredStateInfluence ? "neutral" : "positive"
     },
     {
       label: "Global context",
@@ -2526,20 +2537,22 @@ async function refreshSnapshot() {
     render(pickSnapshot(payload));
   } catch (error) {
     elements.controlHint.textContent = error.message;
-    replaceChildren(elements.operatorSummary, [
-      (() => {
-        const pill = makeNode("span", { className: "hero-pill negative" });
-        pill.append(
-          makeNode("strong", { text: "Dashboard" }),
-          makeNode("span", {
-            text: error?.message
-              ? `Snapshot mislukt: ${truncate(error.message, 140)}`
-              : "Controleer of de dashboardserver nog draait."
-          })
-        );
-        return pill;
-      })()
-    ]);
+    if (!latestSnapshot) {
+      replaceChildren(elements.operatorSummary, [
+        (() => {
+          const pill = makeNode("span", { className: "hero-pill negative" });
+          pill.append(
+            makeNode("strong", { text: "Dashboard" }),
+            makeNode("span", {
+              text: error?.message
+                ? `Snapshot mislukt: ${truncate(error.message, 140)}`
+                : "Controleer of de dashboardserver nog draait."
+            })
+          );
+          return pill;
+        })()
+      ]);
+    }
   }
 }
 

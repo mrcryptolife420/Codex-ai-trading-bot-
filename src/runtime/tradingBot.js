@@ -66,7 +66,7 @@ import { summarizeStrategyDsl } from "../research/strategyDsl.js";
 import { minutesBetween, nowIso, sameUtcDay } from "../utils/time.js";
 import { mapWithConcurrency } from "../utils/async.js";
 import { average, clamp } from "../utils/math.js";
-import { getConfiguredTradingSource } from "../utils/tradingSource.js";
+import { getConfiguredTradingSource, matchesTradingSource } from "../utils/tradingSource.js";
 import { resolveStatusTone } from "../shared/statusTone.js";
 import { buildContract, computeOperationalReadiness, requiresOperatorAck } from "./operationalTruth.js";
 import { buildCoreMetricsView } from "./viewMappers.js";
@@ -139,6 +139,41 @@ function usesDemoPaperExecution(config = {}) {
 
 function getPortfolioSnapshotSource(config = {}) {
   return getConfiguredTradingSource(config, config?.botMode || "paper");
+}
+
+function buildSourceOfTruthPortfolioState({ runtime = {}, journal = {}, config = {} } = {}) {
+  const botMode = config?.botMode || "paper";
+  const tradingSource = getPortfolioSnapshotSource(config);
+  const sourceScopedPositions = arr(runtime.openPositions || []).filter((position) =>
+    matchesTradingSource(position, tradingSource, botMode)
+  );
+  const latestSourceScopedEquity = [...arr(journal.equitySnapshots || [])]
+    .reverse()
+    .find((item) => matchesTradingSource(item, tradingSource, botMode)) || null;
+  const runtimeSnapshotMatches = `${runtime?.portfolioSnapshotMode || ""}`.trim().toLowerCase() === tradingSource;
+  const balance = Number.isFinite(latestSourceScopedEquity?.quoteFree)
+    ? latestSourceScopedEquity.quoteFree
+    : runtimeSnapshotMatches
+      ? safeNumber(runtime.lastKnownBalance, 0)
+      : 0;
+  const equity = Number.isFinite(latestSourceScopedEquity?.equity)
+    ? latestSourceScopedEquity.equity
+    : runtimeSnapshotMatches
+      ? safeNumber(runtime.lastKnownEquity, balance)
+      : balance;
+  return {
+    botMode,
+    tradingSource,
+    sourceScopedPositions,
+    quoteFree: balance,
+    equity,
+    equitySource: latestSourceScopedEquity
+      ? "journal.equitySnapshots(source_scoped)"
+      : runtimeSnapshotMatches
+        ? "runtime.lastKnown* (source_matched)"
+        : "none (source_mismatch_guard)",
+    restoredStateInfluence: Boolean(runtime.recovery?.restoredFromBackupAt)
+  };
 }
 
 const EMPTY_MARKET_STRUCTURE = {
@@ -283,6 +318,9 @@ function summarizeLastEntryAttempt(attempt = {}) {
     selectedSymbol: attempt.selectedSymbol || null,
     openedSymbol: attempt.openedSymbol || null,
     attemptedSymbols: arr(attempt.attemptedSymbols || []).slice(0, 8),
+    allowedCandidates: Math.max(0, Number(attempt.allowedCandidates || 0)),
+    skippedCandidates: Math.max(0, Number(attempt.skippedCandidates || 0)),
+    skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts || {}, 5),
     blockedReasons: arr(attempt.blockedReasons || []).slice(0, 6),
     blockedReasonDetails: summarizeBlockedReasonDetails(attempt.blockedReasonDetails || {}),
     symbolBlockers: arr(attempt.symbolBlockers || []).slice(0, 6).map((item) => ({
@@ -5967,10 +6005,23 @@ export class TradingBot {
 
   buildPublicReportView(report = this.getPerformanceReport()) {
     const coreMetrics = buildCoreMetricsView({ report });
+    const sourceTruth = buildSourceOfTruthPortfolioState({
+      runtime: this.runtime,
+      journal: this.journal,
+      config: this.config
+    });
     return {
       contract: buildContract("report", "report_public"),
       generatedAt: this.observabilityCache?.reportGeneratedAt || nowIso(),
       coreMetrics,
+      sourceOfTruth: {
+        mode: sourceTruth.botMode,
+        tradingSource: sourceTruth.tradingSource,
+        equitySource: sourceTruth.equitySource,
+        effectiveBudgetSource: "capital_policy + source_scoped_equity",
+        openExposureSubtracted: Boolean((report.openExposure || 0) > 0),
+        restoredStateInfluence: sourceTruth.restoredStateInfluence
+      },
       tradeCount: report.tradeCount || 0,
       realizedPnl: num(report.realizedPnl || 0, 2),
       winRate: num(report.winRate || 0, 4),
@@ -15210,9 +15261,12 @@ export class TradingBot {
       selectedSymbol: null,
       openedPosition: null,
       attemptedSymbols: [],
+      allowedCandidates: 0,
+      skippedCandidates: 0,
       blockedReasons: [...(executionBlockers || [])],
       entryErrors: [],
       symbolBlockers: [],
+      skipReasonCounts: {},
       blockedReasonDetails: {
         lowConfidenceDrivers: [],
         featurePressureSources: [],
@@ -15241,6 +15295,7 @@ export class TradingBot {
       return attempt;
     }
     const allowedCandidates = candidates.filter((item) => item.decision.allow);
+    attempt.allowedCandidates = allowedCandidates.length;
     if (!allowedCandidates.length) {
       const summarizedBlockedReasons = summarizeCountMap(this.runtime?.signalFlow?.lastCycle?.rejectionReasons || {}, 3).map((item) => item.id);
       const blockedReasonDetails = summarizeRejectedCandidateDiagnostics(candidates, 4);
@@ -15282,6 +15337,8 @@ export class TradingBot {
       attempt.selectedSymbol = attempt.selectedSymbol || candidate.symbol;
       const symbolConflict = botMode === "live" ? symbolExchangeConflicts.get(candidate.symbol) : null;
       if (symbolConflict) {
+        attempt.skippedCandidates += 1;
+        incrementCount(attempt.skipReasonCounts, symbolConflict);
         attempt.symbolBlockers.push({ symbol: candidate.symbol, reason: symbolConflict });
         continue;
       }
@@ -15303,6 +15360,10 @@ export class TradingBot {
         invalidExecutionState.push("missing_raw_features");
       }
       if (invalidExecutionState.length) {
+        attempt.skippedCandidates += 1;
+        for (const reason of invalidExecutionState) {
+          incrementCount(attempt.skipReasonCounts, reason);
+        }
         attempt.symbolBlockers.push({ symbol: candidate.symbol, reason: invalidExecutionState[0] });
         this.logger?.warn?.("Allowed candidate skipped before execution", {
           symbol: candidate.symbol,
@@ -15409,12 +15470,18 @@ export class TradingBot {
       this.logger?.info?.("Entry flow blocked", {
         status: attempt.status,
         blockedReasons: attempt.blockedReasons,
-        symbolBlockers: attempt.symbolBlockers
+        symbolBlockers: attempt.symbolBlockers,
+        allowedCandidates: attempt.allowedCandidates,
+        skippedCandidates: attempt.skippedCandidates,
+        skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       this.recordEvent("entry_flow_blocked", {
         status: attempt.status,
         blockedReasons: [...attempt.blockedReasons],
-        symbolBlockers: arr(attempt.symbolBlockers).map((item) => item.reason)
+        symbolBlockers: arr(attempt.symbolBlockers).map((item) => item.reason),
+        allowedCandidates: attempt.allowedCandidates,
+        skippedCandidates: attempt.skippedCandidates,
+        skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       return attempt;
     }
@@ -15424,12 +15491,18 @@ export class TradingBot {
       this.logger?.info?.("Entry flow blocked", {
         status: attempt.status,
         blockedReasons: attempt.blockedReasons,
-        symbolBlockers: attempt.symbolBlockers
+        symbolBlockers: attempt.symbolBlockers,
+        allowedCandidates: attempt.allowedCandidates,
+        skippedCandidates: attempt.skippedCandidates,
+        skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       this.recordEvent("entry_flow_blocked", {
         status: attempt.status,
         blockedReasons: [...attempt.blockedReasons],
-        symbolBlockers: arr(attempt.symbolBlockers).map((item) => item.reason)
+        symbolBlockers: arr(attempt.symbolBlockers).map((item) => item.reason),
+        allowedCandidates: attempt.allowedCandidates,
+        skippedCandidates: attempt.skippedCandidates,
+        skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       return attempt;
     }
@@ -15438,12 +15511,18 @@ export class TradingBot {
       this.logger?.info?.("Entry flow blocked", {
         status: attempt.status,
         blockedReasons: attempt.blockedReasons,
-        entryErrors: attempt.entryErrors
+        entryErrors: attempt.entryErrors,
+        allowedCandidates: attempt.allowedCandidates,
+        skippedCandidates: attempt.skippedCandidates,
+        skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       this.recordEvent("entry_flow_blocked", {
         status: attempt.status,
         blockedReasons: [...attempt.blockedReasons],
-        entryErrors: arr(attempt.entryErrors).map((item) => item.error)
+        entryErrors: arr(attempt.entryErrors).map((item) => item.error),
+        allowedCandidates: attempt.allowedCandidates,
+        skippedCandidates: attempt.skippedCandidates,
+        skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
     }
     return attempt;
@@ -15495,6 +15574,9 @@ export class TradingBot {
       selectedSymbol: entryAttempt.selectedSymbol || null,
       openedSymbol,
       attemptedSymbols: [...attemptedSymbols],
+      allowedCandidates: Math.max(0, Number(entryAttempt.allowedCandidates || 0)),
+      skippedCandidates: Math.max(0, Number(entryAttempt.skippedCandidates || 0)),
+      skipReasonCounts: summarizeCountMap(entryAttempt.skipReasonCounts || {}, 5),
       blockedReasons: [...primaryBlockedReasons],
       blockedReasonDetails: summarizeBlockedReasonDetails(entryAttempt.blockedReasonDetails || {}),
       symbolBlockers: arr(entryAttempt.symbolBlockers),
@@ -17298,6 +17380,11 @@ export class TradingBot {
     await this.safeRefreshMarketHistorySnapshot({ referenceNow, context: "doctor" });
     const balance = await this.broker.getBalance(this.runtime);
     const report = this.getPerformanceReport();
+    const sourceTruth = buildSourceOfTruthPortfolioState({
+      runtime: this.runtime,
+      journal: this.journal,
+      config: this.config
+    });
     const previewSafety = this.buildSafetyPreview({ now: new Date(referenceNow), report });
     const previewCandidates = await this.scanCandidatesReadOnly(balance, { selfHealState: previewSafety.selfHealState });
     const currentSafety = this.buildSafetyPreview({ now: new Date(referenceNow), candidateSummaries: previewCandidates, report });
@@ -17346,7 +17433,7 @@ export class TradingBot {
     }));
     return {
       contract: buildContract("doctor", "doctor"),
-      mode: this.config.botMode,
+      mode: sourceTruth.botMode,
       validation: this.config.validation,
       broker: await this.broker.doctor(this.runtime),
       clockOffsetMs: this.client.getClockOffsetMs(),
@@ -17387,6 +17474,12 @@ export class TradingBot {
       readiness: this.buildOperationalReadiness(referenceNow, { selfHeal: currentSafety.selfHealState }),
       checks,
       report: this.buildPublicReportView(report),
+      sourceOfTruth: {
+        mode: sourceTruth.botMode,
+        tradingSource: sourceTruth.tradingSource,
+        equitySource: sourceTruth.equitySource,
+        restoredStateInfluence: sourceTruth.restoredStateInfluence
+      },
       research: this.buildResearchView(),
       explainability: {
         replays: arr(report.recentTrades || []).slice(0, 3).map((trade) => this.buildTradeReplayDigest(this.buildTradeReplayView(trade))),
@@ -17407,7 +17500,12 @@ export class TradingBot {
       await this.updatePortfolioSnapshot();
     }
 
-    const fullPositions = this.runtime.openPositions.map((position) => this.buildPositionView(position));
+    const sourceTruth = buildSourceOfTruthPortfolioState({
+      runtime: this.runtime,
+      journal: this.journal,
+      config: this.config
+    });
+    const fullPositions = sourceTruth.sourceScopedPositions.map((position) => this.buildPositionView(position));
     const positions = fullPositions.map((position) => this.buildDashboardPositionView(position));
     const totalUnrealizedPnl = fullPositions.reduce((total, position) => total + position.unrealizedPnl, 0);
     const report = this.getPerformanceReport();
@@ -17455,8 +17553,8 @@ export class TradingBot {
       }
     });
     const effectiveBudget = summarizeEffectiveBudget({
-      equity: this.runtime.lastKnownEquity || 0,
-      quoteFree: this.runtime.lastKnownBalance || 0,
+      equity: sourceTruth.equity || 0,
+      quoteFree: sourceTruth.quoteFree || 0,
       capitalPolicy: capitalPolicySummary
     });
     capitalPolicySummary.effectiveBudget = effectiveBudget;
@@ -17548,12 +17646,12 @@ export class TradingBot {
         : "Explainability volgt zodra er recente trades of beslissingen zijn."
     };
     const overview = {
-      mode: this.config.botMode,
+      mode: sourceTruth.botMode,
       lastCycleAt: this.runtime.lastCycleAt,
       lastAnalysisAt: this.runtime.lastAnalysisAt,
       lastPortfolioUpdateAt: this.runtime.lastPortfolioUpdateAt,
-      quoteFree: num(this.runtime.lastKnownBalance || 0, 2),
-      equity: num(this.runtime.lastKnownEquity || 0, 2),
+      quoteFree: num(sourceTruth.quoteFree || 0, 2),
+      equity: num(sourceTruth.equity || 0, 2),
       effectiveBudget,
       sizingGuide,
       openPositionCount: positions.length,
@@ -17569,6 +17667,14 @@ export class TradingBot {
       },
       overview,
       coreMetrics: buildCoreMetricsView({ report, overview }),
+      sourceOfTruth: {
+        mode: sourceTruth.botMode,
+        tradingSource: sourceTruth.tradingSource,
+        equitySource: sourceTruth.equitySource,
+        effectiveBudgetSource: "capital_policy + source_scoped_equity",
+        openExposureSubtracted: Boolean((effectiveBudget.openExposure || 0) > 0),
+        restoredStateInfluence: sourceTruth.restoredStateInfluence
+      },
       exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       health: this.health.getStatus(this.runtime),
       stream: this.stream.getStatus(),
@@ -17787,6 +17893,7 @@ export class TradingBot {
       signalFlow: dashboard.ops?.signalFlow || null,
       ops: dashboard.ops,
       coreMetrics: dashboard.coreMetrics || buildCoreMetricsView({ report: dashboard.report, overview: dashboard.overview }),
+      sourceOfTruth: dashboard.sourceOfTruth || null,
       report: dashboard.report,
       modelWeights: dashboard.modelWeights
     };

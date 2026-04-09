@@ -1,4 +1,4 @@
-import { getRuntimeTradingSource, matchesBrokerMode, matchesTradingSource } from "../utils/tradingSource.js";
+import { getConfiguredTradingSource, matchesBrokerMode, matchesTradingSource } from "../utils/tradingSource.js";
 
 function safeDivide(numerator, denominator, fallback = 0) {
   return denominator ? numerator / denominator : fallback;
@@ -1289,12 +1289,13 @@ function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals =
 export function buildPerformanceReport({ journal, runtime, config, now = null }) {
   const referenceNow = resolveReportReferenceNow({ providedNow: now, runtime, journal });
   const botMode = config.botMode || "paper";
-  const currentTradingSource = getRuntimeTradingSource(runtime, config, botMode);
+  const currentTradingSource = getConfiguredTradingSource(config, botMode);
   const trades = [...(journal.trades || [])];
   const scaleOuts = [...(journal.scaleOuts || [])];
   const blockedSetups = [...(journal.blockedSetups || [])];
   const researchRuns = [...(journal.researchRuns || [])];
   const equitySnapshots = [...(journal.equitySnapshots || [])];
+  const openPositions = [...(runtime.openPositions || [])].filter((position) => matchesTradingSource(position, currentTradingSource, botMode));
   const sourceScopedTrades = trades.filter((trade) => matchesTradingSource(trade, currentTradingSource, botMode));
   const sourceScopedScaleOuts = scaleOuts.filter((item) => matchesTradingSource(item, currentTradingSource, botMode));
   const sourceScopedEquitySnapshots = equitySnapshots.filter((item) => matchesTradingSource(item, currentTradingSource, botMode));
@@ -1305,7 +1306,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
   const primaryLookbackTrades = shouldScopePrimary ? sourceScopedLookbackTrades : lookbackTrades;
   const primaryScaleOuts = shouldScopePrimary ? sourceScopedScaleOuts : scaleOuts;
   const primaryEquitySnapshots = shouldScopePrimary ? sourceScopedEquitySnapshots : equitySnapshots;
-  const openExposure = (runtime.openPositions || []).reduce(
+  const openExposure = openPositions.reduce(
     (total, position) => {
       const notional = safeNumber(position?.notional, Number.NaN);
       const quantity = safeNumber(position?.quantity, 0);
@@ -1340,7 +1341,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
     executionCostSummary,
     config
   });
-  const openExposureReview = buildOpenExposureReview(runtime.openPositions || []);
+  const openExposureReview = buildOpenExposureReview(openPositions);
   const windowSummaries = buildWindowSummaries(primaryTrades, {
     today: localDayStartMs,
     days7: nowMs - 7 * 86_400_000,
@@ -1387,7 +1388,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
       sourceScopedMaxDrawdownPct: buildDrawdown(sourceScopedEquitySnapshots)
     },
     openExposure,
-    openPositions: (runtime.openPositions || []).length,
+    openPositions: openPositions.length,
     openExposureReview,
     recentTrades: primaryLookbackTrades.slice(-25).reverse(),
     executionSummary: buildExecutionSummary(primaryLookbackTrades),
