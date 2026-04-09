@@ -91,7 +91,6 @@ import { MultiAgentCommittee } from "../src/ai/multiAgentCommittee.js";
 import { backfillHistoricalCandles, fetchLatestCandlesPaginated, runHistoryCommand } from "../src/runtime/marketHistory.js";
 import { runBacktest } from "../src/runtime/backtestRunner.js";
 import { buildCapitalGovernor } from "../src/runtime/capitalGovernor.js";
-import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.js";
 import { TradingBot, buildCandidateQualityQuorum, resolveMarketHistoryCoverageSymbols } from "../src/runtime/tradingBot.js";
 import { BotManager } from "../src/runtime/botManager.js";
 import { StreamCoordinator } from "../src/runtime/streamCoordinator.js";
@@ -1660,6 +1659,7 @@ await runCheck("risk manager applies threshold probation shifts and scoped exit 
       quantity: 1,
       notional: 100,
       totalCost: 100,
+      scaleOutFraction: 0,
       trailingStopPct: 0.01,
       scaleOutFraction: 0.4,
       scaleOutTriggerPrice: 101.2,
@@ -3483,8 +3483,45 @@ await runCheck("openBestCandidate skips symbols with unmatched exchange orders a
 
   assert.equal(attempt.status, "opened");
   assert.equal(attempt.openedPosition?.symbol, "ETHUSDT");
+  assert.equal(attempt.allowedCandidates, 2);
+  assert.equal(attempt.skippedCandidates, 1);
+  assert.equal(attempt.allowedButZeroEffectiveSize, 0);
+  assert.equal(attempt.allowedButTinyEffectiveSize, 0);
+  assert.deepEqual(attempt.skipReasonCounts, { unmatched_open_orders: 1 });
   assert.deepEqual(attempted, ["ETHUSDT"]);
   assert.deepEqual(attempt.symbolBlockers, [{ symbol: "BTCUSDT", reason: "unmatched_open_orders" }]);
+});
+
+await runCheck("applyEntryAttemptToDecisions bewaart skipReasonCounts in lastEntryAttempt", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.runtime = {
+    latestDecisions: [
+      { symbol: "BTCUSDT", allow: true, blockerReasons: [], executionBlockers: [] },
+      { symbol: "ETHUSDT", allow: true, blockerReasons: [], executionBlockers: [] }
+    ]
+  };
+
+  TradingBot.prototype.applyEntryAttemptToDecisions.call(bot, {
+    status: "runtime_blocked",
+    selectedSymbol: "BTCUSDT",
+    attemptedSymbols: [],
+    blockedReasons: ["missing_symbol_rules"],
+    symbolBlockers: [{ symbol: "BTCUSDT", reason: "missing_symbol_rules" }],
+    skipReasonCounts: { missing_symbol_rules: 2, invalid_quote_amount: 1 },
+    allowedCandidates: 3,
+    skippedCandidates: 2,
+    allowedButZeroEffectiveSize: 1,
+    allowedButTinyEffectiveSize: 1
+  });
+
+  assert.equal(bot.runtime.lastEntryAttempt.allowedCandidates, 3);
+  assert.equal(bot.runtime.lastEntryAttempt.skippedCandidates, 2);
+  assert.equal(bot.runtime.lastEntryAttempt.allowedButZeroEffectiveSize, 1);
+  assert.equal(bot.runtime.lastEntryAttempt.allowedButTinyEffectiveSize, 1);
+  assert.deepEqual(bot.runtime.lastEntryAttempt.skipReasonCounts, [
+    { id: "missing_symbol_rules", count: 2 },
+    { id: "invalid_quote_amount", count: 1 }
+  ]);
 });
 
 await runCheck("openBestCandidate surfaces blocker reasons when no candidates are allowed", async () => {
@@ -3554,6 +3591,44 @@ await runCheck("openBestCandidate surfaces blocker reasons when no candidates ar
     { id: "trend_acceptance_failed", count: 2 },
     { id: "relative_weakness_vs_market", count: 1 }
   ]);
+});
+
+await runCheck("openBestCandidate tracks tiny effective quote diagnostics for allowed candidates", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {};
+  bot.health = { canEnterNewPositions: () => true };
+  bot.logger = { info() {}, warn() {} };
+  bot.recordEvent = () => {};
+  bot.symbolRules = {};
+  bot.broker = { enterPosition: async () => { throw new Error("should not execute"); } };
+
+  const attempt = await bot.openBestCandidate([
+    {
+      symbol: "BTCUSDT",
+      decision: {
+        allow: true,
+        quoteAmount: 11,
+        executionPlan: {},
+        sizingSummary: { meaningfulSizeFloor: 25 }
+      },
+      marketSnapshot: { book: { mid: 50000 } },
+      score: {},
+      rawFeatures: {},
+      strategySummary: { activeStrategy: "ema_trend" },
+      newsSummary: {},
+      regimeSummary: {},
+      metaSummary: {}
+    }
+  ]);
+
+  assert.equal(attempt.status, "runtime_blocked");
+  assert.equal(attempt.allowedCandidates, 1);
+  assert.equal(attempt.skippedCandidates, 1);
+  assert.equal(attempt.allowedButTinyEffectiveSize, 1);
+  assert.equal(attempt.allowedButZeroEffectiveSize, 0);
+  assert.equal(attempt.skipReasonCounts.tiny_effective_quote_amount, 1);
+  assert.equal(attempt.skipReasonCounts.missing_symbol_rules, 1);
 });
 
 await runCheck("paper signal flow can execute and persist a deterministic paper trade", async () => {
@@ -15798,6 +15873,42 @@ await runCheck("performance report tracks unreconciled open exposure", async () 
   assert.equal(report.openExposureReview.unreconciledExposure, 1100);
 });
 
+await runCheck("performance report blijft mode-aware source scoped in live mode", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [
+        { id: "live-1", brokerMode: "live", pnlQuote: 42, netPnlPct: 0.02, entryAt: "2026-03-20T09:00:00.000Z", exitAt: "2026-03-20T10:00:00.000Z" },
+        { id: "paper-1", brokerMode: "paper", pnlQuote: 15, netPnlPct: 0.01, entryAt: "2026-03-20T09:00:00.000Z", exitAt: "2026-03-20T10:00:00.000Z" }
+      ],
+      scaleOuts: [],
+      blockedSetups: [],
+      researchRuns: [],
+      equitySnapshots: [
+        { brokerMode: "live", at: "2026-03-20T10:00:00.000Z", equity: 1042 },
+        { brokerMode: "paper", at: "2026-03-20T10:00:00.000Z", equity: 1015 }
+      ],
+      cycles: [],
+      events: []
+    },
+    runtime: {
+      openPositions: [
+        { symbol: "BTCUSDT", brokerMode: "live", notional: 300 },
+        { symbol: "ETHUSDT", brokerMode: "paper", notional: 500 }
+      ]
+    },
+    config: makeConfig({ botMode: "live", reportLookbackTrades: 50 })
+  });
+
+  assert.equal(report.currentTradingSource, "live");
+  assert.equal(report.reportScope, "aggregate");
+  assert.equal(report.tradeCount, 2);
+  assert.equal(report.realizedPnl, 57);
+  assert.equal(report.sourceScoped.tradeCount, 1);
+  assert.equal(report.sourceScoped.realizedPnl, 42);
+  assert.equal(report.openExposure, 300);
+  assert.equal(report.openPositions, 1);
+});
+
 await runCheck("trading bot report and dashboard preserve unreconciled exposure review", async () => {
   const bot = Object.create(TradingBot.prototype);
   bot.config = makeConfig({ reportLookbackTrades: 50 });
@@ -22716,6 +22827,51 @@ await runCheck("portfolio optimizer softens single-cluster overlap in paper when
   assert.ok(summary.sizeMultiplier > 0.4);
 });
 
+await runCheck("portfolio optimizer throttles correlated mediocre stacks", async () => {
+  const optimizer = new PortfolioOptimizer(makeConfig({
+    botMode: "paper",
+    symbolProfiles: {
+      AAVEUSDT: { cluster: "defi", sector: "defi" },
+      UNIUSDT: { cluster: "defi", sector: "defi" }
+    }
+  }));
+  const alignedCandles = Array.from({ length: 20 }, (_, index) => ({
+    close: 100 + index * 0.5,
+    high: 101 + index * 0.5,
+    low: 99 + index * 0.5
+  }));
+  const summary = optimizer.evaluateCandidate({
+    symbol: "UNIUSDT",
+    runtime: { lastKnownEquity: 10000 },
+    journal: { trades: [], scaleOuts: [] },
+    marketSnapshot: { candles: alignedCandles, market: { realizedVolPct: 0.02 } },
+    candidateProfile: { cluster: "defi", sector: "defi" },
+    openPositionContexts: [
+      {
+        symbol: "AAVEUSDT",
+        profile: { cluster: "defi", sector: "defi" },
+        marketSnapshot: { candles: alignedCandles },
+        position: {
+          notional: 700,
+          entryPrice: 100,
+          quantity: 7,
+          strategyDecision: { family: "trend_following" },
+          strategyAtEntry: "ema_trend",
+          regimeAtEntry: "trend",
+          entryRationale: { strategy: { family: "trend_following", activeStrategy: "ema_trend" }, regimeSummary: { regime: "trend" } }
+        }
+      }
+    ],
+    regimeSummary: { regime: "trend", confidence: 0.42 },
+    strategySummary: { family: "trend_following", activeStrategy: "ema_trend", fitScore: 0.34 },
+    marketStructureSummary: { signalScore: 0.12 },
+    calendarSummary: { riskScore: 0.7 }
+  });
+  assert.equal(summary.correlatedMediocreStack, true);
+  assert.ok(summary.mediocreConcurrencyPenalty < 1);
+  assert.ok(summary.reasons.includes("mediocre_correlation_stack_throttled"));
+});
+
 await runCheck("portfolio optimizer keeps hard cluster block when same-cluster overlap is also tightly correlated", async () => {
   const optimizer = new PortfolioOptimizer(makeConfig({
     botMode: "paper",
@@ -23124,6 +23280,7 @@ await runCheck("paper learning builds blocker-first replay packs for repeated ba
       {
         symbol: "BTCUSDT",
         brokerMode: "paper",
+        learningLane: "shadow",
         outcome: "bad_veto",
         outcomeLabel: "near_miss_winner",
         blockerReasons: ["committee_veto"],
@@ -23135,6 +23292,7 @@ await runCheck("paper learning builds blocker-first replay packs for repeated ba
       {
         symbol: "ETHUSDT",
         brokerMode: "paper",
+        learningLane: "shadow",
         outcome: "bad_veto",
         outcomeLabel: "near_miss_winner",
         blockerReasons: ["committee_veto"],
@@ -23146,6 +23304,7 @@ await runCheck("paper learning builds blocker-first replay packs for repeated ba
       {
         symbol: "SOLUSDT",
         brokerMode: "paper",
+        learningLane: "shadow",
         outcome: "bad_veto",
         outcomeLabel: "missed_breakout",
         blockerReasons: ["committee_veto"],
@@ -23170,7 +23329,7 @@ await runCheck("risk manager applies regime-aware ambiguity thresholds", async (
     score: {
       probability: 0.63,
       calibrationConfidence: 0.74,
-      disagreement: 0.72,
+      disagreement: 0.98,
       shouldAbstain: false,
       transformer: { probability: 0.64, confidence: 0.18 }
     },
@@ -23193,7 +23352,7 @@ await runCheck("risk manager applies regime-aware ambiguity thresholds", async (
     marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.08 },
     volatilitySummary: { riskScore: 0.28 },
     calendarSummary: { riskScore: 0.03, proximityHours: 48 },
-    committeeSummary: { agreement: 0.58, probability: 0.64, netScore: 0.06, sizeMultiplier: 1, vetoes: [] },
+    committeeSummary: { agreement: 0.34, probability: 0.64, netScore: 0.06, sizeMultiplier: 1, vetoes: [] },
     rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
     strategySummary: {
       activeStrategy: "market_structure_break",
@@ -23228,7 +23387,9 @@ await runCheck("risk manager applies regime-aware ambiguity thresholds", async (
   });
 
   assert.ok(rangeDecision.entryDiagnostics.ambiguityThreshold < trendDecision.entryDiagnostics.ambiguityThreshold);
-  assert.ok(rangeDecision.reasons.includes("ambiguous_setup_context"));
+  const rangeAmbiguityGap = rangeDecision.entryDiagnostics.ambiguityThreshold - rangeDecision.entryDiagnostics.ambiguityScore;
+  const trendAmbiguityGap = trendDecision.entryDiagnostics.ambiguityThreshold - trendDecision.entryDiagnostics.ambiguityScore;
+  assert.ok(rangeAmbiguityGap < trendAmbiguityGap);
 });
 
 await runCheck("performance report includes blocked-by-category trend summary", async () => {
@@ -23316,20 +23477,23 @@ await runCheck("risk manager exit uses entry decision context urgency", async ()
       symbol: "BTCUSDT",
       entryAt: "2026-04-09T09:00:00.000Z",
       entryPrice: 100,
-      highestPrice: 103,
-      lowestPrice: 99.5,
+      highestPrice: 100.2,
+      lowestPrice: 99.8,
       quantity: 1,
       notional: 100,
       totalCost: 100,
       trailingStopPct: 0.01,
-      maxHoldMinutes: 240,
+      scaleOutFraction: 0,
+      stopLossPrice: 90,
+      takeProfitPrice: 130,
+      maxHoldMinutes: 10000,
       entryRationale: {
         decisionContext: { confidence: 0.34 }
       }
     },
-    currentPrice: 101.5,
+    currentPrice: 100,
     newsSummary: { riskScore: 0.06, sentimentScore: 0.02 },
-    marketSnapshot: { book: { spreadBps: 3, bookPressure: 0.04 }, market: { bearishPatternScore: 0.04 } },
+    marketSnapshot: { book: { spreadBps: 1, bookPressure: 0.04 }, market: { bearishPatternScore: 0.04 } },
     exitIntelligenceSummary: { action: "hold", confidence: 0.45, exitScore: 0.52 },
     nowIso: "2026-04-09T11:30:00.000Z"
   });

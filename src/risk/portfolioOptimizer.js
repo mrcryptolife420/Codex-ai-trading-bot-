@@ -505,6 +505,21 @@ export class PortfolioOptimizer {
       effectiveRegimeLossStreak >= regimeKillSwitchThreshold &&
       (!regimeKillSwitchStale || regimeKillSwitchPaperGrace || regimeKillSwitchPersistentPressure);
     const regimeKillSwitchSoftenedInPaper = this.config.botMode === "paper" && regimeKillSwitchActive;
+    const candidateClarityScore = clamp(
+      (strategySummary.fitScore || 0.5) * 0.58 +
+      (regimeSummary.confidence || 0.5) * 0.22 +
+      (marketStructureSummary.signalScore || 0) * 0.12 +
+      (1 - (calendarSummary.riskScore || 0)) * 0.08,
+      0,
+      1
+    );
+    const correlatedMediocreStack =
+      sameFamilyPositions.length > 0 &&
+      maxCorrelation > Math.max(0.68, maxPairCorrelation - 0.08) &&
+      candidateClarityScore < 0.58;
+    const mediocreConcurrencyPenalty = correlatedMediocreStack
+      ? clamp(0.84 - Math.min(0.12, sameFamilyPositions.length * 0.04), 0.68, 0.84)
+      : 1;
 
     const sizeMultiplier = clamp(
       volatilityTargetFraction *
@@ -528,6 +543,7 @@ export class PortfolioOptimizer {
         portfolioHeatPenalty *
         cvarPenalty *
         drawdownBudgetPenalty *
+        mediocreConcurrencyPenalty *
         (regimeKillSwitchActive ? (regimeKillSwitchSoftenedInPaper ? 0.74 : 0.22) : 1),
       0.18,
       1.12
@@ -650,6 +666,9 @@ export class PortfolioOptimizer {
     if (allocatorScore < 0.42) {
       reasons.push("portfolio_allocator_score_low");
     }
+    if (correlatedMediocreStack) {
+      reasons.push("mediocre_correlation_stack_throttled");
+    }
 
     const blockingReasons = [...new Set(hardReasons)];
     const advisoryReasons = [...new Set(reasons.filter((reason) => !blockingReasons.includes(reason)))];
@@ -699,6 +718,9 @@ export class PortfolioOptimizer {
       unknownClusterOverlapIgnored: !hasSpecificCluster,
       unknownSectorOverlapIgnored: !hasSpecificSector,
       allocatorScore,
+      candidateClarityScore,
+      correlatedMediocreStack,
+      mediocreConcurrencyPenalty,
       sizeMultiplier,
       reasons: [...new Set(reasons)],
       advisoryReasons,

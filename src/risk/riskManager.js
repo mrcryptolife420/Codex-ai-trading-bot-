@@ -2877,6 +2877,30 @@ export class RiskManager {
     const modelConfidenceFactor = clamp(0.82 + (preliminaryConfidenceBreakdown.modelConfidence || 0.45) * 0.2, 0.7, 1.03);
     const signalQualityFactor = clamp(0.76 + (signalQualitySummary.overallScore || 0.5) * 0.34, 0.5, 1.08);
     const setupQualityFactor = clamp(0.72 + safeValue(setupQuality.score, 0) * 0.4, 0.58, 1.08);
+    const riskClarityScore = clamp(
+      (preliminaryConfidenceBreakdown.overallConfidence || 0.5) * 0.42 +
+      (safeValue(setupQuality.score, 0.5)) * 0.24 +
+      (score.calibrationConfidence || 0.5) * 0.2 +
+      (committeeSummary.agreement || 0.5) * 0.14 -
+      Math.max(0, score.disagreement || 0) * 0.18,
+      0,
+      1
+    );
+    const uncertaintyPenalty = clamp(
+      1 -
+      Math.max(0, (score.disagreement || 0) - 0.45) * 0.5 -
+      Math.max(0, 0.62 - (score.calibrationConfidence || 0)) * 0.24,
+      0.62,
+      1.04
+    );
+    const setupTierSizeFactor = setupQuality.tier === "exceptional"
+      ? 1.03
+      : setupQuality.tier === "weak"
+        ? 0.8
+        : setupQuality.tier === "unreliable"
+          ? 0.68
+          : 1;
+    const riskClaritySizeFactor = clamp(uncertaintyPenalty * setupTierSizeFactor, 0.62, 1.05);
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
     const streakPenalty = paperLearningRecoveryActive
@@ -2916,6 +2940,7 @@ export class RiskManager {
       modelConfidenceFactor *
       signalQualityFactor *
       setupQualityFactor *
+      riskClaritySizeFactor *
       divergenceFactor *
       heatPenalty *
       streakPenalty *
@@ -2953,6 +2978,8 @@ export class RiskManager {
     const cappedQuoteAmount = invalidQuoteAmount
       ? 0
       : Math.min(adjustedQuoteAmount, maxByPosition, maxByRisk, remainingExposureBudget);
+    const meaningfulSizeFloor = Math.max(this.config.minTradeUsdt * 1.4, Math.min(45, this.config.minTradeUsdt + 20));
+    const deservesMeaningfulSize = !invalidQuoteAmount && cappedQuoteAmount >= meaningfulSizeFloor;
 
     const normalizedReasons = normalizeDecisionReasons(reasons);
     reasons.length = 0;
@@ -3702,10 +3729,17 @@ export class RiskManager {
       dataQualitySummary,
       signalQualitySummary,
       confidenceBreakdown,
+      sizeVerdict: {
+        allowTrade: allow,
+        deservesMeaningfulSize,
+        meaningfulSizeFloor: num(meaningfulSizeFloor, 2),
+        riskClarityScore: num(riskClarityScore, 4)
+      },
       setupQuality,
       lowConfidencePressure,
       decisionContext: {
         confidence: num(decisionContextConfidence, 4),
+        riskClarityScore: num(riskClarityScore, 4),
         regime: regimeSummary.regime || null,
         conditionId: marketConditionId || null
       },
@@ -3723,6 +3757,11 @@ export class RiskManager {
         offlineLearningSizeMultiplier: num(offlineLearningGuidanceApplied.sizeMultiplier, 4),
         offlineLearningExecutionCaution: num(offlineLearningGuidanceApplied.executionCaution, 4),
         offlineLearningFeatureTrustPenalty: num(offlineLearningGuidanceApplied.featureTrustPenalty, 4),
+        riskClaritySizeFactor: num(riskClaritySizeFactor, 4),
+        setupTierSizeFactor: num(setupTierSizeFactor, 4),
+        riskClarityScore: num(riskClarityScore, 4),
+        meaningfulSizeFloor: num(meaningfulSizeFloor, 2),
+        deservesMeaningfulSize,
         advisoryPortfolioReasons: [...(portfolioSummary.advisoryReasons || [])],
         dominantSizingDrag,
         dominantSizingBoost

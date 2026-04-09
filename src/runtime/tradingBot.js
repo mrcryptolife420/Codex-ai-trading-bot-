@@ -150,7 +150,8 @@ function buildSourceOfTruthPortfolioState({ runtime = {}, journal = {}, config =
   const latestSourceScopedEquity = [...arr(journal.equitySnapshots || [])]
     .reverse()
     .find((item) => matchesTradingSource(item, tradingSource, botMode)) || null;
-  const runtimeSnapshotMatches = `${runtime?.portfolioSnapshotMode || ""}`.trim().toLowerCase() === tradingSource;
+  const runtimeSnapshotMode = `${runtime?.portfolioSnapshotMode || ""}`.trim().toLowerCase();
+  const runtimeSnapshotMatches = !runtimeSnapshotMode || runtimeSnapshotMode === tradingSource;
   const balance = Number.isFinite(latestSourceScopedEquity?.quoteFree)
     ? latestSourceScopedEquity.quoteFree
     : runtimeSnapshotMatches
@@ -320,6 +321,8 @@ function summarizeLastEntryAttempt(attempt = {}) {
     attemptedSymbols: arr(attempt.attemptedSymbols || []).slice(0, 8),
     allowedCandidates: Math.max(0, Number(attempt.allowedCandidates || 0)),
     skippedCandidates: Math.max(0, Number(attempt.skippedCandidates || 0)),
+    allowedButZeroEffectiveSize: Math.max(0, Number(attempt.allowedButZeroEffectiveSize || 0)),
+    allowedButTinyEffectiveSize: Math.max(0, Number(attempt.allowedButTinyEffectiveSize || 0)),
     skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts || {}, 5),
     blockedReasons: arr(attempt.blockedReasons || []).slice(0, 6),
     blockedReasonDetails: summarizeBlockedReasonDetails(attempt.blockedReasonDetails || {}),
@@ -6014,6 +6017,7 @@ export class TradingBot {
       contract: buildContract("report", "report_public"),
       generatedAt: this.observabilityCache?.reportGeneratedAt || nowIso(),
       coreMetrics,
+      reportScope: report.reportScope || "aggregate",
       sourceOfTruth: {
         mode: sourceTruth.botMode,
         tradingSource: sourceTruth.tradingSource,
@@ -6078,6 +6082,7 @@ export class TradingBot {
       windows: report.windows || {},
       modes: report.modes || {},
       marketHistory: summarizeMarketHistory(this.runtime.marketHistory || {}),
+      entryFunnel: summarizeLastEntryAttempt(this.runtime.lastEntryAttempt || {}),
       recentTrades: report.recentTrades.map((trade) => this.buildTradeView(trade)),
       recentScaleOuts: report.recentScaleOuts.map((event) => this.buildScaleOutView(event)),
       recentEvents: report.recentEvents || [],
@@ -15263,6 +15268,8 @@ export class TradingBot {
       attemptedSymbols: [],
       allowedCandidates: 0,
       skippedCandidates: 0,
+      allowedButZeroEffectiveSize: 0,
+      allowedButTinyEffectiveSize: 0,
       blockedReasons: [...(executionBlockers || [])],
       entryErrors: [],
       symbolBlockers: [],
@@ -15352,6 +15359,14 @@ export class TradingBot {
       }
       if (!Number.isFinite(candidate.decision?.quoteAmount) || (candidate.decision?.quoteAmount || 0) <= 0) {
         invalidExecutionState.push("invalid_quote_amount");
+        attempt.allowedButZeroEffectiveSize += 1;
+      } else if (
+        Number.isFinite(candidate.decision?.sizingSummary?.meaningfulSizeFloor) &&
+        (candidate.decision?.quoteAmount || 0) > 0 &&
+        (candidate.decision?.quoteAmount || 0) < candidate.decision.sizingSummary.meaningfulSizeFloor
+      ) {
+        attempt.allowedButTinyEffectiveSize += 1;
+        incrementCount(attempt.skipReasonCounts, "tiny_effective_quote_amount");
       }
       if (!candidate.decision?.executionPlan) {
         invalidExecutionState.push("missing_execution_plan");
@@ -15473,6 +15488,8 @@ export class TradingBot {
         symbolBlockers: attempt.symbolBlockers,
         allowedCandidates: attempt.allowedCandidates,
         skippedCandidates: attempt.skippedCandidates,
+        allowedButZeroEffectiveSize: attempt.allowedButZeroEffectiveSize,
+        allowedButTinyEffectiveSize: attempt.allowedButTinyEffectiveSize,
         skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       this.recordEvent("entry_flow_blocked", {
@@ -15481,6 +15498,8 @@ export class TradingBot {
         symbolBlockers: arr(attempt.symbolBlockers).map((item) => item.reason),
         allowedCandidates: attempt.allowedCandidates,
         skippedCandidates: attempt.skippedCandidates,
+        allowedButZeroEffectiveSize: attempt.allowedButZeroEffectiveSize,
+        allowedButTinyEffectiveSize: attempt.allowedButTinyEffectiveSize,
         skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       return attempt;
@@ -15494,6 +15513,8 @@ export class TradingBot {
         symbolBlockers: attempt.symbolBlockers,
         allowedCandidates: attempt.allowedCandidates,
         skippedCandidates: attempt.skippedCandidates,
+        allowedButZeroEffectiveSize: attempt.allowedButZeroEffectiveSize,
+        allowedButTinyEffectiveSize: attempt.allowedButTinyEffectiveSize,
         skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       this.recordEvent("entry_flow_blocked", {
@@ -15502,6 +15523,8 @@ export class TradingBot {
         symbolBlockers: arr(attempt.symbolBlockers).map((item) => item.reason),
         allowedCandidates: attempt.allowedCandidates,
         skippedCandidates: attempt.skippedCandidates,
+        allowedButZeroEffectiveSize: attempt.allowedButZeroEffectiveSize,
+        allowedButTinyEffectiveSize: attempt.allowedButTinyEffectiveSize,
         skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       return attempt;
@@ -15514,6 +15537,8 @@ export class TradingBot {
         entryErrors: attempt.entryErrors,
         allowedCandidates: attempt.allowedCandidates,
         skippedCandidates: attempt.skippedCandidates,
+        allowedButZeroEffectiveSize: attempt.allowedButZeroEffectiveSize,
+        allowedButTinyEffectiveSize: attempt.allowedButTinyEffectiveSize,
         skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
       this.recordEvent("entry_flow_blocked", {
@@ -15522,6 +15547,8 @@ export class TradingBot {
         entryErrors: arr(attempt.entryErrors).map((item) => item.error),
         allowedCandidates: attempt.allowedCandidates,
         skippedCandidates: attempt.skippedCandidates,
+        allowedButZeroEffectiveSize: attempt.allowedButZeroEffectiveSize,
+        allowedButTinyEffectiveSize: attempt.allowedButTinyEffectiveSize,
         skipReasonCounts: summarizeCountMap(attempt.skipReasonCounts, 5)
       });
     }
@@ -15576,6 +15603,8 @@ export class TradingBot {
       attemptedSymbols: [...attemptedSymbols],
       allowedCandidates: Math.max(0, Number(entryAttempt.allowedCandidates || 0)),
       skippedCandidates: Math.max(0, Number(entryAttempt.skippedCandidates || 0)),
+      allowedButZeroEffectiveSize: Math.max(0, Number(entryAttempt.allowedButZeroEffectiveSize || 0)),
+      allowedButTinyEffectiveSize: Math.max(0, Number(entryAttempt.allowedButTinyEffectiveSize || 0)),
       skipReasonCounts: summarizeCountMap(entryAttempt.skipReasonCounts || {}, 5),
       blockedReasons: [...primaryBlockedReasons],
       blockedReasonDetails: summarizeBlockedReasonDetails(entryAttempt.blockedReasonDetails || {}),
@@ -16904,6 +16933,20 @@ export class TradingBot {
             title: "History dekking",
             detail: learningInsights.history.note || "Replay- of governance-dekking mist nog history truth.",
             tone: learningInsights.history.status === "urgent" ? "negative" : "neutral"
+          }
+        : null,
+      (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0 || (lastEntryAttempt.allowedButTinyEffectiveSize || 0) > 0
+        ? {
+            title: "Sizing funnel",
+            detail: compactJoin([
+              (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0
+                ? `${lastEntryAttempt.allowedButZeroEffectiveSize}x zero-size`
+                : null,
+              (lastEntryAttempt.allowedButTinyEffectiveSize || 0) > 0
+                ? `${lastEntryAttempt.allowedButTinyEffectiveSize}x tiny-size`
+                : null
+            ], " | "),
+            tone: (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0 ? "negative" : "neutral"
           }
         : null,
       lastEntryAttempt.status === "no_allowed_candidates" && (

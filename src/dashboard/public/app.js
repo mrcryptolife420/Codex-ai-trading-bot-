@@ -1706,6 +1706,17 @@ function buildOpsCards(snapshot) {
       ? titleize(lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].id)
       : null
   ], " | ");
+  const entrySizingFunnel = compactJoin([
+    (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0
+      ? `${lastEntryAttempt.allowedButZeroEffectiveSize}x zero-size`
+      : null,
+    (lastEntryAttempt.allowedButTinyEffectiveSize || 0) > 0
+      ? `${lastEntryAttempt.allowedButTinyEffectiveSize}x tiny-size`
+      : null,
+    lastEntryAttempt.skipReasonCounts?.[0]
+      ? `${titleize(lastEntryAttempt.skipReasonCounts[0].id)} ${lastEntryAttempt.skipReasonCounts[0].count}x`
+      : null
+  ], " | ");
   return [
     {
       label: "Trading flow",
@@ -1750,6 +1761,12 @@ function buildOpsCards(snapshot) {
       value: formatMoney(sizingGuide.targetQuote || 0),
       foot: `${titleize(strategyAllocation.budgetLane || "standard")} x${formatNumber(strategyAllocation.budgetMultiplier || 1, 2)} · Probe ${formatMoney(sizingGuide.paperProbeQuote || 0)} · ${sizingGuide.idealConcurrentPositions || 0} tegelijk`,
       tone: (sizingGuide.minTradeDominates || false) ? "neutral" : "positive"
+    },
+    {
+      label: "Entry sizing funnel",
+      value: `${lastEntryAttempt.allowedCandidates || 0} allow · ${lastEntryAttempt.skippedCandidates || 0} skip`,
+      foot: entrySizingFunnel || entryBottleneck || "Geen sizing-frictie zichtbaar",
+      tone: (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0 ? "negative" : "neutral"
     },
     {
       label: "PnL split",
