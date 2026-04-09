@@ -524,6 +524,78 @@ function classifySignalRejectionCategory(reason = "") {
   return "other";
 }
 
+function normalizeCounterfactualOutcomeLabel(label = "") {
+  const normalized = `${label || ""}`.trim().toLowerCase();
+  return normalized || null;
+}
+
+function isBadVetoOutcomeLabel(label = "") {
+  const normalized = normalizeCounterfactualOutcomeLabel(label);
+  return new Set([
+    "bad_veto",
+    "missed_winner",
+    "near_miss_winner",
+    "missed_breakout",
+    "bad_countertrend_veto",
+    "quality_trap",
+    "right_direction_wrong_timing"
+  ]).has(normalized);
+}
+
+function isGoodVetoOutcomeLabel(label = "") {
+  const normalized = normalizeCounterfactualOutcomeLabel(label);
+  return new Set([
+    "good_veto",
+    "blocked_correctly",
+    "near_miss_loser",
+    "fakeout_avoided"
+  ]).has(normalized);
+}
+
+function classifyShadowOutcomeLabel({
+  realizedMovePct = 0,
+  outcome = "neutral",
+  blockerCategory = "other",
+  winBar = 0.01,
+  lossBar = -0.01,
+  edgeToThreshold = 0,
+  modelConfidence = 0,
+  executionViability = 0
+} = {}) {
+  const positiveMove = realizedMovePct >= Math.max(winBar * 0.6, 0.005);
+  const negativeMove = realizedMovePct <= Math.min(lossBar * 0.75, -0.004);
+  if (outcome === "bad_veto") {
+    if (blockerCategory === "market" && modelConfidence >= 0.56 && executionViability >= 0.5) {
+      return "missed_breakout";
+    }
+    if (blockerCategory === "trend" || blockerCategory === "market") {
+      return "bad_countertrend_veto";
+    }
+    return "near_miss_winner";
+  }
+  if (outcome === "good_veto") {
+    if (blockerCategory === "market" && negativeMove) {
+      return "fakeout_avoided";
+    }
+    return "near_miss_loser";
+  }
+  if (outcome === "late_veto") {
+    return positiveMove ? "near_miss_winner" : "late_veto";
+  }
+  if (outcome === "right_direction_wrong_timing") {
+    return modelConfidence < 0.45 || executionViability < 0.45
+      ? "quality_trap"
+      : "right_direction_wrong_timing";
+  }
+  if (outcome === "neutral" && positiveMove && edgeToThreshold > -0.015) {
+    return "near_miss_winner";
+  }
+  if (outcome === "neutral" && negativeMove) {
+    return "near_miss_loser";
+  }
+  return outcome || "neutral";
+}
+
 function isUsableCounterfactual(item = {}) {
   return !item.resolutionFailed && item.outcome !== "resolution_failed";
 }
@@ -970,7 +1042,14 @@ function summarizeMissedTradeLearning(summary = {}) {
   const totalCounterfactuals = summary.counterfactuals?.total || 0;
   const missedWinners = summary.counterfactuals?.missedWinners || 0;
   const badVetoShare = totalCounterfactuals ? missedWinners / totalCounterfactuals : 0;
-  const status = strictestBlocker?.badVetoRate >= 0.42 || badVetoShare >= 0.34
+  const shadowCaseSummary = summary.shadowCaseSummary || {};
+  const topOverblockedScope = arr(shadowCaseSummary.overblockedScopes || [])[0] || null;
+  const blendedBadVetoRate = Math.max(
+    badVetoShare,
+    Number(shadowCaseSummary.badVetoRate || 0),
+    Number(strictestBlocker?.badVetoRate || 0)
+  );
+  const status = blendedBadVetoRate >= 0.34
     ? "priority"
     : totalCounterfactuals >= 6 || strictestBlocker || topFailure
       ? "watch"
@@ -990,6 +1069,21 @@ function summarizeMissedTradeLearning(summary = {}) {
           governanceScore: num(strictestBlocker.governanceScore || 0, 4)
         }
       : null,
+    badVetoRate: num(blendedBadVetoRate || 0, 4),
+    shadowCaseSummary: {
+      status: shadowCaseSummary.status || "warmup",
+      resolvedCount: shadowCaseSummary.resolvedCount || 0,
+      queuedCount: shadowCaseSummary.queuedCount || 0,
+      topSuspiciousBlocker: shadowCaseSummary.topSuspiciousBlocker || null
+    },
+    topOverblockedScope: topOverblockedScope ? {
+      id: topOverblockedScope.id || null,
+      blocker: topOverblockedScope.blocker || null,
+      family: topOverblockedScope.family || null,
+      regime: topOverblockedScope.regime || null,
+      session: topOverblockedScope.session || null,
+      badVetoCount: topOverblockedScope.badVetoCount || 0
+    } : null,
     tuning: {
       blocker: counterfactualTuning.blocker || null,
       action: counterfactualTuning.action || "observe",
@@ -1005,6 +1099,10 @@ function summarizeMissedTradeLearning(summary = {}) {
       : null,
     note: topMissedSetup
       ? `${topMissedSetup} is nu de duidelijkste gemiste setup om review op te doen.`
+      : shadowCaseSummary.topSuspiciousBlocker
+        ? `${titleize(shadowCaseSummary.topSuspiciousBlocker)} lijkt nu de sterkste kandidaat voor blocker-versoepeling.`
+      : topOverblockedScope?.id
+        ? `Overblocked patroon: ${topOverblockedScope.id}.`
       : strictestBlocker?.id
         ? `${titleize(strictestBlocker.id)} lijkt nu de strengste gemiste-trade blocker.`
         : totalCounterfactuals
@@ -3120,7 +3218,10 @@ function summarizePaperLearning(summary = {}) {
       topMissedSetup: summary.reviewPacks.topMissedSetup || null,
       topExecutionDrag: summary.reviewPacks.topExecutionDrag || null,
       topQualityTrap: summary.reviewPacks.topQualityTrap || null,
-      topProbationRisk: summary.reviewPacks.topProbationRisk || null
+      topProbationRisk: summary.reviewPacks.topProbationRisk || null,
+      topSuspiciousBlocker: summary.reviewPacks.topSuspiciousBlocker || null,
+      suspiciousBlockerCase: summary.reviewPacks.suspiciousBlockerCase || null,
+      repeatedBadVetoPattern: summary.reviewPacks.repeatedBadVetoPattern || null
     } : null,
     recentProbeReviews: arr(summary.recentProbeReviews || []).slice(0, 4).map((item) => ({
       id: item.id || null,
@@ -3137,6 +3238,7 @@ function summarizePaperLearning(summary = {}) {
       id: item.id || null,
       symbol: item.symbol || null,
       outcome: item.outcome || "neutral",
+      vetoVerdict: item.vetoVerdict || null,
       blocker: item.blocker || null,
       realizedMovePct: numOrNull(item.realizedMovePct, 4),
       resolvedAt: item.resolvedAt || null,
@@ -3147,6 +3249,39 @@ function summarizePaperLearning(summary = {}) {
       } : null,
       lesson: item.lesson || null
     })),
+    shadowCaseSummary: summary.shadowCaseSummary ? {
+      status: summary.shadowCaseSummary.status || "warmup",
+      resolvedCount: summary.shadowCaseSummary.resolvedCount || 0,
+      queuedCount: summary.shadowCaseSummary.queuedCount || 0,
+      badVetoCount: summary.shadowCaseSummary.badVetoCount || 0,
+      goodVetoCount: summary.shadowCaseSummary.goodVetoCount || 0,
+      badVetoRate: num(summary.shadowCaseSummary.badVetoRate || 0, 4),
+      goodVetoRate: num(summary.shadowCaseSummary.goodVetoRate || 0, 4),
+      topSuspiciousBlocker: summary.shadowCaseSummary.topSuspiciousBlocker || null,
+      topSuspiciousBlockerCategory: summary.shadowCaseSummary.topSuspiciousBlockerCategory || null,
+      blockerQuality: arr(summary.shadowCaseSummary.blockerQuality || []).slice(0, 4).map((item) => ({
+        id: item.id || null,
+        category: item.category || null,
+        total: item.total || 0,
+        badVetoCount: item.badVetoCount || 0,
+        goodVetoCount: item.goodVetoCount || 0,
+        badVetoRate: num(item.badVetoRate || 0, 4),
+        goodVetoRate: num(item.goodVetoRate || 0, 4),
+        suspicionScore: num(item.suspicionScore || 0, 4),
+        status: item.status || "observe"
+      })),
+      overblockedScopes: arr(summary.shadowCaseSummary.overblockedScopes || []).slice(0, 4).map((item) => ({
+        id: item.id || null,
+        blocker: item.blocker || null,
+        family: item.family || null,
+        regime: item.regime || null,
+        session: item.session || null,
+        badVetoCount: item.badVetoCount || 0,
+        averageMovePct: num(item.averageMovePct || 0, 4),
+        status: item.status || "watch"
+      })),
+      note: summary.shadowCaseSummary.note || null
+    } : null,
     paperToLiveReadiness: summary.paperToLiveReadiness ? {
       status: summary.paperToLiveReadiness.status || "warmup",
       score: num(summary.paperToLiveReadiness.score || 0, 4),
@@ -3431,6 +3566,8 @@ function summarizePaperLearning(summary = {}) {
       type: item.type || null,
       id: item.id || null,
       priority: item.priority || "normal",
+      rank: item.rank || null,
+      impactScore: num(item.impactScore || 0, 4),
       note: item.note || null
     })),
     counterfactualBranches: summary.counterfactualBranches ? {
@@ -4281,19 +4418,21 @@ function pickCounterfactualBlocker(item = {}) {
 
 function summarizeCounterfactualReview(item = {}) {
   const branch = arr(item.branches || []).find((entry) => ["winner", "small_winner"].includes(entry.outcome)) || arr(item.branches || [])[0] || null;
-  const lesson = item.outcome === "bad_veto"
+  const outcomeLabel = item.outcomeLabel || item.outcome || "neutral";
+  const lesson = outcomeLabel === "bad_veto" || outcomeLabel === "near_miss_winner" || outcomeLabel === "missed_breakout"
     ? "Deze blokkade lijkt te streng; vergelijkbare setups liepen vaker door."
-    : item.outcome === "good_veto"
+    : outcomeLabel === "good_veto" || outcomeLabel === "near_miss_loser" || outcomeLabel === "fakeout_avoided"
       ? "Deze blokkade was waarschijnlijk juist; skippen was hier veiliger."
-      : item.outcome === "right_direction_wrong_timing"
+      : outcomeLabel === "right_direction_wrong_timing" || outcomeLabel === "quality_trap"
         ? "De richting klopte, maar timing of uitvoering kon beter."
-        : item.outcome === "late_veto"
+        : outcomeLabel === "late_veto"
           ? "De setup kwam laat op gang; extra timing-review is nuttig."
           : "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.";
   return {
     id: item.id || null,
     symbol: item.symbol || null,
-    outcome: item.outcome || "neutral",
+    outcome: outcomeLabel,
+    vetoVerdict: isBadVetoOutcomeLabel(outcomeLabel) ? "bad_veto" : isGoodVetoOutcomeLabel(outcomeLabel) ? "good_veto" : "mixed",
     blocker: pickCounterfactualBlocker(item),
     realizedMovePct: numOrNull(item.realizedMovePct, 4),
     resolvedAt: item.resolvedAt || null,
@@ -5665,6 +5804,16 @@ function scoreBlockedHistoryFocus(item = {}) {
   return num(base + tuningBonus + blockerBonus + 0.08, 4);
 }
 
+function buildBlockedSetupCaseKey(setup = {}) {
+  const symbol = `${setup.symbol || ""}`.trim().toUpperCase();
+  const blocker = arr(setup.blockerReasons || setup.reasons || []).find(Boolean) || "no_blocker";
+  const family = setup.strategy?.family || setup.paperLearning?.scope?.family || "na_family";
+  const regime = setup.regime || setup.paperLearning?.scope?.regime || "na_regime";
+  const session = setup.session?.session || setup.sessionAtEntry || setup.paperLearning?.scope?.session || "na_session";
+  const condition = setup.marketCondition?.conditionId || setup.paperLearning?.scope?.condition || "na_condition";
+  return [symbol, blocker, family, regime, session, condition].join("::");
+}
+
 function scoreReplayHistoryFocus(trade = {}, index = 0) {
   const recency = clamp(1 - Math.min(index, 8) / 8, 0.2, 1);
   const moveMagnitude = clamp(Math.abs(Number(trade.netPnlPct || 0)) * 20, 0, 0.5);
@@ -6984,6 +7133,8 @@ export class TradingBot {
     const entryStyle = candidate.decision?.executionPlan?.entryStyle || candidate.decision?.executionStyle || null;
     const expectedSlippageBps = num(candidate.decision?.executionPlan?.expectedSlippageBps || 0, 2);
     const counterfactualContext = candidate.decision?.counterfactualContext || buildCandidateCounterfactualContext(candidate);
+    const blockedSetupId = candidate?.decision?.blockedSetupId || crypto.randomUUID();
+    candidate.decision.blockedSetupId = blockedSetupId;
     const branchScenarios = [
       {
         id: "base",
@@ -7029,6 +7180,7 @@ export class TradingBot {
     ];
     this.runtime.counterfactualQueue = [...(this.runtime.counterfactualQueue || []), {
       id: crypto.randomUUID(),
+      blockedSetupId,
       symbol: candidate.symbol,
       brokerMode: this.config.botMode,
       portfolioSnapshotMode: this.runtime.portfolioSnapshotMode || getPortfolioSnapshotSource(this.config),
@@ -7115,6 +7267,18 @@ export class TradingBot {
               adjustedMovePct: null
             }))
           });
+          if (item.blockedSetupId) {
+            const index = arr(this.journal.blockedSetups || []).findIndex((entry) => entry?.blockedSetupId === item.blockedSetupId);
+            if (index >= 0) {
+              const current = this.journal.blockedSetups[index] || {};
+              this.journal.blockedSetups[index] = {
+                ...current,
+                counterfactualStatus: "failed",
+                counterfactualOutcome: "resolution_failed",
+                counterfactualResolvedAt: nowAt
+              };
+            }
+          }
           this.markReportDirty();
           this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: "invalid_counterfactual_snapshot" });
           continue;
@@ -7131,6 +7295,23 @@ export class TradingBot {
             : realizedMovePct > 0 && realizedMovePct < winBar
               ? "late_veto"
               : "neutral";
+        const blocker = pickCounterfactualBlocker(item);
+        const blockerCategory = classifySignalRejectionCategory(blocker || item.dominantBlocker || "");
+        const outcomeLabel = classifyShadowOutcomeLabel({
+          realizedMovePct,
+          outcome,
+          blockerCategory,
+          winBar,
+          lossBar,
+          edgeToThreshold: item.edgeToThreshold || 0,
+          modelConfidence: item.modelConfidence || 0,
+          executionViability: item.executionViability || 0
+        });
+        const vetoVerdict = isBadVetoOutcomeLabel(outcomeLabel)
+          ? "bad_veto"
+          : isGoodVetoOutcomeLabel(outcomeLabel)
+            ? "good_veto"
+            : "mixed";
         const branches = arr(item.branchScenarios).map((branch) => {
           let adjustedMovePct = realizedMovePct;
           if (branch.kind === "size") {
@@ -7171,8 +7352,28 @@ export class TradingBot {
           currentPrice,
           realizedMovePct: num(realizedMovePct, 4),
           outcome,
+          outcomeLabel,
+          vetoVerdict,
+          dominantBlocker: blocker || item.dominantBlocker || null,
+          blockerCategory,
           branches
         });
+        if (item.blockedSetupId) {
+          const index = arr(this.journal.blockedSetups || []).findIndex((entry) => entry?.blockedSetupId === item.blockedSetupId);
+          if (index >= 0) {
+            const current = this.journal.blockedSetups[index] || {};
+            this.journal.blockedSetups[index] = {
+              ...current,
+              counterfactualStatus: "resolved",
+              counterfactualOutcome: outcome,
+              counterfactualOutcomeLabel: outcomeLabel,
+              counterfactualVetoVerdict: vetoVerdict,
+              counterfactualResolvedAt: nowAt,
+              counterfactualMovePct: num(realizedMovePct, 4),
+              counterfactualBlocker: blocker || current.counterfactualBlocker || null
+            };
+          }
+        }
         this.markReportDirty();
       } catch (error) {
         const retryCount = (item.retryCount || 0) + 1;
@@ -7199,6 +7400,18 @@ export class TradingBot {
             adjustedMovePct: null
           }))
         });
+        if (item.blockedSetupId) {
+          const index = arr(this.journal.blockedSetups || []).findIndex((entry) => entry?.blockedSetupId === item.blockedSetupId);
+          if (index >= 0) {
+            const current = this.journal.blockedSetups[index] || {};
+            this.journal.blockedSetups[index] = {
+              ...current,
+              counterfactualStatus: "failed",
+              counterfactualOutcome: "resolution_failed",
+              counterfactualResolvedAt: nowAt
+            };
+          }
+        }
         this.markReportDirty();
         this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: error.message });
       }
@@ -9950,14 +10163,92 @@ export class TradingBot {
     ];
     const shadowOutcomeCounts = {};
     for (const item of counterfactuals.filter((entry) => isShadowReviewCase(entry))) {
-      if (!item?.outcome) {
+      const outcomeId = item?.outcomeLabel || item?.outcome;
+      if (!outcomeId) {
         continue;
       }
-      shadowOutcomeCounts[item.outcome] = (shadowOutcomeCounts[item.outcome] || 0) + 1;
+      shadowOutcomeCounts[outcomeId] = (shadowOutcomeCounts[outcomeId] || 0) + 1;
     }
     for (const item of arr(this.runtime?.counterfactualQueue || []).filter((entry) => (entry.brokerMode || "paper") === "paper" && isShadowReviewCase(entry))) {
       shadowOutcomeCounts.shadow_watch = (shadowOutcomeCounts.shadow_watch || 0) + 1;
     }
+    const shadowBlockerStats = {};
+    let resolvedShadowCount = 0;
+    let badVetoShadowCount = 0;
+    let goodVetoShadowCount = 0;
+    for (const item of counterfactuals.filter((entry) => isShadowReviewCase(entry))) {
+      const outcomeLabel = item?.outcomeLabel || item?.outcome || "neutral";
+      const blockerId = pickCounterfactualBlocker(item) || "unknown_blocker";
+      const blockerCategory = classifySignalRejectionCategory(blockerId);
+      if (!shadowBlockerStats[blockerId]) {
+        shadowBlockerStats[blockerId] = {
+          id: blockerId,
+          category: blockerCategory,
+          total: 0,
+          badVetoCount: 0,
+          goodVetoCount: 0,
+          averageMovePctSum: 0
+        };
+      }
+      const stats = shadowBlockerStats[blockerId];
+      stats.total += 1;
+      stats.averageMovePctSum += Number(item.realizedMovePct || 0);
+      if (isBadVetoOutcomeLabel(outcomeLabel)) {
+        stats.badVetoCount += 1;
+        badVetoShadowCount += 1;
+      } else if (isGoodVetoOutcomeLabel(outcomeLabel)) {
+        stats.goodVetoCount += 1;
+        goodVetoShadowCount += 1;
+      }
+      resolvedShadowCount += 1;
+    }
+    const blockerQuality = Object.values(shadowBlockerStats)
+      .map((item) => {
+        const badRate = item.total ? item.badVetoCount / item.total : 0;
+        const goodRate = item.total ? item.goodVetoCount / item.total : 0;
+        const suspicion = clamp(
+          badRate * 0.62 +
+          Math.max(0, item.averageMovePctSum / Math.max(item.total, 1)) * 3.8 +
+          Math.min(0.18, item.total / 18),
+          0,
+          1
+        );
+        return {
+          id: item.id,
+          category: item.category,
+          total: item.total,
+          badVetoCount: item.badVetoCount,
+          goodVetoCount: item.goodVetoCount,
+          badVetoRate: num(badRate, 4),
+          goodVetoRate: num(goodRate, 4),
+          suspicionScore: num(suspicion, 4),
+          averageMovePct: num(item.averageMovePctSum / Math.max(item.total, 1), 4),
+          status: badRate >= 0.5 && item.total >= 3
+            ? "too_strict_watch"
+            : goodRate >= 0.58 && item.total >= 3
+              ? "useful_guard"
+              : "observe"
+        };
+      })
+      .sort((left, right) => (right.suspicionScore || 0) - (left.suspicionScore || 0))
+      .slice(0, 6);
+    const topSuspiciousBlocker = blockerQuality[0] || null;
+    const shadowCaseSummary = {
+      status: resolvedShadowCount || arr(this.runtime?.counterfactualQueue || []).length ? "active" : "warmup",
+      resolvedCount: resolvedShadowCount,
+      queuedCount: arr(this.runtime?.counterfactualQueue || []).filter((entry) => (entry.brokerMode || "paper") === "paper" && isShadowReviewCase(entry)).length,
+      badVetoCount: badVetoShadowCount,
+      goodVetoCount: goodVetoShadowCount,
+      badVetoRate: num(resolvedShadowCount ? badVetoShadowCount / resolvedShadowCount : 0, 4),
+      goodVetoRate: num(resolvedShadowCount ? goodVetoShadowCount / resolvedShadowCount : 0, 4),
+      topSuspiciousBlocker: topSuspiciousBlocker?.id || null,
+      topSuspiciousBlockerCategory: topSuspiciousBlocker?.category || null,
+      blockerQuality,
+      overblockedScopes,
+      note: topSuspiciousBlocker
+        ? `${titleize(topSuspiciousBlocker.id)} levert nu de meeste signalen van mogelijk te strenge veto's.`
+        : "Shadow-cases bouwen nog op; blockerkwaliteit volgt zodra meer reviews zijn afgerond."
+    };
     const recentOutcomes = Object.entries({
       ...outcomeCounts,
       ...Object.fromEntries(
@@ -10297,6 +10588,65 @@ export class TradingBot {
       topExecutionDrag: topExecutionDragTrade?.symbol || null,
       topQualityTrap: topQualityTrapTrade?.symbol || null,
       topProbationRisk: topQualityTrapTrade?.symbol || topExecutionDragTrade?.symbol || null
+    };
+    const suspiciousBlockerShadowCases = topSuspiciousBlocker
+      ? counterfactuals
+        .filter((item) => pickCounterfactualBlocker(item) === topSuspiciousBlocker.id)
+        .slice(-8)
+      : [];
+    const rankedBadPatterns = (() => {
+      const buckets = new Map();
+      for (const item of counterfactuals) {
+        const outcomeLabel = item.outcomeLabel || item.outcome || "neutral";
+        if (!isBadVetoOutcomeLabel(outcomeLabel)) {
+          continue;
+        }
+        const blocker = pickCounterfactualBlocker(item) || "unknown_blocker";
+        const family = item.strategyFamily || "na_family";
+        const regime = item.regime || "na_regime";
+        const session = item.sessionAtEntry || "na_session";
+        const key = `${blocker}::${family}::${regime}::${session}`;
+        if (!buckets.has(key)) {
+          buckets.set(key, {
+            blocker,
+            family,
+            regime,
+            session,
+            count: 0,
+            avgMovePctSum: 0
+          });
+        }
+        const bucket = buckets.get(key);
+        bucket.count += 1;
+        bucket.avgMovePctSum += Number(item.realizedMovePct || 0);
+      }
+      return [...buckets.values()]
+        .map((item) => ({
+          ...item,
+          averageMovePct: item.count ? item.avgMovePctSum / item.count : 0,
+          patternId: [item.blocker, item.family, item.regime, item.session].join(" | ")
+        }))
+        .sort((left, right) => {
+          const countDelta = (right.count || 0) - (left.count || 0);
+          return countDelta !== 0 ? countDelta : (right.averageMovePct || 0) - (left.averageMovePct || 0);
+        });
+    })();
+    const repeatedBadPattern = rankedBadPatterns[0] || null;
+    const overblockedScopes = rankedBadPatterns.slice(0, 4).map((item) => ({
+      id: item.patternId,
+      blocker: item.blocker,
+      family: item.family,
+      regime: item.regime,
+      session: item.session,
+      badVetoCount: item.count,
+      averageMovePct: num(item.averageMovePct || 0, 4),
+      status: item.count >= 3 ? "priority" : "watch"
+    }));
+    reviewPacks = {
+      ...reviewPacks,
+      topSuspiciousBlocker: topSuspiciousBlocker?.id || null,
+      suspiciousBlockerCase: suspiciousBlockerShadowCases[0]?.symbol || null,
+      repeatedBadVetoPattern: repeatedBadPattern?.patternId || null
     };
     const averageSetupReviewScore = average(paperTradeQualityReviews.map((item) => item.review.setupScore || 0), 0);
     const averageExecutionReviewScore = average(paperTradeQualityReviews.map((item) => item.review.executionScore || 0), 0);
@@ -10951,8 +11301,58 @@ export class TradingBot {
                 ? `${rankedActiveCandidates[0].symbol || "Deze candidate"} krijgt allocator-prioriteit als probe-case.`
                 : `${rankedActiveCandidates[0].symbol || "Deze candidate"} is nu de meest informatieve active-learning case.`
           }
+        : null,
+      topSuspiciousBlocker
+        ? {
+            type: "blocker_quality",
+            id: topSuspiciousBlocker.id,
+            priority: topSuspiciousBlocker.status === "too_strict_watch" ? "high" : "normal",
+            note: topSuspiciousBlocker.status === "too_strict_watch"
+              ? `${titleize(topSuspiciousBlocker.id)} lijkt te streng (${Math.round((topSuspiciousBlocker.badVetoRate || 0) * 100)}% vermoedelijke bad veto's).`
+              : `${titleize(topSuspiciousBlocker.id)} blijft monitoren voor blockerkwaliteit.`
+          }
+        : null,
+      repeatedBadPattern
+        ? {
+            type: "replay_pack",
+            id: repeatedBadPattern.patternId,
+            priority: repeatedBadPattern.count >= 3 ? "high" : "normal",
+            note: `${titleize(repeatedBadPattern.blocker)} herhaalt bad-veto patroon in ${titleize(repeatedBadPattern.family)} | ${titleize(repeatedBadPattern.regime)} | ${titleize(repeatedBadPattern.session)} (${repeatedBadPattern.count}x).`
+          }
         : null
-    ].filter(Boolean);
+    ]
+      .filter(Boolean)
+      .map((item) => {
+        const priorityBase = item.priority === "high" ? 0.72 : 0.46;
+        const typeBoost = item.type === "blocker_quality"
+          ? 0.2
+          : item.type === "replay_pack"
+            ? 0.18
+            : item.type === "shadow_case"
+              ? 0.14
+              : item.type === "probe_trade"
+                ? 0.1
+                : 0.06;
+        const strictnessBoost = item.type === "blocker_quality" && topSuspiciousBlocker
+          ? clamp((topSuspiciousBlocker.badVetoRate || 0) * 0.22, 0, 0.22)
+          : 0;
+        const repeatBoost = item.type === "replay_pack" && repeatedBadPattern
+          ? Math.min(0.2, (repeatedBadPattern.count || 0) * 0.05)
+          : 0;
+        const activeBoost = item.type === "active_candidate" && rankedActiveCandidates[0]
+          ? Math.min(0.16, (rankedActiveCandidates[0].score || 0) * 0.18)
+          : 0;
+        return {
+          ...item,
+          impactScore: num(clamp(priorityBase + typeBoost + strictnessBoost + repeatBoost + activeBoost, 0, 1), 4)
+        };
+      })
+      .sort((left, right) => (right.impactScore || 0) - (left.impactScore || 0))
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1
+      }))
+      .slice(0, 5);
     const topBranch = [...branchStats.values()]
       .map((item) => ({
         id: item.id,
@@ -11012,6 +11412,7 @@ export class TradingBot {
       abExperiments,
       reviewQueue,
       counterfactualBranches,
+      shadowCaseSummary,
       primaryScope: displayPrimaryScope
         ? {
             id: displayPrimaryScope.id,
@@ -11082,6 +11483,9 @@ export class TradingBot {
         counterfactualTuning.blocker
           ? `Counterfactual tuning kijkt nu vooral naar ${counterfactualTuning.blocker}.`
           : "Counterfactual tuning heeft nog geen dominante blocker.",
+        shadowCaseSummary.topSuspiciousBlocker
+          ? `Shadow blocker-watch: ${shadowCaseSummary.topSuspiciousBlocker} toont nu de meeste kans op gemiste winnaars.`
+          : "Shadow blocker-watch heeft nog geen duidelijke verdachte blocker.",
         activeLearning.focusReason
           ? `Active learning focust nu vooral op ${activeLearning.focusReason}.`
           : "Active learning heeft nog geen uitgesproken focus.",
@@ -14412,6 +14816,7 @@ export class TradingBot {
       calibrationConfidence: num(candidate.score.calibrationConfidence || 0, 4),
       disagreement: num(candidate.score.disagreement || 0, 4),
       allow: candidate.decision.allow,
+      blockedSetupId: candidate.decision.blockedSetupId || null,
       reasons: candidate.decision.reasons,
       blockerReasons: [...(candidate.decision.reasons || [])],
       regimeReasons: [...(candidate.regimeSummary.reasons || [])],
@@ -14648,10 +15053,34 @@ export class TradingBot {
       }));
       const blockedCandidates = this.runtime.latestDecisions.filter((decision) => !decision.allow).slice(0, this.config.dashboardDecisionLimit).map((decision) => ({
       ...decision,
-      blockedAt: now.toISOString()
+      blockedSetupId: decision.blockedSetupId || crypto.randomUUID(),
+      blockedCaseKey: buildBlockedSetupCaseKey(decision),
+      blockedAt: now.toISOString(),
+      lastSeenAt: now.toISOString(),
+      seenCount: 1,
+      counterfactualStatus: "queued"
       }));
       this.runtime.latestBlockedSetups = blockedCandidates;
-      this.journal.blockedSetups.push(...blockedCandidates.slice(0, 4));
+      for (const blocked of blockedCandidates.slice(0, 4)) {
+        const existingIndex = arr(this.journal.blockedSetups || []).findIndex((entry) =>
+          entry?.blockedCaseKey && blocked.blockedCaseKey && entry.blockedCaseKey === blocked.blockedCaseKey &&
+          (entry.counterfactualStatus === "queued" || !entry.counterfactualStatus)
+        );
+        if (existingIndex >= 0) {
+          const existing = this.journal.blockedSetups[existingIndex] || {};
+          this.journal.blockedSetups[existingIndex] = {
+            ...existing,
+            ...blocked,
+            blockedSetupId: existing.blockedSetupId || blocked.blockedSetupId,
+            blockedAt: existing.blockedAt || blocked.blockedAt,
+            lastSeenAt: blocked.blockedAt,
+            seenCount: (existing.seenCount || 1) + 1,
+            counterfactualStatus: existing.counterfactualStatus || "queued"
+          };
+        } else {
+          this.journal.blockedSetups.push(blocked);
+        }
+      }
       if (blockedCandidates.length) {
         this.markReportDirty();
       }
@@ -15548,10 +15977,17 @@ export class TradingBot {
         );
       })
       .slice(-12);
-    const badVetoCount = recentCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome)).length;
-    const goodVetoCount = recentCounterfactuals.filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome)).length;
-    const lateVetoCount = recentCounterfactuals.filter((item) => item.outcome === "late_veto").length;
-    const timingIssueCount = recentCounterfactuals.filter((item) => item.outcome === "right_direction_wrong_timing").length;
+    const badVetoCount = recentCounterfactuals.filter((item) => isBadVetoOutcomeLabel(item.outcomeLabel || item.outcome)).length;
+    const goodVetoCount = recentCounterfactuals.filter((item) => isGoodVetoOutcomeLabel(item.outcomeLabel || item.outcome)).length;
+    const lateVetoCount = recentCounterfactuals.filter((item) => (item.outcomeLabel || item.outcome) === "late_veto").length;
+    const timingIssueCount = recentCounterfactuals.filter((item) => ["right_direction_wrong_timing", "quality_trap"].includes(item.outcomeLabel || item.outcome)).length;
+    const dominantOutcomeLabel = Object.entries(
+      recentCounterfactuals.reduce((acc, item) => {
+        const label = item.outcomeLabel || item.outcome || "neutral";
+        acc[label] = (acc[label] || 0) + 1;
+        return acc;
+      }, {})
+    ).sort((left, right) => right[1] - left[1])[0]?.[0] || null;
     const averageRecentMovePct = num(average(recentCounterfactuals.map((item) => item.realizedMovePct || 0), 0), 4);
     const summary = blockerCard
       ? blockerCard.badVetoRate >= 0.45
@@ -15580,6 +16016,7 @@ export class TradingBot {
       recentLateVetoCount: lateVetoCount,
       recentTimingIssueCount: timingIssueCount,
       recentAverageMovePct: averageRecentMovePct,
+      dominantOutcomeLabel,
       recommendation: badVetoCount > goodVetoCount
         ? "Deze blokkade lijkt vaak te streng. Volg shadow/probe cases extra op."
         : goodVetoCount > badVetoCount

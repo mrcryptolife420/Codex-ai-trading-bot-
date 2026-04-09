@@ -4,7 +4,7 @@
   "symbol": "UNIUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T13:15:04.934Z",
+  "updatedAt": "2026-04-09T14:45:03.519Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T13:15:04.930Z"
+      "updatedAt": "2026-04-09T14:45:03.515Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775740500000,
-      "count": 822,
-      "updatedAt": "2026-04-09T13:15:04.934Z"
+      "endTime": 1775745900000,
+      "count": 828,
+      "updatedAt": "2026-04-09T14:45:03.519Z"
     }
   ]
 }

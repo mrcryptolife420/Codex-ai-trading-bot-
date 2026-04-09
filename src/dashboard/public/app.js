@@ -440,15 +440,16 @@ function buildMissedTradeMetricTags(analysis = {}, { compact = false } = {}) {
     analysis.recentGoodVetoCount ? makeTag(`${analysis.recentGoodVetoCount} terecht recent`, "tag positive") : null,
     analysis.recentLateVetoCount ? makeTag(`${analysis.recentLateVetoCount} timing-case recent`) : null,
     analysis.recentTimingIssueCount ? makeTag(`${analysis.recentTimingIssueCount} timing issue recent`) : null,
+    analysis.dominantOutcomeLabel ? makeTag(`Patroon ${titleize(analysis.dominantOutcomeLabel)}`) : null,
     analysis.recentMatches ? makeTag(`${analysis.recentMatches}${suffix}`) : null
   ].filter(Boolean);
 }
 
 function shadowOutcomeTone(outcome) {
-  if (outcome === "bad_veto") {
+  if (["bad_veto", "near_miss_winner", "missed_breakout", "bad_countertrend_veto", "quality_trap"].includes(outcome)) {
     return "negative";
   }
-  if (["good_veto", "small_winner"].includes(outcome)) {
+  if (["good_veto", "near_miss_loser", "fakeout_avoided", "small_winner"].includes(outcome)) {
     return "positive";
   }
   return "neutral";
@@ -461,11 +462,26 @@ function shadowOutcomeText(review = {}) {
   if (review.outcome === "bad_veto") {
     return "Blokkade te streng";
   }
+  if (review.outcome === "near_miss_winner") {
+    return "Near-miss winnaar";
+  }
+  if (review.outcome === "missed_breakout") {
+    return "Mogelijke gemiste breakout";
+  }
+  if (review.outcome === "bad_countertrend_veto") {
+    return "Mogelijk te strenge trend-veto";
+  }
   if (review.outcome === "good_veto") {
     return "Blokkade terecht";
   }
+  if (review.outcome === "near_miss_loser" || review.outcome === "fakeout_avoided") {
+    return "Fakeout vermeden";
+  }
   if (review.outcome === "right_direction_wrong_timing") {
     return "Richting goed, timing zwak";
+  }
+  if (review.outcome === "quality_trap") {
+    return "Quality trap";
   }
   if (review.outcome === "late_veto") {
     return "Te laat op gang";
@@ -526,6 +542,7 @@ function buildLearningDigest(snapshot) {
   const inputHealth = paperLearning.inputHealth || {};
   const topScope = resolveLearningTopScope(paperLearning);
   const topBlocker = paperLearning.topBlockers?.[0];
+  const shadowCaseSummary = paperLearning.shadowCaseSummary || {};
   const topOutcome = paperLearning.recentOutcomes?.[0];
   const latestTrade = latestTradeSummary(snapshot);
   const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
@@ -533,17 +550,33 @@ function buildLearningDigest(snapshot) {
   const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
   const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
   const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
+  const reviewPriorityPlan = reviewQueue
+    .map((item, index) => {
+      const rank = item.rank || index + 1;
+      return `${rank}) ${titleize(item.type || "review")} · ${titleize(item.id || "case")}`;
+    })
+    .join(" | ");
   const benchmarkLead = paperLearning.challengerScorecards?.[0] || paperLearning.challengerPolicy || null;
   const policyCandidates = (paperLearning.policyTransitions?.candidates || []).slice(0, 2);
   const activeOverrides = (paperLearning.operatorActions?.activeOverrides || []).slice(0, 3);
   const operatorHistory = (paperLearning.operatorActions?.history || []).slice(0, 3);
   const operatorGuardrails = (paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 3);
   const reviewText = reviewQueue[0]?.note ||
+    (shadowCaseSummary.topSuspiciousBlocker
+      ? `${titleize(shadowCaseSummary.topSuspiciousBlocker)} lijkt te streng in shadow-cases; zet deze blocker bovenaan de reviewqueue.`
+      :
+    (paperLearning.reviewPacks?.repeatedBadVetoPattern
+      ? `Herhaald bad-veto patroon: ${paperLearning.reviewPacks.repeatedBadVetoPattern}. Zet dit als eerste replay-pack.`
+      :
     (paperLearning.reviewPacks?.topMissedSetup
       ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
-      : "Nog geen automatische review-pack beschikbaar.");
+      : "Nog geen automatische review-pack beschikbaar.")));
   const blockerMeaning = topBlocker?.id
     ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
+    : shadowCaseSummary.topSuspiciousBlocker
+      ? `Shadow-cases tonen nu vooral ${titleize(shadowCaseSummary.topSuspiciousBlocker)} als verdachte blocker.`
+    : missedTradeDigest.topOverblockedScope?.id
+      ? `Overblocked scope: ${titleize(missedTradeDigest.topOverblockedScope.id)}.`
     : "Er is nog geen dominante rem in de huidige learning-data.";
   const scopeMeaning = topScope?.id
     ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_trades"
@@ -568,6 +601,9 @@ function buildLearningDigest(snapshot) {
         : "De leerlus bouwt nog basisdata op."
   );
   const nextStep =
+    (reviewQueue[0]?.note
+      ? `Do this next: ${reviewQueue[0].note}`
+      : null) ||
     retrainPlan.operatorAction ||
     (["priority", "watch"].includes(rawModelProbabilityAudit.status) ? rawModelProbabilityAudit.note : null) ||
     (["priority", "watch"].includes(lowConfidenceAudit.status) ? lowConfidenceAudit.note : null) ||
@@ -672,6 +708,7 @@ function buildLearningDigest(snapshot) {
     operatorHistory,
     operatorGuardrails,
     reviewText,
+    reviewPriorityPlan,
     blockerMeaning,
     scopeMeaning,
     learningInputTag,
@@ -1375,6 +1412,7 @@ function renderLearning(snapshot) {
     operatorHistory,
     operatorGuardrails,
     reviewText,
+    reviewPriorityPlan,
     blockerMeaning,
     scopeMeaning,
     learningInputTag,
@@ -1477,7 +1515,10 @@ function renderLearning(snapshot) {
 
   const callouts = makeNode("section", { className: "learning-callouts" });
   const reviewTags = reviewQueue.length
-    ? reviewQueue.map((item) => makeTag(`${titleize(item.type)} · ${item.id}`, item.priority === "high" ? "tag negative" : "tag"))
+    ? reviewQueue.map((item, index) => makeTag(
+      `${item.rank || index + 1}. ${titleize(item.type)} · ${item.id}`,
+      item.priority === "high" ? "tag negative" : "tag"
+    ))
     : [makeTag("Geen review queue")];
   const policyTags = policyCandidates.length
     ? policyCandidates.map((item) => makeTag(
@@ -1497,7 +1538,8 @@ function renderLearning(snapshot) {
           : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds en filters te verbeteren."),
       benchmarkLead?.id
         ? `${titleize(benchmarkLead.id)} presteert nu het sterkst als challenger of benchmark.`
-        : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar."
+        : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar.",
+      reviewPriorityPlan ? `Prioriteitsplan: ${reviewPriorityPlan}.` : null
     ], [makeTagList(reviewTags)]),
     makeLearningListItem(
       "Misses en exits",

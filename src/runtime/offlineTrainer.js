@@ -514,6 +514,27 @@ const HARD_TUNING_BLOCKERS = new Set([
   "exchange_truth_freeze"
 ]);
 
+const BAD_VETO_OUTCOMES = new Set([
+  "missed_winner",
+  "bad_veto",
+  "near_miss_winner",
+  "missed_breakout",
+  "bad_countertrend_veto",
+  "quality_trap",
+  "right_direction_wrong_timing"
+]);
+
+const GOOD_VETO_OUTCOMES = new Set([
+  "good_veto",
+  "blocked_correctly",
+  "near_miss_loser",
+  "fakeout_avoided"
+]);
+
+function resolveCounterfactualOutcomeLabel(item = {}) {
+  return `${item?.outcomeLabel || item?.outcome || ""}`.trim().toLowerCase();
+}
+
 function buildBlockerConditionScorecards(counterfactuals = []) {
   const buckets = new Map();
   for (const item of counterfactuals || []) {
@@ -551,7 +572,7 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
         bucket.sharedCount += 1;
       }
       bucket.averageMovePctSum += item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0;
-      if (["missed_winner", "bad_veto", "right_direction_wrong_timing"].includes(item.outcome)) {
+      if (BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.missedWinnerCount += 1;
         if (blockerMode === "marginal") {
           bucket.marginalMissedWinnerCount += 1;
@@ -559,7 +580,7 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
           bucket.sharedMissedWinnerCount += 1;
         }
       }
-      if (["good_veto", "blocked_correctly"].includes(item.outcome)) {
+      if (GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.goodVetoCount += 1;
         if (blockerMode === "marginal") {
           bucket.marginalGoodVetoCount += 1;
@@ -567,7 +588,7 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
           bucket.sharedGoodVetoCount += 1;
         }
       }
-      if (item.outcome === "late_veto") {
+      if (resolveCounterfactualOutcomeLabel(item) === "late_veto") {
         bucket.lateVetoCount += 1;
       }
     }
@@ -674,23 +695,23 @@ function buildBlockerScorecards(counterfactuals = []) {
         bucket.sharedCount += 1;
       }
       bucket.moveSum += item.realizedMovePct || 0;
-      if (["blocked_correctly", "good_veto"].includes(item.outcome)) {
+      if (GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.goodVetoCount += 1;
         if (blockerMode === "marginal") {
           bucket.marginalGoodVetoCount += 1;
         } else if (blockerMode === "shared") {
           bucket.sharedGoodVetoCount += 1;
         }
-      } else if (["missed_winner", "bad_veto"].includes(item.outcome)) {
+      } else if (BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.badVetoCount += 1;
         if (blockerMode === "marginal") {
           bucket.marginalBadVetoCount += 1;
         } else if (blockerMode === "shared") {
           bucket.sharedBadVetoCount += 1;
         }
-      } else if (item.outcome === "late_veto") {
+      } else if (resolveCounterfactualOutcomeLabel(item) === "late_veto") {
         bucket.lateVetoCount += 1;
-      } else if (item.outcome === "right_direction_wrong_timing") {
+      } else if (["right_direction_wrong_timing", "quality_trap"].includes(resolveCounterfactualOutcomeLabel(item))) {
         bucket.timingIssueCount += 1;
       }
       if (item.strategy || item.strategyAtEntry) {
@@ -963,10 +984,10 @@ function buildScopedOutcomeLearningScorecards(trades = [], counterfactuals = [],
     const bucket = ensureBucket(keyFn ? keyFn(item) : null);
     bucket.counterfactualCount += 1;
     bucket.moveSum += item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0;
-    if (["missed_winner", "bad_veto", "right_direction_wrong_timing"].includes(item.outcome)) {
+    if (BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
       bucket.badVetoCount += 1;
     }
-    if (["good_veto", "blocked_correctly"].includes(item.outcome)) {
+    if (GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
       bucket.goodVetoCount += 1;
     }
   }
@@ -2093,10 +2114,10 @@ export class OfflineTrainer {
     const modeScopedCounterfactuals = botMode === "paper"
       ? usableCounterfactuals.filter((item) => matchesTradingSource(item, tradingSource, "paper"))
       : usableCounterfactuals.filter((item) => (item?.brokerMode || "paper") === "live");
-    const missedWinners = modeScopedCounterfactuals.filter((item) => ["missed_winner", "bad_veto"].includes(item.outcome));
-    const blockedCorrectly = modeScopedCounterfactuals.filter((item) => ["blocked_correctly", "good_veto"].includes(item.outcome));
-    const lateVetoes = modeScopedCounterfactuals.filter((item) => item.outcome === "late_veto");
-    const timingIssues = modeScopedCounterfactuals.filter((item) => item.outcome === "right_direction_wrong_timing");
+    const missedWinners = modeScopedCounterfactuals.filter((item) => BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item)));
+    const blockedCorrectly = modeScopedCounterfactuals.filter((item) => GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item)));
+    const lateVetoes = modeScopedCounterfactuals.filter((item) => resolveCounterfactualOutcomeLabel(item) === "late_veto");
+    const timingIssues = modeScopedCounterfactuals.filter((item) => ["right_direction_wrong_timing", "quality_trap"].includes(resolveCounterfactualOutcomeLabel(item)));
     const falsePositives = modeScopedTrades.filter((trade) => (trade.labelScore || 0.5) < 0.45 && (trade.pnlQuote || 0) < 0);
     const falseNegatives = missedWinners.filter((item) => (item.realizedMovePct || 0) > 0.01);
     const marginalFalseNegatives = falseNegatives.filter((item) => resolveCounterfactualBlockerMode(item) === "marginal");

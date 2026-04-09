@@ -22961,4 +22961,134 @@ await runCheck("performance report normalizes protective stop exits for reportin
   assert.equal(report.performanceDiagnosis.topLosers.exitReasons[0].id, "protective_stop");
 });
 
+await runCheck("counterfactual resolution updates blocked setup lifecycle with verdict labels", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ counterfactualQueueLimit: 40, scaleOutTriggerPct: 0.014, takeProfitPct: 0.03, stopLossPct: 0.018 });
+  bot.runtime = {
+    counterfactualQueue: [{
+      id: "cf1",
+      blockedSetupId: "bs1",
+      symbol: "BTCUSDT",
+      brokerMode: "paper",
+      queuedAt: "2026-03-10T10:00:00.000Z",
+      dueAt: "2026-03-10T10:30:00.000Z",
+      entryPrice: 100,
+      blockerReasons: ["committee_veto"],
+      branchScenarios: [{ id: "base", kind: "baseline", label: "Base" }]
+    }]
+  };
+  bot.journal = {
+    blockedSetups: [{
+      blockedSetupId: "bs1",
+      symbol: "BTCUSDT",
+      blockerReasons: ["committee_veto"],
+      counterfactualStatus: "queued"
+    }],
+    counterfactuals: []
+  };
+  bot.marketCache = {};
+  bot.getMarketSnapshot = async () => ({ book: { mid: 103 } });
+  bot.markReportDirty = () => {};
+  bot.recordEvent = () => {};
+
+  await TradingBot.prototype.resolveCounterfactualQueue.call(
+    bot,
+    "2026-03-10T12:00:00.000Z",
+    { BTCUSDT: { book: { mid: 103 } } }
+  );
+
+  assert.equal(bot.runtime.counterfactualQueue.length, 0);
+  assert.equal(bot.journal.counterfactuals.length, 1);
+  assert.ok(bot.journal.counterfactuals[0].outcomeLabel);
+  assert.ok(["good_veto", "bad_veto", "mixed"].includes(bot.journal.counterfactuals[0].vetoVerdict));
+  assert.equal(bot.journal.blockedSetups[0].counterfactualStatus, "resolved");
+  assert.ok(bot.journal.blockedSetups[0].counterfactualOutcomeLabel);
+});
+
+await runCheck("performance report exposes blocked setup lifecycle summary and suspicious blocker", async () => {
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [],
+      scaleOuts: [],
+      blockedSetups: [
+        { blockedSetupId: "b1", counterfactualStatus: "queued" },
+        { blockedSetupId: "b2", counterfactualStatus: "resolved" },
+        { blockedSetupId: "b3", counterfactualStatus: "failed" }
+      ],
+      counterfactuals: [
+        { dominantBlocker: "committee_veto", vetoVerdict: "bad_veto" },
+        { dominantBlocker: "committee_veto", vetoVerdict: "bad_veto" },
+        { dominantBlocker: "model_confidence_too_low", vetoVerdict: "good_veto" }
+      ],
+      researchRuns: [],
+      equitySnapshots: [],
+      events: []
+    },
+    runtime: { openPositions: [] },
+    config: makeConfig(),
+    now: new Date("2026-03-10T12:00:00.000Z")
+  });
+
+  assert.equal(report.blockedSetupLifecycle.total, 3);
+  assert.equal(report.blockedSetupLifecycle.queued, 1);
+  assert.equal(report.blockedSetupLifecycle.resolved, 1);
+  assert.equal(report.blockedSetupLifecycle.failed, 1);
+  assert.equal(report.blockedSetupLifecycle.topSuspiciousBlocker, "committee_veto");
+  assert.ok(Array.isArray(report.blockedSetupLifecycle.topOverblockedScopes));
+});
+
+await runCheck("paper learning builds blocker-first replay packs for repeated bad veto patterns", async () => {
+  const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "paper" });
+  bot.runtime = {
+    latestDecisions: [],
+    counterfactualQueue: [],
+    offlineTrainer: {},
+    ops: {}
+  };
+  bot.journal = {
+    trades: [],
+    counterfactuals: [
+      {
+        symbol: "BTCUSDT",
+        brokerMode: "paper",
+        outcome: "bad_veto",
+        outcomeLabel: "near_miss_winner",
+        blockerReasons: ["committee_veto"],
+        strategyFamily: "trend_following",
+        regime: "trend",
+        sessionAtEntry: "europe",
+        realizedMovePct: 0.021
+      },
+      {
+        symbol: "ETHUSDT",
+        brokerMode: "paper",
+        outcome: "bad_veto",
+        outcomeLabel: "near_miss_winner",
+        blockerReasons: ["committee_veto"],
+        strategyFamily: "trend_following",
+        regime: "trend",
+        sessionAtEntry: "europe",
+        realizedMovePct: 0.018
+      },
+      {
+        symbol: "SOLUSDT",
+        brokerMode: "paper",
+        outcome: "bad_veto",
+        outcomeLabel: "missed_breakout",
+        blockerReasons: ["committee_veto"],
+        strategyFamily: "trend_following",
+        regime: "trend",
+        sessionAtEntry: "europe",
+        realizedMovePct: 0.025
+      }
+    ]
+  };
+
+  const summary = TradingBot.prototype.buildPaperLearningSummary.call(bot, [], "2026-03-10T12:00:00.000Z");
+  assert.equal(summary.reviewPacks.topSuspiciousBlocker, "committee_veto");
+  assert.ok(summary.reviewPacks.repeatedBadVetoPattern?.includes("committee_veto"));
+  assert.ok(summary.reviewQueue.some((item) => item.type === "replay_pack"));
+});
+
 console.log("All checks passed.");

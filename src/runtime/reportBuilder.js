@@ -1146,6 +1146,87 @@ function buildTradeQualitySummary(trades = [], counterfactuals = []) {
   };
 }
 
+function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals = []) {
+  const items = [...(blockedSetups || [])];
+  const resolved = items.filter((item) => item?.counterfactualStatus === "resolved").length;
+  const failed = items.filter((item) => item?.counterfactualStatus === "failed").length;
+  const queued = Math.max(0, items.length - resolved - failed);
+  const verdictCounts = { good_veto: 0, bad_veto: 0, mixed: 0 };
+  const blockerMap = new Map();
+  const scopeMap = new Map();
+  for (const item of counterfactuals || []) {
+    const verdict = `${item?.vetoVerdict || ""}`.trim().toLowerCase();
+    if (verdict && verdict in verdictCounts) {
+      verdictCounts[verdict] += 1;
+    }
+    const blocker = item?.dominantBlocker || (item?.blockerReasons || [])[0] || null;
+    if (!blocker) {
+      // still process scope-level patterns even without dominant blocker
+    } else {
+      const bucket = blockerMap.get(blocker) || { id: blocker, total: 0, badVetoCount: 0, goodVetoCount: 0 };
+      bucket.total += 1;
+      if (verdict === "bad_veto") {
+        bucket.badVetoCount += 1;
+      } else if (verdict === "good_veto") {
+        bucket.goodVetoCount += 1;
+      }
+      blockerMap.set(blocker, bucket);
+    }
+    const family = item?.strategyFamily || "na_family";
+    const regime = item?.regime || "na_regime";
+    const session = item?.sessionAtEntry || "na_session";
+    const scopeKey = `${family}::${regime}::${session}`;
+    const scopeBucket = scopeMap.get(scopeKey) || {
+      id: scopeKey,
+      family,
+      regime,
+      session,
+      total: 0,
+      badVetoCount: 0,
+      goodVetoCount: 0
+    };
+    scopeBucket.total += 1;
+    if (verdict === "bad_veto") {
+      scopeBucket.badVetoCount += 1;
+    } else if (verdict === "good_veto") {
+      scopeBucket.goodVetoCount += 1;
+    }
+    scopeMap.set(scopeKey, scopeBucket);
+  }
+  const topSuspiciousBlocker = [...blockerMap.values()]
+    .map((item) => ({
+      ...item,
+      badVetoRate: item.total ? item.badVetoCount / item.total : 0
+    }))
+    .sort((left, right) => (right.badVetoRate || 0) - (left.badVetoRate || 0))[0] || null;
+  const topOverblockedScopes = [...scopeMap.values()]
+    .map((item) => ({
+      ...item,
+      badVetoRate: item.total ? item.badVetoCount / item.total : 0,
+      goodVetoRate: item.total ? item.goodVetoCount / item.total : 0
+    }))
+    .sort((left, right) => (right.badVetoRate || 0) - (left.badVetoRate || 0))
+    .slice(0, 4);
+  return {
+    total: items.length,
+    queued,
+    resolved,
+    failed,
+    verdictCounts,
+    topSuspiciousBlocker: topSuspiciousBlocker?.id || null,
+    topSuspiciousBlockerBadVetoRate: num(topSuspiciousBlocker?.badVetoRate || 0),
+    topOverblockedScopes: topOverblockedScopes.map((item) => ({
+      id: item.id,
+      family: item.family,
+      regime: item.regime,
+      session: item.session,
+      total: item.total,
+      badVetoRate: num(item.badVetoRate),
+      goodVetoRate: num(item.goodVetoRate)
+    }))
+  };
+}
+
 export function buildPerformanceReport({ journal, runtime, config, now = null }) {
   const referenceNow = resolveReportReferenceNow({ providedNow: now, runtime, journal });
   const botMode = config.botMode || "paper";
@@ -1188,6 +1269,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
   const sourceScopedLookbackScaleOuts = buildRecentScaleOuts(sourceScopedScaleOuts, sourceScopedLookbackTrades, config.reportLookbackTrades || 0);
   const sourceScopedLookbackScaleOutPnl = sourceScopedLookbackScaleOuts.reduce((sum, item) => sum + safeNumber(item.realizedPnl, 0), 0);
   const tradeQualityReview = buildTradeQualitySummary(primaryTrades, journal.counterfactuals || []);
+  const blockedSetupLifecycle = buildBlockedSetupLifecycleSummary(blockedSetups, journal.counterfactuals || []);
   const executionCostSummary = buildExecutionCostSummary(primaryLookbackTrades, config, referenceNow.toISOString());
   const pnlDecomposition = buildPnlDecomposition(primaryLookbackTrades);
   const reportStats = buildTradeStats(primaryLookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl });
@@ -1280,6 +1362,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
     recentEvents: buildRecentEvents(journal.events || [], runtime, referenceNow),
     recentScaleOuts: primaryScaleOuts.slice(-20).reverse(),
     recentBlockedSetups: blockedSetups.slice(-20).reverse(),
+    blockedSetupLifecycle,
     recentResearchRuns: researchRuns.slice(-8).reverse()
   };
 }
