@@ -58,6 +58,7 @@ export class BotManager {
     this.externalModeDrift = null;
     this.externalConfigDrift = null;
     this.stopReason = null;
+    this.consecutiveCycleFailures = 0;
     this.botNeedsReinitialize = false;
     this.serial = Promise.resolve();
   }
@@ -254,18 +255,31 @@ export class BotManager {
   }
 
   async runLoop() {
+    const escalationThreshold = Math.max(3, Number(this.config?.managerCycleFailureEscalationThreshold || 6));
     while (!this.stopRequested) {
       try {
         const result = await this.bot.runCycle();
         await this.applySelfHealManagerAction(result.selfHeal);
+        this.consecutiveCycleFailures = 0;
         if (this.stopReason !== "self_heal_live_positions_open") {
           this.lastError = null;
         }
       } catch (error) {
+        this.consecutiveCycleFailures += 1;
         this.lastError = summarizeError(error);
         this.logger.error("Managed cycle failed", {
-          error: error.message
+          error: error.message,
+          consecutiveFailures: this.consecutiveCycleFailures
         });
+        if (this.consecutiveCycleFailures >= escalationThreshold) {
+          this.stopRequested = true;
+          this.stopReason = "manager_cycle_failure_escalated";
+          this.logger.error("Manager loop escalated after repeated cycle failures", {
+            threshold: escalationThreshold,
+            consecutiveFailures: this.consecutiveCycleFailures,
+            lastError: error.message
+          });
+        }
       }
       if (this.stopRequested) {
         break;
@@ -315,6 +329,7 @@ export class BotManager {
       }
       this.stopRequested = false;
       this.stopReason = null;
+      this.consecutiveCycleFailures = 0;
       this.runState = "running";
       this.lastStartAt = nowIso();
       this.loopPromise = this.runLoop();
@@ -333,8 +348,11 @@ export class BotManager {
         throw new Error("Stop eerst de doorlopende bot voordat je een losse cyclus draait.");
       }
       const result = await this.bot.runCycle();
-      await this.applySelfHealManagerAction(result.selfHeal);
-      this.lastError = null;
+      const selfHealAction = await this.applySelfHealManagerAction(result.selfHeal);
+      this.consecutiveCycleFailures = 0;
+      if (!["paper_switch_blocked_open_positions"].includes(selfHealAction || "") && !this.lastError?.message) {
+        this.lastError = null;
+      }
       return {
         result,
         snapshot: await this.getSnapshot()

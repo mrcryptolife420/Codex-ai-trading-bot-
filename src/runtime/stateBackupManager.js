@@ -58,11 +58,18 @@ export class StateBackupManager {
     const latest = [...files].sort().reverse()[0] || null;
     const restored = previousState && typeof previousState === "object" ? previousState : {};
     const latestBackupAt = parseBackupTimestamp(latest) || await fallbackBackupTimestamp(latest);
+    const restoredBackupAtMs = restored.lastBackupAt ? new Date(restored.lastBackupAt).getTime() : Number.NaN;
+    const latestBackupAtMs = latestBackupAt ? new Date(latestBackupAt).getTime() : Number.NaN;
+    const resolvedLastBackupAt = Number.isFinite(restoredBackupAtMs) || Number.isFinite(latestBackupAtMs)
+      ? (Number.isFinite(restoredBackupAtMs) && (!Number.isFinite(latestBackupAtMs) || restoredBackupAtMs >= latestBackupAtMs)
+          ? restored.lastBackupAt
+          : latestBackupAt)
+      : null;
 
     this.state = {
       ...this.state,
       enabled: true,
-      lastBackupAt: restored.lastBackupAt || latestBackupAt || null,
+      lastBackupAt: resolvedLastBackupAt,
       latestFile: latest || restored.latestFile || null,
       backupCount: Math.max(safeStateNumber(restored.backupCount, 0), files.length),
       lastReason: restored.lastReason || this.state.lastReason,

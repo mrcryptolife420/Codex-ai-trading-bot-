@@ -7421,7 +7421,6 @@ export class TradingBot {
   }
 
   async close() {
-    this.runtime.stream = this.stream.getStatus();
     this.runtime.lifecycle = this.runtime.lifecycle || {};
     this.runtime.lifecycle.activeRun = false;
     this.runtime.lifecycle.lastShutdownAt = nowIso();
@@ -7433,8 +7432,13 @@ export class TradingBot {
     this.runtime.recovery = {
       ...(this.runtime.recovery || {}),
       uncleanShutdownDetected: false,
+      restoredFromBackupAt: null,
+      corruptPrimaryState: null,
       latestBackupAt: this.backupManager.getSummary().lastBackupAt || this.runtime.recovery?.latestBackupAt || null
     };
+    if (this.runtime.stateBackups && typeof this.runtime.stateBackups === "object") {
+      this.runtime.stateBackups.restoredFromBackupAt = null;
+    }
     this.syncOrderLifecycleState("shutdown");
     this.refreshOperationalViews({ nowIso: nowIso() });
     await this.backupManager.maybeBackup({
@@ -7447,11 +7451,12 @@ export class TradingBot {
       this.logger?.warn?.("Shutdown backup failed", { error: error.message });
     });
     this.runtime.stateBackups = this.backupManager.getSummary();
-    await this.persist().catch((error) => {
-      this.logger?.warn?.("Shutdown persist failed", { error: error.message });
-    });
     await this.stream.close().catch((error) => {
       this.logger?.warn?.("Stream shutdown failed", { error: error.message });
+    });
+    this.runtime.stream = this.stream.getStatus();
+    await this.persist().catch((error) => {
+      this.logger?.warn?.("Shutdown persist failed", { error: error.message });
     });
   }
 
@@ -11663,12 +11668,23 @@ export class TradingBot {
       nowIso: referenceNow
     }));
     this.runtime.exchangeSafety = exchangeSafety;
-    if ((this.config.botMode || "paper") === "live" && exchangeSafety.freezeEntries) {
+    if ((this.config.botMode || "paper") === "live") {
+      const previousFreeze = Boolean(this.runtime.exchangeTruth?.freezeEntries);
+      const nextFreeze = Boolean(exchangeSafety.freezeEntries);
       this.runtime.exchangeTruth = {
         ...(this.runtime.exchangeTruth || {}),
-        freezeEntries: true,
-        notes: [...new Set([...(this.runtime.exchangeTruth?.notes || []), ...(exchangeSafety.notes || [])])].slice(0, 6)
+        freezeEntries: nextFreeze,
+        notes: nextFreeze
+          ? [...new Set([...(this.runtime.exchangeTruth?.notes || []), ...(exchangeSafety.notes || [])])].slice(0, 6)
+          : []
       };
+      if (previousFreeze !== nextFreeze) {
+        this.recordEvent("exchange_truth_freeze_toggled", {
+          freezeEntries: nextFreeze,
+          mismatchCount: this.runtime.exchangeTruth?.mismatchCount || 0,
+          reason: nextFreeze ? "exchange_safety_freeze" : "exchange_safety_cleared"
+        });
+      }
     }
     this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
     this.runtime.paperLearning = this.buildPaperLearningSummary(arr(this.runtime.latestDecisions), referenceNow);
@@ -11692,6 +11708,21 @@ export class TradingBot {
       nowIso: referenceNow
     }));
     const signalFlowSummary = summarizeSignalFlow(this.runtime.signalFlow || {});
+    const previousReadinessState = existingOps.readinessState || {};
+    const previousStatus = previousReadinessState.status || null;
+    const currentStatus = readiness.status || "ready";
+    const statusChanged = previousStatus !== currentStatus;
+    const statusSince = statusChanged ? referenceNow : (previousReadinessState.since || referenceNow);
+    const statusSinceMs = new Date(statusSince).getTime();
+    const nowMs = new Date(referenceNow).getTime();
+    const statusAgeMinutes = Number.isFinite(statusSinceMs) && Number.isFinite(nowMs)
+      ? Math.max(0, Math.round((nowMs - statusSinceMs) / 60_000))
+      : 0;
+    const exchangeTruthSummary = this.runtime.exchangeTruth || {};
+    const mismatchCount = exchangeTruthSummary.mismatchCount || 0;
+    const exchangeFreezeReason = exchangeTruthSummary.freezeEntries
+      ? `${mismatchCount} exchange/runtime mismatch(es) vragen eerst reconcile.`
+      : null;
     this.runtime.ops = {
       ...existingOps,
       lastUpdatedAt: referenceNow,
@@ -11707,6 +11738,23 @@ export class TradingBot {
       adaptation: summarizeAdaptationHealth(this.runtime.adaptation || {}),
       signalFlow: signalFlowSummary,
       tradingFlowHealth: signalFlowSummary.tradingFlowHealth,
+      readinessState: {
+        status: currentStatus,
+        previousStatus,
+        changedAt: statusChanged ? referenceNow : (previousReadinessState.changedAt || null),
+        since: statusSince,
+        ageMinutes: statusAgeMinutes,
+        reasons: [...(readiness.reasons || [])].slice(0, 8),
+        keyBlocker: exchangeTruthSummary.freezeEntries
+          ? {
+              id: "exchange_truth_freeze",
+              severity: "critical",
+              title: "Exchange Truth Freeze",
+              detail: exchangeFreezeReason,
+              action: "Voer force reconcile uit, bevestig orphan/unmatched symbols en herstel bescherming voor je entries hervat."
+            }
+          : null
+      },
       diagnosticsActions: existingOps.diagnosticsActions || { history: [] },
       promotionState
     };
@@ -15811,7 +15859,14 @@ export class TradingBot {
       this.recordEvent("cycle_failure", { error: error.message });
       this.refreshOperationalViews({ nowIso: nowIso() });
       this.trimJournal();
-      await this.persist();
+      try {
+        await this.persist();
+      } catch (persistError) {
+        this.logger?.warn?.("Persist failed after cycle failure", {
+          cycleError: error.message,
+          persistError: persistError.message
+        });
+      }
       throw error;
     }
   }

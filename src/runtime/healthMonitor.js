@@ -98,7 +98,13 @@ export class HealthMonitor {
     runtime.health.circuitOpen = false;
     runtime.health.reason = null;
     runtime.health.lastSuccessAt = nowIso();
-    clearWarnings(runtime, new Set(["cycle_failure"]));
+    clearWarnings(runtime, new Set([
+      "cycle_failure",
+      "stale_candles",
+      "missing_candles",
+      "missing_order_book_prices",
+      "crossed_order_book"
+    ]));
   }
 
   recordFailure(runtime, error) {

@@ -23415,4 +23415,85 @@ await runCheck("entry guard module keeps position blocker behavior", async () =>
   );
 });
 
+await runCheck("state backup manager prefers newest timestamp between restored and disk", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-backup-"));
+  try {
+    const manager = new StateBackupManager({
+      runtimeDir: tempDir,
+      config: makeConfig({ stateBackupEnabled: true }),
+      logger: { warn() {} }
+    });
+    await fs.mkdir(path.join(tempDir, "backups"), { recursive: true });
+    await fs.writeFile(path.join(tempDir, "backups", "backup-2026-04-09T12-00-00.000Z.json"), "{}");
+    await manager.init({ lastBackupAt: "2026-04-08T10:00:00.000Z" });
+    assert.equal(manager.getSummary().lastBackupAt, "2026-04-09T12:00:00.000Z");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("health monitor clears stale snapshot warnings on success", async () => {
+  const monitor = new HealthMonitor(makeConfig(), { warn() {} });
+  const runtime = {
+    health: {
+      warnings: [
+        { issues: ["stale_candles"] },
+        { issues: ["cycle_failure"] },
+        { issues: ["clock_drift_too_large"] }
+      ]
+    }
+  };
+  monitor.recordSuccess(runtime);
+  const remaining = (runtime.health.warnings || []).flatMap((item) => item.issues || []);
+  assert.equal(remaining.includes("stale_candles"), false);
+  assert.equal(remaining.includes("cycle_failure"), false);
+  assert.equal(remaining.includes("clock_drift_too_large"), true);
+});
+
+await runCheck("runCycleOnce preserves self-heal blocker error context", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-manager-selfheal-"));
+  try {
+    const envPath = path.join(tempDir, ".env");
+    await fs.writeFile(envPath, "BOT_MODE=live\n");
+    const manager = new BotManager({ projectRoot: tempDir, logger: { warn() {}, error() {} } });
+    manager.config = { ...makeConfig(), botMode: "live", envPath };
+    manager.ensureBotReady = async () => {};
+    manager.runState = "stopped";
+    manager.bot = {
+      runtime: { openPositions: [{ symbol: "BTCUSDT" }] },
+      async runCycle() {
+        return { selfHeal: { managerAction: "switch_to_paper", reason: "drawdown_guard" } };
+      },
+      async getDashboardSnapshot() {
+        return {
+          overview: { lastAnalysisAt: "2026-03-11T08:00:00.000Z" },
+          ops: { readiness: { status: "ready", reasons: [] }, alerts: { alerts: [] }, service: {} },
+          safety: { orderLifecycle: { pendingActions: [] } }
+        };
+      }
+    };
+    await manager.runCycleOnce();
+    assert.ok(manager.lastError?.message?.includes("Self-heal requested paper fallback"));
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await runCheck("bot manager escalates after repeated cycle failures", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { error() {}, warn() {} } });
+  manager.config = { ...makeConfig(), tradingIntervalSeconds: 0, managerCycleFailureEscalationThreshold: 3 };
+  manager.bot = {
+    async runCycle() {
+      throw new Error("cycle_broken");
+    }
+  };
+  manager.runState = "running";
+  manager.stopRequested = false;
+  manager.interruptibleDelay = async () => {};
+  await manager.runLoop();
+  assert.equal(manager.stopReason, "manager_cycle_failure_escalated");
+  assert.equal(manager.runState, "stopped");
+  assert.ok((manager.lastError?.message || "").includes("cycle_broken"));
+});
+
 console.log("All checks passed.");
