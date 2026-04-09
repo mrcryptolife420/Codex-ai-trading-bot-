@@ -4,7 +4,7 @@
   "symbol": "DOGEUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T13:30:01.937Z",
+  "updatedAt": "2026-04-09T15:00:37.788Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T13:30:01.934Z"
+      "updatedAt": "2026-04-09T15:00:37.785Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775741400000,
-      "count": 823,
-      "updatedAt": "2026-04-09T13:30:01.937Z"
+      "endTime": 1775746800000,
+      "count": 829,
+      "updatedAt": "2026-04-09T15:00:37.788Z"
     }
   ]
 }

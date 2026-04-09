@@ -4,7 +4,7 @@
   "symbol": "ETHUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T13:30:12.148Z",
+  "updatedAt": "2026-04-09T15:00:27.590Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774624500000,
       "endTime": 1775000700000,
       "count": 419,
-      "updatedAt": "2026-04-09T13:30:12.145Z"
+      "updatedAt": "2026-04-09T15:00:27.587Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775741400000,
-      "count": 823,
-      "updatedAt": "2026-04-09T13:30:12.148Z"
+      "endTime": 1775746800000,
+      "count": 829,
+      "updatedAt": "2026-04-09T15:00:27.589Z"
     }
   ]
 }

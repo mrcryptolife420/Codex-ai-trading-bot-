@@ -535,6 +535,8 @@ function buildLearningDigest(snapshot) {
   const missedTradeDigest = learningInsights.missedTrades || {};
   const exitDigest = learningInsights.exits || {};
   const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
+  const report = snapshot?.dashboard?.report || {};
+  const blockedSetupLifecycle = report.blockedSetupLifecycle || {};
   const strategyAllocation = adaptation.strategyAllocation || snapshot?.dashboard?.ai?.strategyAllocation || {};
   const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
@@ -544,6 +546,11 @@ function buildLearningDigest(snapshot) {
   const topBlocker = paperLearning.topBlockers?.[0];
   const shadowCaseSummary = paperLearning.shadowCaseSummary || {};
   const topOutcome = paperLearning.recentOutcomes?.[0];
+  const blockedByCategoryTrend = blockedSetupLifecycle.blockedByCategoryTrend || {};
+  const topBlockedCategory = (blockedByCategoryTrend.topLast7d || [])[0] || null;
+  const blockedCategoryText = topBlockedCategory?.id
+    ? `${titleize(topBlockedCategory.id)} leidt in geblokkeerde setups (${topBlockedCategory.count} in 7d).`
+    : "Nog geen duidelijke blocker-categorietrend uit report-data.";
   const latestTrade = latestTradeSummary(snapshot);
   const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
   const learningScore = formatPct(paperLearning.readinessScore || 0, 1);
@@ -1487,6 +1494,7 @@ function renderLearning(snapshot) {
             : "Nog geen duidelijke blockertrend zichtbaar.",
       compactJoin([
         blockerMeaning,
+        blockedCategoryText,
         missedTradeDigest.note,
         missedTradeTuning?.blockerSofteningRecommendation
           ? `${titleize(missedTradeTuning.blockerSofteningRecommendation)} nu als mogelijke tuning.`
@@ -1516,7 +1524,11 @@ function renderLearning(snapshot) {
   const callouts = makeNode("section", { className: "learning-callouts" });
   const reviewTags = reviewQueue.length
     ? reviewQueue.map((item, index) => makeTag(
-      `${item.rank || index + 1}. ${titleize(item.type)} · ${item.id}`,
+      `${item.rank || index + 1}. ${titleize(item.type)} · ${item.id}${
+        item.impactBreakdown
+          ? ` (p ${formatPct(item.impactBreakdown.priorityBase || 0, 0)} · t ${formatPct(item.impactBreakdown.typeBoost || 0, 0)} · s ${formatPct(item.impactBreakdown.strictnessBoost || 0, 0)} · r ${formatPct(item.impactBreakdown.repeatBoost || 0, 0)} · a ${formatPct(item.impactBreakdown.activeBoost || 0, 0)})`
+          : ""
+      }`,
       item.priority === "high" ? "tag negative" : "tag"
     ))
     : [makeTag("Geen review queue")];
@@ -1554,14 +1566,16 @@ function renderLearning(snapshot) {
           ? `${exitDigest.leadSignal.symbol} wordt nu vooral gestuurd door ${titleize(exitDigest.leadSignal.reason)}.`
           : exitDigest.learning?.topReason
             ? `Offline exit learning ziet nu vooral ${titleize(exitDigest.learning.topReason)} terugkomen.`
-            : exitDigest.note || "Exit intelligence heeft nog geen duidelijke focus."
+            : exitDigest.note || "Exit intelligence heeft nog geen duidelijke focus.",
+        blockedCategoryText
       ],
       [makeTagList([
         makeTag(`${exitDigest.exitCount || 0} exit`),
         makeTag(`${exitDigest.trimCount || 0} trim`),
         makeTag(`${exitDigest.trailCount || 0} trail`),
-        makeTag(`${missedTradeDigest.missedWinners || 0} gemist`)
-      ])]
+        makeTag(`${missedTradeDigest.missedWinners || 0} gemist`),
+        topBlockedCategory?.id ? makeTag(`Top 7d blocker: ${titleize(topBlockedCategory.id)}`) : null
+      ].filter(Boolean))]
     ),
     makeLearningListItem(
       "Policy en operatoracties",

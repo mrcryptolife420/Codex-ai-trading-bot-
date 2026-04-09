@@ -23091,4 +23091,178 @@ await runCheck("paper learning builds blocker-first replay packs for repeated ba
   assert.ok(summary.reviewQueue.some((item) => item.type === "replay_pack"));
 });
 
+await runCheck("risk manager applies regime-aware ambiguity thresholds", async () => {
+  const manager = new RiskManager(makeConfig());
+  const basePayload = {
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.63,
+      calibrationConfidence: 0.74,
+      disagreement: 0.72,
+      shouldAbstain: false,
+      transformer: { probability: 0.64, confidence: 0.18 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.8, bookPressure: -0.11, microPriceEdgeBps: -0.04, depthConfidence: 0.79, weightedDepthImbalance: -0.04 },
+      market: {
+        realizedVolPct: 0.015,
+        atrPct: 0.009,
+        bullishPatternScore: 0.16,
+        bearishPatternScore: 0.08,
+        closeLocationQuality: 0.61,
+        volumeAcceptanceScore: 0.58,
+        anchoredVwapRejectionScore: 0.22,
+        breakoutFollowThroughScore: 0.46
+      }
+    },
+    newsSummary: { riskScore: 0.04, sentimentScore: 0.03, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.14, signalScore: 0.09, crowdingBias: 0.05, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.28 },
+    calendarSummary: { riskScore: 0.03, proximityHours: 48 },
+    committeeSummary: { agreement: 0.58, probability: 0.64, netScore: 0.06, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.35, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "market_structure_break",
+      family: "breakout",
+      fitScore: 0.6,
+      confidence: 0.52,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 8, sampleConfidence: 0.52 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1, session: "europe" },
+    driftSummary: { blockerReasons: [], severity: 0.05 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0 },
+    metaSummary: { action: "pass", score: 0.64, sizeMultiplier: 1, thresholdPenalty: 0 },
+    marketConditionSummary: { conditionId: "trend_continuation", conditionConfidence: 0.66, conditionRisk: 0.32, posture: "risk_on", drivers: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.88, blockerReasons: [] },
+    nowIso: "2026-03-20T12:00:00.000Z"
+  };
+
+  const rangeDecision = manager.evaluateEntry({
+    ...basePayload,
+    regimeSummary: { regime: "range", confidence: 0.7 }
+  });
+  const trendDecision = manager.evaluateEntry({
+    ...basePayload,
+    regimeSummary: { regime: "trend", confidence: 0.7 }
+  });
+
+  assert.ok(rangeDecision.entryDiagnostics.ambiguityThreshold < trendDecision.entryDiagnostics.ambiguityThreshold);
+  assert.ok(rangeDecision.reasons.includes("ambiguous_setup_context"));
+});
+
+await runCheck("performance report includes blocked-by-category trend summary", async () => {
+  const now = "2026-04-09T12:00:00.000Z";
+  const report = buildPerformanceReport({
+    journal: {
+      trades: [],
+      scaleOuts: [],
+      counterfactuals: [
+        { vetoVerdict: "bad_veto", dominantBlocker: "committee_veto", strategyFamily: "breakout", regime: "range", sessionAtEntry: "europe" }
+      ],
+      blockedSetups: [
+        { blockedSetupId: "b1", queuedAt: "2026-04-08T10:00:00.000Z", blockerReasons: ["committee_veto"] },
+        { blockedSetupId: "b2", queuedAt: "2026-04-01T10:00:00.000Z", blockerReasons: ["spread_too_wide"] },
+        { blockedSetupId: "b3", queuedAt: "2026-03-01T10:00:00.000Z", blockerReasons: ["negative_news_risk"] }
+      ],
+      researchRuns: [],
+      equitySnapshots: []
+    },
+    runtime: { openPositions: [] },
+    config: makeConfig(),
+    now
+  });
+  assert.ok(report.blockedSetupLifecycle.blockedByCategoryTrend);
+  assert.ok(typeof report.blockedSetupLifecycle.blockedByCategoryTrend.total === "object");
+  assert.ok(Array.isArray(report.blockedSetupLifecycle.blockedByCategoryTrend.topLast7d));
+});
+
+await runCheck("risk manager exposes decision context confidence and ambiguity threshold", async () => {
+  const manager = new RiskManager(makeConfig());
+  const decision = manager.evaluateEntry({
+    symbol: "ETHUSDT",
+    score: {
+      probability: 0.61,
+      calibrationConfidence: 0.68,
+      disagreement: 0.18,
+      shouldAbstain: false,
+      transformer: { probability: 0.6, confidence: 0.22 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2.4, bookPressure: 0.03, microPriceEdgeBps: 0.05, depthConfidence: 0.84 },
+      market: { realizedVolPct: 0.014, atrPct: 0.009, bearishPatternScore: 0.07, bullishPatternScore: 0.14, breakoutFollowThroughScore: 0.49 }
+    },
+    newsSummary: { riskScore: 0.05, sentimentScore: 0.04, socialSentiment: 0.02, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.13, signalScore: 0.08, crowdingBias: 0.03, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.2, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.26 },
+    calendarSummary: { riskScore: 0.03, proximityHours: 40 },
+    committeeSummary: { agreement: 0.74, probability: 0.62, netScore: 0.04, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.38, expectedReward: 0.01 },
+    strategySummary: {
+      activeStrategy: "market_structure_break",
+      family: "breakout",
+      fitScore: 0.61,
+      confidence: 0.56,
+      blockers: [],
+      agreementGap: 0.03,
+      optimizer: { sampleSize: 12, sampleConfidence: 0.62 }
+    },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.02, sizeMultiplier: 1, session: "europe" },
+    driftSummary: { blockerReasons: [], severity: 0.04 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0 },
+    metaSummary: { action: "pass", score: 0.64, sizeMultiplier: 1, thresholdPenalty: 0 },
+    marketConditionSummary: { conditionId: "range_break_risk", conditionConfidence: 0.59, conditionRisk: 0.41, posture: "cautious", drivers: [] },
+    runtime: { openPositions: [] },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "range", confidence: 0.7 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-04-09T12:00:00.000Z"
+  });
+  assert.ok(Number.isFinite(decision.entryDiagnostics.decisionContextConfidence));
+  assert.ok(Number.isFinite(decision.entryDiagnostics.ambiguityThreshold));
+  assert.ok(decision.decisionContext && Number.isFinite(decision.decisionContext.confidence));
+});
+
+await runCheck("risk manager exit uses entry decision context urgency", async () => {
+  const manager = new RiskManager(makeConfig());
+  const lowContextExit = manager.evaluateExit({
+    position: {
+      id: "p-low",
+      symbol: "BTCUSDT",
+      entryAt: "2026-04-09T09:00:00.000Z",
+      entryPrice: 100,
+      highestPrice: 103,
+      lowestPrice: 99.5,
+      quantity: 1,
+      notional: 100,
+      totalCost: 100,
+      trailingStopPct: 0.01,
+      maxHoldMinutes: 240,
+      entryRationale: {
+        decisionContext: { confidence: 0.34 }
+      }
+    },
+    currentPrice: 101.5,
+    newsSummary: { riskScore: 0.06, sentimentScore: 0.02 },
+    marketSnapshot: { book: { spreadBps: 3, bookPressure: 0.04 }, market: { bearishPatternScore: 0.04 } },
+    exitIntelligenceSummary: { action: "hold", confidence: 0.45, exitScore: 0.52 },
+    nowIso: "2026-04-09T11:30:00.000Z"
+  });
+  assert.ok(lowContextExit.exitContext);
+  assert.ok(lowContextExit.exitContext.contextExitUrgency > 0);
+});
+
 console.log("All checks passed.");

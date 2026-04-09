@@ -11342,8 +11342,16 @@ export class TradingBot {
         const activeBoost = item.type === "active_candidate" && rankedActiveCandidates[0]
           ? Math.min(0.16, (rankedActiveCandidates[0].score || 0) * 0.18)
           : 0;
+        const impactBreakdown = {
+          priorityBase: num(priorityBase, 4),
+          typeBoost: num(typeBoost, 4),
+          strictnessBoost: num(strictnessBoost, 4),
+          repeatBoost: num(repeatBoost, 4),
+          activeBoost: num(activeBoost, 4)
+        };
         return {
           ...item,
+          impactBreakdown,
           impactScore: num(clamp(priorityBase + typeBoost + strictnessBoost + repeatBoost + activeBoost, 0, 1), 4)
         };
       })

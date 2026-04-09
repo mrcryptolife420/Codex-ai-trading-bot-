@@ -1146,6 +1146,34 @@ function buildTradeQualitySummary(trades = [], counterfactuals = []) {
   };
 }
 
+function classifyBlockedReasonCategory(reason = "") {
+  if (!reason) {
+    return "other";
+  }
+  if (reason.includes("confidence") || reason.includes("abstain") || reason.includes("quality")) {
+    return "quality";
+  }
+  if (reason.includes("committee") || reason.includes("meta") || reason.includes("governor")) {
+    return "governance";
+  }
+  if (reason.includes("volatility") || reason.includes("spread") || reason.includes("orderbook") || reason.includes("liquidity")) {
+    return "execution";
+  }
+  if (reason.includes("news") || reason.includes("event") || reason.includes("calendar") || reason.includes("announcement")) {
+    return "event";
+  }
+  if (reason.includes("portfolio") || reason.includes("exposure") || reason.includes("position") || reason.includes("trade_size")) {
+    return "risk";
+  }
+  if (reason.includes("regime") || reason.includes("trend") || reason.includes("breakout") || reason.includes("session")) {
+    return "regime";
+  }
+  if (reason.startsWith("paper_learning_") || reason.includes("shadow")) {
+    return "learning";
+  }
+  return "other";
+}
+
 function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals = []) {
   const items = [...(blockedSetups || [])];
   const resolved = items.filter((item) => item?.counterfactualStatus === "resolved").length;
@@ -1154,6 +1182,14 @@ function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals =
   const verdictCounts = { good_veto: 0, bad_veto: 0, mixed: 0 };
   const blockerMap = new Map();
   const scopeMap = new Map();
+  const nowMs = Date.now();
+  const sevenDaysAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgoMs = nowMs - (30 * 24 * 60 * 60 * 1000);
+  const categoryTrend = {
+    total: {},
+    last7d: {},
+    last30d: {}
+  };
   for (const item of counterfactuals || []) {
     const verdict = `${item?.vetoVerdict || ""}`.trim().toLowerCase();
     if (verdict && verdict in verdictCounts) {
@@ -1193,6 +1229,23 @@ function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals =
     }
     scopeMap.set(scopeKey, scopeBucket);
   }
+  for (const item of items) {
+    const reasons = item?.blockerReasons || [];
+    const primaryReason = item?.dominantBlocker || reasons[0] || null;
+    const category = classifyBlockedReasonCategory(primaryReason);
+    const eventMs = new Date(item?.queuedAt || item?.createdAt || item?.at || 0).getTime();
+    categoryTrend.total[category] = (categoryTrend.total[category] || 0) + 1;
+    if (Number.isFinite(eventMs) && eventMs >= sevenDaysAgoMs) {
+      categoryTrend.last7d[category] = (categoryTrend.last7d[category] || 0) + 1;
+    }
+    if (Number.isFinite(eventMs) && eventMs >= thirtyDaysAgoMs) {
+      categoryTrend.last30d[category] = (categoryTrend.last30d[category] || 0) + 1;
+    }
+  }
+  const topCategoryTrend = Object.entries(categoryTrend.last7d)
+    .map(([id, count]) => ({ id, count }))
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 4);
   const topSuspiciousBlocker = [...blockerMap.values()]
     .map((item) => ({
       ...item,
@@ -1215,6 +1268,12 @@ function buildBlockedSetupLifecycleSummary(blockedSetups = [], counterfactuals =
     verdictCounts,
     topSuspiciousBlocker: topSuspiciousBlocker?.id || null,
     topSuspiciousBlockerBadVetoRate: safeNumber(topSuspiciousBlocker?.badVetoRate, 0),
+    blockedByCategoryTrend: {
+      total: categoryTrend.total,
+      last7d: categoryTrend.last7d,
+      last30d: categoryTrend.last30d,
+      topLast7d: topCategoryTrend
+    },
     topOverblockedScopes: topOverblockedScopes.map((item) => ({
       id: item.id,
       family: item.family,

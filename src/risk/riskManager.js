@@ -62,8 +62,122 @@ function isSoftPaperReason(reason) {
     "trade_size_below_minimum",
     "entry_cooldown_active",
     "daily_entry_budget_reached",
-    "weekend_high_risk_strategy_block"
+    "weekend_high_risk_strategy_block",
+    "ambiguous_setup_context"
   ].includes(reason);
+}
+
+function classifyReasonCategory(reason = "") {
+  if (!reason) {
+    return "other";
+  }
+  if (reason.includes("confidence") || reason.includes("abstain") || reason.includes("quality")) {
+    return "quality";
+  }
+  if (reason.includes("committee") || reason.includes("meta") || reason.includes("governor")) {
+    return "governance";
+  }
+  if (reason.includes("volatility") || reason.includes("spread") || reason.includes("orderbook") || reason.includes("liquidity")) {
+    return "execution";
+  }
+  if (reason.includes("news") || reason.includes("event") || reason.includes("calendar") || reason.includes("announcement")) {
+    return "event";
+  }
+  if (reason.includes("portfolio") || reason.includes("exposure") || reason.includes("position") || reason.includes("trade_size")) {
+    return "risk";
+  }
+  if (reason.includes("regime") || reason.includes("trend") || reason.includes("breakout") || reason.includes("session")) {
+    return "regime";
+  }
+  if (reason.startsWith("paper_learning_") || reason.includes("shadow")) {
+    return "learning";
+  }
+  return "other";
+}
+
+function reasonSeverity(reason = "") {
+  if (!reason || isSoftPaperReason(reason)) {
+    return 1;
+  }
+  if (
+    [
+      "position_already_open",
+      "max_open_positions_reached",
+      "trade_size_invalid",
+      "trade_size_below_minimum"
+    ].includes(reason)
+  ) {
+    return 5;
+  }
+  if (
+    [
+      "capital_governor_blocked",
+      "regime_kill_switch_active",
+      "self_heal_pause_entries",
+      "execution_cost_budget_exceeded"
+    ].includes(reason)
+  ) {
+    return 4;
+  }
+  return 3;
+}
+
+function normalizeDecisionReasons(reasons = []) {
+  return [...new Set((reasons || []).filter(Boolean))]
+    .sort((left, right) => {
+      const severityDelta = reasonSeverity(right) - reasonSeverity(left);
+      if (severityDelta !== 0) {
+        return severityDelta;
+      }
+      return left.localeCompare(right);
+    });
+}
+
+function getAmbiguityThreshold({
+  regime = "range",
+  family = "",
+  marketConditionId = ""
+} = {}) {
+  let threshold = 0.62;
+  if (["range", "high_vol"].includes(regime)) {
+    threshold -= 0.04;
+  } else if (regime === "trend") {
+    threshold += 0.03;
+  }
+  if (["breakout", "market_structure", "orderflow"].includes(family)) {
+    threshold -= 0.02;
+  } else if (family === "mean_reversion") {
+    threshold += 0.03;
+  }
+  if (["failed_breakout", "range_break_risk", "trend_exhaustion"].includes(marketConditionId)) {
+    threshold -= 0.02;
+  }
+  return clamp(threshold, 0.5, 0.75);
+}
+
+function buildDecisionContextConfidence({
+  signalQualitySummary = {},
+  dataQualitySummary = {},
+  confidenceBreakdown = {},
+  marketConditionSummary = {},
+  score = {}
+} = {}) {
+  const signalQuality = safeValue(signalQualitySummary.overallScore, 0);
+  const dataQuality = safeValue(dataQualitySummary.overallScore, 0);
+  const executionConfidence = safeValue(confidenceBreakdown.executionConfidence, 0);
+  const modelConfidence = safeValue(score.calibrationConfidence ?? score.confidence, 0);
+  const conditionConfidence = safeValue(marketConditionSummary.conditionConfidence, 0);
+  const conditionRiskPenalty = safeValue(marketConditionSummary.conditionRisk, 0) * 0.14;
+  return clamp(
+    signalQuality * 0.26 +
+    dataQuality * 0.22 +
+    executionConfidence * 0.24 +
+    modelConfidence * 0.18 +
+    conditionConfidence * 0.1 -
+    conditionRiskPenalty,
+    0,
+    1
+  );
 }
 
 function isMildPaperQualityReason(reason) {
@@ -2270,6 +2384,11 @@ export class RiskManager {
       (marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.48 &&
       acceptanceQuality < 0.56 &&
       score.probability < threshold + 0.055;
+    const ambiguityThreshold = getAmbiguityThreshold({
+      regime: regimeSummary.regime || "range",
+      family: strategySummary.family || "",
+      marketConditionId
+    });
     const chopContextFragile =
       ["breakout", "trend_following", "market_structure", "orderflow"].includes(strategySummary.family || "") &&
       (
@@ -2300,6 +2419,14 @@ export class RiskManager {
       (marketSnapshot.market.priceZScore || 0) > -0.75 &&
       acceptanceQuality < 0.58 &&
       score.probability < threshold + 0.12;
+    const ambiguityScore = clamp(
+      (safeValue(score.disagreement, 0) * 0.45) +
+      (Math.max(0, 0.7 - safeValue(committeeSummary.agreement, 0)) * 0.35) +
+      (Math.max(0, 0.62 - safeValue(signalQualitySummary.overallScore, 0)) * 0.28) +
+      (Math.max(0, 0.58 - safeValue(confidenceBreakdown.executionConfidence, 0)) * 0.22),
+      0,
+      1
+    );
 
     if (openPositions.length >= this.config.maxOpenPositions) {
       reasons.push("max_open_positions_reached");
@@ -2574,6 +2701,14 @@ export class RiskManager {
     }
     if (meanReversionTooShallow) {
       reasons.push("mean_reversion_too_shallow");
+    }
+    if (
+      riskSensitiveFamily &&
+      ambiguityScore >= ambiguityThreshold &&
+      score.probability < threshold + 0.06 &&
+      !strongTrendGuardOverride
+    ) {
+      reasons.push("ambiguous_setup_context");
     }
     const trendAcceptanceFamily = strategySummary.family || "";
     const activeStrategyId = strategySummary.activeStrategy || "";
@@ -2852,6 +2987,9 @@ export class RiskManager {
       ? 0
       : Math.min(adjustedQuoteAmount, maxByPosition, maxByRisk, remainingExposureBudget);
 
+    const normalizedReasons = normalizeDecisionReasons(reasons);
+    reasons.length = 0;
+    reasons.push(...normalizedReasons);
     let allow = reasons.length === 0;
     let entryMode = "standard";
     let suppressedReasons = [];
@@ -3471,6 +3609,55 @@ export class RiskManager {
       marketConditionSummary
     });
     const approvalReasons = allow ? candidateApprovalReasons : [];
+    const decisionContextConfidence = buildDecisionContextConfidence({
+      signalQualitySummary,
+      dataQualitySummary,
+      confidenceBreakdown,
+      marketConditionSummary,
+      score
+    });
+    const blockerCategoryCounts = reasons.reduce((acc, reason) => {
+      const category = classifyReasonCategory(reason);
+      acc[category] = (acc[category] || 0) + 1;
+      return acc;
+    }, {});
+    const reasonSeverityProfile = reasons.reduce((acc, reason) => {
+      const severity = reasonSeverity(reason);
+      if (severity >= 4) {
+        acc.hard += 1;
+      } else if (severity >= 3) {
+        acc.medium += 1;
+      } else {
+        acc.soft += 1;
+      }
+      return acc;
+    }, { hard: 0, medium: 0, soft: 0 });
+    const sizingFactors = [
+      { id: "session", value: sessionSizeMultiplier },
+      { id: "drift", value: driftSizeMultiplier },
+      { id: "self_heal", value: selfHealSizeMultiplier },
+      { id: "meta", value: metaSizeMultiplier },
+      { id: "strategy_meta", value: strategyMetaSizeMultiplier },
+      { id: "venue", value: venueSizeMultiplier },
+      { id: "capital_governor", value: capitalGovernorSizeMultiplier },
+      { id: "capital_ladder", value: capitalLadderSizeMultiplier },
+      { id: "retirement", value: retirementSizeMultiplier },
+      { id: "execution_cost", value: executionCostSizeMultiplier },
+      { id: "downtrend", value: spotDowntrendPenalty },
+      { id: "trend_state", value: trendStateTuning.sizeMultiplier },
+      { id: "offline_learning", value: offlineLearningGuidanceApplied.sizeMultiplier }
+    ].map((item) => ({
+      ...item,
+      effect: num((safeValue(item.value, 1) - 1), 4)
+    }));
+    const dominantSizingDrag = [...sizingFactors]
+      .filter((item) => item.value < 1)
+      .sort((left, right) => left.value - right.value)
+      .slice(0, 3);
+    const dominantSizingBoost = [...sizingFactors]
+      .filter((item) => item.value > 1)
+      .sort((left, right) => right.value - left.value)
+      .slice(0, 2);
     const entryDiagnostics = {
       regime: regimeSummary.regime || null,
       phase: marketStateSummary.phase || null,
@@ -3483,7 +3670,12 @@ export class RiskManager {
       },
       thresholdBuffer: num(score.probability - threshold, 4),
       strongestConfirmingFactors: candidateApprovalReasons.slice(0, 4),
-      strongestRejectingFactors: [...new Set(reasons)].slice(0, 4)
+      strongestRejectingFactors: reasons.slice(0, 4),
+      blockerCategoryCounts,
+      reasonSeverityProfile,
+      ambiguityScore: num(ambiguityScore, 4),
+      ambiguityThreshold: num(ambiguityThreshold, 4),
+      decisionContextConfidence: num(decisionContextConfidence, 4)
     };
 
     return {
@@ -3566,6 +3758,11 @@ export class RiskManager {
       confidenceBreakdown,
       setupQuality,
       lowConfidencePressure,
+      decisionContext: {
+        confidence: num(decisionContextConfidence, 4),
+        regime: regimeSummary.regime || null,
+        conditionId: marketConditionId || null
+      },
       sizingSummary: {
         rawQuoteAmount: Number.isFinite(quoteAmount) ? num(quoteAmount, 2) : null,
         adjustedQuoteAmount: Number.isFinite(adjustedQuoteAmount) ? num(adjustedQuoteAmount, 2) : null,
@@ -3580,7 +3777,9 @@ export class RiskManager {
         offlineLearningSizeMultiplier: num(offlineLearningGuidanceApplied.sizeMultiplier, 4),
         offlineLearningExecutionCaution: num(offlineLearningGuidanceApplied.executionCaution, 4),
         offlineLearningFeatureTrustPenalty: num(offlineLearningGuidanceApplied.featureTrustPenalty, 4),
-        advisoryPortfolioReasons: [...(portfolioSummary.advisoryReasons || [])]
+        advisoryPortfolioReasons: [...(portfolioSummary.advisoryReasons || [])],
+        dominantSizingDrag,
+        dominantSizingBoost
       },
       modelAbstainReasons: abstainReasons,
       committeeVetoObservation: {
@@ -3692,6 +3891,16 @@ export class RiskManager {
     const updatedHigh = Math.max(position.highestPrice || position.entryPrice, currentPrice);
     const updatedLow = Math.min(position.lowestPrice || position.entryPrice, currentPrice);
     const adaptiveExitPolicy = this.resolveAdaptiveExitPolicy(exitPolicySummary, position);
+    const entryDecisionContextConfidence = clamp(
+      safeValue(
+        position.entryRationale?.decisionContext?.confidence ??
+        position.entryRationale?.entryDiagnostics?.decisionContextConfidence,
+        0.5
+      ),
+      0,
+      1
+    );
+    const contextExitUrgency = clamp((0.58 - entryDecisionContextConfidence) * 0.5, 0, 0.18);
     const parameterGovernorAdjustment = this.resolveParameterGovernor(parameterGovernorSummary, {
       activeStrategy: position.strategyAtEntry || position.strategyDecision?.activeStrategy || position.entryRationale?.strategy?.activeStrategy || null
     }, {
@@ -3705,7 +3914,8 @@ export class RiskManager {
       (position.trailingStopPct || this.config.trailingStopPct) *
       (adaptiveExitPolicy.trailingStopMultiplier || 1) *
       (parameterGovernorAdjustment.trailingStopMultiplier || 1) *
-      (1 + clamp(exitTrailBias, -0.18, 0.18)),
+      (1 + clamp(exitTrailBias, -0.18, 0.18)) *
+      (1 - contextExitUrgency * 0.55),
       0.004,
       0.04
     );
@@ -3723,7 +3933,8 @@ export class RiskManager {
         (position.maxHoldMinutes || this.config.maxHoldMinutes || 1) *
         (adaptiveExitPolicy.maxHoldMinutesMultiplier || 1) *
         (parameterGovernorAdjustment.maxHoldMinutesMultiplier || 1) *
-        (1 + clamp(maxHoldBias, -0.18, 0.18))
+        (1 + clamp(maxHoldBias, -0.18, 0.18)) *
+        (1 - contextExitUrgency * 0.5)
       )
     );
     const canScaleOut =
@@ -3770,7 +3981,7 @@ export class RiskManager {
     if (updatedHigh > position.entryPrice * 1.004 && currentPrice <= trailingStopPrice) {
       return { shouldExit: true, shouldScaleOut: false, reason: "trailing_stop", updatedHigh, updatedLow };
     }
-    if (heldMinutes >= effectiveMaxHoldMinutes && holdToleranceBias <= 0.08) {
+    if (heldMinutes >= effectiveMaxHoldMinutes && (holdToleranceBias - contextExitUrgency * 0.4) <= 0.08) {
       return { shouldExit: true, shouldScaleOut: false, reason: "time_stop", updatedHigh, updatedLow };
     }
     if ((marketSnapshot.book?.spreadBps || 0) >= this.config.exitOnSpreadShockBps) {
@@ -3819,8 +4030,8 @@ export class RiskManager {
     }
     if (
       exitIntelligenceSummary.action === "exit" &&
-      (exitIntelligenceSummary.confidence || 0) >= this.config.exitIntelligenceMinConfidence &&
-      (exitIntelligenceSummary.exitScore || 0) >= this.config.exitIntelligenceExitScore
+      (exitIntelligenceSummary.confidence || 0) >= Math.max(0.2, this.config.exitIntelligenceMinConfidence - contextExitUrgency * 0.08) &&
+      (exitIntelligenceSummary.exitScore || 0) >= Math.max(0.2, this.config.exitIntelligenceExitScore - contextExitUrgency * 0.06)
     ) {
       return { shouldExit: true, shouldScaleOut: false, reason: exitIntelligenceSummary.reason || "exit_ai_signal", updatedHigh, updatedLow };
     }
@@ -3831,7 +4042,11 @@ export class RiskManager {
       reason: null,
       updatedHigh,
       updatedLow,
-      exitPolicy: adaptiveExitPolicy
+      exitPolicy: adaptiveExitPolicy,
+      exitContext: {
+        entryDecisionContextConfidence: num(entryDecisionContextConfidence, 4),
+        contextExitUrgency: num(contextExitUrgency, 4)
+      }
     };
   }
 }
