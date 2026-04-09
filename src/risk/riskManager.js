@@ -2379,6 +2379,53 @@ export class RiskManager {
       (marketSnapshot.market.priceZScore || 0) > -0.75 &&
       acceptanceQuality < 0.58 &&
       score.probability < threshold + 0.12;
+    const thresholdEdge = score.probability - threshold;
+    const matureEntryConfidence = (score.calibrationConfidence || 0) >= 0.45;
+    const trendContinuationFamily = ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "");
+    const breakoutConfirmationFamily = ["breakout", "market_structure", "orderflow"].includes(strategySummary.family || "");
+    const meanReversionFamily = (strategySummary.family || "") === "mean_reversion";
+    const chopLikelyContext =
+      ["range_acceptance", "late_crowded"].includes(marketStateSummary.phase || "") ||
+      (regimeSummary.regime || "") === "range";
+    const antiChopEntryRisk =
+      trendContinuationFamily &&
+      chopLikelyContext &&
+      safeValue(signalQualitySummary.structureQuality, 0) < 0.66 &&
+      acceptanceQuality < 0.56 &&
+      thresholdEdge < 0.09 &&
+      matureEntryConfidence &&
+      !strongTrendGuardOverride;
+    const breakoutConfirmationWeak =
+      breakoutConfirmationFamily &&
+      (marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.44 &&
+      (marketSnapshot.market.closeLocationQuality || 0) < 0.56 &&
+      safeValue(marketSnapshot.book.depthConfidence, 0.5) < 0.68 &&
+      thresholdEdge < 0.11 &&
+      matureEntryConfidence &&
+      !strongTrendGuardOverride;
+    const continuationTimingExtended =
+      trendContinuationFamily &&
+      (marketSnapshot.market.closeLocation || 0) >= 0.86 &&
+      (trendStateSummary.exhaustionScore || 0) >= 0.58 &&
+      (marketSnapshot.market.vwapGapPct || 0) >= 0.007 &&
+      thresholdEdge < 0.12 &&
+      matureEntryConfidence &&
+      !strongTrendGuardOverride;
+    const meanReversionMomentumConflict =
+      meanReversionFamily &&
+      (trendStateSummary.uptrendScore || 0) >= 0.68 &&
+      (marketSnapshot.market.breakoutFollowThroughScore || 0) >= 0.54 &&
+      relativeStrengthComposite >= 0.004 &&
+      thresholdEdge < 0.13 &&
+      matureEntryConfidence;
+    const confluenceDiversityWeak =
+      trendContinuationFamily &&
+      safeValue(signalQualitySummary.overallScore, 0) < 0.68 &&
+      acceptanceQuality < 0.58 &&
+      replenishmentQuality < 0.56 &&
+      Math.abs(relativeStrengthComposite) < 0.0028 &&
+      thresholdEdge < 0.1 &&
+      matureEntryConfidence;
     const ambiguityScore = clamp(
       (safeValue(score.disagreement, 0) * 0.45) +
       (Math.max(0, 0.7 - safeValue(committeeSummary.agreement, 0)) * 0.35) +
@@ -2667,6 +2714,21 @@ export class RiskManager {
     if (meanReversionTooShallow) {
       reasons.push("mean_reversion_too_shallow");
     }
+    if (antiChopEntryRisk) {
+      reasons.push("anti_chop_context_filter");
+    }
+    if (breakoutConfirmationWeak) {
+      reasons.push("breakout_confirmation_weak");
+    }
+    if (continuationTimingExtended) {
+      reasons.push("continuation_timing_extended");
+    }
+    if (meanReversionMomentumConflict) {
+      reasons.push("mean_reversion_momentum_conflict");
+    }
+    if (confluenceDiversityWeak) {
+      reasons.push("confluence_diversity_weak");
+    }
     if (shouldBlockAmbiguousSetup({
       riskSensitiveFamily,
       ambiguityScore,
@@ -2807,6 +2869,16 @@ export class RiskManager {
     if (!hasOpenPositionForSymbol && recentTrade?.exitAt && minutesBetween(recentTrade.exitAt, nowIso) < entryCooldownMinutes) {
       reasons.push("entry_cooldown_active");
     }
+    const churnWindowMinutes = Math.max(30, safeValue(this.config.entryChurnWindowMinutes, 180));
+    const recentSymbolClosedTrades = (journal?.trades || [])
+      .filter((trade) => trade?.symbol === symbol && trade?.exitAt)
+      .filter((trade) => minutesBetween(trade.exitAt, nowIso) <= churnWindowMinutes);
+    const churnLikeTrades = recentSymbolClosedTrades.filter((trade) =>
+      (trade.pnlQuote || 0) <= 0 || Math.abs(trade.netPnlPct || 0) <= 0.002
+    );
+    if (!hasOpenPositionForSymbol && recentSymbolClosedTrades.length >= 2 && churnLikeTrades.length >= 2) {
+      reasons.push("anti_reentry_churn_guard");
+    }
     const recentPortfolioTradeAt = getMostRecentTradeTimestamp(journal);
     const minutesSincePortfolioTrade = recentPortfolioTradeAt ? minutesBetween(recentPortfolioTradeAt, nowIso) : Number.POSITIVE_INFINITY;
     const effectivePaperExplorationCooldownMinutes = this.config.botMode === "paper"
@@ -2901,6 +2973,10 @@ export class RiskManager {
           ? 0.68
           : 1;
     const riskClaritySizeFactor = clamp(uncertaintyPenalty * setupTierSizeFactor, 0.62, 1.05);
+    const effectiveRiskClaritySizeFactor =
+      this.config.botMode === "paper" && selfHealState.lowRiskOnly
+        ? Math.max(riskClaritySizeFactor, 0.82)
+        : riskClaritySizeFactor;
     const divergenceFactor = clamp((divergenceSummary.averageScore || 0) >= this.config.divergenceBlockScore ? 0.55 : (divergenceSummary.averageScore || 0) >= this.config.divergenceAlertScore ? 0.86 : 1, 0.5, 1);
     const heatPenalty = clamp(1 - portfolioHeat * 0.45, 0.55, 1);
     const streakPenalty = paperLearningRecoveryActive
@@ -2940,7 +3016,7 @@ export class RiskManager {
       modelConfidenceFactor *
       signalQualityFactor *
       setupQualityFactor *
-      riskClaritySizeFactor *
+      effectiveRiskClaritySizeFactor *
       divergenceFactor *
       heatPenalty *
       streakPenalty *
@@ -3635,6 +3711,8 @@ export class RiskManager {
     const dominantSizingBoost = sizingBreakdown.dominantSizingBoost;
     const entryDiagnostics = buildEntryDiagnosticsSummary({
       regimeSummary,
+      strategySummary,
+      allow,
       marketStateSummary,
       marketConditionId,
       marketConditionConfidence,
@@ -3758,6 +3836,7 @@ export class RiskManager {
         offlineLearningExecutionCaution: num(offlineLearningGuidanceApplied.executionCaution, 4),
         offlineLearningFeatureTrustPenalty: num(offlineLearningGuidanceApplied.featureTrustPenalty, 4),
         riskClaritySizeFactor: num(riskClaritySizeFactor, 4),
+        effectiveRiskClaritySizeFactor: num(effectiveRiskClaritySizeFactor, 4),
         setupTierSizeFactor: num(setupTierSizeFactor, 4),
         riskClarityScore: num(riskClarityScore, 4),
         meaningfulSizeFloor: num(meaningfulSizeFloor, 2),

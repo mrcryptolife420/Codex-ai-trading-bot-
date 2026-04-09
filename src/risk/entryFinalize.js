@@ -31,6 +31,8 @@ export function buildReasonProfiles(reasons = [], { classifyReasonCategory, reas
 
 export function buildEntryDiagnosticsSummary({
   regimeSummary,
+  strategySummary,
+  allow,
   marketStateSummary,
   marketConditionId,
   marketConditionConfidence,
@@ -48,6 +50,8 @@ export function buildEntryDiagnosticsSummary({
 }) {
   return {
     regime: regimeSummary.regime || null,
+    setupFamily: strategySummary?.family || null,
+    activeStrategy: strategySummary?.activeStrategy || null,
     phase: marketStateSummary.phase || null,
     marketCondition: {
       id: marketConditionId || null,
@@ -59,6 +63,10 @@ export function buildEntryDiagnosticsSummary({
     thresholdBuffer: num(score.probability - threshold, 4),
     strongestConfirmingFactors: candidateApprovalReasons.slice(0, 4),
     strongestRejectingFactors: reasons.slice(0, 4),
+    decision: allow ? "tradeable" : "blocked",
+    decisionPrimaryReason: allow
+      ? (candidateApprovalReasons[0] || null)
+      : (reasons[0] || null),
     blockerCategoryCounts,
     reasonSeverityProfile,
     ambiguityScore: num(ambiguityScore, 4),

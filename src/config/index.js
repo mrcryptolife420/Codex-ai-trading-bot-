@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { coinAliases } from "../data/coinAliases.js";
 import { getCoinProfile } from "../data/coinProfiles.js";
@@ -489,6 +490,14 @@ function normalizeMode(value, fallback) {
   return normalized === "live" ? "live" : "paper";
 }
 
+function resolveDefaultHistoryDir() {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    return path.join(localAppData, "binance-ai-trading-bot", "data-history");
+  }
+  return path.join(os.homedir(), ".local", "share", "binance-ai-trading-bot", "data-history");
+}
+
 export async function loadConfig(projectRoot = process.cwd()) {
   const envPath = path.join(projectRoot, ".env");
   let fileEnv = {};
@@ -511,7 +520,7 @@ export async function loadConfig(projectRoot = process.cwd()) {
   const watchlistInclude = parseCsv(env.WATCHLIST_INCLUDE, DEFAULTS.watchlistInclude);
   const watchlistExclude = parseCsv(env.WATCHLIST_EXCLUDE, DEFAULTS.watchlistExclude);
   const runtimeDir = path.join(projectRoot, "data", "runtime");
-  const historyDir = env.HISTORY_DIR || path.join(projectRoot, "data", "history");
+  const historyDir = env.HISTORY_DIR || resolveDefaultHistoryDir();
 
   const config = {
     projectRoot,

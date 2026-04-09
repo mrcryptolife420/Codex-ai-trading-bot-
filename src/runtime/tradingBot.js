@@ -13813,6 +13813,9 @@ export class TradingBot {
       approvalReasons: arr(candidate.decision.approvalReasons || []).slice(0, 4),
       entryDiagnostics: candidate.decision.entryDiagnostics ? {
         regime: candidate.decision.entryDiagnostics.regime || null,
+        setupFamily: candidate.decision.entryDiagnostics.setupFamily || null,
+        decision: candidate.decision.entryDiagnostics.decision || null,
+        decisionPrimaryReason: candidate.decision.entryDiagnostics.decisionPrimaryReason || null,
         phase: candidate.decision.entryDiagnostics.phase || null,
         marketCondition: candidate.decision.entryDiagnostics.marketCondition || null,
         thresholdBuffer: num(candidate.decision.entryDiagnostics.thresholdBuffer || 0, 4),
@@ -14971,6 +14974,9 @@ export class TradingBot {
       approvalReasons: arr(candidate.decision.approvalReasons || []).slice(0, 4),
       entryDiagnostics: candidate.decision.entryDiagnostics ? {
         regime: candidate.decision.entryDiagnostics.regime || null,
+        setupFamily: candidate.decision.entryDiagnostics.setupFamily || null,
+        decision: candidate.decision.entryDiagnostics.decision || null,
+        decisionPrimaryReason: candidate.decision.entryDiagnostics.decisionPrimaryReason || null,
         phase: candidate.decision.entryDiagnostics.phase || null,
         marketCondition: candidate.decision.entryDiagnostics.marketCondition || null,
         thresholdBuffer: num(candidate.decision.entryDiagnostics.thresholdBuffer || 0, 4),
@@ -16398,6 +16404,9 @@ export class TradingBot {
       approvalReasons: arr(decision.approvalReasons || []).slice(0, 4),
       entryDiagnostics: {
         regime: decision.entryDiagnostics?.regime || null,
+        setupFamily: decision.entryDiagnostics?.setupFamily || null,
+        decision: decision.entryDiagnostics?.decision || null,
+        decisionPrimaryReason: decision.entryDiagnostics?.decisionPrimaryReason || null,
         phase: decision.entryDiagnostics?.phase || null,
         marketCondition: decision.entryDiagnostics?.marketCondition || null,
         thresholdBuffer: num(decision.entryDiagnostics?.thresholdBuffer || 0, 4),
