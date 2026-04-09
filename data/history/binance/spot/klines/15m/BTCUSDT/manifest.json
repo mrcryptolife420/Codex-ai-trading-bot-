@@ -4,7 +4,7 @@
   "symbol": "BTCUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T12:45:45.427Z",
+  "updatedAt": "2026-04-09T14:15:49.633Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774624500000,
       "endTime": 1775000700000,
       "count": 419,
-      "updatedAt": "2026-04-09T12:45:45.424Z"
+      "updatedAt": "2026-04-09T14:15:49.628Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775738700000,
-      "count": 820,
-      "updatedAt": "2026-04-09T12:45:45.427Z"
+      "endTime": 1775744100000,
+      "count": 826,
+      "updatedAt": "2026-04-09T14:15:49.633Z"
     }
   ]
 }

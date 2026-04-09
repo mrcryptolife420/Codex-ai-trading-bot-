@@ -4,7 +4,7 @@
   "interval": "15m",
   "partitionId": "2026-03",
   "partitionGranularity": "month",
-  "updatedAt": "2026-04-09T12:48:00.008Z",
+  "updatedAt": "2026-04-09T14:18:02.048Z",
   "candles": [
     {
       "openTime": 1774625400000,

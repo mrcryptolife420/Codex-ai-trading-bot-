@@ -4,7 +4,7 @@
   "symbol": "FETUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T12:48:31.165Z",
+  "updatedAt": "2026-04-09T14:15:26.310Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T12:48:31.162Z"
+      "updatedAt": "2026-04-09T14:15:26.306Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775738700000,
-      "count": 820,
-      "updatedAt": "2026-04-09T12:48:31.165Z"
+      "endTime": 1775744100000,
+      "count": 826,
+      "updatedAt": "2026-04-09T14:15:26.310Z"
     }
   ]
 }
