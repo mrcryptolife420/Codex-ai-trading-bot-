@@ -117,7 +117,7 @@ async function handleApi(request, response, manager) {
   if (request.method === "GET" && url.pathname === "/api/health") {
     const readiness = await manager.getOperationalReadiness();
     return sendJson(response, 200, {
-      ok: true,
+      ok: readiness.ok !== false && (readiness.status || "ready") === "ready",
       status: readiness.status,
       reasons: readiness.reasons,
       checkedAt: readiness.checkedAt

@@ -73,6 +73,10 @@ import { DivergenceMonitor } from "../src/runtime/divergenceMonitor.js";
 import { CapitalLadder } from "../src/runtime/capitalLadder.js";
 import { OfflineTrainer } from "../src/runtime/offlineTrainer.js";
 import { StrategyResearchMiner } from "../src/runtime/strategyResearchMiner.js";
+import { buildCapitalPolicySnapshot } from "../src/runtime/capitalPolicyEngine.js";
+import { computeOperationalReadiness } from "../src/runtime/operationalTruth.js";
+import { buildCoreMetricsView } from "../src/runtime/viewMappers.js";
+import { evaluatePositionGuards, shouldBlockAmbiguousSetup } from "../src/risk/entryGuards.js";
 import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { buildMarketConditionSummary } from "../src/runtime/marketConditionController.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
@@ -23331,6 +23335,84 @@ await runCheck("risk manager exit uses entry decision context urgency", async ()
   });
   assert.ok(lowContextExit.exitContext);
   assert.ok(lowContextExit.exitContext.contextExitUrgency > 0);
+});
+
+await runCheck("performance report pnl decomposition respects configured fee budget", async () => {
+  const config = makeConfig({ reportLookbackTrades: 20, paperFeeBps: 37 });
+  const trade = {
+    symbol: "BTCUSDT",
+    side: "buy",
+    entryPrice: 100,
+    exitPrice: 103,
+    quantity: 2,
+    totalCost: 200,
+    pnlQuote: 6,
+    executedAt: "2026-04-09T12:00:00.000Z",
+    closedAt: "2026-04-09T13:00:00.000Z"
+  };
+  const report = buildPerformanceReport({
+    journal: { trades: [trade], scaleOuts: [], blockedSetups: [], counterfactuals: [], researchRuns: [], equitySnapshots: [] },
+    runtime: { openPositions: [] },
+    config
+  });
+  const expected = buildTradePnlBreakdown(trade, config);
+  assert.equal(report.pnlDecomposition.totalFees, expected.totalFees);
+});
+
+await runCheck("capital policy snapshot uses weekly drawdown config budget", async () => {
+  const snapshot = buildCapitalPolicySnapshot({
+    journal: { trades: [], scaleOuts: [], equitySnapshots: [] },
+    runtime: {},
+    capitalGovernor: { weeklyLossFraction: 0.05, sizeMultiplier: 1, status: "ready", allowEntries: true },
+    capitalLadder: { sizeMultiplier: 1, allowEntries: true },
+    config: makeConfig({ capitalGovernorWeeklyDrawdownPct: 0.1, capitalGovernorWeeklyLossBudgetFraction: 0.5 })
+  });
+  assert.equal(snapshot.budgets.weeklyLossBudgetUsage, 0.5);
+});
+
+await runCheck("operational readiness mapper escalates blocked reasons consistently", async () => {
+  const readiness = computeOperationalReadiness({
+    snapshotReadiness: { status: "ready", reasons: [] },
+    checkedAt: "2026-04-09T12:00:00.000Z",
+    mode: "paper",
+    lastAnalysisAt: "2026-04-09T11:59:00.000Z",
+    exchangeTruthFreeze: true,
+    alerts: []
+  });
+  assert.equal(readiness.status, "blocked");
+  assert.equal(readiness.ok, false);
+  assert.ok(readiness.reasons.includes("exchange_truth_freeze"));
+});
+
+await runCheck("core metrics mapper normalizes rounded values", async () => {
+  const view = buildCoreMetricsView({
+    report: { tradeCount: 3, realizedPnl: 12.3456, winRate: 0.666666, averagePnlPct: 0.012345, maxDrawdownPct: 0.087654, openExposure: 155.5555 },
+    overview: { quoteFree: 901.239, equity: 1012.987, openExposure: 155.5555 }
+  });
+  assert.equal(view.realizedPnl, 12.35);
+  assert.equal(view.winRate, 0.6667);
+  assert.equal(view.openExposure, 155.56);
+});
+
+await runCheck("entry guard module keeps position blocker behavior", async () => {
+  const guards = evaluatePositionGuards({
+    openPositionsInMode: [{ symbol: "BTCUSDT" }],
+    maxOpenPositions: 1,
+    symbol: "BTCUSDT"
+  });
+  assert.ok(guards.reasons.includes("max_open_positions_reached"));
+  assert.ok(guards.reasons.includes("position_already_open"));
+  assert.equal(
+    shouldBlockAmbiguousSetup({
+      riskSensitiveFamily: true,
+      ambiguityScore: 0.7,
+      ambiguityThreshold: 0.6,
+      scoreProbability: 0.55,
+      threshold: 0.52,
+      strongTrendGuardOverride: false
+    }),
+    true
+  );
 });
 
 console.log("All checks passed.");

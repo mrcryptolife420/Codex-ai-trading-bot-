@@ -2,6 +2,7 @@
 import { ensureEnvFile, updateEnvFile } from "../config/envFile.js";
 import { nowIso } from "../utils/time.js";
 import { TradingBot } from "./tradingBot.js";
+import { buildApiEnvelope, computeOperationalReadiness } from "./operationalTruth.js";
 
 function summarizeError(error) {
   return {
@@ -19,20 +20,6 @@ function publicError(error) {
     at: error.at || nowIso(),
     message: `${error.message}`.slice(0, 400)
   };
-}
-
-function requiresOperatorAck(alert = {}, mode = "paper") {
-  if (alert.resolvedAt || alert.acknowledgedAt) {
-    return false;
-  }
-  const severity = `${alert.severity || ""}`.toLowerCase();
-  if (!["negative", "critical", "high"].includes(severity)) {
-    return false;
-  }
-  if (mode !== "paper") {
-    return true;
-  }
-  return !["capital_governor_blocked", "capital_governor_recovery", "execution_cost_budget_blocked", "readiness_degraded"].includes(alert.id || "");
 }
 
 function isDemoSpotEnvironment(config = {}) {
@@ -154,61 +141,45 @@ export class BotManager {
   }
 
   buildSnapshotFromDashboard(dashboard) {
-    const snapshot = {
-      contract: {
-        version: "v1",
-        kind: "snapshot"
-      },
-      manager: {
-        runState: this.runState,
-        currentMode: this.config.botMode,
-        externalConfigMode: this.externalConfigMode,
-        externalConfigDrift: this.externalConfigDrift,
-        externalConfigCheckedAt: this.externalConfigCheckedAt,
-        externalModeDrift: this.externalModeDrift,
-        lastStartAt: this.lastStartAt,
-        lastStopAt: this.lastStopAt,
-        lastModeSwitchAt: this.lastModeSwitchAt,
-        stopReason: this.stopReason || null,
-        lastError: publicError(this.lastError),
-        dashboardPort: this.config.dashboardPort
-      },
-      dashboard
+    const manager = {
+      runState: this.runState,
+      currentMode: this.config.botMode,
+      externalConfigMode: this.externalConfigMode,
+      externalConfigDrift: this.externalConfigDrift,
+      externalConfigCheckedAt: this.externalConfigCheckedAt,
+      externalModeDrift: this.externalModeDrift,
+      lastStartAt: this.lastStartAt,
+      lastStopAt: this.lastStopAt,
+      lastModeSwitchAt: this.lastModeSwitchAt,
+      stopReason: this.stopReason || null,
+      lastError: publicError(this.lastError),
+      dashboardPort: this.config.dashboardPort
     };
-    snapshot.manager.readiness = this.buildOperationalReadiness(snapshot);
-    snapshot.payload = {
+    const snapshot = buildApiEnvelope({
+      kind: "snapshot",
+      manager,
       snapshot: {
-        manager: snapshot.manager,
-        dashboard: snapshot.dashboard
-      },
-      status: null,
-      doctor: null,
-      report: null
-    };
+        manager,
+        dashboard
+      }
+    });
+    snapshot.dashboard = dashboard;
+    snapshot.manager.readiness = this.buildOperationalReadiness(snapshot);
     return snapshot;
   }
 
   buildApiEnvelope(kind, body = {}) {
-    return {
-      contract: {
-        version: "v1",
-        kind
-      },
+    return buildApiEnvelope({
+      kind,
       manager: body.manager || {
         runState: this.runState,
         currentMode: this.config?.botMode || "paper",
         lastError: publicError(this.lastError)
       },
-      ...(kind === "status" ? { status: body.status || null } : {}),
-      ...(kind === "doctor" ? { doctor: body.doctor || null } : {}),
-      ...(kind === "report" ? { report: body.report || null } : {}),
-      payload: {
-        snapshot: null,
-        status: kind === "status" ? (body.status || null) : null,
-        doctor: kind === "doctor" ? (body.doctor || null) : null,
-        report: kind === "report" ? (body.report || null) : null
-      }
-    };
+      status: kind === "status" ? (body.status || null) : null,
+      doctor: kind === "doctor" ? (body.doctor || null) : null,
+      report: kind === "report" ? (body.report || null) : null
+    });
   }
 
   async closeBotForStop() {
@@ -440,66 +411,27 @@ export class BotManager {
   }
 
   buildOperationalReadiness(snapshot) {
-    const snapshotReadiness = snapshot?.dashboard?.ops?.readiness || {};
-    const reasons = [...new Set(Array.isArray(snapshotReadiness.reasons) ? snapshotReadiness.reasons : [])];
-    const readiness = {
-      ok: (snapshotReadiness.status || "ready") === "ready",
-      status: snapshotReadiness.status || "ready",
-      reasons,
+    const mode = snapshot?.manager?.currentMode || this.config?.botMode || "paper";
+    return computeOperationalReadiness({
+      snapshotReadiness: snapshot?.dashboard?.ops?.readiness || {},
       checkedAt: nowIso(),
       lastAnalysisAt: snapshot?.dashboard?.overview?.lastAnalysisAt || null,
       runState: snapshot?.manager?.runState || this.runState,
-      mode: snapshot?.manager?.currentMode || this.config?.botMode || "paper"
-    };
-    const addReason = (reason, status = "degraded") => {
-      if (!readiness.reasons.includes(reason)) {
-        readiness.reasons.push(reason);
-      }
-      readiness.ok = false;
-      readiness.status = readiness.status === "blocked" || status === "blocked" ? "blocked" : status;
-    };
-    if (!snapshot?.dashboard?.overview?.lastAnalysisAt) {
-      addReason("analysis_not_ready", "warming");
-    }
-    if (snapshot?.manager?.lastError?.message || this.lastError?.message) {
-      addReason("manager_error", "degraded");
-    }
-    if (snapshot?.dashboard?.health?.circuitOpen) {
-      addReason("health_circuit_open", "blocked");
-    }
-    if (snapshot?.dashboard?.safety?.exchangeTruth?.freezeEntries) {
-      addReason("exchange_truth_freeze", "blocked");
-    }
-    if ((snapshot?.dashboard?.safety?.exchangeSafety?.status || "") === "blocked") {
-      addReason("exchange_safety_blocked", "blocked");
-    }
-    if ((snapshot?.dashboard?.ops?.capitalGovernor?.status || "") === "blocked") {
-      addReason("capital_governor_blocked", "blocked");
-    }
-    if (["paused", "paper_fallback"].includes(snapshot?.dashboard?.safety?.selfHeal?.mode || "")) {
-      addReason("self_heal_paused", "blocked");
-    }
-    const service = snapshot?.dashboard?.ops?.service || {};
-    if (service.watchdogStatus === "degraded") {
-      addReason("service_watchdog_degraded", "degraded");
-    }
-    if (service.heartbeatStale) {
-      addReason("service_heartbeat_stale", "degraded");
-    }
-    if (service.recoveryActive) {
-      addReason("service_restart_backoff_active", "degraded");
-    }
-    const mode = snapshot?.manager?.currentMode || this.config?.botMode || "paper";
-    if (snapshot?.manager?.externalModeDrift?.externalMode && this.runState === "running") {
-      addReason("external_mode_mismatch", "degraded");
-    }
-    if ((snapshot?.dashboard?.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, mode))) {
-      addReason("operator_ack_required", "degraded");
-    }
-    if ((snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
-      addReason("lifecycle_attention_required", "degraded");
-    }
-    return readiness;
+      mode,
+      managerHasError: Boolean(snapshot?.manager?.lastError?.message || this.lastError?.message),
+      healthCircuitOpen: Boolean(snapshot?.dashboard?.health?.circuitOpen),
+      exchangeTruthFreeze: Boolean(snapshot?.dashboard?.safety?.exchangeTruth?.freezeEntries),
+      exchangeSafetyBlocked: (snapshot?.dashboard?.safety?.exchangeSafety?.status || "") === "blocked",
+      capitalGovernorBlocked: (snapshot?.dashboard?.ops?.capitalGovernor?.status || "") === "blocked",
+      selfHealMode: snapshot?.dashboard?.safety?.selfHeal?.mode || "",
+      serviceWatchdogStatus: snapshot?.dashboard?.ops?.service?.watchdogStatus || "",
+      serviceHeartbeatStale: Boolean(snapshot?.dashboard?.ops?.service?.heartbeatStale),
+      serviceRecoveryActive: Boolean(snapshot?.dashboard?.ops?.service?.recoveryActive),
+      externalModeMismatch: Boolean(snapshot?.manager?.externalModeDrift?.externalMode && this.runState === "running"),
+      alerts: snapshot?.dashboard?.ops?.alerts?.alerts || [],
+      pendingActions: snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || [],
+      analysisMissingStatus: "warming"
+    });
   }
 
   async getOperationalReadiness() {

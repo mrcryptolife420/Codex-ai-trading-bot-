@@ -911,8 +911,8 @@ export function buildTradePnlBreakdown(trade = {}, config = {}) {
   };
 }
 
-function buildPnlDecomposition(trades = []) {
-  const breakdowns = trades.map((trade) => buildTradePnlBreakdown(trade));
+function buildPnlDecomposition(trades = [], config = {}) {
+  const breakdowns = trades.map((trade) => buildTradePnlBreakdown(trade, config));
   return {
     netRealizedPnl: breakdowns.reduce((total, item) => total + item.netRealizedPnl, 0),
     grossMovePnl: breakdowns.reduce((total, item) => total + item.grossMovePnl, 0),
@@ -1330,7 +1330,7 @@ export function buildPerformanceReport({ journal, runtime, config, now = null })
   const tradeQualityReview = buildTradeQualitySummary(primaryTrades, journal.counterfactuals || []);
   const blockedSetupLifecycle = buildBlockedSetupLifecycleSummary(blockedSetups, journal.counterfactuals || []);
   const executionCostSummary = buildExecutionCostSummary(primaryLookbackTrades, config, referenceNow.toISOString());
-  const pnlDecomposition = buildPnlDecomposition(primaryLookbackTrades);
+  const pnlDecomposition = buildPnlDecomposition(primaryLookbackTrades, config);
   const reportStats = buildTradeStats(primaryLookbackTrades, { realizedPnlAdjustment: lookbackScaleOutPnl });
   const sourceScopedStats = buildTradeStats(sourceScopedLookbackTrades, { realizedPnlAdjustment: sourceScopedLookbackScaleOutPnl });
   const performanceDiagnosis = buildPerformanceDiagnosis({

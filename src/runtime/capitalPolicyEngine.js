@@ -41,8 +41,14 @@ export function buildCapitalPolicySnapshot({
   const dailyLossBudgetUsage = config.maxDailyDrawdown
     ? clamp((budgetState.dailyLossFraction || 0) / Math.max(config.maxDailyDrawdown, 0.0001), 0, 2)
     : 0;
-  const weeklyLossBudgetUsage = clamp((capitalGovernor.weeklyLossFraction || 0) / Math.max(config.capitalGovernorWeeklyLossBudgetFraction || 0.08, 0.0001), 0, 2);
-  const monthlyLossBudgetUsage = clamp((capitalGovernor.monthlyLossFraction || 0) / Math.max(config.capitalGovernorMonthlyLossBudgetFraction || 0.14, 0.0001), 0, 2);
+  const weeklyLossBudgetUsage = clamp(
+    (capitalGovernor.weeklyLossFraction || 0) / Math.max(config.capitalGovernorWeeklyDrawdownPct || 0.08, 0.0001),
+    0,
+    2
+  );
+  const monthlyLossBudgetUsage = Number.isFinite(capitalGovernor.monthlyLossFraction)
+    ? clamp((capitalGovernor.monthlyLossFraction || 0) / Math.max(config.capitalGovernorMonthlyLossBudgetFraction || 0.14, 0.0001), 0, 2)
+    : 0;
   const deRiskLevel = clamp(
     1 -
       (average([
@@ -59,7 +65,8 @@ export function buildCapitalPolicySnapshot({
     worstRegimes[0] ? `Regimebudget onder druk: ${worstRegimes[0].id} x${worstRegimes[0].multiplier}.` : null,
     familyKillSwitches[0] ? `Strategy-family cooldown: ${familyKillSwitches[0].id}.` : null,
     (capitalGovernor.status || "") === "blocked" ? "Capital governor blokkeert nieuwe entries." : null,
-    (capitalLadder.allowEntries === false) ? "Capital ladder houdt deployment in shadow/probation." : null
+    (capitalLadder.allowEntries === false) ? "Capital ladder houdt deployment in shadow/probation." : null,
+    Number.isFinite(capitalGovernor.monthlyLossFraction) ? null : "Monthly capital-governor budget nog niet beschikbaar in runtime snapshot."
   ].filter(Boolean);
 
   return {

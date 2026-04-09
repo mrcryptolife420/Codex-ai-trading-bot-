@@ -1,0 +1,3 @@
+# Reduce review noise for generated history datasets.
+data/history/binance/spot/klines/15m/** linguist-generated=true
+data/history/binance/spot/klines/15m/**/parts/*.json -diff

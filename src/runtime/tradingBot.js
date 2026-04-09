@@ -68,6 +68,8 @@ import { mapWithConcurrency } from "../utils/async.js";
 import { average, clamp } from "../utils/math.js";
 import { getConfiguredTradingSource } from "../utils/tradingSource.js";
 import { resolveStatusTone } from "../shared/statusTone.js";
+import { buildContract, computeOperationalReadiness, requiresOperatorAck } from "./operationalTruth.js";
+import { buildCoreMetricsView } from "./viewMappers.js";
 
 const EMPTY_NEWS = {
   coverage: 0,
@@ -692,20 +694,6 @@ function defaultProfile(symbol) {
 
 function getMomentum20(snapshot) {
   return Number.isFinite(snapshot?.market?.momentum20) ? snapshot.market.momentum20 : 0;
-}
-
-function requiresOperatorAck(alert = {}, mode = "paper") {
-  if (alert.resolvedAt || alert.acknowledgedAt) {
-    return false;
-  }
-  const severity = `${alert.severity || ""}`.toLowerCase();
-  if (!["negative", "critical", "high"].includes(severity)) {
-    return false;
-  }
-  if (mode !== "paper") {
-    return true;
-  }
-  return !["capital_governor_blocked", "capital_governor_recovery", "execution_cost_budget_blocked", "readiness_degraded", "paper_signal_flow_stalled"].includes(alert.id || "");
 }
 
 function buildRelativeStrengthMap(snapshotMap = {}, symbols = [], config = {}) {
@@ -5930,7 +5918,8 @@ export class TradingBot {
     this.observabilityCache = {
       reportVersion: 0,
       reportBuiltVersion: -1,
-      report: null
+      report: null,
+      reportGeneratedAt: null
     };
   }
 
@@ -5953,7 +5942,8 @@ export class TradingBot {
     this.observabilityCache = this.observabilityCache || {
       reportVersion: 0,
       reportBuiltVersion: -1,
-      report: null
+      report: null,
+      reportGeneratedAt: null
     };
     this.observabilityCache.reportVersion = (this.observabilityCache.reportVersion || 0) + 1;
   }
@@ -5962,7 +5952,8 @@ export class TradingBot {
     this.observabilityCache = this.observabilityCache || {
       reportVersion: 0,
       reportBuiltVersion: -1,
-      report: null
+      report: null,
+      reportGeneratedAt: null
     };
     if (this.observabilityCache.report && this.observabilityCache.reportBuiltVersion === this.observabilityCache.reportVersion) {
       return this.observabilityCache.report;
@@ -5970,16 +5961,16 @@ export class TradingBot {
     const report = buildPerformanceReport({ journal: this.journal, runtime: this.runtime, config: this.config });
     this.observabilityCache.report = report;
     this.observabilityCache.reportBuiltVersion = this.observabilityCache.reportVersion;
+    this.observabilityCache.reportGeneratedAt = nowIso();
     return report;
   }
 
   buildPublicReportView(report = this.getPerformanceReport()) {
+    const coreMetrics = buildCoreMetricsView({ report });
     return {
-      contract: {
-        version: "v1",
-        shape: "report_public"
-      },
-      generatedAt: nowIso(),
+      contract: buildContract("report", "report_public"),
+      generatedAt: this.observabilityCache?.reportGeneratedAt || nowIso(),
+      coreMetrics,
       tradeCount: report.tradeCount || 0,
       realizedPnl: num(report.realizedPnl || 0, 2),
       winRate: num(report.winRate || 0, 4),
@@ -6780,6 +6771,9 @@ export class TradingBot {
     }
     const persistedState = await this.loadPersistedStateWithBackupFallback();
     this.runtime = persistedState.runtime;
+    this.runtime.lifecycle = this.runtime.lifecycle || {};
+    this.runtime.lifecycle.activeRun = true;
+    this.runtime.lifecycle.lastBootAt = nowIso();
     this.runtime.openPositions = arr(this.runtime.openPositions);
     this.runtime.latestDecisions = arr(this.runtime.latestDecisions);
     this.runtime.newsCache = this.runtime.newsCache || {};
@@ -9350,73 +9344,90 @@ export class TradingBot {
   }
 
   buildOperationalReadiness(referenceNow = nowIso(), { selfHeal = null } = {}) {
-    const reasons = [];
     const serviceState = summarizeServiceState(this.runtime.service || {}, this.config, referenceNow);
     const selfHealSummary = summarizeSelfHeal(selfHeal || this.runtime.selfHeal || {});
+    const signalFlow = summarizeSignalFlow(this.runtime.signalFlow || {});
+    const runtimeReasons = [];
     if (!this.runtime.lastAnalysisAt) {
-      reasons.push("analysis_not_ready");
+      runtimeReasons.push("analysis_not_ready");
     }
     if (this.runtime.health?.circuitOpen) {
-      reasons.push("health_circuit_open");
+      runtimeReasons.push("health_circuit_open");
     }
     if (this.runtime.exchangeTruth?.freezeEntries) {
-      reasons.push("exchange_truth_freeze");
+      runtimeReasons.push("exchange_truth_freeze");
     }
     if ((this.runtime.exchangeSafety?.status || "") === "blocked") {
-      reasons.push("exchange_safety_blocked");
+      runtimeReasons.push("exchange_safety_blocked");
     }
     if (arr(this.runtime.orderLifecycle?.pendingActions || []).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
-      reasons.push("lifecycle_attention_required");
+      runtimeReasons.push("lifecycle_attention_required");
     }
     if ((this.runtime.exchangeTruth?.unmatchedOrderSymbols || []).length) {
-      reasons.push("exchange_truth_unmatched_orders");
+      runtimeReasons.push("exchange_truth_unmatched_orders");
     }
     if ((this.runtime.exchangeTruth?.orphanedSymbols || []).length) {
-      reasons.push("exchange_truth_orphaned_balance");
+      runtimeReasons.push("exchange_truth_orphaned_balance");
     }
     if ((this.runtime.exchangeTruth?.manualInterferenceSymbols || []).length) {
-      reasons.push("exchange_truth_manual_interference");
+      runtimeReasons.push("exchange_truth_manual_interference");
     }
     if (serviceState.watchdogStatus === "degraded") {
-      reasons.push("service_watchdog_degraded");
+      runtimeReasons.push("service_watchdog_degraded");
     }
     if (serviceState.heartbeatStale) {
-      reasons.push("service_heartbeat_stale");
+      runtimeReasons.push("service_heartbeat_stale");
     }
     if (serviceState.recoveryActive) {
-      reasons.push("service_restart_backoff_active");
+      runtimeReasons.push("service_restart_backoff_active");
     }
     if (serviceState.bootstrapDegraded) {
-      reasons.push("service_bootstrap_degraded");
+      runtimeReasons.push("service_bootstrap_degraded");
     }
     if (["paused", "paper_fallback"].includes(selfHealSummary.mode || "")) {
-      reasons.push("self_heal_paused");
+      runtimeReasons.push("self_heal_paused");
     }
-    const signalFlow = summarizeSignalFlow(this.runtime.signalFlow || {});
     if (
       this.config.botMode === "paper" &&
       (signalFlow.consecutiveCyclesWithSignalsNoPaperTrade || 0) >= (this.config.paperSilentFailureCycleThreshold || 3)
     ) {
-      reasons.push("paper_signal_flow_stalled");
+      runtimeReasons.push("paper_signal_flow_stalled");
     }
     if (this.config.botMode === "live" && this.runtime.capitalLadder?.allowEntries === false) {
-      reasons.push("capital_ladder_shadow_only");
+      runtimeReasons.push("capital_ladder_shadow_only");
     }
     if (this.config.botMode === "live" && this.runtime.capitalGovernor?.allowEntries === false) {
-      reasons.push("capital_governor_blocked");
+      runtimeReasons.push("capital_governor_blocked");
     }
     if (arr(this.runtime.ops?.alerts?.alerts || []).some((item) => requiresOperatorAck(item, this.config.botMode))) {
-      reasons.push("operator_ack_required");
+      runtimeReasons.push("operator_ack_required");
     }
-    return {
+    const readiness = computeOperationalReadiness({
+      snapshotReadiness: {
+        status: "ready",
+        reasons: runtimeReasons
+      },
       checkedAt: referenceNow,
-      ready: reasons.length === 0,
-      status: reasons.includes("exchange_truth_freeze") || reasons.includes("health_circuit_open") || reasons.includes("exchange_safety_blocked") || reasons.includes("capital_governor_blocked") || reasons.includes("self_heal_paused")
-        ? "blocked"
-      : reasons.length
-          ? "degraded"
-          : "ready",
-      reasons
+      lastAnalysisAt: this.runtime.lastAnalysisAt || null,
+      runState: this.runtime.lifecycle?.activeRun ? "running" : "stopped",
+      mode: this.config.botMode,
+      healthCircuitOpen: Boolean(this.runtime.health?.circuitOpen),
+      exchangeTruthFreeze: Boolean(this.runtime.exchangeTruth?.freezeEntries),
+      exchangeSafetyBlocked: (this.runtime.exchangeSafety?.status || "") === "blocked",
+      capitalGovernorBlocked: this.config.botMode === "live" && this.runtime.capitalGovernor?.allowEntries === false,
+      selfHealMode: selfHealSummary.mode || "",
+      serviceWatchdogStatus: serviceState.watchdogStatus || "",
+      serviceHeartbeatStale: Boolean(serviceState.heartbeatStale),
+      serviceRecoveryActive: Boolean(serviceState.recoveryActive),
+      alerts: this.runtime.ops?.alerts?.alerts || [],
+      pendingActions: this.runtime.orderLifecycle?.pendingActions || [],
+      analysisMissingStatus: "degraded"
+    });
+    return {
+      checkedAt: readiness.checkedAt,
+      ready: readiness.ok,
+      status: readiness.status,
+      reasons: readiness.reasons
     };
   }
 
@@ -17279,10 +17290,7 @@ export class TradingBot {
       selfHeal: currentSafety.selfHealState
     }));
     return {
-      contract: {
-        version: "v1",
-        shape: "doctor"
-      },
+      contract: buildContract("doctor", "doctor"),
       mode: this.config.botMode,
       validation: this.config.validation,
       broker: await this.broker.doctor(this.runtime),
@@ -17484,29 +17492,28 @@ export class TradingBot {
         ? "Trade replays en decision explainers laten nu dezelfde beslisketen zien."
         : "Explainability volgt zodra er recente trades of beslissingen zijn."
     };
+    const overview = {
+      mode: this.config.botMode,
+      lastCycleAt: this.runtime.lastCycleAt,
+      lastAnalysisAt: this.runtime.lastAnalysisAt,
+      lastPortfolioUpdateAt: this.runtime.lastPortfolioUpdateAt,
+      quoteFree: num(this.runtime.lastKnownBalance || 0, 2),
+      equity: num(this.runtime.lastKnownEquity || 0, 2),
+      effectiveBudget,
+      sizingGuide,
+      openPositionCount: positions.length,
+      totalUnrealizedPnl: num(totalUnrealizedPnl, 2),
+      openExposure: num(report.openExposure || 0, 2),
+      watchlistSize: this.config.watchlist.length
+    };
     return {
-      contract: {
-        version: "v1",
-        shape: "dashboard_snapshot"
-      },
+      contract: buildContract("snapshot", "dashboard_snapshot"),
       generatedAt: nowIso(),
       analysis: {
         lastError: this.runtime.lastAnalysisError || null
       },
-      overview: {
-        mode: this.config.botMode,
-        lastCycleAt: this.runtime.lastCycleAt,
-        lastAnalysisAt: this.runtime.lastAnalysisAt,
-        lastPortfolioUpdateAt: this.runtime.lastPortfolioUpdateAt,
-        quoteFree: num(this.runtime.lastKnownBalance || 0, 2),
-        equity: num(this.runtime.lastKnownEquity || 0, 2),
-        effectiveBudget,
-        sizingGuide,
-        openPositionCount: positions.length,
-        totalUnrealizedPnl: num(totalUnrealizedPnl, 2),
-        openExposure: num(report.openExposure || 0, 2),
-        watchlistSize: this.config.watchlist.length
-      },
+      overview,
+      coreMetrics: buildCoreMetricsView({ report, overview }),
       exchangeCapabilities: summarizeExchangeCapabilities(this.runtime.exchangeCapabilities || this.config.exchangeCapabilities || {}),
       health: this.health.getStatus(this.runtime),
       stream: this.stream.getStatus(),
@@ -17724,6 +17731,7 @@ export class TradingBot {
       safety: dashboard.safety,
       signalFlow: dashboard.ops?.signalFlow || null,
       ops: dashboard.ops,
+      coreMetrics: dashboard.coreMetrics || buildCoreMetricsView({ report: dashboard.report, overview: dashboard.overview }),
       report: dashboard.report,
       modelWeights: dashboard.modelWeights
     };

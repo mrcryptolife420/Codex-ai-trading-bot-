@@ -3,6 +3,10 @@ import { minutesBetween, sameUtcDay } from "../utils/time.js";
 import { buildMarketStateSummary } from "../strategy/marketState.js";
 import { buildConfidenceBreakdown, buildDataQualitySummary, buildSignalQualitySummary } from "../strategy/candidateInsights.js";
 import { matchesBrokerMode } from "../utils/tradingSource.js";
+import { evaluatePositionGuards, shouldBlockAmbiguousSetup } from "./entryGuards.js";
+import { getAmbiguityThreshold, buildDecisionContextConfidence } from "./entryScoring.js";
+import { buildSizingFactorBreakdown } from "./entrySizing.js";
+import { buildEntryDiagnosticsSummary, buildReasonProfiles } from "./entryFinalize.js";
 
 function safeValue(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -133,132 +137,6 @@ function normalizeDecisionReasons(reasons = []) {
     });
 }
 
-function getAmbiguityThreshold({
-  regime = "range",
-  family = "",
-  marketConditionId = ""
-} = {}) {
-  let threshold = 0.62;
-  if (["range", "high_vol"].includes(regime)) {
-    threshold -= 0.04;
-  } else if (regime === "trend") {
-    threshold += 0.03;
-  }
-  if (["breakout", "market_structure", "orderflow"].includes(family)) {
-    threshold -= 0.02;
-  } else if (family === "mean_reversion") {
-    threshold += 0.03;
-  }
-  if (["failed_breakout", "range_break_risk", "trend_exhaustion"].includes(marketConditionId)) {
-    threshold -= 0.02;
-  }
-  return clamp(threshold, 0.5, 0.75);
-}
-
-function buildDecisionContextConfidence({
-  signalQualitySummary = {},
-  dataQualitySummary = {},
-  confidenceBreakdown = {},
-  marketConditionSummary = {},
-  score = {}
-} = {}) {
-  const signalQuality = safeValue(signalQualitySummary.overallScore, 0);
-  const dataQuality = safeValue(dataQualitySummary.overallScore, 0);
-  const executionConfidence = safeValue(confidenceBreakdown.executionConfidence, 0);
-  const modelConfidence = safeValue(score.calibrationConfidence ?? score.confidence, 0);
-  const conditionConfidence = safeValue(marketConditionSummary.conditionConfidence, 0);
-  const conditionRiskPenalty = safeValue(marketConditionSummary.conditionRisk, 0) * 0.14;
-  return clamp(
-    signalQuality * 0.26 +
-    dataQuality * 0.22 +
-    executionConfidence * 0.24 +
-    modelConfidence * 0.18 +
-    conditionConfidence * 0.1 -
-    conditionRiskPenalty,
-    0,
-    1
-  );
-}
-
-function evaluatePositionGuards({
-  openPositionsInMode = [],
-  maxOpenPositions = 0,
-  symbol = ""
-} = {}) {
-  const reasons = [];
-  if (openPositionsInMode.length >= maxOpenPositions) {
-    reasons.push("max_open_positions_reached");
-  }
-  const hasOpenPositionForSymbol = openPositionsInMode.some((position) => position.symbol === symbol);
-  if (hasOpenPositionForSymbol) {
-    reasons.push("position_already_open");
-  }
-  return {
-    reasons,
-    hasOpenPositionForSymbol
-  };
-}
-
-function shouldBlockAmbiguousSetup({
-  riskSensitiveFamily = false,
-  ambiguityScore = 0,
-  ambiguityThreshold = 1,
-  scoreProbability = 0,
-  threshold = 1,
-  strongTrendGuardOverride = false
-} = {}) {
-  return Boolean(
-    riskSensitiveFamily &&
-    ambiguityScore >= ambiguityThreshold &&
-    scoreProbability < threshold + 0.06 &&
-    !strongTrendGuardOverride
-  );
-}
-
-function buildSizingFactorBreakdown({
-  sessionSizeMultiplier,
-  driftSizeMultiplier,
-  selfHealSizeMultiplier,
-  metaSizeMultiplier,
-  strategyMetaSizeMultiplier,
-  venueSizeMultiplier,
-  capitalGovernorSizeMultiplier,
-  capitalLadderSizeMultiplier,
-  retirementSizeMultiplier,
-  executionCostSizeMultiplier,
-  spotDowntrendPenalty,
-  trendStateSizeMultiplier,
-  offlineLearningSizeMultiplier
-}) {
-  const sizingFactors = [
-    { id: "session", value: sessionSizeMultiplier },
-    { id: "drift", value: driftSizeMultiplier },
-    { id: "self_heal", value: selfHealSizeMultiplier },
-    { id: "meta", value: metaSizeMultiplier },
-    { id: "strategy_meta", value: strategyMetaSizeMultiplier },
-    { id: "venue", value: venueSizeMultiplier },
-    { id: "capital_governor", value: capitalGovernorSizeMultiplier },
-    { id: "capital_ladder", value: capitalLadderSizeMultiplier },
-    { id: "retirement", value: retirementSizeMultiplier },
-    { id: "execution_cost", value: executionCostSizeMultiplier },
-    { id: "downtrend", value: spotDowntrendPenalty },
-    { id: "trend_state", value: trendStateSizeMultiplier },
-    { id: "offline_learning", value: offlineLearningSizeMultiplier }
-  ].map((item) => ({
-    ...item,
-    effect: num((safeValue(item.value, 1) - 1), 4)
-  }));
-  return {
-    dominantSizingDrag: [...sizingFactors]
-      .filter((item) => item.value < 1)
-      .sort((left, right) => left.value - right.value)
-      .slice(0, 3),
-    dominantSizingBoost: [...sizingFactors]
-      .filter((item) => item.value > 1)
-      .sort((left, right) => right.value - left.value)
-      .slice(0, 2)
-  };
-}
 
 function isMildPaperQualityReason(reason) {
   return [
@@ -3705,22 +3583,12 @@ export class RiskManager {
       marketConditionSummary,
       score
     });
-    const blockerCategoryCounts = reasons.reduce((acc, reason) => {
-      const category = classifyReasonCategory(reason);
-      acc[category] = (acc[category] || 0) + 1;
-      return acc;
-    }, {});
-    const reasonSeverityProfile = reasons.reduce((acc, reason) => {
-      const severity = reasonSeverity(reason);
-      if (severity >= 4) {
-        acc.hard += 1;
-      } else if (severity >= 3) {
-        acc.medium += 1;
-      } else {
-        acc.soft += 1;
-      }
-      return acc;
-    }, { hard: 0, medium: 0, soft: 0 });
+    const reasonProfiles = buildReasonProfiles(reasons, {
+      classifyReasonCategory,
+      reasonSeverity
+    });
+    const blockerCategoryCounts = reasonProfiles.blockerCategoryCounts;
+    const reasonSeverityProfile = reasonProfiles.reasonSeverityProfile;
     const sizingBreakdown = buildSizingFactorBreakdown({
       sessionSizeMultiplier,
       driftSizeMultiplier,
@@ -3738,25 +3606,23 @@ export class RiskManager {
     });
     const dominantSizingDrag = sizingBreakdown.dominantSizingDrag;
     const dominantSizingBoost = sizingBreakdown.dominantSizingBoost;
-    const entryDiagnostics = {
-      regime: regimeSummary.regime || null,
-      phase: marketStateSummary.phase || null,
-      marketCondition: {
-        id: marketConditionId || null,
-        confidence: num(marketConditionConfidence, 4),
-        risk: num(marketConditionRisk, 4),
-        posture: marketConditionSummary.posture || null,
-        drivers: [...(marketConditionSummary.drivers || [])].slice(0, 3)
-      },
-      thresholdBuffer: num(score.probability - threshold, 4),
-      strongestConfirmingFactors: candidateApprovalReasons.slice(0, 4),
-      strongestRejectingFactors: reasons.slice(0, 4),
+    const entryDiagnostics = buildEntryDiagnosticsSummary({
+      regimeSummary,
+      marketStateSummary,
+      marketConditionId,
+      marketConditionConfidence,
+      marketConditionRisk,
+      marketConditionSummary,
+      score,
+      threshold,
+      candidateApprovalReasons,
+      reasons,
       blockerCategoryCounts,
       reasonSeverityProfile,
-      ambiguityScore: num(ambiguityScore, 4),
-      ambiguityThreshold: num(ambiguityThreshold, 4),
-      decisionContextConfidence: num(decisionContextConfidence, 4)
-    };
+      ambiguityScore,
+      ambiguityThreshold,
+      decisionContextConfidence
+    });
 
     return {
       allow,
