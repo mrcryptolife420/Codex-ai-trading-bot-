@@ -69,6 +69,7 @@ let allowedOnly = false;
 let showAllDecisions = readStoredBoolean(STORAGE_KEYS.showAllDecisions, false);
 let lastSnapshotReceivedAt = null;
 let latestAppliedEpoch = 0;
+const renderFallbackSections = new Set();
 const panelState = {
   signals: true,
   positions: true,
@@ -313,11 +314,39 @@ function showDashboardRenderIssue(section, error) {
   }
 }
 
+function syncRenderHealthBanner() {
+  if (!elements.operatorSummary) {
+    return;
+  }
+  const existing = elements.operatorSummary.querySelector?.("[data-render-health='1']");
+  if (!renderFallbackSections.size) {
+    existing?.remove?.();
+    return;
+  }
+  const label = `Render fallback actief: ${[...renderFallbackSections].join(", ")}`;
+  if (existing) {
+    const text = existing.querySelector?.("span");
+    if (text) {
+      text.textContent = label;
+    }
+    return;
+  }
+  const pill = makeNode("span", { className: "hero-pill negative" });
+  pill.setAttribute("data-render-health", "1");
+  pill.append(
+    makeNode("strong", { text: "UI health" }),
+    makeNode("span", { text: label })
+  );
+  elements.operatorSummary.append(pill);
+}
+
 function safeRenderSection(section, renderFn) {
   try {
     renderFn();
+    renderFallbackSections.delete(section);
     return null;
   } catch (error) {
+    renderFallbackSections.add(section);
     showDashboardRenderIssue(section, error);
     if (section === "learning" && elements.learningList) {
       replaceChildren(elements.learningList, [
@@ -2469,6 +2498,7 @@ function render(snapshot) {
       renderErrors.push(issue);
     }
   }
+  syncRenderHealthBanner();
   if (!renderErrors.length && elements.controlHint) {
     elements.controlHint.textContent = buildHeroSummary(snapshot).subline;
   }

@@ -274,6 +274,33 @@ export class StateStore {
     await saveJson(this.modelBackupsPath, backups);
   }
 
+  async saveSnapshotBundle({ runtime, journal, model, modelBackups }) {
+    const payloads = [
+      { path: this.runtimePath, data: migrateRuntime(runtime) },
+      { path: this.journalPath, data: migrateJournal(journal) },
+      { path: this.modelPath, data: model },
+      { path: this.modelBackupsPath, data: modelBackups }
+    ];
+    const staged = [];
+    const nonce = `${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
+    try {
+      for (const item of payloads) {
+        const tempPath = `${item.path}.staging-${nonce}.tmp`;
+        const content = `${JSON.stringify(item.data, null, 2)}\n`;
+        await fs.writeFile(tempPath, content, "utf8");
+        staged.push({ tempPath, finalPath: item.path });
+      }
+      for (const item of staged) {
+        await fs.rename(item.tempPath, item.finalPath);
+      }
+    } catch (error) {
+      for (const item of staged) {
+        await removeFile(item.tempPath).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
   async quarantineCorruptFile(filePath, atIso = new Date().toISOString()) {
     if (!filePath) {
       return null;

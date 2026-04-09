@@ -9039,6 +9039,52 @@ await runCheck("risk manager suppresses strategy cooldown when the same symbol p
   assert.ok(!decision.reasons.includes("strategy_cooldown"));
 });
 
+await runCheck("risk manager scopes max-position and duplicate-position blockers by broker mode", async () => {
+  const manager = new RiskManager(makeConfig({ botMode: "live", maxOpenPositions: 1 }));
+  const decision = manager.evaluateEntry({
+    symbol: "BTCUSDT",
+    score: {
+      probability: 0.72,
+      calibrationConfidence: 0.82,
+      disagreement: 0.02,
+      shouldAbstain: false,
+      transformer: { probability: 0.74, confidence: 0.2 }
+    },
+    marketSnapshot: {
+      book: { spreadBps: 2, bookPressure: 0.12, microPriceEdgeBps: 0.12, depthConfidence: 0.88 },
+      market: { realizedVolPct: 0.012, atrPct: 0.008, bearishPatternScore: 0.03, bullishPatternScore: 0.22, dominantPattern: "none" }
+    },
+    newsSummary: { riskScore: 0.03, sentimentScore: 0.05, eventBullishScore: 0.01, eventBearishScore: 0, socialSentiment: 0.01, socialRisk: 0 },
+    announcementSummary: { riskScore: 0.01, sentimentScore: 0 },
+    marketStructureSummary: { riskScore: 0.08, signalScore: 0.08, crowdingBias: 0.01, fundingRate: 0.00001, liquidationImbalance: 0, liquidationIntensity: 0 },
+    marketSentimentSummary: { riskScore: 0.18, contrarianScore: 0.08 },
+    volatilitySummary: { riskScore: 0.24, ivPremium: 1.4 },
+    calendarSummary: { riskScore: 0.02, bullishScore: 0, urgencyScore: 0.01 },
+    committeeSummary: { agreement: 0.84, probability: 0.73, netScore: 0.12, sizeMultiplier: 1, vetoes: [] },
+    rlAdvice: { sizeMultiplier: 1, confidence: 0.45, expectedReward: 0.02 },
+    strategySummary: { activeStrategy: "ema_trend", family: "trend_following", fitScore: 0.7, confidence: 0.63, blockers: [], agreementGap: 0.02, optimizer: { sampleSize: 12, sampleConfidence: 0.71 } },
+    sessionSummary: { blockerReasons: [], lowLiquidity: false, riskScore: 0.01, sizeMultiplier: 1, isWeekend: false },
+    driftSummary: { blockerReasons: [], severity: 0.03 },
+    selfHealState: { mode: "normal", active: false, sizeMultiplier: 1, thresholdPenalty: 0, lowRiskOnly: false },
+    metaSummary: { action: "pass", score: 0.66, dailyTradeCount: 0, sizeMultiplier: 1, thresholdPenalty: 0 },
+    runtime: {
+      openPositions: [
+        { symbol: "BTCUSDT", brokerMode: "paper", notional: 200, quantity: 1, entryPrice: 200 },
+        { symbol: "ETHUSDT", brokerMode: "paper", notional: 200, quantity: 1, entryPrice: 200 }
+      ]
+    },
+    journal: { trades: [] },
+    balance: { quoteFree: 1000 },
+    symbolStats: { avgPnlPct: 0 },
+    portfolioSummary: { sizeMultiplier: 1, maxCorrelation: 0, reasons: [] },
+    regimeSummary: { regime: "trend", confidence: 0.74 },
+    qualityQuorumSummary: { status: "ready", observeOnly: false, quorumScore: 0.9, blockerReasons: [] },
+    nowIso: "2026-04-09T12:00:00.000Z"
+  });
+  assert.ok(!decision.reasons.includes("max_open_positions_reached"));
+  assert.ok(!decision.reasons.includes("position_already_open"));
+});
+
 await runCheck("risk manager does not block breakout paper setups on mild local sell pressure without corroboration", async () => {
   const manager = new RiskManager(makeConfig({ paperExplorationEnabled: false }));
   const decision = manager.evaluateEntry({
@@ -10950,6 +10996,27 @@ await runCheck("shared status tone keeps runtime and dashboard semantics aligned
   assert.equal(resolveStatusTone("paper"), "positive");
   assert.equal(resolveStatusTone("blocked"), "negative");
   assert.equal(resolveStatusTone("unknown_state"), "neutral");
+});
+
+await runCheck("bot manager API envelopes expose contract version and fixed payload shape", async () => {
+  const manager = new BotManager({ projectRoot: process.cwd(), logger: { warn() {}, error() {} } });
+  manager.config = makeConfig();
+  manager.ensureBotReady = async () => {};
+  manager.bot = {
+    async getStatus() { return { ok: true }; },
+    async runDoctor() { return { ok: true }; },
+    async getReport() { return { ok: true }; }
+  };
+  const status = await manager.getStatus();
+  const doctor = await manager.getDoctor();
+  const report = await manager.getReport();
+  assert.equal(status.contract.version, "v1");
+  assert.equal(doctor.contract.version, "v1");
+  assert.equal(report.contract.version, "v1");
+  assert.ok(Object.prototype.hasOwnProperty.call(status.payload, "snapshot"));
+  assert.ok(Object.prototype.hasOwnProperty.call(status.payload, "status"));
+  assert.ok(Object.prototype.hasOwnProperty.call(status.payload, "doctor"));
+  assert.ok(Object.prototype.hasOwnProperty.call(status.payload, "report"));
 });
 
 await runCheck("bot manager stops instead of switching live positions to paper", async () => {
@@ -17821,6 +17888,7 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
   assert.equal(snapshot.ops.tuningGovernance.governorScope, "strategy:ema_trend");
   assert.equal(snapshot.ops.paperLearning.status, "active");
   assert.equal(snapshot.ops.paperLearning.probeCount, 2);
+  assert.ok(snapshot.report.blockedSetupLifecycle);
   assert.equal(snapshot.dataRecorder.replayFrames, 5);
   assert.equal(snapshot.sourceReliability.externalFeeds.providerCount, 1);
   assert.equal(snapshot.sourceReliability.externalFeeds.providers[0].group, "calendar");

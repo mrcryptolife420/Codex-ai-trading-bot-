@@ -180,6 +180,86 @@ function buildDecisionContextConfidence({
   );
 }
 
+function evaluatePositionGuards({
+  openPositionsInMode = [],
+  maxOpenPositions = 0,
+  symbol = ""
+} = {}) {
+  const reasons = [];
+  if (openPositionsInMode.length >= maxOpenPositions) {
+    reasons.push("max_open_positions_reached");
+  }
+  const hasOpenPositionForSymbol = openPositionsInMode.some((position) => position.symbol === symbol);
+  if (hasOpenPositionForSymbol) {
+    reasons.push("position_already_open");
+  }
+  return {
+    reasons,
+    hasOpenPositionForSymbol
+  };
+}
+
+function shouldBlockAmbiguousSetup({
+  riskSensitiveFamily = false,
+  ambiguityScore = 0,
+  ambiguityThreshold = 1,
+  scoreProbability = 0,
+  threshold = 1,
+  strongTrendGuardOverride = false
+} = {}) {
+  return Boolean(
+    riskSensitiveFamily &&
+    ambiguityScore >= ambiguityThreshold &&
+    scoreProbability < threshold + 0.06 &&
+    !strongTrendGuardOverride
+  );
+}
+
+function buildSizingFactorBreakdown({
+  sessionSizeMultiplier,
+  driftSizeMultiplier,
+  selfHealSizeMultiplier,
+  metaSizeMultiplier,
+  strategyMetaSizeMultiplier,
+  venueSizeMultiplier,
+  capitalGovernorSizeMultiplier,
+  capitalLadderSizeMultiplier,
+  retirementSizeMultiplier,
+  executionCostSizeMultiplier,
+  spotDowntrendPenalty,
+  trendStateSizeMultiplier,
+  offlineLearningSizeMultiplier
+}) {
+  const sizingFactors = [
+    { id: "session", value: sessionSizeMultiplier },
+    { id: "drift", value: driftSizeMultiplier },
+    { id: "self_heal", value: selfHealSizeMultiplier },
+    { id: "meta", value: metaSizeMultiplier },
+    { id: "strategy_meta", value: strategyMetaSizeMultiplier },
+    { id: "venue", value: venueSizeMultiplier },
+    { id: "capital_governor", value: capitalGovernorSizeMultiplier },
+    { id: "capital_ladder", value: capitalLadderSizeMultiplier },
+    { id: "retirement", value: retirementSizeMultiplier },
+    { id: "execution_cost", value: executionCostSizeMultiplier },
+    { id: "downtrend", value: spotDowntrendPenalty },
+    { id: "trend_state", value: trendStateSizeMultiplier },
+    { id: "offline_learning", value: offlineLearningSizeMultiplier }
+  ].map((item) => ({
+    ...item,
+    effect: num((safeValue(item.value, 1) - 1), 4)
+  }));
+  return {
+    dominantSizingDrag: [...sizingFactors]
+      .filter((item) => item.value < 1)
+      .sort((left, right) => left.value - right.value)
+      .slice(0, 3),
+    dominantSizingBoost: [...sizingFactors]
+      .filter((item) => item.value > 1)
+      .sort((left, right) => right.value - left.value)
+      .slice(0, 2)
+  };
+}
+
 function isMildPaperQualityReason(reason) {
   return [
     "local_book_quality_too_low",
@@ -1806,7 +1886,9 @@ export class RiskManager {
 
 
   getCurrentExposure(runtime) {
-    return (runtime.openPositions || []).reduce((total, position) => {
+    return (runtime.openPositions || [])
+      .filter((position) => matchesBrokerMode(position, this.config.botMode))
+      .reduce((total, position) => {
       const notional = safeValue(position?.notional, Number.NaN);
       const quantity = safeValue(position?.quantity, 0);
       const entryPrice = safeValue(position?.entryPrice, 0);
@@ -2428,8 +2510,13 @@ export class RiskManager {
       1
     );
 
-    if (openPositions.length >= this.config.maxOpenPositions) {
-      reasons.push("max_open_positions_reached");
+    const positionGuard = evaluatePositionGuards({
+      openPositionsInMode,
+      maxOpenPositions: this.config.maxOpenPositions,
+      symbol
+    });
+    if (positionGuard.reasons.length) {
+      reasons.push(...positionGuard.reasons);
     }
     if ((sessionSummary.blockerReasons || []).length) {
       reasons.push(...sessionSummary.blockerReasons);
@@ -2455,7 +2542,7 @@ export class RiskManager {
     if ((venueConfirmationSummary.status || "") === "blocked") {
       reasons.push(...(venueConfirmationSummary.blockerReasons || ["reference_venue_divergence"]));
     }
-    const hasOpenPositionForSymbol = openPositions.some((position) => position.symbol === symbol);
+    const hasOpenPositionForSymbol = positionGuard.hasOpenPositionForSymbol;
     if (strategyRetirementPolicy.blocked) {
       reasons.push("strategy_retired");
     } else if (
@@ -2702,12 +2789,14 @@ export class RiskManager {
     if (meanReversionTooShallow) {
       reasons.push("mean_reversion_too_shallow");
     }
-    if (
-      riskSensitiveFamily &&
-      ambiguityScore >= ambiguityThreshold &&
-      score.probability < threshold + 0.06 &&
-      !strongTrendGuardOverride
-    ) {
+    if (shouldBlockAmbiguousSetup({
+      riskSensitiveFamily,
+      ambiguityScore,
+      ambiguityThreshold,
+      scoreProbability: score.probability,
+      threshold,
+      strongTrendGuardOverride
+    })) {
       reasons.push("ambiguous_setup_context");
     }
     const trendAcceptanceFamily = strategySummary.family || "";
@@ -3632,32 +3721,23 @@ export class RiskManager {
       }
       return acc;
     }, { hard: 0, medium: 0, soft: 0 });
-    const sizingFactors = [
-      { id: "session", value: sessionSizeMultiplier },
-      { id: "drift", value: driftSizeMultiplier },
-      { id: "self_heal", value: selfHealSizeMultiplier },
-      { id: "meta", value: metaSizeMultiplier },
-      { id: "strategy_meta", value: strategyMetaSizeMultiplier },
-      { id: "venue", value: venueSizeMultiplier },
-      { id: "capital_governor", value: capitalGovernorSizeMultiplier },
-      { id: "capital_ladder", value: capitalLadderSizeMultiplier },
-      { id: "retirement", value: retirementSizeMultiplier },
-      { id: "execution_cost", value: executionCostSizeMultiplier },
-      { id: "downtrend", value: spotDowntrendPenalty },
-      { id: "trend_state", value: trendStateTuning.sizeMultiplier },
-      { id: "offline_learning", value: offlineLearningGuidanceApplied.sizeMultiplier }
-    ].map((item) => ({
-      ...item,
-      effect: num((safeValue(item.value, 1) - 1), 4)
-    }));
-    const dominantSizingDrag = [...sizingFactors]
-      .filter((item) => item.value < 1)
-      .sort((left, right) => left.value - right.value)
-      .slice(0, 3);
-    const dominantSizingBoost = [...sizingFactors]
-      .filter((item) => item.value > 1)
-      .sort((left, right) => right.value - left.value)
-      .slice(0, 2);
+    const sizingBreakdown = buildSizingFactorBreakdown({
+      sessionSizeMultiplier,
+      driftSizeMultiplier,
+      selfHealSizeMultiplier,
+      metaSizeMultiplier,
+      strategyMetaSizeMultiplier,
+      venueSizeMultiplier,
+      capitalGovernorSizeMultiplier,
+      capitalLadderSizeMultiplier,
+      retirementSizeMultiplier,
+      executionCostSizeMultiplier,
+      spotDowntrendPenalty,
+      trendStateSizeMultiplier: trendStateTuning.sizeMultiplier,
+      offlineLearningSizeMultiplier: offlineLearningGuidanceApplied.sizeMultiplier
+    });
+    const dominantSizingDrag = sizingBreakdown.dominantSizingDrag;
+    const dominantSizingBoost = sizingBreakdown.dominantSizingBoost;
     const entryDiagnostics = {
       regime: regimeSummary.regime || null,
       phase: marketStateSummary.phase || null,

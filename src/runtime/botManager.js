@@ -155,6 +155,10 @@ export class BotManager {
 
   buildSnapshotFromDashboard(dashboard) {
     const snapshot = {
+      contract: {
+        version: "v1",
+        kind: "snapshot"
+      },
       manager: {
         runState: this.runState,
         currentMode: this.config.botMode,
@@ -172,7 +176,39 @@ export class BotManager {
       dashboard
     };
     snapshot.manager.readiness = this.buildOperationalReadiness(snapshot);
+    snapshot.payload = {
+      snapshot: {
+        manager: snapshot.manager,
+        dashboard: snapshot.dashboard
+      },
+      status: null,
+      doctor: null,
+      report: null
+    };
     return snapshot;
+  }
+
+  buildApiEnvelope(kind, body = {}) {
+    return {
+      contract: {
+        version: "v1",
+        kind
+      },
+      manager: body.manager || {
+        runState: this.runState,
+        currentMode: this.config?.botMode || "paper",
+        lastError: publicError(this.lastError)
+      },
+      ...(kind === "status" ? { status: body.status || null } : {}),
+      ...(kind === "doctor" ? { doctor: body.doctor || null } : {}),
+      ...(kind === "report" ? { report: body.report || null } : {}),
+      payload: {
+        snapshot: null,
+        status: kind === "status" ? (body.status || null) : null,
+        doctor: kind === "doctor" ? (body.doctor || null) : null,
+        report: kind === "report" ? (body.report || null) : null
+      }
+    };
   }
 
   async closeBotForStop() {
@@ -472,7 +508,7 @@ export class BotManager {
 
   async getStatus() {
     await this.ensureBotReady();
-    return {
+    return this.buildApiEnvelope("status", {
       manager: {
         runState: this.runState,
         currentMode: this.config.botMode,
@@ -483,31 +519,31 @@ export class BotManager {
         lastError: publicError(this.lastError)
       },
       status: await this.bot.getStatus()
-    };
+    });
   }
 
   async getDoctor() {
     await this.ensureBotReady();
-    return {
+    return this.buildApiEnvelope("doctor", {
       manager: {
         runState: this.runState,
         currentMode: this.config.botMode,
         lastError: publicError(this.lastError)
       },
       doctor: await this.bot.runDoctor()
-    };
+    });
   }
 
   async getReport() {
     await this.ensureBotReady();
-    return {
+    return this.buildApiEnvelope("report", {
       manager: {
         runState: this.runState,
         currentMode: this.config.botMode,
         lastError: publicError(this.lastError)
       },
       report: await this.bot.getReport()
-    };
+    });
   }
 
   async acknowledgeAlert(id, acknowledged = true, note = null) {

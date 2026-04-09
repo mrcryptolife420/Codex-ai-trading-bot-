@@ -5975,6 +5975,10 @@ export class TradingBot {
 
   buildPublicReportView(report = this.getPerformanceReport()) {
     return {
+      contract: {
+        version: "v1",
+        shape: "report_public"
+      },
       generatedAt: nowIso(),
       tradeCount: report.tradeCount || 0,
       realizedPnl: num(report.realizedPnl || 0, 2),
@@ -7470,6 +7474,15 @@ export class TradingBot {
     const chainedPersist = (this.persistPromise || Promise.resolve())
       .catch(() => {})
       .then(async () => {
+        if (typeof this.store.saveSnapshotBundle === "function") {
+          await this.store.saveSnapshotBundle({
+            runtime: runtimeSnapshot,
+            journal: journalSnapshot,
+            model: modelSnapshot,
+            modelBackups: modelBackupsSnapshot
+          });
+          return;
+        }
         await this.store.saveRuntime(runtimeSnapshot);
         await this.store.saveJournal(journalSnapshot);
         await this.store.saveModel(modelSnapshot);
@@ -17266,6 +17279,10 @@ export class TradingBot {
       selfHeal: currentSafety.selfHealState
     }));
     return {
+      contract: {
+        version: "v1",
+        shape: "doctor"
+      },
       mode: this.config.botMode,
       validation: this.config.validation,
       broker: await this.broker.doctor(this.runtime),
@@ -17468,6 +17485,10 @@ export class TradingBot {
         : "Explainability volgt zodra er recente trades of beslissingen zijn."
     };
     return {
+      contract: {
+        version: "v1",
+        shape: "dashboard_snapshot"
+      },
       generatedAt: nowIso(),
       analysis: {
         lastError: this.runtime.lastAnalysisError || null
@@ -17601,6 +17622,7 @@ export class TradingBot {
           notes: []
         },
         tradeQualityReview: report.tradeQualityReview || null,
+        blockedSetupLifecycle: report.blockedSetupLifecycle || null,
         recentReviews: arr(report.recentReviews || []).slice(0, 12),
         equitySeries: arr(report.equitySeries || []).slice(-(this.config.dashboardEquityPointLimit || 1440)).map((item) => ({
           at: item.at,
