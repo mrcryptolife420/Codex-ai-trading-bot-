@@ -1,5 +1,9 @@
 import { clamp, sigmoid } from "../utils/math.js";
 
+function safeNumber(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 const PRIOR_BIAS = -0.12;
 const FEATURE_GROUP_DAMPING = [
   {
@@ -417,7 +421,11 @@ export class OnlineTradingModel {
     const executionQuality = clamp(trade.executionQualityScore ?? 0.5, 0.1, 1);
     const brokerModeWeight = clamp(trade.brokerModeWeight ?? ((trade.brokerMode || "paper") === "live" ? 1.08 : 0.94), 0.75, 1.2);
     const executionRegretPenalty = clamp(1 - (trade.executionRegretScore ?? 0) * 0.22, 0.72, 1);
-    const sampleWeight = clamp((Math.abs(netPnlPct || 0) * 22 + Math.abs(target - 0.5) * 2.2) * executionQuality * brokerModeWeight * executionRegretPenalty, 0.3, 2.75);
+    const sampleWeight = clamp(
+      (Math.abs(netPnlPct || 0) * 22 + Math.abs(target - 0.5) * 2.2) * executionQuality * brokerModeWeight * executionRegretPenalty,
+      0.3,
+      safeNumber(this.config.adaptiveLearningMaxSampleWeight, 1.85)
+    );
     const learningRate = overrides.learningRate || this.config.modelLearningRate;
     const l2 = overrides.l2 || this.config.modelL2;
     const error = (target - prediction.probability) * sampleWeight;

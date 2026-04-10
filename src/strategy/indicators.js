@@ -464,6 +464,141 @@ function computeDirectionalAcceleration(returns = []) {
   };
 }
 
+function detectFairValueGap(candles = []) {
+  if (candles.length < 3) {
+    return {
+      bullishFvgActive: 0,
+      bearishFvgActive: 0,
+      nearestBullishFvgDistancePct: 0,
+      nearestBearishFvgDistancePct: 0,
+      fvgFillProgress: 1,
+      fvgWidthPct: 0,
+      fvgRespectScore: 0
+    };
+  }
+  const lastClose = Number(candles.at(-1)?.close || 0);
+  const gaps = [];
+  for (let index = 2; index < candles.length; index += 1) {
+    const left = candles[index - 2];
+    const current = candles[index];
+    if (!left || !current) {
+      continue;
+    }
+    if (Number(current.low || 0) > Number(left.high || 0)) {
+      gaps.push({ direction: "bullish", lower: Number(left.high || 0), upper: Number(current.low || 0), createdAt: index });
+    }
+    if (Number(current.high || 0) < Number(left.low || 0)) {
+      gaps.push({ direction: "bearish", lower: Number(current.high || 0), upper: Number(left.low || 0), createdAt: index });
+    }
+  }
+  const active = gaps
+    .map((gap) => {
+      const width = Math.max(gap.upper - gap.lower, 1e-9);
+      const futureCandles = candles.slice(gap.createdAt + 1);
+      const fillProgress = gap.direction === "bullish"
+        ? clamp((gap.upper - futureCandles.reduce((min, candle) => Math.min(min, Number(candle.low || gap.upper)), gap.upper)) / width, 0, 1)
+        : clamp((futureCandles.reduce((max, candle) => Math.max(max, Number(candle.high || gap.lower)), gap.lower) - gap.lower) / width, 0, 1);
+      return { ...gap, width, fillProgress, active: fillProgress < 0.97 };
+    })
+    .filter((gap) => gap.active)
+    .sort((left, right) => right.createdAt - left.createdAt);
+  const bullish = active.find((gap) => gap.direction === "bullish") || null;
+  const bearish = active.find((gap) => gap.direction === "bearish") || null;
+  const dominant = bullish || bearish;
+  return {
+    bullishFvgActive: bullish ? 1 : 0,
+    bearishFvgActive: bearish ? 1 : 0,
+    nearestBullishFvgDistancePct: bullish && lastClose ? (lastClose - bullish.lower) / lastClose : 0,
+    nearestBearishFvgDistancePct: bearish && lastClose ? (bearish.upper - lastClose) / lastClose : 0,
+    fvgFillProgress: dominant ? dominant.fillProgress : 1,
+    fvgWidthPct: dominant && lastClose ? dominant.width / lastClose : 0,
+    fvgRespectScore: dominant
+      ? clamp((1 - dominant.fillProgress) * 0.6 + clamp(dominant.width / Math.max(lastClose, 1e-9) * 200, 0, 1) * 0.22 + 0.18, 0, 1)
+      : 0
+  };
+}
+
+function detectBreakOfStructure(candles = []) {
+  if (candles.length < 8) {
+    return {
+      bullishBosActive: 0,
+      bearishBosActive: 0,
+      bosStrengthScore: 0,
+      structureShiftScore: 0,
+      swingHighBreakScore: 0,
+      swingLowBreakScore: 0
+    };
+  }
+  const last = candles.at(-1) || {};
+  const lastClose = Number(last.close || 0);
+  const recent = candles.slice(-7, -1);
+  const priorHigh = Math.max(...recent.map((candle) => Number(candle.high || 0)));
+  const priorLow = Math.min(...recent.map((candle) => Number(candle.low || 0)));
+  const breakAbove = priorHigh > 0 ? clamp(((lastClose - priorHigh) / priorHigh) * 80, 0, 1) : 0;
+  const breakBelow = priorLow > 0 ? clamp(((priorLow - lastClose) / priorLow) * 80, 0, 1) : 0;
+  const candleRange = Math.max(Number(last.high || 0) - Number(last.low || 0), 1e-9);
+  const closeDrive = clamp((Number(last.close || 0) - Number(last.open || 0)) / candleRange, -1, 1);
+  return {
+    bullishBosActive: breakAbove > 0.05 && closeDrive > 0.08 ? 1 : 0,
+    bearishBosActive: breakBelow > 0.05 && closeDrive < -0.08 ? 1 : 0,
+    bosStrengthScore: clamp(Math.max(breakAbove, breakBelow) * 0.68 + Math.abs(closeDrive) * 0.32, 0, 1),
+    structureShiftScore: clamp((breakAbove - breakBelow) * 0.78 + closeDrive * 0.22, -1, 1),
+    swingHighBreakScore: breakAbove,
+    swingLowBreakScore: breakBelow
+  };
+}
+
+function computeCvdContext(candles = [], lastClose = 0) {
+  if (candles.length < 6) {
+    return {
+      cvdValue: 0,
+      cvdSlope: 0,
+      cvdMomentum: 0,
+      cvdDivergenceScore: 0,
+      cvdConfirmationScore: 0,
+      cvdTrendAlignment: 0,
+      cvdConfidence: 0.28
+    };
+  }
+  const cumulative = [];
+  let cvd = 0;
+  for (let index = 1; index < candles.length; index += 1) {
+    const previous = candles[index - 1];
+    const current = candles[index];
+    const delta = Number(current.close || 0) - Number(previous.close || 0);
+    const signedVolume = Number(current.volume || 0) * (delta > 0 ? 1 : delta < 0 ? -1 : Math.sign(Number(current.close || 0) - Number(current.open || 0)));
+    cvd += signedVolume;
+    cumulative.push(cvd);
+  }
+  const baseline = Math.max(average(candles.slice(-24).map((candle) => Number(candle.volume || 0)), 1), 1);
+  const recent = cumulative.slice(-5);
+  const prior = cumulative.slice(-10, -5);
+  const recentSlope = recent.length > 1 ? (recent.at(-1) - recent[0]) / recent.length : 0;
+  const priorSlope = prior.length > 1 ? (prior.at(-1) - prior[0]) / prior.length : 0;
+  const priceDelta = candles.length > 6 ? (lastClose - Number(candles.at(-6)?.close || lastClose)) / Math.max(Number(candles.at(-6)?.close || 1), 1e-9) : 0;
+  const cvdSlope = recentSlope / baseline;
+  const cvdMomentum = (recentSlope - priorSlope) / baseline;
+  const divergence = Math.sign(priceDelta || 0) !== Math.sign(cvdSlope || 0)
+    ? clamp(Math.abs(priceDelta) * 26 + Math.abs(cvdSlope) * 2.6, 0, 1)
+    : 0;
+  const alignment = clamp(
+    Math.sign(priceDelta || 0) === Math.sign(cvdSlope || 0)
+      ? Math.min(1, Math.abs(priceDelta) * 24 + Math.abs(cvdSlope) * 2.4)
+      : -Math.min(1, Math.abs(priceDelta) * 22 + Math.abs(cvdSlope) * 2.2),
+    -1,
+    1
+  );
+  return {
+    cvdValue: cvd / baseline,
+    cvdSlope,
+    cvdMomentum,
+    cvdDivergenceScore: divergence,
+    cvdConfirmationScore: clamp(Math.max(0, alignment) * 0.72 + Math.max(0, cvdMomentum) * 0.28, 0, 1),
+    cvdTrendAlignment: alignment,
+    cvdConfidence: clamp(0.32 + Math.min(candles.length, 48) / 48 * 0.5, 0, 0.9)
+  };
+}
+
 export function computeMarketFeatures(candles) {
   const closes = candles.map((candle) => candle.close);
   const highs = candles.map((candle) => candle.high);
@@ -534,6 +669,9 @@ export function computeMarketFeatures(candles) {
   const structureBreak = detectStructureBreak(lastClose, priorChannel.upper, priorChannel.lower, momentum5, closeLocation);
   const swingStructure = computeSwingStructure(highs, lows, 8);
   const directionalAcceleration = computeDirectionalAcceleration(returns);
+  const fvg = detectFairValueGap(candles);
+  const bos = detectBreakOfStructure(candles);
+  const cvd = computeCvdContext(candles, lastClose);
   const keltnerWidthPct = keltner.basis ? (keltner.upper - keltner.lower) / keltner.basis : 0;
   const insideKeltner = bollinger.upper <= keltner.upper && bollinger.lower >= keltner.lower ? 1 : 0;
   const squeezeCompression = keltnerWidthPct > 0 ? 1 - clamp(bollingerWidthPct / Math.max(keltnerWidthPct, 1e-9), 0, 1.6) : 0;
@@ -609,6 +747,34 @@ export function computeMarketFeatures(candles) {
     0,
     1
   );
+  const rangeWidthPct = donchianWidthPct;
+  const rangeTopDistancePct = lastClose ? Math.max(0, currentChannel.upper - lastClose) / lastClose : 0;
+  const rangeBottomDistancePct = lastClose ? Math.max(0, lastClose - currentChannel.lower) / lastClose : 0;
+  const rangeBoundaryRespectScore = clamp(
+    average([
+      clamp(1 - Math.abs(donchianPosition - 0.5) * 2.1, 0, 1),
+      clamp(1 - Math.abs(swingStructure.swingStructureScore), 0, 1),
+      clamp(1 - Math.abs(bos.structureShiftScore), 0, 1),
+      clamp(1 - cvd.cvdDivergenceScore, 0, 1)
+    ], 0.5),
+    0,
+    1
+  );
+  const rangeMeanRevertScore = clamp(
+    average([
+      clamp(1 - Math.abs(priceZScore) / 2.3, 0, 1),
+      clamp(1 - Math.abs(dmi.dmiSpread) * 1.8, 0, 1),
+      rangeBoundaryRespectScore,
+      clamp(1 - Math.max(0, trendQualityScore), 0, 1)
+    ], 0.45),
+    0,
+    1
+  );
+  const gridEntrySide = donchianPosition <= 0.32
+    ? "buy_lower_band"
+    : donchianPosition >= 0.68
+      ? "sell_upper_band"
+      : "none";
 
   return {
     lastClose,
@@ -686,7 +852,33 @@ export function computeMarketFeatures(candles) {
     liquiditySweepScore: liquiditySweep.score,
     liquiditySweepLabel: liquiditySweep.label,
     structureBreakScore: structureBreak.score,
-    structureBreakLabel: structureBreak.label
+    structureBreakLabel: structureBreak.label,
+    bullishFvgActive: fvg.bullishFvgActive,
+    bearishFvgActive: fvg.bearishFvgActive,
+    nearestBullishFvgDistancePct: fvg.nearestBullishFvgDistancePct,
+    nearestBearishFvgDistancePct: fvg.nearestBearishFvgDistancePct,
+    fvgFillProgress: fvg.fvgFillProgress,
+    fvgWidthPct: fvg.fvgWidthPct,
+    fvgRespectScore: fvg.fvgRespectScore,
+    bullishBosActive: bos.bullishBosActive,
+    bearishBosActive: bos.bearishBosActive,
+    bosStrengthScore: bos.bosStrengthScore,
+    structureShiftScore: bos.structureShiftScore,
+    swingHighBreakScore: bos.swingHighBreakScore,
+    swingLowBreakScore: bos.swingLowBreakScore,
+    cvdValue: cvd.cvdValue,
+    cvdSlope: cvd.cvdSlope,
+    cvdMomentum: cvd.cvdMomentum,
+    cvdDivergenceScore: cvd.cvdDivergenceScore,
+    cvdConfirmationScore: cvd.cvdConfirmationScore,
+    cvdTrendAlignment: cvd.cvdTrendAlignment,
+    cvdConfidence: cvd.cvdConfidence,
+    rangeWidthPct,
+    rangeTopDistancePct,
+    rangeBottomDistancePct,
+    rangeMeanRevertScore,
+    rangeBoundaryRespectScore,
+    gridEntrySide
   };
 }
 

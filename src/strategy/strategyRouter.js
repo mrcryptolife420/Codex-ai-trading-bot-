@@ -18,7 +18,8 @@ export const STRATEGY_META = {
   market_structure_break: { label: "Market structure break", family: "market_structure", familyLabel: "Market structure", setupStyle: "market_structure_break" },
   funding_rate_extreme: { label: "Funding rate extreme", family: "derivatives", familyLabel: "Derivatives", setupStyle: "funding_reversion" },
   open_interest_breakout: { label: "Open interest breakout", family: "derivatives", familyLabel: "Derivatives", setupStyle: "open_interest_breakout" },
-  orderbook_imbalance: { label: "Orderbook imbalance", family: "orderflow", familyLabel: "Orderflow", setupStyle: "orderbook_imbalance" }
+  orderbook_imbalance: { label: "Orderbook imbalance", family: "orderflow", familyLabel: "Orderflow", setupStyle: "orderbook_imbalance" },
+  range_grid_reversion: { label: "Range grid reversion", family: "range_grid", familyLabel: "Range grid", setupStyle: "range_grid" }
 };
 
 function safeValue(value) {
@@ -150,7 +151,7 @@ function buildInputs(context) {
     bearishPattern,
     exchangeCapabilities,
     marketState,
-    trendState: marketState.trendStateSummary,
+    trendState: marketState.trendStateSummary || {},
     relativeStrength,
     downsideVolDominance,
     acceptanceQuality,
@@ -162,12 +163,19 @@ function buildBreakoutContextState(inputs = {}) {
   const market = inputs.market || {};
   const marketState = inputs.marketState || {};
   const marketCondition = inputs.marketCondition || {};
+  const bosStrength = clamp(safeValue(market.bosStrengthScore), 0, 1);
+  const bullishBos = safeValue(market.bullishBosActive) > 0 ? 1 : 0;
+  const fvgSupport = clamp(safeValue(market.fvgRespectScore), 0, 1);
+  const cvdConfirmation = clamp(safeValue(market.cvdConfirmationScore), 0, 1);
+  const cvdDivergence = clamp(safeValue(market.cvdDivergenceScore), 0, 1);
   const breakoutFollowThrough = safeValue(market.breakoutFollowThroughScore);
   const releaseScore = clamp(average([
     breakoutFollowThrough,
     safeValue(inputs.acceptanceQuality, 0.5),
     safeValue(inputs.replenishmentQuality, 0.5),
-    ratio(safeValue(market.closeLocation), 0.56, 1)
+    ratio(safeValue(market.closeLocation), 0.56, 1),
+    bosStrength,
+    cvdConfirmation
   ], 0.45), 0, 1);
   const conditionId = marketCondition.conditionId || "";
   const chopRisk = clamp(
@@ -176,7 +184,9 @@ function buildBreakoutContextState(inputs = {}) {
       (conditionId === "low_liquidity_caution" ? 0.14 : 0) +
       Math.max(0, 0.46 - breakoutFollowThrough) * 0.24 +
       Math.max(0, 0.52 - safeValue(inputs.acceptanceQuality, 0.5)) * 0.18 +
-      Math.max(0, 0.5 - safeValue(inputs.replenishmentQuality, 0.5)) * 0.1,
+      Math.max(0, 0.5 - safeValue(inputs.replenishmentQuality, 0.5)) * 0.1 +
+      Math.max(0, 0.44 - bosStrength) * 0.18 +
+      cvdDivergence * 0.12,
     0,
     1
   );
@@ -184,7 +194,9 @@ function buildBreakoutContextState(inputs = {}) {
     (conditionId === "failed_breakout" ? 0.28 : 0) +
       Math.max(0, 0.54 - releaseScore) * 0.3 +
       Math.max(0, 0.42 - safeValue(inputs.acceptanceQuality, 0.5)) * 0.16 +
-      Math.max(0, -safeValue(inputs.orderflow, 0)) * 0.08,
+      Math.max(0, -safeValue(inputs.orderflow, 0)) * 0.08 +
+      Math.max(0, 0.4 - fvgSupport) * 0.12 +
+      cvdDivergence * 0.14,
     0,
     1
   );
@@ -192,7 +204,12 @@ function buildBreakoutContextState(inputs = {}) {
     conditionId,
     releaseScore,
     chopRisk,
-    falseBreakoutRisk
+    falseBreakoutRisk,
+    bosStrength,
+    bullishBos,
+    fvgSupport,
+    cvdConfirmation,
+    cvdDivergence
   };
 }
 
@@ -242,7 +259,9 @@ function buildReversionContextState(inputs = {}) {
     ((conditionId === "trend_continuation" || conditionId === "breakout_release") ? 0.28 : 0) +
       Math.max(0, safeValue(trendState.uptrendScore, 0) - 0.6) * 0.2 +
       Math.max(0, safeValue(market.breakoutFollowThroughScore, 0) - 0.46) * 0.18 +
-      Math.max(0, safeValue(market.closeLocation, 0) - 0.62) * 0.12,
+      Math.max(0, safeValue(market.closeLocation, 0) - 0.62) * 0.12 +
+      clamp(safeValue(market.bosStrengthScore), 0, 1) * (safeValue(market.bullishBosActive) > 0 ? 0.16 : 0) +
+      clamp(Math.max(0, safeValue(market.cvdTrendAlignment)), 0, 1) * 0.12,
     0,
     1
   );
@@ -250,6 +269,34 @@ function buildReversionContextState(inputs = {}) {
     conditionId,
     stretchedEnough,
     momentumConflictRisk
+  };
+}
+
+function buildRangeGridContext(inputs = {}) {
+  const market = inputs.market || {};
+  const marketState = inputs.marketState || {};
+  const marketCondition = inputs.marketCondition || {};
+  const regime = inputs.regime || "range";
+  const regimeFit = regime === "range" ? 1 : (marketState.phase || "") === "range_acceptance" ? 0.88 : 0.28;
+  const breakoutRisk =
+    ["range_break_risk", "breakout_release", "trend_continuation"].includes(marketCondition.conditionId || "") ||
+    safeValue(market.bullishBosActive) > 0 ||
+    safeValue(market.bearishBosActive) > 0 ||
+    Math.abs(safeValue(market.structureShiftScore)) >= 0.42;
+  const boundaryRespect = clamp(safeValue(market.rangeBoundaryRespectScore), 0, 1);
+  const widthQuality = ratio(safeValue(market.rangeWidthPct) * 100, 0.4, 4.2);
+  const meanRevertQuality = clamp(safeValue(market.rangeMeanRevertScore), 0, 1);
+  const lowerBandReady = ratio(0.045 - safeValue(market.rangeBottomDistancePct), -0.2, 0.045);
+  const upperBandReady = ratio(0.045 - safeValue(market.rangeTopDistancePct), -0.2, 0.045);
+  return {
+    regimeFit,
+    breakoutRisk,
+    boundaryRespect,
+    widthQuality,
+    meanRevertQuality,
+    lowerBandReady,
+    upperBandReady,
+    gridEntrySide: market.gridEntrySide || (lowerBandReady >= upperBandReady ? "buy_lower_band" : "sell_upper_band")
   };
 }
 
@@ -418,26 +465,32 @@ function evaluateBreakout(context) {
   const participation = ratio(safeValue(market.volumeZ), -0.35, 2.5);
   const followThrough = ratio(safeValue(market.closeLocation), 0.48, 1);
   const structureBreak = ratio(safeValue(market.structureBreakScore), 0.05, 1);
+  const bosSupport = ratio(safeValue(market.bosStrengthScore), 0.08, 1);
+  const fvgSupport = ratio(safeValue(market.fvgRespectScore), 0.08, 1);
+  const cvdSupport = ratio(safeValue(market.cvdConfirmationScore), 0.04, 1);
   const trendQuality = ratio(safeValue(market.trendQualityScore), -0.05, 0.95);
   const relativeStrengthScore = ratio(relativeStrength * 100, -0.6, 3.5);
-  const score = clamp(regimeFit * 0.15 + breakoutImpulse * 0.14 + compression * 0.06 + squeeze * 0.06 + keltnerSqueeze * 0.08 + squeezeRelease * 0.07 + participation * 0.09 + orderflow * 0.09 + followThrough * 0.06 + structureBreak * 0.07 + trendQuality * 0.05 + acceptanceQuality * 0.08 + replenishmentQuality * 0.04 + relativeStrengthScore * 0.06 + bullishPattern * 0.04 + newsTailwind * 0.04 - Math.max(0, downsideVolDominance) * 0.08 - breakoutContext.chopRisk * 0.11 - breakoutContext.falseBreakoutRisk * 0.12 - eventRisk * 0.1 - bearishPattern * 0.07, 0, 1);
-  const confidence = clamp(0.28 + average([regimeFit, breakoutImpulse, participation, orderflow, followThrough, keltnerSqueeze, acceptanceQuality], 0) * 0.58 - breakoutContext.chopRisk * 0.08 - breakoutContext.falseBreakoutRisk * 0.08 - Math.max(0, downsideVolDominance) * 0.05 - eventRisk * 0.08, 0, 1);
+  const score = clamp(regimeFit * 0.13 + breakoutImpulse * 0.12 + compression * 0.05 + squeeze * 0.05 + keltnerSqueeze * 0.07 + squeezeRelease * 0.06 + participation * 0.08 + orderflow * 0.08 + followThrough * 0.05 + structureBreak * 0.06 + bosSupport * 0.07 + fvgSupport * 0.05 + cvdSupport * 0.06 + trendQuality * 0.05 + acceptanceQuality * 0.07 + replenishmentQuality * 0.04 + relativeStrengthScore * 0.05 + bullishPattern * 0.03 + newsTailwind * 0.03 - Math.max(0, downsideVolDominance) * 0.08 - breakoutContext.chopRisk * 0.11 - breakoutContext.falseBreakoutRisk * 0.12 - breakoutContext.cvdDivergence * 0.08 - eventRisk * 0.1 - bearishPattern * 0.07, 0, 1);
+  const confidence = clamp(0.28 + average([regimeFit, breakoutImpulse, participation, orderflow, followThrough, bosSupport, cvdSupport, acceptanceQuality], 0) * 0.56 - breakoutContext.chopRisk * 0.08 - breakoutContext.falseBreakoutRisk * 0.08 - Math.max(0, downsideVolDominance) * 0.05 - eventRisk * 0.08, 0, 1);
   return buildStrategy("breakout", score, confidence, [
     `regime ${regime}`,
     `breakout ${(safeValue(market.breakoutPct) * 100).toFixed(2)}%`,
     `donchian ${(safeValue(market.donchianBreakoutPct) * 100).toFixed(2)}%`,
+    breakoutContext.bullishBos ? "bullish_bos_confirmed" : "weak_structure_break",
+    fvgSupport >= 0.52 ? "fvg_reclaim_support" : "fvg_failed_fill",
+    cvdSupport >= 0.54 ? "cvd_confirms_breakout" : "price_up_cvd_diverging",
     `rel ${(relativeStrength * 100).toFixed(2)}%`,
-    `keltner squeeze ${(safeValue(market.keltnerSqueezeScore) * 100).toFixed(0)}%`,
-    `volume z ${safeValue(market.volumeZ).toFixed(2)}`,
     squeezeRelease > 0.5 ? "release ready" : "needs cleaner release"
   ], [
     eventRisk > 0.74 ? "event_risk_headwind" : null,
     breakoutContext.falseBreakoutRisk > 0.54 ? "failed_breakout_context" : null,
     breakoutContext.chopRisk > 0.52 ? "chop_regime" : null,
+    breakoutContext.bullishBos ? null : "bos_not_confirmed",
+    breakoutContext.cvdDivergence > 0.42 ? "cvd_divergence" : null,
     relativeStrength < -0.003 ? "relative_weakness" : null,
     safeValue(context.marketSnapshot?.book?.bookPressure) < -0.22 ? "sell_pressure" : null,
     bearishPattern > 0.68 ? "bearish_pattern_conflict" : null
-  ], { regimeFit, breakoutImpulse, compression, squeeze, keltnerSqueeze, squeezeRelease, participation, acceptanceQuality, relativeStrength, releaseScore: breakoutContext.releaseScore, chopRisk: breakoutContext.chopRisk, falseBreakoutRisk: breakoutContext.falseBreakoutRisk });
+  ], { regimeFit, breakoutImpulse, compression, squeeze, keltnerSqueeze, squeezeRelease, participation, acceptanceQuality, relativeStrength, bosSupport, fvgSupport, cvdSupport, releaseScore: breakoutContext.releaseScore, chopRisk: breakoutContext.chopRisk, falseBreakoutRisk: breakoutContext.falseBreakoutRisk });
 }
 
 function evaluateMeanReversion(context) {
@@ -454,7 +507,9 @@ function evaluateMeanReversion(context) {
   const reboundPressure = ratio(safeValue(context.marketSnapshot?.book?.bookPressure), -0.08, 0.7);
   const cmfSupport = ratio(safeValue(market.cmf20), -0.12, 0.22);
   const trendDamage = clamp(ratio(-safeValue(market.momentum20) * 100, 0.12, 1.6) * 0.44 + ratio(-safeValue(market.emaGap) * 100, 0.04, 0.9) * 0.28 + ratio(-safeValue(market.dmiSpread), 0.02, 0.25) * 0.13 + bearishPattern * 0.15, 0, 1);
-  const score = clamp(regimeFit * 0.2 + oversold * 0.13 + stochReset * 0.11 + mfiReset * 0.1 + discountToVwap * 0.13 + zscore * 0.1 + reboundPressure * 0.1 + calmVol * 0.07 + cmfSupport * 0.06 + bullishPattern * 0.06 + orderflow * 0.03 - trendDamage * 0.14 - reversionContext.momentumConflictRisk * 0.12 + reversionContext.stretchedEnough * 0.05 - eventRisk * 0.09, 0, 1);
+  const antiBosPenalty = clamp(safeValue(market.bosStrengthScore), 0, 1) * (safeValue(market.bullishBosActive) > 0 ? 0.1 : 0);
+  const cvdConflict = Math.max(0, safeValue(market.cvdTrendAlignment));
+  const score = clamp(regimeFit * 0.2 + oversold * 0.13 + stochReset * 0.11 + mfiReset * 0.1 + discountToVwap * 0.13 + zscore * 0.1 + reboundPressure * 0.1 + calmVol * 0.07 + cmfSupport * 0.06 + bullishPattern * 0.06 + orderflow * 0.03 - trendDamage * 0.14 - reversionContext.momentumConflictRisk * 0.12 - antiBosPenalty - cvdConflict * 0.08 + reversionContext.stretchedEnough * 0.05 - eventRisk * 0.09, 0, 1);
   const confidence = clamp(0.26 + average([regimeFit, oversold, discountToVwap, zscore, reboundPressure, stochReset], 0) * 0.56 + reversionContext.stretchedEnough * 0.04 - trendDamage * 0.11 - reversionContext.momentumConflictRisk * 0.08, 0, 1);
   return buildStrategy("mean_reversion", score, confidence, [
     `regime ${regime}`,
@@ -466,6 +521,8 @@ function evaluateMeanReversion(context) {
   ], [
     eventRisk > 0.72 ? "event_risk_headwind" : null,
     reversionContext.momentumConflictRisk > 0.52 && reversionContext.stretchedEnough < 0.42 ? "momentum_regime_conflict" : null,
+    antiBosPenalty > 0.04 ? "fresh_bos_continuation_conflict" : null,
+    cvdConflict > 0.42 ? "cvd_breakdown_under_reclaim" : null,
     trendDamage > 0.58 ? "trend_breakdown_risk" : null,
     safeValue(context.marketSnapshot?.book?.bookPressure) < -0.28 ? "rebound_not_confirmed" : null
   ], { regimeFit, oversold, stochReset, mfiReset, discountToVwap, zscore, reboundPressure, stretchedEnough: reversionContext.stretchedEnough, momentumConflictRisk: reversionContext.momentumConflictRisk });
@@ -1006,14 +1063,18 @@ function evaluateMarketStructureBreak(context) {
   const oiTailwind = ratio(safeValue(structure.openInterestChangePct) * 100, -0.2, 8);
   const signal = ratio(safeValue(structure.signalScore), -0.1, 0.95);
   const relativeStrengthScore = ratio(relativeStrength * 100, -0.45, 3.4);
-  const score = clamp(regimeFit * 0.18 + structureBreak * 0.17 + donchianPosition * 0.1 + volume * 0.09 + oiTailwind * 0.09 + signal * 0.08 + acceptanceQuality * 0.08 + replenishmentQuality * 0.05 + relativeStrengthScore * 0.07 + orderflow * 0.09 + bullishPattern * 0.04 - breakoutContext.chopRisk * 0.1 - breakoutContext.falseBreakoutRisk * 0.12 - bearishPattern * 0.08 - eventRisk * 0.08, 0, 1);
-  const confidence = clamp(0.29 + average([regimeFit, structureBreak, donchianPosition, oiTailwind, signal, acceptanceQuality], 0) * 0.54 - breakoutContext.chopRisk * 0.08 - breakoutContext.falseBreakoutRisk * 0.08, 0, 1);
+  const bosSupport = ratio(safeValue(market.bosStrengthScore), 0.08, 1);
+  const cvdSupport = ratio(safeValue(market.cvdConfirmationScore), 0.04, 1);
+  const liquidationMagnet = ratio(safeValue(structure.liquidationMagnetStrength), 0.05, 1);
+  const score = clamp(regimeFit * 0.16 + structureBreak * 0.15 + donchianPosition * 0.09 + volume * 0.08 + oiTailwind * 0.08 + signal * 0.07 + bosSupport * 0.08 + cvdSupport * 0.06 + liquidationMagnet * 0.06 + acceptanceQuality * 0.07 + replenishmentQuality * 0.05 + relativeStrengthScore * 0.06 + orderflow * 0.08 + bullishPattern * 0.04 - breakoutContext.chopRisk * 0.1 - breakoutContext.falseBreakoutRisk * 0.12 - bearishPattern * 0.08 - eventRisk * 0.08, 0, 1);
+  const confidence = clamp(0.29 + average([regimeFit, structureBreak, donchianPosition, oiTailwind, signal, bosSupport, cvdSupport], 0) * 0.52 - breakoutContext.chopRisk * 0.08 - breakoutContext.falseBreakoutRisk * 0.08, 0, 1);
   return buildStrategy("market_structure_break", score, confidence, [
     market.structureBreakLabel || "none",
+    safeValue(market.bullishBosActive) > 0 ? "bullish_bos_confirmed" : "weak_structure_break",
+    cvdSupport >= 0.52 ? "cvd_confirms_breakout" : "price_up_cvd_diverging",
     `donchian ${(safeValue(market.donchianPosition) * 100).toFixed(0)}%`,
     `rel ${(relativeStrength * 100).toFixed(2)}%`,
-    `oi ${(safeValue(structure.openInterestChangePct) * 100).toFixed(2)}%`,
-    `signal ${safeValue(structure.signalScore).toFixed(2)}`
+    safeValue(structure.liquidationMagnetStrength) >= 0.42 ? "short_liquidation_magnet_up" : `signal ${safeValue(structure.signalScore).toFixed(2)}`
   ], [
     eventRisk > 0.76 ? "event_risk_headwind" : null,
     breakoutContext.falseBreakoutRisk > 0.52 ? "failed_breakout_context" : null,
@@ -1021,7 +1082,7 @@ function evaluateMarketStructureBreak(context) {
     relativeStrength < -0.003 ? "relative_weakness" : null,
     bearishPattern > 0.64 ? "pattern_reversal_risk" : null,
     safeValue(context.marketSnapshot?.book?.bookPressure) < -0.18 ? "sell_pressure" : null
-  ], { regimeFit, structureBreak, donchianPosition, oiTailwind, signal, relativeStrength, acceptanceQuality, chopRisk: breakoutContext.chopRisk, falseBreakoutRisk: breakoutContext.falseBreakoutRisk });
+  ], { regimeFit, structureBreak, donchianPosition, oiTailwind, signal, bosSupport, cvdSupport, liquidationMagnet, relativeStrength, acceptanceQuality, chopRisk: breakoutContext.chopRisk, falseBreakoutRisk: breakoutContext.falseBreakoutRisk });
 }
 
 function evaluateFundingRateExtreme(context) {
@@ -1060,9 +1121,11 @@ function evaluateOpenInterestBreakout(context) {
   const leverage = ratio(safeValue(structure.leverageBuildupScore), 0.05, 1);
   const squeezeConflict = ratio(Math.max(safeValue(structure.longSqueezeScore), safeValue(structure.shortSqueezeScore)), 0.08, 1);
   const signal = ratio(safeValue(structure.signalScore), -0.1, 0.9);
+  const liquidationMagnet = ratio(safeValue(structure.liquidationMagnetStrength), 0.05, 1);
+  const squeezeContinuation = ratio(safeValue(structure.squeezeContinuationScore), 0.05, 1);
   const volume = ratio(safeValue(market.volumeZ), -0.1, 2.6);
   const volPenalty = clamp(ratio(safeValue(volatility.riskScore), 0.48, 1) * 0.5, 0, 0.5);
-  const score = clamp(regimeFit * 0.16 + oiBreak * 0.16 + priceBreak * 0.15 + takerBias * 0.1 + globalBias * 0.08 + leverage * 0.11 + signal * 0.08 + volume * 0.08 + orderflow * 0.08 + bullishPattern * 0.04 - breakoutContext.chopRisk * 0.1 - breakoutContext.falseBreakoutRisk * 0.12 - squeezeConflict * 0.07 - bearishPattern * 0.08 - eventRisk * 0.07 - volPenalty, 0, 1);
+  const score = clamp(regimeFit * 0.15 + oiBreak * 0.15 + priceBreak * 0.14 + takerBias * 0.09 + globalBias * 0.07 + leverage * 0.1 + signal * 0.07 + liquidationMagnet * 0.07 + squeezeContinuation * 0.05 + volume * 0.07 + orderflow * 0.08 + bullishPattern * 0.04 - breakoutContext.chopRisk * 0.1 - breakoutContext.falseBreakoutRisk * 0.12 - squeezeConflict * 0.07 - bearishPattern * 0.08 - eventRisk * 0.07 - volPenalty, 0, 1);
   const confidence = clamp(0.29 + average([regimeFit, oiBreak, priceBreak, leverage, signal], 0) * 0.57 - breakoutContext.chopRisk * 0.08 - breakoutContext.falseBreakoutRisk * 0.08 - volPenalty * 0.2, 0, 1);
   return buildStrategy("open_interest_breakout", score, confidence, [
     `oi ${(safeValue(structure.openInterestChangePct) * 100).toFixed(2)}%`,
@@ -1075,8 +1138,66 @@ function evaluateOpenInterestBreakout(context) {
     breakoutContext.chopRisk > 0.5 ? "chop_regime" : null,
     bearishPattern > 0.64 ? "pattern_reversal_risk" : null,
     safeValue(structure.openInterestChangePct) < 0 ? "oi_not_expanding" : null,
+    safeValue(structure.liquidationTrapRisk) > 0.48 ? "liquidation_trap_risk" : null,
     safeValue(volatility.riskScore) > 0.82 ? "options_vol_stress" : null
-  ], { regimeFit, oiBreak, priceBreak, leverage, signal, chopRisk: breakoutContext.chopRisk, falseBreakoutRisk: breakoutContext.falseBreakoutRisk });
+  ], { regimeFit, oiBreak, priceBreak, leverage, signal, liquidationMagnet, squeezeContinuation, chopRisk: breakoutContext.chopRisk, falseBreakoutRisk: breakoutContext.falseBreakoutRisk });
+}
+
+function evaluateRangeGridReversion(context) {
+  const inputs = buildInputs(context);
+  const { market, regime, eventRisk, orderflow, structure, marketState } = inputs;
+  const grid = buildRangeGridContext(inputs);
+  const executionQuality = average([
+    inputs.acceptanceQuality,
+    inputs.replenishmentQuality,
+    clamp(1 - ratio(safeValue(context.marketSnapshot?.book?.spreadBps), 5, 18), 0, 1)
+  ], 0.45);
+  const trapRisk = clamp(
+    (grid.breakoutRisk ? 0.28 : 0) +
+      ratio(Math.abs(safeValue(structure.liquidationTrapRisk)), 0.18, 0.9) * 0.28 +
+      ratio(Math.abs(safeValue(market.cvdTrendAlignment)), 0.25, 1) * 0.16,
+    0,
+    1
+  );
+  const sideReadiness = grid.gridEntrySide === "buy_lower_band" ? grid.lowerBandReady : grid.upperBandReady;
+  const score = clamp(
+    grid.regimeFit * 0.2 +
+      grid.widthQuality * 0.14 +
+      grid.meanRevertQuality * 0.18 +
+      grid.boundaryRespect * 0.16 +
+      sideReadiness * 0.12 +
+      executionQuality * 0.1 +
+      clamp(1 - Math.abs(orderflow - 0.5) * 1.4, 0, 1) * 0.05 +
+      clamp(1 - Math.abs(safeValue(market.cvdTrendAlignment)), 0, 1) * 0.05 -
+      trapRisk * 0.14 -
+      eventRisk * 0.1,
+    0,
+    1
+  );
+  const confidence = clamp(0.26 + average([grid.regimeFit, grid.widthQuality, grid.meanRevertQuality, grid.boundaryRespect, sideReadiness, executionQuality], 0) * 0.56 - trapRisk * 0.12, 0, 1);
+  return buildStrategy("range_grid_reversion", score, confidence, [
+    `phase ${marketState.phase || regime}`,
+    `range ${(safeValue(market.rangeWidthPct) * 100).toFixed(2)}%`,
+    grid.gridEntrySide,
+    `respect ${(grid.boundaryRespect * 100).toFixed(0)}%`,
+    `mean revert ${(grid.meanRevertQuality * 100).toFixed(0)}%`
+  ], [
+    eventRisk > 0.68 ? "event_risk_headwind" : null,
+    grid.breakoutRisk ? "range_break_risk" : null,
+    executionQuality < 0.46 ? "execution_quality_borderline" : null,
+    safeValue(structure.liquidationTrapRisk) > 0.46 ? "liquidation_trap_risk" : null,
+    safeValue(market.bosStrengthScore) > 0.52 ? "bos_breakout_pressure" : null
+  ], {
+    regimeFit: grid.regimeFit,
+    rangeWidthPct: safeValue(market.rangeWidthPct),
+    rangeTopDistancePct: safeValue(market.rangeTopDistancePct),
+    rangeBottomDistancePct: safeValue(market.rangeBottomDistancePct),
+    rangeMeanRevertScore: safeValue(market.rangeMeanRevertScore),
+    rangeBoundaryRespectScore: safeValue(market.rangeBoundaryRespectScore),
+    gridEntrySide: grid.gridEntrySide,
+    executionQuality,
+    trapRisk
+  });
 }
 function evaluateOrderbookImbalance(context) {
   const inputs = buildInputs(context);
@@ -1146,6 +1267,9 @@ export function evaluateStrategySet(context) {
     evaluateOpenInterestBreakout(context),
     evaluateOrderbookImbalance(context)
   ];
+  if (context?.config?.enableRangeGridStrategy !== false) {
+    baseStrategies.push(evaluateRangeGridReversion(context));
+  }
   const optimizedStrategies = applyOptimizer(baseStrategies, context.optimizerSummary).sort((left, right) => right.fitScore - left.fitScore);
   const adaptiveSelection = applyAdaptiveAllocation(optimizedStrategies, context);
   const strategies = adaptiveSelection.strategies;

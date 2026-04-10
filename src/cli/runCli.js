@@ -7,7 +7,7 @@ function shouldUseReadOnlyInit(command) {
   return ["status", "doctor", "report"].includes(command);
 }
 
-const BOT_COMMANDS = new Set(["run", "once", "status", "doctor", "report", "research"]);
+const BOT_COMMANDS = new Set(["run", "once", "status", "doctor", "report", "research", "scan"]);
 
 async function runContinuousManagedBot({ config, logger, signalSource = process }) {
   const manager = new BotManager({ projectRoot: config.projectRoot, logger });
@@ -130,7 +130,7 @@ export default async function runCli({
   await bot.init({
     command,
     readOnly: shouldUseReadOnlyInit(command),
-    enableStreams: !shouldUseReadOnlyInit(command)
+    enableStreams: !shouldUseReadOnlyInit(command) && command !== "scan"
   });
 
   try {
@@ -162,6 +162,13 @@ export default async function runCli({
       const symbols = args.map((arg) => `${arg}`.trim().toUpperCase()).filter(Boolean);
       const research = await bot.runResearch({ symbols });
       console.log(JSON.stringify(research, null, 2));
+      return;
+    }
+
+    if (command === "scan") {
+      const symbols = args.map((arg) => `${arg}`.trim().toUpperCase()).filter(Boolean);
+      const scan = await bot.runMarketScanner({ symbols });
+      console.log(JSON.stringify(scan, null, 2));
       return;
     }
 

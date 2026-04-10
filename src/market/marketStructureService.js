@@ -22,6 +22,13 @@ const EMPTY_SUMMARY = {
   liquidationNotional: 0,
   liquidationImbalance: 0,
   liquidationIntensity: 0,
+  liquidationClusterBias: 0,
+  liquidationMagnetDirection: "neutral",
+  liquidationMagnetStrength: 0,
+  longLiquidationPocketScore: 0,
+  shortLiquidationPocketScore: 0,
+  squeezeContinuationScore: 0,
+  liquidationTrapRisk: 0,
   crowdingBias: 0,
   riskScore: 0,
   signalScore: 0,
@@ -91,6 +98,8 @@ export function summarizeMarketStructure(payload = {}, streamFeatures = {}) {
   const liquidationImbalance = streamFeatures.liquidationImbalance || 0;
   const liquidationIntensityBase = Math.max(openInterestUsd * 0.002, 150_000);
   const liquidationIntensity = clamp(liquidationNotional / liquidationIntensityBase, 0, 1);
+  const longLiquidationPocketScore = clamp(Math.max(0, -liquidationImbalance) * 0.58 + liquidationIntensity * 0.42, 0, 1);
+  const shortLiquidationPocketScore = clamp(Math.max(0, liquidationImbalance) * 0.58 + liquidationIntensity * 0.42, 0, 1);
   const fundingExtreme = clamp(Math.abs(fundingRate) / 0.0007, 0, 1);
   const basisStress = clamp(Math.abs(basisBps) / 16, 0, 1);
   const oiBuild = clamp(Math.abs(openInterestChangePct) * 18, 0, 1);
@@ -142,6 +151,43 @@ export function summarizeMarketStructure(payload = {}, streamFeatures = {}) {
     -1,
     1
   );
+  const squeezeContinuationScore = clamp(
+    Math.max(shortSqueezeScore, longSqueezeScore) * 0.46 +
+      Math.max(0, openInterestChangePct) * 16 * 0.24 +
+      Math.abs(liquidationImbalance) * 0.18 +
+      Math.abs(crowdingBias) * 0.12,
+    0,
+    1
+  );
+  const liquidationClusterBias = clamp(
+    liquidationImbalance * 0.64 +
+      clamp(openInterestChangePct * 14, -1, 1) * 0.18 +
+      crowdingBias * 0.18,
+    -1,
+    1
+  );
+  const liquidationMagnetStrength = clamp(
+    liquidationIntensity * 0.42 +
+      Math.abs(liquidationImbalance) * 0.28 +
+      Math.max(shortSqueezeScore, longSqueezeScore) * 0.18 +
+      Math.max(0, Math.abs(openInterestChangePct) * 12) * 0.12,
+    0,
+    1
+  );
+  const liquidationMagnetDirection = liquidationClusterBias > 0.12
+    ? "up"
+    : liquidationClusterBias < -0.12
+      ? "down"
+      : "neutral";
+  const liquidationTrapRisk = clamp(
+    liquidationIntensity * 0.34 +
+      Math.abs(liquidationImbalance) * 0.24 +
+      Math.abs(crowdingBias) * 0.18 +
+      Math.abs(globalLongShortImbalance) * 0.12 +
+      Math.abs(topTraderImbalance) * 0.12,
+    0,
+    1
+  );
   const riskScore = clamp(
     fundingExtreme * 0.16 +
       basisStress * 0.12 +
@@ -185,6 +231,18 @@ export function summarizeMarketStructure(payload = {}, streamFeatures = {}) {
   if (liquidationCount > 0) {
     reasons.push(liquidationImbalance > 0 ? "short_liquidations" : "long_liquidations");
   }
+  if (liquidationMagnetStrength > 0.42 && liquidationMagnetDirection === "up") {
+    reasons.push("short_liquidation_magnet_up");
+  }
+  if (liquidationMagnetStrength > 0.42 && liquidationMagnetDirection === "down") {
+    reasons.push("long_liquidation_flush_risk");
+  }
+  if (squeezeContinuationScore > 0.52) {
+    reasons.push("squeeze_continuation_supported");
+  }
+  if (liquidationTrapRisk > 0.54) {
+    reasons.push("liquidation_trap_risk");
+  }
 
   const observedSignals = [premium, openInterest, latestOi, latestBasis, latestTaker, latestGlobalLongShort, latestTopTrader].filter(Boolean).length;
   return {
@@ -208,6 +266,13 @@ export function summarizeMarketStructure(payload = {}, streamFeatures = {}) {
     liquidationNotional,
     liquidationImbalance,
     liquidationIntensity,
+    liquidationClusterBias,
+    liquidationMagnetDirection,
+    liquidationMagnetStrength,
+    longLiquidationPocketScore,
+    shortLiquidationPocketScore,
+    squeezeContinuationScore,
+    liquidationTrapRisk,
     crowdingBias,
     riskScore,
     signalScore,

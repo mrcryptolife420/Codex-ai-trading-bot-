@@ -34,6 +34,7 @@ const STABLE_OR_FIAT_ASSETS = new Set([
 ]);
 
 const LEVERAGED_TOKEN_SUFFIXES = ["UP", "DOWN", "BULL", "BEAR"];
+const FIAT_CODE_SUFFIXES = ["USD", "EUR", "GBP", "AUD", "BRL", "TRY", "JPY", "RUB", "UAH", "ZAR"];
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -91,7 +92,7 @@ function guessProfile({ symbol, baseAsset, coinName = "", marketCapRank = 999 })
   return existing;
 }
 
-function isStableOrFiatAsset(baseAsset, coinName = "") {
+export function isStableOrFiatAsset(baseAsset, coinName = "") {
   const upper = normalizeSymbol(baseAsset);
   const normalizedName = `${coinName || ""}`.toLowerCase();
   if (STABLE_OR_FIAT_ASSETS.has(upper)) {
@@ -103,7 +104,7 @@ function isStableOrFiatAsset(baseAsset, coinName = "") {
   return /\bstable\b|\bfiat\b|\bsynthetic dollar\b|\bdigital dollar\b|\busd[0-9a-z]*\b|\beur[0-9a-z]*\b|\bdollar\b/.test(normalizedName);
 }
 
-function isLeveragedToken(baseAsset, coinName = "") {
+export function isLeveragedToken(baseAsset, coinName = "") {
   const upper = normalizeSymbol(baseAsset);
   if (LEVERAGED_TOKEN_SUFFIXES.some((suffix) => upper.endsWith(suffix))) {
     return true;
@@ -111,7 +112,28 @@ function isLeveragedToken(baseAsset, coinName = "") {
   return /\bleveraged\b|\b(3l|3s|5l|5s)\b/.test(coinName.toLowerCase());
 }
 
-function buildTradableUniverse(exchangeInfo, quoteAsset = "USDT") {
+export function getSymbolHygieneFlags(baseAsset, coinName = "", quoteAsset = "USDT") {
+  const upper = normalizeSymbol(baseAsset);
+  const normalizedQuote = normalizeSymbol(quoteAsset);
+  const normalizedName = `${coinName || ""}`.toLowerCase();
+  const invalidTicker = !/^[A-Z0-9]+$/.test(upper);
+  const quoteWrapped = normalizedQuote && upper !== normalizedQuote && (upper.startsWith(normalizedQuote) || upper.endsWith(normalizedQuote));
+  const fiatSuffixWrapped = upper.length <= 8 && FIAT_CODE_SUFFIXES.some((code) => upper !== code && upper.endsWith(code));
+  const stableOrFiat = isStableOrFiatAsset(upper, normalizedName);
+  const leveraged = isLeveragedToken(upper, normalizedName);
+  const syntheticLikeName = /\bsynthetic\b|\bstable\b|\bfiat\b|\beuro\b|\bdollar\b|\bfx\b/.test(normalizedName);
+  return {
+    invalidTicker,
+    quoteWrapped,
+    fiatSuffixWrapped,
+    stableOrFiat,
+    leveraged,
+    syntheticLikeName,
+    exclude: invalidTicker || quoteWrapped || fiatSuffixWrapped || stableOrFiat || leveraged || syntheticLikeName
+  };
+}
+
+export function buildTradableUniverse(exchangeInfo, quoteAsset = "USDT") {
   const tradable = new Map();
   for (const symbolInfo of exchangeInfo?.symbols || []) {
     if (symbolInfo.status !== "TRADING") {
@@ -166,7 +188,7 @@ async function fetchCoinGeckoTopMarkets({ config, fetchImpl, requestBudget = nul
   return Array.isArray(payload) ? payload : [];
 }
 
-async function fetchBinanceVolumeRanking({ client, tradableMap }) {
+async function fetchBinanceVolumeRanking({ client, tradableMap, quoteAsset = "USDT" }) {
   const payload = await client.publicRequest("GET", "/api/v3/ticker/24hr");
   const tickers = Array.isArray(payload) ? payload : [];
   return tickers
@@ -177,6 +199,9 @@ async function fetchBinanceVolumeRanking({ client, tradableMap }) {
       }
       const baseAsset = symbol.slice(0, -4);
       if (!tradableMap.has(baseAsset)) {
+        return null;
+      }
+      if (getSymbolHygieneFlags(baseAsset, baseAsset, quoteAsset).exclude) {
         return null;
       }
       return {
@@ -201,10 +226,8 @@ function buildSelectedEntries({ tradableMap, markets, config, source }) {
     if (!tradable || seen.has(tradable.symbol) || excluded.has(tradable.symbol)) {
       continue;
     }
-    if (config.watchlistExcludeStablecoins && isStableOrFiatAsset(baseAsset, market.name || "")) {
-      continue;
-    }
-    if (config.watchlistExcludeLeveragedTokens && isLeveragedToken(baseAsset, market.name || "")) {
+    const hygiene = getSymbolHygieneFlags(baseAsset, market.name || "", config.baseQuoteAsset);
+    if (hygiene.exclude) {
       continue;
     }
     seen.add(tradable.symbol);
@@ -239,6 +262,9 @@ function buildSelectedEntries({ tradableMap, markets, config, source }) {
     const baseAsset = symbol.endsWith(config.baseQuoteAsset) ? symbol.slice(0, -config.baseQuoteAsset.length) : symbol;
     const tradable = tradableMap.get(baseAsset);
     if (!tradable) {
+      continue;
+    }
+    if (getSymbolHygieneFlags(baseAsset, baseAsset, config.baseQuoteAsset).exclude) {
       continue;
     }
     seen.add(tradable.symbol);
@@ -308,10 +334,8 @@ export async function resolveDynamicWatchlist({ client, config, logger, fetchImp
 
   if (selectedEntries.length < minimumCount) {
     source = "binance_quote_volume_fallback";
-    const volumeRanking = await fetchBinanceVolumeRanking({ client, tradableMap });
+    const volumeRanking = await fetchBinanceVolumeRanking({ client, tradableMap, quoteAsset: config.baseQuoteAsset });
     selectedEntries = volumeRanking
-      .filter((item) => !config.watchlistExcludeStablecoins || !isStableOrFiatAsset(item.baseAsset, item.baseAsset))
-      .filter((item) => !config.watchlistExcludeLeveragedTokens || !isLeveragedToken(item.baseAsset, item.baseAsset))
       .slice(0, targetCount)
       .map((item, index) => ({
         symbol: item.symbol,

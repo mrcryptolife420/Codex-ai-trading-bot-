@@ -167,6 +167,13 @@ function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
   return node;
 }
 
+function setStyleProperty(node, name, value) {
+  if (!node?.style || typeof node.style.setProperty !== "function") {
+    return;
+  }
+  node.style.setProperty(name, value);
+}
+
 function replaceChildren(element, children = []) {
   if (!element) {
     return;
@@ -219,8 +226,8 @@ function makeSignalMiniChart(decision) {
   const chart = makeNode("div", { className: "signal-mini-chart" });
   chart.append(...bars.map((value, index) => {
     const bar = makeNode("span", { className: "signal-mini-bar" });
-    bar.style.setProperty("--bar-height", `${Math.round(clamp(value, 0.12, 1) * 100)}%`);
-    bar.style.setProperty("--bar-delay", `${index * 24}ms`);
+    setStyleProperty(bar, "--bar-height", `${Math.round(clamp(value, 0.12, 1) * 100)}%`);
+    setStyleProperty(bar, "--bar-delay", `${index * 24}ms`);
     return bar;
   }));
   return chart;
@@ -232,7 +239,7 @@ function makePositionGauge(position) {
   const gauge = makeNode("div", {
     className: `position-gauge ${pnlPct >= 0 ? "positive" : "negative"}`
   });
-  gauge.style.setProperty("--gauge-fill", `${Math.round(normalized * 100)}%`);
+  setStyleProperty(gauge, "--gauge-fill", `${Math.round(normalized * 100)}%`);
   gauge.append(
     makeNode("span", { className: "position-gauge-value", text: formatSignedPct(pnlPct, 1) }),
     makeNode("span", { className: "position-gauge-label", text: "Open P/L" })
@@ -623,10 +630,10 @@ function buildLearningDigest(snapshot) {
       ? `Overblocked scope: ${titleize(missedTradeDigest.topOverblockedScope.id)}.`
     : "Er is nog geen dominante rem in de huidige learning-data.";
   const scopeMeaning = topScope?.id
-    ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_trades"
+    ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_outcomes"
       ? `${titleize(topScope.id)} is nu de versere leerscope, omdat probe/live closes stilvallen sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
-      : topScope.source === "shadow_learning"
-        ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-learning; bevestig dit nog met extra probes.`
+      : topScope.source === "shadow_evidence"
+        ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-evidence; bevestig dit nog met extra probes.`
         : `${titleize(topScope.id)} is nu de sterkste leerscope.`
     : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
   const learningInputTag = inputHealth.status === "stalled"
@@ -655,15 +662,13 @@ function buildLearningDigest(snapshot) {
     paperLearning.probation?.note ||
     paperLearning.notes?.[0] ||
     "Nog geen directe leeractie nodig.";
-  const sourceLabel = topScope?.source === "shadow_learning"
-    ? "via shadow-learning"
-    : topScope?.source === "active_learning"
-      ? "via active learning"
-      : "in paper readiness";
+  const sourceLabel = topScope?.source
+    ? `via ${learningSourceLabel(topScope.source)}`
+    : "in paper readiness";
   const focusText = inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt
     ? retrainPlan.selectedScopes?.[0]?.id
       ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}, maar probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
-      : `Probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}; de bot leunt nu op ${titleize(topScope?.source || "shadow_learning")}.`
+      : `Probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}; de bot leunt nu op ${learningSourceLabel(topScope?.source || "shadow_evidence")}.`
     : retrainPlan.selectedScopes?.[0]?.id
       ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`
       : topScope?.id
@@ -793,6 +798,32 @@ function humanizeReason(value, fallback = "-") {
   return isReadableSentence(text) ? text : titleize(text);
 }
 
+function canonicalDecisionReason(decision) {
+  return (
+    decision.decisionTruth?.primaryReason ||
+    decision.entryDiagnostics?.decisionPrimaryReason ||
+    decision.blockerReasons?.[0] ||
+    decision.reasons?.[0] ||
+    null
+  );
+}
+
+function learningSourceLabel(source) {
+  if (source === "shadow_evidence") {
+    return "shadow-evidence";
+  }
+  if (source === "probe_outcomes") {
+    return "probe outcomes";
+  }
+  if (source === "queued_cases") {
+    return "queued cases";
+  }
+  if (source === "active_learning") {
+    return "active learning";
+  }
+  return titleize(source || "paper_readiness");
+}
+
 function formatDecisionType(decision) {
   return titleize(
     decision.setupStyle ||
@@ -818,7 +849,7 @@ function whyTradeable(decision) {
 }
 
 function whyBlocked(decision) {
-  return decision.operatorAction || titleize(decision.blockerReasons?.[0] || decision.reasons?.[0] || "geen directe reden");
+  return decision.operatorAction || humanizeReason(canonicalDecisionReason(decision), "Geen directe reden");
 }
 
 function actionText(decision) {
@@ -843,20 +874,52 @@ function signalPrimaryReason(decision) {
 }
 
 function signalStatusText(decision) {
+  const executionTruth = decision.executionTruth || {};
   if (decision.allow) {
+    if (executionTruth.nonExecutable || decision.sizingSummary?.invalidQuoteAmount) {
+      return "Trade toegestaan, maar broker-size is nu niet uitvoerbaar.";
+    }
+    if (executionTruth.tinySize || (decision.sizeVerdict && decision.sizeVerdict.deservesMeaningfulSize === false)) {
+      return "Tradebaar, maar alleen met kleine of probe-size.";
+    }
     return `Klaar voor ${titleize(decision.executionStyle || "entry")}.`;
   }
-  return decision.blockerReasons?.[0]
-    ? `Geblokkeerd door ${titleize(decision.blockerReasons[0])}.`
+  const reason = canonicalDecisionReason(decision);
+  return reason
+    ? `Geblokkeerd door ${humanizeReason(reason)}.`
     : "Nog niet tradebaar.";
 }
 
 function signalSupportText(decision) {
+  const executionTruth = decision.executionTruth || {};
+  const learningImpact = decision.learningImpact || {};
   if (decision.allow) {
+    if (executionTruth.nonExecutable || decision.sizingSummary?.invalidQuoteAmount) {
+      return "De policy laat de setup toe, maar de uiteindelijke broker-normalisatie maakt de size nu ongeldig.";
+    }
+    if (executionTruth.tinySize || (decision.sizeVerdict && decision.sizeVerdict.deservesMeaningfulSize === false)) {
+      const floor = Number(
+        executionTruth.meaningfulSizeFloor ||
+        decision.sizeVerdict?.meaningfulSizeFloor ||
+        decision.sizingSummary?.meaningfulSizeFloor ||
+        0
+      );
+      return floor > 0
+        ? `Toegestaan als leer- of probe-case; de setup verdient nog geen meaningful size boven ${formatMoney(floor)}.`
+        : "Toegestaan als leer- of probe-case; de setup verdient nog geen meaningful size.";
+    }
+    if (learningImpact.runtimeApplied && learningImpact.runtimeEvidence?.length) {
+      return `Learning past deze setup actief aan via ${learningImpact.runtimeEvidence.map((reason) => titleize(reason)).join(", ")}.`;
+    }
     if (decision.entryDiagnostics?.strongestConfirmingFactors?.length) {
       return `Bevestigd door ${decision.entryDiagnostics.strongestConfirmingFactors.map((reason) => titleize(reason)).join(", ")}.`;
     }
     return actionText(decision);
+  }
+  const primaryReason = canonicalDecisionReason(decision);
+  const rejectingFactors = decision.decisionTruth?.blockerReasonChain || decision.entryDiagnostics?.strongestRejectingFactors || [];
+  if (primaryReason && rejectingFactors.length) {
+    return `Afgewezen op ${humanizeReason(primaryReason)}; extra druk van ${rejectingFactors.map((reason) => titleize(reason)).join(", ")}.`;
   }
   if (decision.entryDiagnostics?.strongestRejectingFactors?.length) {
     return `Afgewezen door ${decision.entryDiagnostics.strongestRejectingFactors.map((reason) => titleize(reason)).join(", ")}.`;
@@ -1130,6 +1193,51 @@ function signalSummary(decision) {
   return decision.operatorAction || decision.blockerReasons?.[0] || decision.summary || "Nog niet tradebaar.";
 }
 
+function structureContextText(decision) {
+  const structure = decision.structureContext || decision.signalQuality?.structureContext || {};
+  const bos = structure.bos && structure.bos !== "none"
+    ? `${titleize(structure.bos)} BOS ${formatPct(structure.bosStrengthScore || 0, 0)}`
+    : null;
+  const fvg = structure.fvg && structure.fvg !== "none"
+    ? `${titleize(structure.fvg)} FVG ${formatPct(structure.fvgRespectScore || 0, 0)}`
+    : null;
+  const fill = Number.isFinite(structure.fvgFillProgress)
+    ? `Fill ${formatPct(structure.fvgFillProgress || 0, 0)}`
+    : null;
+  return compactJoin([bos, fvg, fvg ? fill : null], " · ");
+}
+
+function flowContextText(decision) {
+  const cvd = decision.cvdContext || decision.signalQuality?.cvdContext || {};
+  const liquidation = decision.liquidationContext || {};
+  const cvdLine = Number.isFinite(cvd.confirmationScore) || Number.isFinite(cvd.divergenceScore)
+    ? compactJoin([
+        `CVD conf ${formatPct(cvd.confirmationScore || 0, 0)}`,
+        (cvd.divergenceScore || 0) > 0.2 ? `div ${formatPct(cvd.divergenceScore || 0, 0)}` : null
+      ], " · ")
+    : null;
+  const liqLine = liquidation.liquidationMagnetDirection && liquidation.liquidationMagnetDirection !== "neutral"
+    ? compactJoin([
+        `${titleize(liquidation.liquidationMagnetDirection)} magnet`,
+        formatPct(liquidation.liquidationMagnetStrength || 0, 0),
+        (liquidation.liquidationTrapRisk || 0) > 0.24 ? `trap ${formatPct(liquidation.liquidationTrapRisk || 0, 0)}` : null
+      ], " · ")
+    : null;
+  return compactJoin([cvdLine, liqLine], " | ");
+}
+
+function gridContextText(decision) {
+  const grid = decision.gridContext || decision.signalQuality?.gridContext || {};
+  if (!grid.gridEntrySide || grid.gridEntrySide === "none") {
+    return null;
+  }
+  return compactJoin([
+    titleize(grid.gridEntrySide),
+    Number.isFinite(grid.rangeWidthPct) ? `width ${formatPct(grid.rangeWidthPct || 0, 1)}` : null,
+    Number.isFinite(grid.rangeBoundaryRespectScore) ? `respect ${formatPct(grid.rangeBoundaryRespectScore || 0, 0)}` : null
+  ], " · ");
+}
+
 function makeMissedTradeAnalysisNode(decision) {
   const analysis = decision.missedTradeAnalysis;
   if (decision.allow || !analysis?.available) {
@@ -1151,8 +1259,8 @@ function makeMissedTradeAnalysisNode(decision) {
 
 function buildSignalCard(decision) {
   const article = makeNode("article", { className: "signal-card" });
-  article.style.setProperty("--signal-prob", `${Math.round(clamp(decision.probability || 0) * 100)}%`);
-  article.style.setProperty("--signal-conf", `${Math.round(clamp(decision.confidenceBreakdown?.overallConfidence || 0) * 100)}%`);
+  setStyleProperty(article, "--signal-prob", `${Math.round(clamp(decision.probability || 0) * 100)}%`);
+  setStyleProperty(article, "--signal-conf", `${Math.round(clamp(decision.confidenceBreakdown?.overallConfidence || 0) * 100)}%`);
   const summary = makeNode("div", { className: "card-summary" });
   const header = makeNode("div", { className: "card-header" });
   const left = makeNode("div");
@@ -1192,6 +1300,8 @@ function buildSignalCard(decision) {
     decision.entryDiagnostics?.marketCondition?.id ? makeTag(titleize(decision.entryDiagnostics.marketCondition.id)) : null,
     decision.strategy?.strategyLabel ? makeTag(decision.strategy.strategyLabel) : null,
     decision.executionStyle ? makeTag(titleize(decision.executionStyle)) : null,
+    decision.scannerPriority?.scannerLane ? makeTag(`Scanner ${titleize(decision.scannerPriority.scannerLane)}`) : null,
+    decision.learningImpact?.runtimeApplied ? makeTag("Learning applied", "tag positive") : null,
     decision.setupQuality?.tier ? makeTag(`${titleize(decision.setupQuality.tier)} quality`, `tag ${statusTone(decision.setupQuality.tier === "elite" ? "ready" : decision.setupQuality.tier === "good" ? "positive" : decision.setupQuality.tier === "watch" ? "watch" : "negative")}`.trim()) : null,
     decision.dataQuality?.status ? makeTag(titleize(decision.dataQuality.status), `tag ${statusTone(decision.dataQuality.status)}`.trim()) : null
   ].filter(Boolean);
@@ -1201,6 +1311,7 @@ function buildSignalCard(decision) {
     ["Setup", compactBodyText(whyTradeable(decision) || formatDecisionType(decision), 84, formatDecisionType(decision))],
     ["Focus", compactBodyText(signalPrimaryReason(decision), 120)],
     ["Gate", compactBodyText(signalSupportText(decision), 112)],
+    ["Flow", compactBodyText(flowContextText(decision) || structureContextText(decision) || gridContextText(decision) || "Geen extra orderflow- of structure-context.", 112)],
     ["Next", compactBodyText(actionText(decision), 92)]
   ]);
 
@@ -1261,6 +1372,7 @@ function renderPositions(snapshot) {
     const tagNodes = [
       position.regimeAtEntry ? makeTag(titleize(position.regimeAtEntry)) : null,
       position.strategyAtEntry ? makeTag(position.strategyAtEntry) : null,
+      position.gridContext?.gridMode ? makeTag(`Grid ${titleize(position.gridContext.gridBand || position.gridContext.gridMode)}`) : null,
       position.lifecycle?.manualReviewRequired ? makeTag("Manual review", "tag negative") : null,
       position.lifecycle?.reconcileRequired ? makeTag("Reconcile", "tag negative") : null
     ].filter(Boolean);
@@ -1512,7 +1624,7 @@ function renderLearning(snapshot) {
       "Focus",
       topScope?.id ? titleize(topScope.id) : "Warmup dataset",
       topScope?.status
-        ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 1)} · ${titleize(topScope.source || "probe_trades")}`
+        ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 1)} · ${learningSourceLabel(topScope.source || "probe_outcomes")}`
         : "Nog geen sterke scope zichtbaar.",
       [scopeMeaning, learningInputNote, `Markt: ${marketConditionText}.`].filter(Boolean).join(" ")
     ),
@@ -1680,6 +1792,7 @@ function buildOpsCards(snapshot) {
   const readiness = snapshot?.dashboard?.ops?.readiness || {};
   const signalFlow = snapshot?.dashboard?.ops?.signalFlow || {};
   const tradingFlowHealth = snapshot?.dashboard?.ops?.tradingFlowHealth || signalFlow.tradingFlowHealth || {};
+  const scanner = snapshot?.dashboard?.scanner || {};
   const alerts = unresolvedAlerts(snapshot);
   const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
   const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
@@ -1716,6 +1829,12 @@ function buildOpsCards(snapshot) {
     lastEntryAttempt.skipReasonCounts?.[0]
       ? `${titleize(lastEntryAttempt.skipReasonCounts[0].id)} ${lastEntryAttempt.skipReasonCounts[0].count}x`
       : null
+  ], " | ");
+  const scannerFoot = compactJoin([
+    scanner.rankedCount ? `${scanner.rankedCount} ranked` : null,
+    scanner.universe?.selectedCount ? `${scanner.universe.selectedCount} tradable` : null,
+    scanner.universe?.analysisCount ? `${scanner.universe.analysisCount} analyzed` : null,
+    scanner.deepBookEnrichedCount ? `${scanner.deepBookEnrichedCount} deep books` : null
   ], " | ");
   return [
     {
@@ -1767,6 +1886,22 @@ function buildOpsCards(snapshot) {
       value: `${lastEntryAttempt.allowedCandidates || 0} allow · ${lastEntryAttempt.skippedCandidates || 0} skip`,
       foot: entrySizingFunnel || entryBottleneck || "Geen sizing-frictie zichtbaar",
       tone: (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0 ? "negative" : "neutral"
+    },
+    {
+      label: "Scanner",
+      value: scanner.topCandidates?.[0]?.symbol || `${scanner.rankedCount || 0} ranked`,
+      foot: scanner.topCandidates?.[0]
+        ? compactJoin([
+            `Score ${number(scanner.topCandidates[0].finalScore || 0, 2)}`,
+            titleize(scanner.topCandidates[0].recommendedLane || "probe"),
+            scannerFoot
+          ], " | ")
+        : scannerFoot || "Nog geen recente market scan zichtbaar",
+      tone: scanner.topCandidates?.[0]?.recommendedAction === "strong_candidate"
+        ? "positive"
+        : scanner.rankedCount
+          ? "neutral"
+          : "neutral"
     },
     {
       label: "PnL split",
@@ -1839,6 +1974,7 @@ function buildOpsEvents(snapshot) {
   const contextHealth = snapshot?.dashboard?.ops?.contextHealth || {};
   const contextSources = contextHealth.sources || {};
   const lastEntryAttempt = snapshot?.dashboard?.ops?.lastEntryAttempt || {};
+  const onlineAdaptation = snapshot?.dashboard?.onlineAdaptation || snapshot?.dashboard?.ops?.onlineAdaptation || {};
   const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
     title: titleize(item.type || item.severity || "alert"),
     detail: item.note || item.message || item.reason || "Alert vereist aandacht.",
@@ -1901,6 +2037,31 @@ function buildOpsEvents(snapshot) {
           title: "Retrain batch",
           detail: retrainPlan.operatorAction,
           tone: retrainPlan.gatingReasons?.length ? "negative" : "neutral"
+        }
+      : null,
+    offlineTrainer.runtimeApplied?.thresholdPolicy?.id || offlineTrainer.runtimeApplied?.topScope?.id
+      ? {
+          title: "Learning applied",
+          detail: compactJoin([
+            offlineTrainer.runtimeApplied?.thresholdPolicy?.id
+              ? `${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.id)} ${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.action || "observe")}`
+              : null,
+            offlineTrainer.runtimeApplied?.topScope?.id
+              ? `${titleize(offlineTrainer.runtimeApplied.topScope.type || "scope")} ${titleize(offlineTrainer.runtimeApplied.topScope.id)}`
+              : null
+          ], " Â· "),
+          tone: "positive"
+        }
+      : null,
+    onlineAdaptation.lastApplied?.symbol
+      ? {
+          title: "Online adaptatie",
+          detail: compactJoin([
+            onlineAdaptation.lastApplied.symbol,
+            titleize(onlineAdaptation.lastApplied.category || "uncertain"),
+            `${onlineAdaptation.lastApplied.runtimeApplied?.length || 0} runtime`
+          ], " | "),
+          tone: onlineAdaptation.lastApplied.runtimeApplied?.length ? "positive" : "neutral"
         }
       : null,
     replayPlan.operatorGoal
@@ -2168,7 +2329,10 @@ function renderExplainability(snapshot) {
   const replayChaos = snapshot?.dashboard?.ops?.replayChaos || explainability.replayChaos || {};
   const replayPlan = replayChaos.deterministicReplayPlan || {};
   const dataRecorder = snapshot?.dashboard?.dataRecorder || {};
+  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
   const research = snapshot?.dashboard?.research || {};
+  const scanner = snapshot?.dashboard?.scanner || {};
+  const onlineAdaptation = snapshot?.dashboard?.onlineAdaptation || snapshot?.dashboard?.ops?.onlineAdaptation || {};
   const decisions = explainability.decisions || [];
   const replays = explainability.replays || [];
   if (!elements.explainabilityList) {
@@ -2185,6 +2349,38 @@ function renderExplainability(snapshot) {
     research.averageSharpe != null ? `Sharpe ${number(research.averageSharpe, 2)}` : null,
     research.generatedAt ? formatDate(research.generatedAt) : null
   ].filter(Boolean).join(" | ");
+  const scannerFoot = [
+    scanner.rankedCount ? `${scanner.rankedCount} ranked` : null,
+    scanner.universe?.selectedCount ? `${scanner.universe.selectedCount} tradable` : null,
+    scanner.universe?.analysisCount ? `${scanner.universe.analysisCount} analyzed` : null,
+    scanner.deepBookEnrichedCount ? `${scanner.deepBookEnrichedCount} deep books` : null,
+    scanner.generatedAt ? formatDate(scanner.generatedAt) : null
+  ].filter(Boolean).join(" | ");
+  const scannerLaneFoot = (items = [], fallback = "Nog geen kandidaten.") => items.length
+    ? items.slice(0, 3).map((item) => `${item.symbol} ${number(item.finalScore || 0, 2)}`).join(" | ")
+    : fallback;
+  const learningImpactFoot = compactJoin([
+    offlineTrainer.runtimeApplied?.thresholdPolicy?.id
+      ? `${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.id)} ${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.action || "observe")}`
+      : null,
+    offlineTrainer.runtimeApplied?.topScope?.id
+      ? `${titleize(offlineTrainer.runtimeApplied.topScope.type || "scope")} ${titleize(offlineTrainer.runtimeApplied.topScope.id)}`
+      : null,
+    offlineTrainer.runtimeApplied?.topSymbol?.id
+      ? `${offlineTrainer.runtimeApplied.topSymbol.id} ${titleize(offlineTrainer.runtimeApplied.topSymbol.trapStatus || offlineTrainer.runtimeApplied.topSymbol.status || "observe")}`
+      : null
+  ]);
+  const adaptiveLearningFoot = compactJoin([
+    offlineTrainer.runtimeApplied?.strategyReweighting?.id
+      ? `${titleize(offlineTrainer.runtimeApplied.strategyReweighting.id)} ${titleize(offlineTrainer.runtimeApplied.strategyReweighting.status || "observe")}`
+      : null,
+    offlineTrainer.analysisOnly?.parameterOptimization?.topCandidate
+      ? `Opt ${titleize(offlineTrainer.analysisOnly.parameterOptimization.topCandidate)}`
+      : null,
+    onlineAdaptation.lastApplied?.category
+      ? `Online ${titleize(onlineAdaptation.lastApplied.category)}`
+      : null
+  ]);
   const items = [
     makeKeyValueCard({
       className: "risk-card",
@@ -2222,6 +2418,56 @@ function renderExplainability(snapshot) {
       value: research.bestSymbol || `${research.symbolCount || 0} symbols`,
       foot: researchFoot || "Nog geen recente research-run zichtbaar.",
       valueClassName: research.bestSymbol || research.symbolCount ? "positive" : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Learning impact",
+      value: offlineTrainer.runtimeApplied?.thresholdPolicy?.id
+        || offlineTrainer.runtimeApplied?.topScope?.id
+        || offlineTrainer.runtimeApplied?.topSymbol?.id
+        || "-",
+      foot: compactJoin([learningImpactFoot, adaptiveLearningFoot]) || "Nog geen learning-signal dat runtime beleid zichtbaar aanpast.",
+      valueClassName: learningImpactFoot ? "positive" : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Scanner",
+      value: scanner.topCandidates?.[0]?.symbol || `${scanner.universe?.selectedCount || 0} symbols`,
+      foot: scanner.topCandidates?.[0]
+        ? [
+            `Score ${number(scanner.topCandidates[0].finalScore || 0, 2)}`,
+            titleize(scanner.topCandidates[0].recommendedLane || "probe"),
+            scannerFoot
+          ].filter(Boolean).join(" | ")
+        : scannerFoot || "Nog geen recente market scan zichtbaar.",
+      valueClassName: scanner.topCandidates?.[0]?.recommendedAction === "strong_candidate"
+        ? "positive"
+        : scanner.topCandidates?.[0]
+          ? "neutral"
+          : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Top safe",
+      value: scanner.topSafeCandidates?.[0]?.symbol || "-",
+      foot: scannerLaneFoot(scanner.topSafeCandidates, "Nog geen safe-lane leaders."),
+      valueClassName: scanner.topSafeCandidates?.length ? "positive" : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Top probe",
+      value: scanner.topProbeCandidates?.[0]?.symbol || "-",
+      foot: scannerLaneFoot(scanner.topProbeCandidates, "Nog geen probe-lane leaders."),
+      valueClassName: scanner.topProbeCandidates?.length ? "neutral" : "neutral"
+    }),
+    makeKeyValueCard({
+      className: "risk-card",
+      label: "Top shadow",
+      value: scanner.topShadowCandidates?.[0]?.symbol || "-",
+      foot: scanner.topShadowCandidates?.[0]?.historicalTrapWarning
+        ? compactBodyText(scanner.topShadowCandidates[0].historicalTrapWarning, 78)
+        : scannerLaneFoot(scanner.topShadowCandidates, "Nog geen shadow-lane leaders."),
+      valueClassName: scanner.topShadowCandidates?.length ? "negative" : "neutral"
     })
   ];
   const decisionCards = decisions.length
@@ -2863,4 +3109,3 @@ async function init() {
 if (activeDocument) {
   init();
 }
-

@@ -35,6 +35,10 @@ const DEFAULT_RUNTIME = {
     lastRunAt: null,
     latestSummary: null
   },
+  scanner: {
+    lastRunAt: null,
+    latestSummary: null
+  },
   marketSentiment: {},
   volatilityContext: {},
   onChainLite: {},
@@ -53,6 +57,7 @@ const DEFAULT_RUNTIME = {
   dataRecorder: {},
   shadowTrading: {},
   strategyResearch: {},
+  onlineAdaptation: {},
   thresholdTuning: {},
   parameterGovernor: {},
   executionCalibration: {},
@@ -160,6 +165,7 @@ const DEFAULT_JOURNAL = {
   blockedSetups: [],
   counterfactuals: [],
   universeRuns: [],
+  scannerRuns: [],
   researchRuns: [],
   equitySnapshots: [],
   cycles: [],
@@ -219,7 +225,7 @@ export function migrateRuntime(runtime) {
 export function migrateJournal(journal) {
   const merged = mergeDefaultShape(clone(DEFAULT_JOURNAL), journal);
   merged.schemaVersion = JOURNAL_SCHEMA_VERSION;
-  for (const key of ["trades", "scaleOuts", "blockedSetups", "counterfactuals", "universeRuns", "researchRuns", "equitySnapshots", "cycles", "events"]) {
+  for (const key of ["trades", "scaleOuts", "blockedSetups", "counterfactuals", "universeRuns", "scannerRuns", "researchRuns", "equitySnapshots", "cycles", "events"]) {
     merged[key] = Array.isArray(merged[key]) ? merged[key] : [];
   }
   return merged;
@@ -323,6 +329,4 @@ export class StateStore {
     }
   }
 }
-
-
 

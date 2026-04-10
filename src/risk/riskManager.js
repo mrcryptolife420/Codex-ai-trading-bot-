@@ -233,6 +233,9 @@ function getStrategyFitGuardFloor(strategySummary = {}, botMode = "paper") {
     if (activeStrategy === "orderbook_imbalance") {
       return 0.4;
     }
+    if (activeStrategy === "range_grid_reversion" || family === "range_grid") {
+      return 0.48;
+    }
     if (["zscore_reversion", "vwap_reversion"].includes(activeStrategy) || family === "mean_reversion") {
       return 0.47;
     }
@@ -983,7 +986,9 @@ function resolvePaperLearningLane({
   dataQualitySummary = {},
   paperLearningBudget = {},
   botMode = "paper",
-  samplingState = {}
+  samplingState = {},
+  regimeSummary = {},
+  sessionSummary = {}
 } = {}) {
   const activeLearningState = buildPaperActiveLearningState({
     score,
@@ -1019,10 +1024,33 @@ function resolvePaperLearningLane({
       activeLearningState
     };
   }
-  const nearThreshold = (score.probability || 0) >= threshold - (config.paperLearningNearMissThresholdBuffer || 0.025);
+  const regime = `${regimeSummary?.regime || "range"}`.toLowerCase();
+  const session = `${sessionSummary?.session || "unknown"}`.toLowerCase();
+  const baseNearMissBuffer = config.paperLearningNearMissThresholdBuffer || 0.025;
+  const adaptiveNearMissBuffer = clamp(
+    baseNearMissBuffer +
+      (regime === "breakout" || regime === "high_vol" ? 0.008 : regime === "trend" ? 0.004 : regime === "range" ? 0 : 0.002) +
+      (session === "asia" ? 0.003 : session === "weekend" ? -0.002 : 0),
+    0.012,
+    0.05
+  );
+  const signalFloor = clamp(
+    (config.paperLearningMinSignalQuality || 0.4) +
+      (regime === "breakout" || regime === "high_vol" ? 0.03 : regime === "range" ? -0.01 : 0),
+    0.32,
+    0.62
+  );
+  const dataFloor = clamp(
+    (config.paperLearningMinDataQuality || 0.52) +
+      (regime === "high_vol" ? 0.02 : 0) +
+      (session === "weekend" ? 0.02 : 0),
+    0.42,
+    0.72
+  );
+  const nearThreshold = (score.probability || 0) >= threshold - adaptiveNearMissBuffer;
   const qualityOkay =
-    safeValue(signalQualitySummary.overallScore, 0) >= (config.paperLearningMinSignalQuality || 0.4) &&
-    safeValue(dataQualitySummary.overallScore, 0) >= (config.paperLearningMinDataQuality || 0.52);
+    safeValue(signalQualitySummary.overallScore, 0) >= signalFloor &&
+    safeValue(dataQualitySummary.overallScore, 0) >= dataFloor;
   const hardBlocked = reasons.some((reason) => isHardPaperLearningBlocker(reason));
   const informativeShadowCase =
     nearThreshold ||
@@ -1030,8 +1058,8 @@ function resolvePaperLearningLane({
     safeValue(activeLearningState.disagreementScore, 0) >= 0.35 ||
     safeValue(activeLearningState.uncertaintyScore, 0) >= 0.48;
   const shadowQualityOkay =
-    safeValue(signalQualitySummary.overallScore, 0) >= Math.max(0.34, (config.paperLearningMinSignalQuality || 0.4) - 0.06) &&
-    safeValue(dataQualitySummary.overallScore, 0) >= Math.max(0.42, (config.paperLearningMinDataQuality || 0.52) - 0.08);
+    safeValue(signalQualitySummary.overallScore, 0) >= Math.max(0.34, signalFloor - 0.06) &&
+    safeValue(dataQualitySummary.overallScore, 0) >= Math.max(0.42, dataFloor - 0.08);
   if (informativeShadowCase && shadowQualityOkay && !hardBlocked && (paperLearningBudget.shadowRemaining || 0) > 0) {
     if (samplingState.canQueueShadow === false) {
       return {
@@ -1197,10 +1225,14 @@ function applyPaperLearningGuidance({
     nextLearningLane = "shadow";
   }
 
+  const scopeEvidenceBoost = clamp(safeValue(guidance.scopeEvidenceBoost, 0), 0, 0.08);
+  const reviewImpactBoost = clamp(safeValue(guidance.reviewImpactBoost, 0), 0, 0.06);
   const positiveLearningBoost =
     safeValue(guidance.priorityBoost, 0) * 0.7 +
     safeValue(guidance.probeBoost, 0) * (allow ? 0.75 : 0.35) +
-    safeValue(guidance.shadowBoost, 0) * (!allow ? 0.7 : 0.2);
+    safeValue(guidance.shadowBoost, 0) * (!allow ? 0.7 : 0.2) +
+    scopeEvidenceBoost * 0.6 +
+    reviewImpactBoost * 0.65;
   const negativeLearningPenalty = safeValue(guidance.cautionPenalty, 0) * 0.45;
   const nextLearningValueScore = clamp(learningValueScore + positiveLearningBoost - negativeLearningPenalty, 0, 1);
   const nextActiveLearningScore = clamp(
@@ -1208,14 +1240,18 @@ function applyPaperLearningGuidance({
       safeValue(guidance.priorityBoost, 0) * 0.55 +
       safeValue(guidance.probeBoost, 0) * 0.35 +
       safeValue(guidance.shadowBoost, 0) * 0.32 -
-      safeValue(guidance.cautionPenalty, 0) * 0.24,
+      safeValue(guidance.cautionPenalty, 0) * 0.24 +
+      scopeEvidenceBoost * 0.34 +
+      reviewImpactBoost * 0.42,
     0,
     1
   );
   const opportunityBoost = num(clamp(
     (allow
       ? safeValue(guidance.priorityBoost, 0) + safeValue(guidance.probeBoost, 0) * 0.8
-      : safeValue(guidance.priorityBoost, 0) * 0.45 + safeValue(guidance.shadowBoost, 0) * 0.9) -
+      : safeValue(guidance.priorityBoost, 0) * 0.45 + safeValue(guidance.shadowBoost, 0) * 0.9) +
+      scopeEvidenceBoost * 0.42 +
+      reviewImpactBoost * 0.55 -
       safeValue(guidance.cautionPenalty, 0) * 0.8,
     -0.05,
     0.12
@@ -1248,6 +1284,8 @@ function applyOfflineLearningGuidance({
     return {
       thresholdShift: 0,
       sizeMultiplier: 1,
+      priorityBoost: 0,
+      confidenceBias: 0,
       cautionPenalty: 0,
       executionCaution: 0,
       featureTrustPenalty: 0,
@@ -1259,12 +1297,16 @@ function applyOfflineLearningGuidance({
       opportunityShift: 0,
       learningValueScore,
       activeLearningState,
+      onlineAdaptation: null,
+      strategyReweighting: null,
       applied: false
     };
   }
 
   const rawThresholdShift = clamp(safeValue(guidance.thresholdShift, 0), -0.018, 0.018);
   const rawSizeMultiplier = clamp(safeValue(guidance.sizeMultiplier, 1), 0.84, 1.08);
+  const priorityBoost = clamp(safeValue(guidance.priorityBoost, 0), 0, 0.08);
+  const confidenceBias = clamp(safeValue(guidance.confidenceBias, 0), -0.03, 0.03);
   const baseCautionPenalty = clamp(safeValue(guidance.cautionPenalty, 0), 0, 0.14);
   const executionCaution = clamp(safeValue(guidance.executionCaution, 0), 0, 0.18);
   const featureTrustPenalty = clamp(safeValue(guidance.featureTrustPenalty, guidance.featurePenalty || 0), 0, 0.12);
@@ -1301,14 +1343,18 @@ function applyOfflineLearningGuidance({
     safeValue(activeLearningState.activeLearningScore, 0) +
       Math.max(0, -thresholdShift) * 0.55 +
       Math.max(0, executionAwareSizeMultiplier - 1) * 0.14 -
-      cautionPenalty * 0.24,
+      cautionPenalty * 0.24 +
+      priorityBoost * 0.5 +
+      Math.max(0, confidenceBias) * 0.2,
     0,
     1
   );
   const opportunityShift = num(clamp(
     (thresholdShift < 0 ? Math.abs(thresholdShift) * 1.9 : -thresholdShift * 1.6) +
       (executionAwareSizeMultiplier - 1) * 0.42 -
-      cautionPenalty * 0.42,
+      cautionPenalty * 0.42 +
+      priorityBoost * 0.85 +
+      confidenceBias * 0.35,
     -0.08,
     0.08
   ), 4);
@@ -1316,6 +1362,8 @@ function applyOfflineLearningGuidance({
   return {
     thresholdShift: num(thresholdShift, 4),
     sizeMultiplier: num(executionAwareSizeMultiplier, 4),
+    priorityBoost: num(priorityBoost, 4),
+    confidenceBias: num(confidenceBias, 4),
     cautionPenalty: num(cautionPenalty, 4),
     executionCaution: num(executionCaution, 4),
     featureTrustPenalty: num(featureTrustPenalty, 4),
@@ -1331,9 +1379,13 @@ function applyOfflineLearningGuidance({
       activeLearningScore: nextActiveLearningScore,
       focusReason: activeLearningState.focusReason || guidance.focusReason || "offline_learning_guidance"
     },
+    onlineAdaptation: guidance.onlineAdaptation || null,
+    strategyReweighting: guidance.strategyReweighting || null,
     applied:
       thresholdShift !== 0 ||
       executionAwareSizeMultiplier !== 1 ||
+      priorityBoost !== 0 ||
+      confidenceBias !== 0 ||
       cautionPenalty !== 0 ||
       executionCaution !== 0 ||
       featureTrustPenalty !== 0 ||
@@ -2091,8 +2143,8 @@ export class RiskManager {
     marketConditionSummary = {},
     runtime,
     journal,
-    balance,
-    symbolStats,
+    balance = {},
+    symbolStats = {},
     portfolioSummary = {},
     regimeSummary = { regime: "range" },
     thresholdTuningSummary = {},
@@ -2379,6 +2431,25 @@ export class RiskManager {
       (marketSnapshot.market.priceZScore || 0) > -0.75 &&
       acceptanceQuality < 0.58 &&
       score.probability < threshold + 0.12;
+    const bosStrength = safeValue(marketSnapshot.market.bosStrengthScore, 0);
+    const cvdConfirmation = safeValue(marketSnapshot.market.cvdConfirmationScore, 0);
+    const cvdDivergence = safeValue(marketSnapshot.market.cvdDivergenceScore, 0);
+    const fvgRespect = safeValue(marketSnapshot.market.fvgRespectScore, 0);
+    const hasStructureSignals = [
+      marketSnapshot.market.bullishBosActive,
+      marketSnapshot.market.bearishBosActive,
+      marketSnapshot.market.bosStrengthScore,
+      marketSnapshot.market.fvgRespectScore,
+      marketSnapshot.market.cvdConfirmationScore,
+      marketSnapshot.market.cvdDivergenceScore
+    ].some((value) => value != null);
+    const rangeGridFamily = (strategySummary.family || "") === "range_grid";
+    const strongBosContinuation =
+      bosStrength >= 0.52 &&
+      (safeValue(marketSnapshot.market.bullishBosActive, 0) > 0 || safeValue(marketSnapshot.market.bearishBosActive, 0) > 0);
+    const rangeBreakRiskContext =
+      ["range_break_risk", "breakout_release", "trend_continuation"].includes(marketConditionId) ||
+      (marketStateSummary.phase || "") === "breakout_release";
     const thresholdEdge = score.probability - threshold;
     const matureEntryConfidence = (score.calibrationConfidence || 0) >= 0.45;
     const trendContinuationFamily = ["trend_following", "breakout", "market_structure"].includes(strategySummary.family || "");
@@ -2387,9 +2458,12 @@ export class RiskManager {
     const chopLikelyContext =
       ["range_acceptance", "late_crowded"].includes(marketStateSummary.phase || "") ||
       (regimeSummary.regime || "") === "range";
+    const hasSignalQualityStructure = Number.isFinite(signalQualitySummary?.structureQuality);
     const antiChopEntryRisk =
       trendContinuationFamily &&
       chopLikelyContext &&
+      hasStructureSignals &&
+      hasSignalQualityStructure &&
       safeValue(signalQualitySummary.structureQuality, 0) < 0.66 &&
       acceptanceQuality < 0.56 &&
       thresholdEdge < 0.09 &&
@@ -2426,6 +2500,15 @@ export class RiskManager {
       Math.abs(relativeStrengthComposite) < 0.0028 &&
       thresholdEdge < 0.1 &&
       matureEntryConfidence;
+    const breakoutFakeoutRisk =
+      breakoutConfirmationFamily &&
+      (marketSnapshot.market.breakoutFollowThroughScore || 0) < 0.5 &&
+      (marketSnapshot.market.anchoredVwapRejectionScore || 0) > 0.58 &&
+      relativeStrengthComposite < 0.002 &&
+      acceptanceQuality < 0.56 &&
+      thresholdEdge < 0.12 &&
+      matureEntryConfidence &&
+      !strongTrendGuardOverride;
     const ambiguityScore = clamp(
       (safeValue(score.disagreement, 0) * 0.45) +
       (Math.max(0, 0.7 - safeValue(committeeSummary.agreement, 0)) * 0.35) +
@@ -2569,6 +2652,9 @@ export class RiskManager {
     }
     if ((marketStructureSummary.liquidationImbalance || 0) < -0.55 && (marketStructureSummary.liquidationIntensity || 0) > 0.35) {
       reasons.push("liquidation_sell_pressure");
+    }
+    if ((marketStructureSummary.liquidationTrapRisk || 0) > 0.56) {
+      reasons.push("liquidation_trap_risk");
     }
     if ((marketSentimentSummary.riskScore || 0) > 0.84 && (marketSentimentSummary.contrarianScore || 0) < -0.2) {
       reasons.push("macro_sentiment_overheated");
@@ -2714,6 +2800,53 @@ export class RiskManager {
     if (meanReversionTooShallow) {
       reasons.push("mean_reversion_too_shallow");
     }
+    if (
+      ["breakout", "market_structure", "orderflow"].includes(strategySummary.family || "") &&
+      hasStructureSignals &&
+      (bosStrength < 0.34 || cvdConfirmation < 0.34 || fvgRespect < 0.26) &&
+      score.probability < threshold + 0.08 &&
+      !strongTrendGuardOverride
+    ) {
+      reasons.push("structure_confirmation_missing");
+    }
+    if (
+      ["breakout", "market_structure", "orderflow"].includes(strategySummary.family || "") &&
+      hasStructureSignals &&
+      cvdDivergence >= 0.52 &&
+      score.probability < threshold + 0.1 &&
+      !strongTrendGuardOverride
+    ) {
+      reasons.push("cvd_divergence");
+    }
+    if (
+      strategySummary.family === "mean_reversion" &&
+      hasStructureSignals &&
+      strongBosContinuation &&
+      Math.max(0, safeValue(marketSnapshot.market.cvdTrendAlignment, 0)) >= 0.36 &&
+      score.probability < threshold + 0.12
+    ) {
+      reasons.push("mean_reversion_vs_fresh_bos");
+    }
+    if (rangeGridFamily) {
+      if (this.config.botMode === "live" && !this.config.enableLiveRangeGrid) {
+        reasons.push("live_range_grid_disabled");
+      }
+      if (rangeBreakRiskContext) {
+        reasons.push("range_break_risk");
+      }
+      if (strongBosContinuation) {
+        reasons.push("bos_breakout_pressure");
+      }
+      if ((marketStructureSummary.liquidationTrapRisk || 0) > 0.46) {
+        reasons.push("liquidation_trap_risk");
+      }
+      if ((marketSnapshot.market.rangeWidthPct || 0) < 0.004) {
+        reasons.push("range_too_narrow");
+      }
+      if ((marketSnapshot.book.depthConfidence || 0) < 0.42 || (marketSnapshot.book.spreadBps || 0) > Math.max(this.config.maxSpreadBps * 0.75, 9)) {
+        reasons.push("grid_execution_quality_too_low");
+      }
+    }
     if (antiChopEntryRisk) {
       reasons.push("anti_chop_context_filter");
     }
@@ -2728,6 +2861,9 @@ export class RiskManager {
     }
     if (confluenceDiversityWeak) {
       reasons.push("confluence_diversity_weak");
+    }
+    if (breakoutFakeoutRisk) {
+      reasons.push("breakout_fakeout_risk");
     }
     if (shouldBlockAmbiguousSetup({
       riskSensitiveFamily,
@@ -2982,6 +3118,9 @@ export class RiskManager {
     const streakPenalty = paperLearningRecoveryActive
       ? clamp(1 - globalLossStreak * 0.02 - symbolLossStreak * 0.01, 0.88, 1)
       : clamp(1 - globalLossStreak * 0.08 - symbolLossStreak * 0.06, 0.55, 1);
+    const gridFamilySizeMultiplier = (strategySummary.family || "") === "range_grid"
+      ? clamp(safeValue(this.config.gridBaseSizeMultiplier, 0.55), 0.2, 0.9)
+      : 1;
 
     const quoteAmount =
       Math.min(maxByPosition, maxByRisk, remainingExposureBudget) *
@@ -3030,6 +3169,7 @@ export class RiskManager {
       capitalLadderSizeMultiplier *
       retirementSizeMultiplier *
       executionCostSizeMultiplier *
+      gridFamilySizeMultiplier *
       spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
     const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier * offlineLearningGuidanceApplied.sizeMultiplier;
@@ -3483,7 +3623,9 @@ export class RiskManager {
       dataQualitySummary,
       paperLearningBudget,
       botMode: this.config.botMode,
-      samplingState: paperLearningSampling
+      samplingState: paperLearningSampling,
+      regimeSummary,
+      sessionSummary
     });
     if (!allow && shadowQueueBlockedByCap) {
       for (const reason of shadowCapReasons || []) {
@@ -3537,7 +3679,9 @@ export class RiskManager {
         dataQualitySummary,
         paperLearningBudget,
         botMode: this.config.botMode,
-        samplingState: paperLearningSampling
+        samplingState: paperLearningSampling,
+        regimeSummary,
+        sessionSummary
       }));
       if (!allow && shadowQueueBlockedByCap) {
         for (const reason of shadowCapReasons || []) {
@@ -3709,6 +3853,27 @@ export class RiskManager {
     });
     const dominantSizingDrag = sizingBreakdown.dominantSizingDrag;
     const dominantSizingBoost = sizingBreakdown.dominantSizingBoost;
+    const rankedRejectingFactors = [...reasons]
+      .sort((left, right) => {
+        const severityDelta = reasonSeverity(right) - reasonSeverity(left);
+        if (severityDelta !== 0) {
+          return severityDelta;
+        }
+        return left.localeCompare(right);
+      });
+    const canonicalRejectingFactors = [];
+    const seenRejectingCategories = new Set();
+    for (const reason of rankedRejectingFactors) {
+      const category = classifyReasonCategory(reason);
+      const dedupeKey = category || reason;
+      if (seenRejectingCategories.has(dedupeKey)) {
+        continue;
+      }
+      seenRejectingCategories.add(dedupeKey);
+      canonicalRejectingFactors.push(reason);
+    }
+    const rankedConfirmingFactors = [...candidateApprovalReasons]
+      .sort((left, right) => left.localeCompare(right));
     const entryDiagnostics = buildEntryDiagnosticsSummary({
       regimeSummary,
       strategySummary,
@@ -3720,8 +3885,9 @@ export class RiskManager {
       marketConditionSummary,
       score,
       threshold,
-      candidateApprovalReasons,
+      candidateApprovalReasons: rankedConfirmingFactors,
       reasons,
+      rankedRejectingFactors: canonicalRejectingFactors,
       blockerCategoryCounts,
       reasonSeverityProfile,
       ambiguityScore,
@@ -3763,10 +3929,14 @@ export class RiskManager {
         applied: offlineLearningGuidanceApplied.applied,
         thresholdShiftApplied: offlineLearningGuidanceApplied.thresholdShift,
         sizeMultiplierApplied: offlineLearningGuidanceApplied.sizeMultiplier,
+        priorityBoostApplied: offlineLearningGuidanceApplied.priorityBoost,
+        confidenceBiasApplied: offlineLearningGuidanceApplied.confidenceBias,
         cautionPenaltyApplied: offlineLearningGuidanceApplied.cautionPenalty,
         executionCautionApplied: offlineLearningGuidanceApplied.executionCaution,
         featureTrustPenaltyApplied: offlineLearningGuidanceApplied.featureTrustPenalty,
-        opportunityShift: offlineLearningGuidanceApplied.opportunityShift
+        opportunityShift: offlineLearningGuidanceApplied.opportunityShift,
+        onlineAdaptation: offlineLearningGuidanceApplied.onlineAdaptation || null,
+        strategyReweighting: offlineLearningGuidanceApplied.strategyReweighting || null
       },
       paperThresholdSandbox: {
         ...paperThresholdSandbox,
@@ -3833,6 +4003,7 @@ export class RiskManager {
         entryReferencePrice: Number.isFinite(entryReferencePrice) ? num(entryReferencePrice, 8) : null,
         missingExecutableEntryPrice: !Number.isFinite(entryReferencePrice) || entryReferencePrice <= 0,
         offlineLearningSizeMultiplier: num(offlineLearningGuidanceApplied.sizeMultiplier, 4),
+        offlineLearningPriorityBoost: num(offlineLearningGuidanceApplied.priorityBoost, 4),
         offlineLearningExecutionCaution: num(offlineLearningGuidanceApplied.executionCaution, 4),
         offlineLearningFeatureTrustPenalty: num(offlineLearningGuidanceApplied.featureTrustPenalty, 4),
         riskClaritySizeFactor: num(riskClaritySizeFactor, 4),
@@ -4001,6 +4172,30 @@ export class RiskManager {
         (1 - contextExitUrgency * 0.5)
       )
     );
+    const isRangeGrid = (position.strategyFamily || position.strategyDecision?.family || position.entryRationale?.strategy?.family || "") === "range_grid" || Boolean(position.gridContext?.gridMode);
+    const gridContext = position.gridContext || {};
+    if (isRangeGrid) {
+      const gridBand = gridContext.gridBand || "mid";
+      const rangeMid = Number(gridContext.rangeMidPrice || position.entryPrice);
+      const oppositeBand = Number(gridContext.oppositeBandPrice || position.takeProfitPrice || position.entryPrice * (1 + this.config.takeProfitPct * 0.75));
+      const gridTakeProfit = gridBand === "lower"
+        ? Math.max(rangeMid, oppositeBand * 0.92)
+        : gridBand === "upper"
+          ? Math.min(rangeMid, oppositeBand * 1.08)
+          : rangeMid;
+      if ((marketStructureSummary.liquidationTrapRisk || 0) >= 0.52) {
+        return { shouldExit: true, shouldScaleOut: false, reason: "grid_liquidation_trap_exit", updatedHigh, updatedLow };
+      }
+      if ((marketSnapshot.market?.bullishBosActive || 0) > 0 || (marketSnapshot.market?.bearishBosActive || 0) > 0) {
+        return { shouldExit: true, shouldScaleOut: false, reason: "grid_bos_invalidation_exit", updatedHigh, updatedLow };
+      }
+      if (["range_break_risk", "breakout_release"].includes(position.marketConditionAtEntry || "") && heldMinutes >= Math.max(12, Math.round(effectiveMaxHoldMinutes * 0.35))) {
+        return { shouldExit: true, shouldScaleOut: false, reason: "grid_regime_shift_exit", updatedHigh, updatedLow };
+      }
+      if (currentPrice >= gridTakeProfit) {
+        return { shouldExit: true, shouldScaleOut: false, reason: "grid_take_profit", updatedHigh, updatedLow };
+      }
+    }
     const canScaleOut =
       !position.scaleOutCompletedAt &&
       !position.scaleOutInProgress &&

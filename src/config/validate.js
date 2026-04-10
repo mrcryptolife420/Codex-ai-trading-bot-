@@ -189,6 +189,15 @@ export function validateConfig(config) {
   assertRange("FEATURE_DECAY_MIN_TRADES", config.featureDecayMinTrades, 3, 100, errors);
   assertRange("FEATURE_DECAY_WEAK_SCORE", config.featureDecayWeakScore, 0, 1, errors);
   assertRange("FEATURE_DECAY_BLOCKED_SCORE", config.featureDecayBlockedScore, 0, 1, errors);
+  assertRange("ADAPTIVE_LEARNING_CORE_LEARNING_RATE", config.adaptiveLearningCoreLearningRate, 0.001, 0.05, errors);
+  assertRange("ADAPTIVE_LEARNING_MAX_THRESHOLD_SHIFT", config.adaptiveLearningMaxThresholdShift, 0.001, 0.05, errors);
+  assertRange("ADAPTIVE_LEARNING_MAX_SIZE_BIAS", config.adaptiveLearningMaxSizeBias, 0.01, 0.25, errors);
+  assertRange("ADAPTIVE_LEARNING_MAX_SAMPLE_WEIGHT", config.adaptiveLearningMaxSampleWeight, 0.5, 3, errors);
+  assertRange("ADAPTIVE_LEARNING_MIN_QUARANTINE_EVIDENCE", config.adaptiveLearningMinQuarantineEvidence, 0.1, 1, errors);
+  assertRange("ADAPTIVE_LEARNING_STRATEGY_REWEIGHT_LOOKBACK_HOURS", config.adaptiveLearningStrategyReweightLookbackHours, 24, 24 * 30, errors);
+  assertRange("ADAPTIVE_LEARNING_STRATEGY_REWEIGHT_MAX_BIAS", config.adaptiveLearningStrategyReweightMaxBias, 0.01, 0.2, errors);
+  assertRange("ADAPTIVE_LEARNING_PARAMETER_OPTIMIZATION_MIN_TRADES", config.adaptiveLearningParameterOptimizationMinTrades, 8, 500, errors);
+  assertRange("ADAPTIVE_LEARNING_PARAMETER_OPTIMIZATION_MAX_CANDIDATES", config.adaptiveLearningParameterOptimizationMaxCandidates, 2, 40, errors);
   assertRange("EXECUTION_CALIBRATION_MIN_LIVE_TRADES", config.executionCalibrationMinLiveTrades, 1, 200, errors);
   assertRange("EXECUTION_CALIBRATION_LOOKBACK_TRADES", config.executionCalibrationLookbackTrades, 4, 500, errors);
   assertRange("EXECUTION_CALIBRATION_MAX_BPS_ADJUST", config.executionCalibrationMaxBpsAdjust, 0.5, 50, errors);

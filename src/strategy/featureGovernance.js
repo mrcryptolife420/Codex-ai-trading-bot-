@@ -30,6 +30,18 @@ function correlation(values = [], outcomes = []) {
 }
 
 export function featureGroup(name = "") {
+  if (name.includes("cvd")) {
+    return "orderflow";
+  }
+  if (name.includes("liquidation") || name.includes("open_interest") || name.includes("funding")) {
+    return "derivatives";
+  }
+  if (name.includes("fvg") || name.includes("bos") || name.includes("swing_")) {
+    return "market_structure";
+  }
+  if (name.includes("range") || name.includes("grid")) {
+    return "range_execution";
+  }
   if (name.includes("execution") || name.includes("book_") || name.includes("queue_") || name.includes("spread") || name.includes("depth_") || name.includes("microprice")) {
     return "execution";
   }

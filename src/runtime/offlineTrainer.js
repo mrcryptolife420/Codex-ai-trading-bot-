@@ -5,6 +5,8 @@ import {
   featureGroup,
   isSupportFeature
 } from "../strategy/featureGovernance.js";
+import { buildTradeLearningAttribution } from "./tradeAttribution.js";
+import { buildAdaptiveParameterOptimization } from "./adaptiveParameterOptimizer.js";
 import { getConfiguredTradingSource, matchesTradingSource } from "../utils/tradingSource.js";
 
 function num(value, digits = 4) {
@@ -21,6 +23,429 @@ function safeNumber(value, fallback = 0) {
 
 function arr(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function buildFeatureUsefulnessGroups(scorecards = []) {
+  const groups = new Map();
+  for (const item of arr(scorecards)) {
+    const groupId = item.group || featureGroup(item.id || "");
+    if (!groups.has(groupId)) {
+      groups.set(groupId, {
+        group: groupId,
+        featureCount: 0,
+        positiveCount: 0,
+        negativeCount: 0,
+        totalInfluence: 0,
+        topFeature: null
+      });
+    }
+    const group = groups.get(groupId);
+    group.featureCount += 1;
+    if ((item.signedEdge || 0) >= 0) {
+      group.positiveCount += 1;
+    } else {
+      group.negativeCount += 1;
+    }
+    group.totalInfluence += Math.abs(safeNumber(item.influenceScore, 0));
+    if (!group.topFeature || safeNumber(item.influenceScore, 0) > safeNumber(group.topFeature.influenceScore, 0)) {
+      group.topFeature = {
+        id: item.id || null,
+        influenceScore: num(item.influenceScore || 0),
+        predictiveScore: num(item.predictiveScore || 0)
+      };
+    }
+  }
+  return [...groups.values()]
+    .map((item) => ({
+      group: item.group,
+      featureCount: item.featureCount,
+      positiveCount: item.positiveCount,
+      negativeCount: item.negativeCount,
+      averageInfluence: num(item.totalInfluence / Math.max(item.featureCount, 1)),
+      topFeature: item.topFeature
+    }))
+    .sort((left, right) => (right.averageInfluence || 0) - (left.averageInfluence || 0));
+}
+
+function resolveTradeLearningAttribution(trade = {}) {
+  return trade.learningAttribution?.category
+    ? trade.learningAttribution
+    : buildTradeLearningAttribution(trade);
+}
+
+function buildLearningAttributionSummary(trades = []) {
+  const categories = new Map();
+  const reasonCounts = new Map();
+  const recent = [];
+  for (const trade of arr(trades)) {
+    const attribution = resolveTradeLearningAttribution(trade);
+    const category = attribution.category || "uncertain";
+    const bucket = categories.get(category) || {
+      category,
+      count: 0,
+      averageConfidence: 0,
+      wins: 0,
+      losses: 0
+    };
+    bucket.count += 1;
+    bucket.averageConfidence += safeNumber(attribution.confidence, 0);
+    if ((trade.pnlQuote || 0) >= 0) {
+      bucket.wins += 1;
+    } else {
+      bucket.losses += 1;
+    }
+    categories.set(category, bucket);
+    for (const reason of arr(attribution.reasons || [])) {
+      reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+    }
+    recent.push({
+      symbol: trade.symbol || null,
+      category,
+      confidence: num(attribution.confidence || 0),
+      regime: attribution.scope?.regime || trade.regimeAtEntry || null,
+      family: attribution.scope?.family || trade.strategyFamily || null,
+      reason: attribution.reasons?.[0] || null,
+      at: trade.exitAt || trade.entryAt || null
+    });
+  }
+  const categoryScorecards = [...categories.values()]
+    .map((item) => ({
+      ...item,
+      averageConfidence: num(item.count ? item.averageConfidence / item.count : 0),
+      winRate: num(item.count ? item.wins / item.count : 0)
+    }))
+    .sort((left, right) => right.count - left.count || (right.averageConfidence || 0) - (left.averageConfidence || 0));
+  return {
+    status: trades.length >= 8 ? "ready" : trades.length >= 3 ? "building" : "warmup",
+    tradeCount: trades.length,
+    topCategory: categoryScorecards[0]?.category || null,
+    categoryScorecards,
+    topReasons: [...reasonCounts.entries()]
+      .map(([id, count]) => ({ id, count }))
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 8),
+    recent: recent.slice(-12).reverse()
+  };
+}
+
+function classifyFeatureLifecycle({
+  recommendation = {},
+  decayScorecard = {},
+  minEvidence = 0.62
+} = {}) {
+  const action = recommendation.action || "keep_active";
+  const actionConfidence = safeNumber(recommendation.actionConfidence, 0);
+  const supportFeature = Boolean(recommendation.supportFeature);
+  if (
+    action === "drop_candidate" &&
+    !supportFeature &&
+    actionConfidence >= Math.min(0.92, minEvidence + 0.12)
+  ) {
+    return "quarantine_candidate";
+  }
+  if (
+    ["drop_candidate", "shadow_only", "fix_live_parity"].includes(action) &&
+    actionConfidence >= Math.max(0.48, minEvidence * 0.82)
+  ) {
+    return "challenger_disable_candidate";
+  }
+  if ((decayScorecard.status || "") === "decayed") {
+    return "decayed";
+  }
+  if (
+    (decayScorecard.status || "") === "watch" ||
+    ["observe_only", "fix_live_parity"].includes(action) ||
+    (recommendation.status || "") === "observe"
+  ) {
+    return "watch";
+  }
+  return "healthy";
+}
+
+function buildScopedFeatureLifecycle(trades = [], candidateIds = [], scopeType = "family") {
+  const grouped = new Map();
+  for (const trade of arr(trades)) {
+    const key = scopeType === "family"
+      ? trade.strategyFamily || trade.entryRationale?.strategy?.family || null
+      : scopeType === "regime"
+        ? trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || null
+        : scopeType === "session"
+          ? trade.sessionAtEntry || trade.entryRationale?.session?.session || null
+          : trade.marketConditionAtEntry || trade.entryRationale?.marketCondition?.conditionId || null;
+    if (!key) {
+      continue;
+    }
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key).push(trade);
+  }
+  const scoped = [];
+  for (const [id, scopedTrades] of grouped.entries()) {
+    if (scopedTrades.length < 5) {
+      continue;
+    }
+    const candidateSignals = candidateIds
+      .map((featureId) => {
+        let activationCount = 0;
+        let negativeCount = 0;
+        for (const trade of scopedTrades) {
+          if (!Number.isFinite(trade.rawFeatures?.[featureId])) {
+            continue;
+          }
+          activationCount += 1;
+          const negative = (trade.pnlQuote || 0) < 0 || safeNumber(trade.labelScore, 0.5) < 0.48;
+          if (negative) {
+            negativeCount += 1;
+          }
+        }
+        if (activationCount < 3) {
+          return null;
+        }
+        const negativeRate = negativeCount / activationCount;
+        return negativeRate >= 0.58
+          ? {
+              featureId,
+              activationCount,
+              negativeRate: num(negativeRate),
+              sampleConfidence: num(buildSampleConfidence(activationCount, 6))
+            }
+          : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => (right.negativeRate || 0) - (left.negativeRate || 0) || (right.activationCount || 0) - (left.activationCount || 0))
+      .slice(0, 4);
+    if (candidateSignals.length) {
+      scoped.push({
+        scopeType,
+        id,
+        tradeCount: scopedTrades.length,
+        candidates: candidateSignals
+      });
+    }
+  }
+  return scoped.slice(0, 10);
+}
+
+function buildFeatureCleanupPlan({
+  featureDecay = {},
+  featureGovernance = {},
+  trades = [],
+  config = {}
+} = {}) {
+  const minEvidence = clamp(safeNumber(config.adaptiveLearningMinQuarantineEvidence, 0.62), 0.45, 0.9);
+  const decayMap = new Map(arr(featureDecay.scorecards || []).map((item) => [item.id, item]));
+  const recommendations = arr(featureGovernance.pruning?.recommendations || [])
+    .map((item) => {
+      const lifecycle = classifyFeatureLifecycle({
+        recommendation: item,
+        decayScorecard: decayMap.get(item.id) || {},
+        minEvidence
+      });
+      return {
+        id: item.id || null,
+        group: item.group || featureGroup(item.id || ""),
+        lifecycle,
+        action: item.action || "keep_active",
+        status: item.status || "active",
+        predictiveScore: num(item.predictiveScore || 0),
+        influenceScore: num(item.influenceScore || 0),
+        tradeCount: item.tradeCount || 0,
+        sampleConfidence: num(item.sampleConfidence || 0),
+        evidenceConfidence: num(item.evidenceConfidence || 0),
+        actionConfidence: num(item.actionConfidence || 0),
+        supportFeature: Boolean(item.supportFeature),
+        rationale: item.rationale || null,
+        scopeHandling:
+          lifecycle === "quarantine_candidate"
+            ? "challenger_disable_then_paper_only_disable"
+            : lifecycle === "challenger_disable_candidate"
+              ? "challenger_disable_first"
+              : lifecycle === "decayed"
+                ? "downweight_and_watch"
+                : lifecycle === "watch"
+                  ? "observe"
+                  : "keep_active"
+      };
+    })
+    .sort((left, right) => {
+      const order = {
+        quarantine_candidate: 5,
+        challenger_disable_candidate: 4,
+        decayed: 3,
+        watch: 2,
+        healthy: 1
+      };
+      return (order[right.lifecycle] || 0) - (order[left.lifecycle] || 0) ||
+        (right.actionConfidence || 0) - (left.actionConfidence || 0);
+    });
+  const featureQuarantineCandidates = recommendations
+    .filter((item) => item.lifecycle === "quarantine_candidate")
+    .slice(0, 8);
+  const challengerDisableCandidates = recommendations
+    .filter((item) => item.lifecycle === "challenger_disable_candidate")
+    .slice(0, 8);
+  const offlinePruneRecommendations = featureQuarantineCandidates
+    .filter((item) => (item.actionConfidence || 0) >= Math.min(0.94, minEvidence + 0.16))
+    .slice(0, 6);
+  const scopedCandidates = recommendations
+    .filter((item) => ["quarantine_candidate", "challenger_disable_candidate", "decayed"].includes(item.lifecycle))
+    .map((item) => item.id)
+    .filter(Boolean);
+  return {
+    status: featureQuarantineCandidates.length
+      ? "action_required"
+      : challengerDisableCandidates.length || recommendations.some((item) => ["decayed", "watch"].includes(item.lifecycle))
+        ? "watch"
+        : "healthy",
+    recommendations: recommendations.slice(0, 16),
+    featureQuarantineCandidates,
+    challengerDisableCandidates,
+    offlinePruneRecommendations,
+    scoped: {
+      family: buildScopedFeatureLifecycle(trades, scopedCandidates, "family"),
+      regime: buildScopedFeatureLifecycle(trades, scopedCandidates, "regime"),
+      session: buildScopedFeatureLifecycle(trades, scopedCandidates, "session"),
+      condition: buildScopedFeatureLifecycle(trades, scopedCandidates, "condition")
+    },
+    note: featureQuarantineCandidates[0]
+      ? `${featureQuarantineCandidates[0].id} is nu de sterkste quarantine-candidate.`
+      : challengerDisableCandidates[0]
+        ? `${challengerDisableCandidates[0].id} verdient eerst challenger-disable validatie.`
+        : "Feature cleanup blijft voorlopig observationeel en offline-only."
+  };
+}
+
+function computeDrawdownPressure(trades = []) {
+  let equity = 0;
+  let peak = 0;
+  let maxDrawdown = 0;
+  for (const trade of arr(trades)) {
+    equity += safeNumber(trade.pnlQuote, 0);
+    peak = Math.max(peak, equity);
+    maxDrawdown = Math.max(maxDrawdown, peak - equity);
+  }
+  const pnlScale = arr(trades).reduce((sum, trade) => sum + Math.abs(safeNumber(trade.pnlQuote, 0)), 0) || 1;
+  return clamp(maxDrawdown / pnlScale, 0, 1);
+}
+
+function buildWeeklyStrategyReweighting(trades = [], config = {}, nowIso = new Date().toISOString()) {
+  const lookbackHours = Math.max(24, Math.round(safeNumber(config.adaptiveLearningStrategyReweightLookbackHours, 24 * 7)));
+  const maxBias = clamp(safeNumber(config.adaptiveLearningStrategyReweightMaxBias, 0.08), 0.02, 0.16);
+  const cutoffMs = new Date(nowIso).getTime() - lookbackHours * 3_600_000;
+  const recentTrades = arr(trades).filter((trade) => {
+    const at = new Date(trade.exitAt || trade.entryAt || 0).getTime();
+    return Number.isFinite(at) && at >= cutoffMs;
+  });
+  const grouped = new Map();
+  for (const trade of recentTrades) {
+    const family = trade.strategyFamily || trade.entryRationale?.strategy?.family || "unknown_family";
+    if (!grouped.has(family)) {
+      grouped.set(family, []);
+    }
+    grouped.get(family).push(trade);
+  }
+  const families = [...grouped.entries()].map(([id, scopedTrades]) => {
+    const winRate = average(scopedTrades.map((trade) => ((trade.pnlQuote || 0) >= 0 ? 1 : 0)), 0);
+    const expectancy = average(scopedTrades.map((trade) => safeNumber(trade.netPnlPct, 0)), 0);
+    const rewardRisk = average(
+      scopedTrades.map((trade) => clamp(safeNumber(trade.netPnlPct, 0) / Math.max(0.0025, Math.abs(safeNumber(trade.maePct, 0.003))), -2, 2)),
+      0
+    );
+    const rewardRiskQuality = clamp((rewardRisk + 2) / 4, 0, 1);
+    const executionQuality = clamp(average(scopedTrades.map((trade) => safeNumber(trade.executionQualityScore, 0)), 0), 0, 1);
+    const freshness = computeFreshnessScore(scopedTrades, nowIso, lookbackHours).freshnessScore || 0;
+    const sampleConfidence = buildSampleConfidence(scopedTrades.length, 8);
+    const drawdownPressure = computeDrawdownPressure(scopedTrades);
+    const expectancyScore = clamp((expectancy + 0.01) / 0.02, 0, 1);
+    const score = clamp(
+      winRate * 0.26 +
+      expectancyScore * 0.22 +
+      rewardRiskQuality * 0.18 +
+      executionQuality * 0.14 +
+      freshness * 0.08 +
+      sampleConfidence * 0.08 -
+      drawdownPressure * 0.18,
+      0,
+      1
+    );
+    const rawBias = clamp((score - 0.5) * 2.4 * maxBias, -maxBias, maxBias);
+    const confidence = clamp(sampleConfidence * 0.72 + freshness * 0.28, 0, 1);
+    const status = rawBias >= 0.03 && confidence >= 0.52
+      ? "promote"
+      : rawBias <= -0.03 && confidence >= 0.5
+        ? "caution"
+        : "observe";
+    return {
+      id,
+      tradeCount: scopedTrades.length,
+      winRate: num(winRate),
+      expectancy: num(expectancy),
+      rewardRiskQuality: num(rewardRiskQuality),
+      executionQuality: num(executionQuality),
+      drawdownPressure: num(drawdownPressure),
+      freshnessScore: num(freshness),
+      sampleConfidence: num(sampleConfidence),
+      score: num(score),
+      weightBias: num(rawBias),
+      thresholdBias: num(clamp(-rawBias * 0.18, -0.01, 0.01)),
+      sizeBias: num(clamp(1 + rawBias * 0.65, 0.92, 1.08)),
+      status,
+      confidence: num(confidence),
+      justification:
+        status === "promote"
+          ? `${id} presteert recent beter met stabiele execution-kwaliteit.`
+          : status === "caution"
+            ? `${id} laat recente drawdown- of expectancy-druk zien.`
+            : `${id} blijft binnen de neutrale band.`
+    };
+  })
+    .sort((left, right) => (right.score || 0) - (left.score || 0) || (right.tradeCount || 0) - (left.tradeCount || 0));
+  return {
+    status: families.length ? "ready" : "warmup",
+    lookbackHours,
+    familyCount: families.length,
+    topFamily: families[0] || null,
+    families: families.slice(0, 10),
+    note: families[0]
+      ? `${families[0].id} is de huidige wekelijkse familie-leider (${families[0].status}).`
+      : "Nog te weinig recente trades voor bounded strategy reweighting."
+  };
+}
+
+function buildAnalyticsDatasets({
+  learningAttribution = {},
+  featureCleanupPlan = {},
+  strategyReweighting = {},
+  parameterOptimization = {}
+} = {}) {
+  return {
+    attributedTrades: {
+      tradeCount: learningAttribution.tradeCount || 0,
+      topCategory: learningAttribution.topCategory || null,
+      status: learningAttribution.status || "warmup"
+    },
+    onlineAdaptationEvents: {
+      eventCount: learningAttribution.tradeCount || 0,
+      status: learningAttribution.tradeCount ? "available" : "warmup",
+      note: "Trade attribution and bounded adaptation are persisted through trade and learning frames."
+    },
+    featureGovernanceEvidence: {
+      recommendationCount: arr(featureCleanupPlan.recommendations || []).length,
+      quarantineCount: arr(featureCleanupPlan.featureQuarantineCandidates || []).length,
+      status: featureCleanupPlan.status || "healthy"
+    },
+    strategyReweighting: {
+      familyCount: strategyReweighting.familyCount || 0,
+      topFamily: strategyReweighting.topFamily?.id || null,
+      status: strategyReweighting.status || "warmup"
+    },
+    parameterOptimization: {
+      candidateCount: parameterOptimization.candidateCount || 0,
+      status: parameterOptimization.status || "warmup",
+      topCandidate: parameterOptimization.topCandidate?.id || null
+    }
+  };
 }
 
 function resolveEvidenceTimestampMs(item = {}) {
@@ -117,7 +542,8 @@ function buildDecisionScorecards({
   falseNegativeKeyFn = null,
   fallbackId = "unknown",
   config = {},
-  nowIso = new Date().toISOString()
+  nowIso = new Date().toISOString(),
+  limit = 10
 } = {}) {
   const map = new Map();
   const halfLifeHours = safeNumber(config.offlineTrainerScorecardHalfLifeHours, 24 * 7);
@@ -290,7 +716,7 @@ function buildDecisionScorecards({
       };
     })
     .sort((left, right) => right.governanceScore - left.governanceScore)
-    .slice(0, 10);
+    .slice(0, Math.max(1, Number(limit || 10)));
 }
 
 function buildStrategyScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
@@ -314,6 +740,19 @@ function buildRegimeScorecards(trades = [], falsePositives = [], falseNegatives 
     keyFn: (trade) => trade.regimeAtEntry || trade.entryRationale?.regimeSummary?.regime || "unknown",
     falseNegativeKeyFn: (item) => item.regime || item.regimeAtEntry || "blocked_setup",
     fallbackId: "unknown",
+    config,
+    nowIso
+  });
+}
+
+function buildFamilyScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
+  return buildDecisionScorecards({
+    trades,
+    falsePositives,
+    falseNegatives,
+    keyFn: (trade) => resolveTradeStrategyFamily(trade),
+    falseNegativeKeyFn: (item) => resolveCounterfactualStrategyFamily(item),
+    fallbackId: "unknown_family",
     config,
     nowIso
   });
@@ -386,6 +825,14 @@ function resolveCounterfactualStrategyId(item = {}) {
     item.paperLearning?.scope?.strategy ||
     "unknown_strategy"
   );
+}
+
+function resolveTradeSymbol(trade = {}) {
+  return trade.symbol || trade.entryRationale?.symbol || "unknown_symbol";
+}
+
+function resolveCounterfactualSymbol(item = {}) {
+  return item.symbol || item.paperLearning?.scope?.symbol || "unknown_symbol";
 }
 
 function resolveCounterfactualBlockerReasons(item = {}) {
@@ -498,6 +945,43 @@ function buildConditionSessionFamilyScorecards(trades = [], falsePositives = [],
       familyId: familyId || null
     };
   });
+}
+
+function buildSymbolScorecards(trades = [], falsePositives = [], falseNegatives = [], config = {}, nowIso = new Date().toISOString()) {
+  return buildDecisionScorecards({
+    trades,
+    falsePositives,
+    falseNegatives,
+    keyFn: (trade) => resolveTradeSymbol(trade),
+    falseNegativeKeyFn: (item) => resolveCounterfactualSymbol(item),
+    fallbackId: "unknown_symbol",
+    config,
+    nowIso,
+    limit: Math.max(12, Number(config.offlineTrainerSymbolScorecardLimit || 24))
+  }).map((item) => {
+    const trapScore = clamp(
+      item.falsePositiveRate * 0.45 +
+        item.falseNegativeRate * 0.34 +
+        Math.max(0, 0.62 - (item.winRate || 0)) * 0.54 +
+        Math.max(0, 0.58 - (item.avgExecutionQuality || 0)) * 0.2 +
+        Math.max(0, 0.52 - (item.governanceScore || 0)) * 0.3,
+      0,
+      1
+    );
+    return {
+      ...item,
+      symbol: item.id,
+      trapScore: num(trapScore),
+      trapStatus: trapScore >= 0.56
+        ? "trap"
+        : trapScore >= 0.34
+          ? "mixed"
+          : "supported"
+    };
+  }).sort((left, right) =>
+    (right.trapScore || 0) - (left.trapScore || 0) ||
+    (right.governanceScore || 0) - (left.governanceScore || 0)
+  );
 }
 
 const HARD_TUNING_BLOCKERS = new Set([
@@ -1708,39 +2192,112 @@ function countCoverage(entries = []) {
   return (Array.isArray(entries) ? entries : []).reduce((total, item) => total + (item.count || 0), 0);
 }
 
+function buildRecorderEvidenceHealth(dataRecorder = {}) {
+  const replayFrames = safeNumber(dataRecorder.replayFrames, 0);
+  const snapshotFrames = safeNumber(dataRecorder.snapshotFrames, 0);
+  const learningFrames = safeNumber(dataRecorder.learningFrames, 0);
+  const datasetCuration = dataRecorder.datasetCuration || {};
+  const curationSignal = clamp(
+    (datasetCuration.paperLearning?.tradeCount || 0) / 80 * 0.34 +
+      (datasetCuration.vetoReview?.counterfactuals || 0) / 60 * 0.3 +
+      learningFrames / 120 * 0.2 +
+      replayFrames / 80 * 0.1 +
+      snapshotFrames / 120 * 0.06,
+    0,
+    1
+  );
+  return {
+    replayFrames,
+    snapshotFrames,
+    learningFrames,
+    curationSignal: num(curationSignal)
+  };
+}
+
 function buildRetrainTrack({
   label = "paper",
   trades = [],
+  counterfactuals = [],
   bootstrap = {},
   learningFrames = 0,
+  replayFrames = 0,
+  snapshotFrames = 0,
   averageRecordQuality = 0,
   lineageCoverage = 0,
+  datasetCuration = null,
   nowIso = new Date().toISOString()
 } = {}) {
   const freshness = computeFreshnessScore(trades, nowIso, label === "live" ? 24 * 30 : 24 * 21);
+  const counterfactualFreshness = computeFreshnessScore(counterfactuals, nowIso, label === "live" ? 24 * 30 : 24 * 21);
   const strategyCount = new Set(trades.map((trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy).filter(Boolean)).size;
   const regimeCount = new Set(trades.map((trade) => trade.regimeAtEntry).filter(Boolean)).size;
+  const conditionCount = new Set(trades.map((trade) => resolveTradeConditionId(trade)).filter(Boolean)).size;
+  const sessionCount = new Set(trades.map((trade) => resolveTradeSessionId(trade)).filter(Boolean)).size;
   const winRate = trades.length ? trades.filter((trade) => (trade.pnlQuote || 0) > 0).length / trades.length : 0;
   const avgExecutionQuality = average(trades.map((trade) => trade.executionQualityScore || 0), 0);
+  const counterfactualCount = arr(counterfactuals).length;
+  const badVetoCount = arr(counterfactuals).filter((item) => BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))).length;
+  const goodVetoCount = arr(counterfactuals).filter((item) => GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))).length;
   const countScore = Math.min(0.38, trades.length / (label === "live" ? 30 : 45) * 0.38);
-  const diversityScore = Math.min(0.18, strategyCount / 6 * 0.1 + regimeCount / 5 * 0.08);
+  const diversityScore = Math.min(
+    0.2,
+    strategyCount / 6 * 0.08 +
+      regimeCount / 5 * 0.06 +
+      conditionCount / 6 * 0.035 +
+      sessionCount / 4 * 0.025
+  );
   const qualityScore = Math.min(0.18, averageRecordQuality * 0.1 + lineageCoverage * 0.08);
   const executionScore = Math.min(0.14, avgExecutionQuality * 0.14);
   const freshnessBias = Math.min(0.1, freshness.freshnessScore * 0.1);
+  const counterfactualBias = Math.min(
+    0.1,
+    counterfactualCount / (label === "live" ? 18 : 28) * 0.05 +
+      counterfactualFreshness.freshnessScore * 0.025 +
+      Math.min(0.025, badVetoCount / 10 * 0.025)
+  );
+  const replayBias = Math.min(0.06, replayFrames / 60 * 0.04 + snapshotFrames / 90 * 0.02);
+  const curationBias = datasetCuration?.paperLearning || datasetCuration?.vetoReview
+    ? Math.min(
+        0.06,
+        (datasetCuration?.paperLearning?.tradeCount || 0) / 120 * 0.03 +
+          (datasetCuration?.vetoReview?.counterfactuals || 0) / 80 * 0.03
+      )
+    : 0;
   const bootstrapBias = label === "paper" && bootstrap?.paperLearningReady ? 0.08 : 0.03;
-  const score = clamp(0.12 + countScore + diversityScore + qualityScore + executionScore + freshnessBias + bootstrapBias, 0, 1);
+  const score = clamp(
+    0.08 +
+      countScore +
+      diversityScore +
+      qualityScore +
+      executionScore +
+      freshnessBias +
+      counterfactualBias +
+      replayBias +
+      curationBias +
+      bootstrapBias,
+    0,
+    1
+  );
   return {
     label,
     tradeCount: trades.length,
+    counterfactualCount,
+    badVetoCount,
+    goodVetoCount,
     strategyCount,
     regimeCount,
+    conditionCount,
+    sessionCount,
     winRate: num(winRate),
     avgExecutionQuality: num(avgExecutionQuality),
     learningFrames,
+    replayFrames,
+    snapshotFrames,
     averageRecordQuality: num(averageRecordQuality),
     lineageCoverage: num(lineageCoverage),
     freshnessScore: freshness.freshnessScore,
     latestTradeAt: freshness.latestTradeAt,
+    counterfactualFreshnessScore: counterfactualFreshness.freshnessScore,
     score: num(score),
     status: score >= 0.72
       ? "ready"
@@ -1748,36 +2305,47 @@ function buildRetrainTrack({
         ? "building"
         : "warmup",
     recommendation: score >= 0.72
-      ? `${label} retrain kan frequenter en breder over scopes worden gebruikt.`
+      ? `${label} retrain kan frequenter en breder over scopes worden gebruikt, inclusief counterfactual review.`
       : score >= 0.52
-        ? `${label} retrain is bruikbaar, maar vraagt nog meer scope-diversiteit, trade-count of recentere data.`
-        : `${label} retrain is nog dun of te oud; verzamel eerst meer recente representatieve closed trades.`
+        ? `${label} retrain is bruikbaar, maar vraagt nog meer scope-diversiteit, counterfactual dekking of recentere data.`
+        : `${label} retrain is nog dun of te oud; verzamel eerst meer recente representatieve closed trades en review-evidence.`
   };
 }
 
 function buildRetrainReadiness({
   paperTrades = [],
   liveTrades = [],
+  paperCounterfactuals = [],
+  liveCounterfactuals = [],
   dataRecorder = {},
   bootstrap = {},
   nowIso = new Date().toISOString()
 } = {}) {
+  const recorderEvidence = buildRecorderEvidenceHealth(dataRecorder);
   const paper = buildRetrainTrack({
     label: "paper",
     trades: paperTrades,
+    counterfactuals: paperCounterfactuals,
     bootstrap: bootstrap.warmStart || {},
     learningFrames: dataRecorder.learningFrames || 0,
+    replayFrames: recorderEvidence.replayFrames,
+    snapshotFrames: recorderEvidence.snapshotFrames,
     averageRecordQuality: dataRecorder.averageRecordQuality || 0,
     lineageCoverage: dataRecorder.lineageCoverage || 0,
+    datasetCuration: dataRecorder.datasetCuration || null,
     nowIso
   });
   const live = buildRetrainTrack({
     label: "live",
     trades: liveTrades,
+    counterfactuals: liveCounterfactuals,
     bootstrap: bootstrap.warmStart || {},
     learningFrames: dataRecorder.learningFrames || 0,
+    replayFrames: recorderEvidence.replayFrames,
+    snapshotFrames: recorderEvidence.snapshotFrames,
     averageRecordQuality: dataRecorder.averageRecordQuality || 0,
     lineageCoverage: dataRecorder.lineageCoverage || 0,
+    datasetCuration: dataRecorder.datasetCuration || null,
     nowIso
   });
   const providerCoverage = countCoverage(dataRecorder.sourceCoverage || []);
@@ -1787,7 +2355,8 @@ function buildRetrainReadiness({
       (dataRecorder.averageRecordQuality || 0) * 0.28 +
       (dataRecorder.lineageCoverage || 0) * 0.22 +
       Math.min(0.16, providerCoverage / 12 * 0.16) +
-      Math.min(0.16, contextCoverage / 8 * 0.16),
+      Math.min(0.16, contextCoverage / 8 * 0.16) +
+      recorderEvidence.curationSignal * 0.16,
     0,
     1
   );
@@ -1809,6 +2378,7 @@ function buildRetrainReadiness({
     status: overallScore >= 0.72 ? "ready" : overallScore >= 0.52 ? "building" : "warmup",
     score: num(overallScore),
     datasetHealth: num(datasetHealth),
+    recorderEvidence,
     providerCoverage,
     contextCoverage,
     bootstrapStatus: bootstrap.status || "empty",
@@ -1910,10 +2480,14 @@ function buildScopedRetrainReadiness({
   for (const trade of paperTrades) {
     addTrade(trade, "paper", "family", trade.entryRationale?.strategy?.family || trade.strategyFamily || null);
     addTrade(trade, "paper", "regime", trade.regimeAtEntry || null);
+    addTrade(trade, "paper", "condition", resolveTradeConditionId(trade));
+    addTrade(trade, "paper", "session", resolveTradeSessionId(trade));
   }
   for (const trade of liveTrades) {
     addTrade(trade, "live", "family", trade.entryRationale?.strategy?.family || trade.strategyFamily || null);
     addTrade(trade, "live", "regime", trade.regimeAtEntry || null);
+    addTrade(trade, "live", "condition", resolveTradeConditionId(trade));
+    addTrade(trade, "live", "session", resolveTradeSessionId(trade));
   }
 
   return [...buckets.values()]
@@ -1958,7 +2532,7 @@ function buildScopedRetrainReadiness({
       };
     })
     .sort((left, right) => right.score - left.score)
-    .slice(0, 10);
+    .slice(0, 12);
 }
 
 function buildRetrainFocusPlan({
@@ -2110,10 +2684,12 @@ export class OfflineTrainer {
     const learningReadyTrades = trades.filter((trade) => Number.isFinite(trade.labelScore) && trade.rawFeatures && Object.keys(trade.rawFeatures).length > 0);
     const paperTrades = learningReadyTrades.filter((trade) => matchesTradingSource(trade, tradingSource, "paper"));
     const liveTrades = learningReadyTrades.filter((trade) => (trade.brokerMode || "paper") === "live");
+    const paperCounterfactuals = usableCounterfactuals.filter((item) => matchesTradingSource(item, tradingSource, "paper"));
+    const liveCounterfactuals = usableCounterfactuals.filter((item) => (item?.brokerMode || "paper") === "live");
     const modeScopedTrades = botMode === "paper" ? paperTrades : liveTrades;
     const modeScopedCounterfactuals = botMode === "paper"
-      ? usableCounterfactuals.filter((item) => matchesTradingSource(item, tradingSource, "paper"))
-      : usableCounterfactuals.filter((item) => (item?.brokerMode || "paper") === "live");
+      ? paperCounterfactuals
+      : liveCounterfactuals;
     const missedWinners = modeScopedCounterfactuals.filter((item) => BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item)));
     const blockedCorrectly = modeScopedCounterfactuals.filter((item) => GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item)));
     const lateVetoes = modeScopedCounterfactuals.filter((item) => resolveCounterfactualOutcomeLabel(item) === "late_veto");
@@ -2128,7 +2704,9 @@ export class OfflineTrainer {
     const falsePositiveByStrategy = buildBucketMap(falsePositives, (trade) => trade.strategyAtEntry || trade.entryRationale?.strategy?.activeStrategy);
     const falseNegativeByStrategy = buildBucketMap(falseNegatives, (item) => item.strategy || "blocked_setup", (item) => ({ pnl: 0, win: 1, quality: 0.5, label: 0.8, move: item.realizedMovePct || 0, mode: "paper" }));
     const strategyScorecards = buildStrategyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const familyScorecards = buildFamilyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
     const regimeScorecards = buildRegimeScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
+    const symbolScorecards = buildSymbolScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
     const conditionScorecards = buildConditionScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
     const conditionStrategyScorecards = buildConditionStrategyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
     const conditionFamilyScorecards = buildConditionFamilyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
@@ -2158,6 +2736,15 @@ export class OfflineTrainer {
       counterfactuals: modeScopedCounterfactuals,
       featureScorecards: featureDecay.scorecards || []
     });
+    const featureUsefulnessGroups = buildFeatureUsefulnessGroups(featureDecay.scorecards || []);
+    const learningAttribution = buildLearningAttributionSummary(modeScopedTrades);
+    const featureCleanupPlan = buildFeatureCleanupPlan({
+      featureDecay,
+      featureGovernance,
+      trades: modeScopedTrades,
+      config: this.config
+    });
+    const strategyReweighting = buildWeeklyStrategyReweighting(modeScopedTrades, this.config, nowIso);
     const outcomeScopeScorecards = buildOutcomeScopeScorecards(modeScopedTrades, modeScopedCounterfactuals);
     const scopeRetrainReadiness = buildScopedRetrainReadiness({
       paperTrades,
@@ -2167,6 +2754,8 @@ export class OfflineTrainer {
     const retrainReadinessRaw = buildRetrainReadiness({
       paperTrades,
       liveTrades,
+      paperCounterfactuals,
+      liveCounterfactuals,
       dataRecorder,
       bootstrap: dataRecorder.latestBootstrap || {},
       nowIso
@@ -2209,6 +2798,17 @@ export class OfflineTrainer {
       calibrationGovernance,
       regimeDeployment
     });
+    const parameterOptimization = buildAdaptiveParameterOptimization({
+      journal,
+      config: this.config,
+      nowIso
+    });
+    const analyticsDatasets = buildAnalyticsDatasets({
+      learningAttribution,
+      featureCleanupPlan,
+      strategyReweighting,
+      parameterOptimization
+    });
 
     const summary = {
       generatedAt: nowIso,
@@ -2246,7 +2846,9 @@ export class OfflineTrainer {
       strategies: strategies.slice(0, 8),
       regimes: regimes.slice(0, 6),
       strategyScorecards,
+      familyScorecards,
       regimeScorecards,
+      symbolScorecards,
       conditionScorecards,
       conditionStrategyScorecards,
       conditionFamilyScorecards,
@@ -2262,6 +2864,15 @@ export class OfflineTrainer {
       featureDecay,
       featureDecayScorecards: featureDecay.scorecards || [],
       featureGovernance,
+      featureUsefulnessGroups,
+      learningAttribution,
+      featureCleanupPlan,
+      featureQuarantineCandidates: featureCleanupPlan.featureQuarantineCandidates || [],
+      challengerDisableCandidates: featureCleanupPlan.challengerDisableCandidates || [],
+      offlinePruneRecommendations: featureCleanupPlan.offlinePruneRecommendations || [],
+      strategyReweighting,
+      parameterOptimization,
+      analyticsDatasets,
       scopeRetrainReadiness,
       retrainReadiness,
       retrainFocusPlan,
@@ -2274,6 +2885,89 @@ export class OfflineTrainer {
       falseNegativeByStrategy: falseNegativeByStrategy.slice(0, 6),
       readinessScore: num(readinessScore),
       status: readinessScore >= 0.72 ? "ready" : readinessScore >= 0.52 ? "building" : "warmup",
+      runtimeApplied: {
+        thresholdPolicy: thresholdPolicy.topRecommendation
+          ? {
+              id: thresholdPolicy.topRecommendation.id || null,
+              action: thresholdPolicy.topRecommendation.action || null,
+              status: thresholdPolicy.status || "observe"
+            }
+          : null,
+        missedTradeTuning: missedTradeTuning.topBlocker
+          ? {
+              blockerId: missedTradeTuning.topBlocker,
+              action: missedTradeTuning.action || null,
+              scope: missedTradeTuning.scope || null
+            }
+          : null,
+        topScope: scopeRetrainReadiness[0]
+          ? {
+              type: scopeRetrainReadiness[0].type || null,
+              id: scopeRetrainReadiness[0].id || null,
+              status: scopeRetrainReadiness[0].status || "warmup",
+              readinessScore: num(scopeRetrainReadiness[0].readinessScore || scopeRetrainReadiness[0].effectiveReadinessScore || 0)
+            }
+          : null,
+        topFamily: familyScorecards[0]
+          ? {
+              id: familyScorecards[0].id || null,
+              status: familyScorecards[0].status || "warmup",
+              governanceScore: num(familyScorecards[0].governanceScore || 0)
+            }
+          : null,
+        topSymbol: symbolScorecards[0]
+          ? {
+              id: symbolScorecards[0].id || symbolScorecards[0].symbol || null,
+              status: symbolScorecards[0].status || "warmup",
+              trapStatus: symbolScorecards[0].trapStatus || "mixed",
+              governanceScore: num(symbolScorecards[0].governanceScore || 0)
+            }
+          : null,
+        strategyReweighting: strategyReweighting.topFamily
+          ? {
+              id: strategyReweighting.topFamily.id || null,
+              status: strategyReweighting.topFamily.status || "observe",
+              weightBias: num(strategyReweighting.topFamily.weightBias || 0),
+              thresholdBias: num(strategyReweighting.topFamily.thresholdBias || 0),
+              sizeBias: num(strategyReweighting.topFamily.sizeBias || 1),
+              confidence: num(strategyReweighting.topFamily.confidence || 0)
+            }
+          : null
+      },
+      analysisOnly: {
+        topBlockerReview: blockerScorecards[0]
+          ? {
+              id: blockerScorecards[0].id || null,
+              status: blockerScorecards[0].status || "observe"
+            }
+          : null,
+        exitLearning: {
+          status: exitLearning.status || "warmup",
+          topReason: exitLearning.topReason || null
+        },
+        featureGovernance: {
+          weakestFeature: featureDecay.weakestFeature || null,
+          topGroup: featureUsefulnessGroups[0]?.group || null
+        },
+        historyCoverage: {
+          status: historyCoverage.status || "unknown",
+          gapSymbolCount: historyCoverage.gapSymbolCount || 0
+        },
+        featureCleanupPlan: {
+          status: featureCleanupPlan.status || "healthy",
+          topCandidate: featureCleanupPlan.recommendations?.[0]?.id || null,
+          quarantineCount: featureCleanupPlan.featureQuarantineCandidates?.length || 0
+        },
+        parameterOptimization: {
+          status: parameterOptimization.status || "warmup",
+          topCandidate: parameterOptimization.topCandidate?.id || null,
+          candidateCount: parameterOptimization.candidateCount || 0
+        },
+        learningAttribution: {
+          topCategory: learningAttribution.topCategory || null,
+          tradeCount: learningAttribution.tradeCount || 0
+        }
+      },
       notes: [
         modeScopedTrades.length >= 20
           ? "Er is genoeg gesloten trade-data voor regelmatige offline evaluatie."
@@ -2307,6 +3001,16 @@ export class OfflineTrainer {
           : "Feature-decay tracking warmt nog op.",
         featureGovernance.notes?.[0] || "Feature-governance warmt nog op.",
         featureGovernance.notes?.[1] || "Feature parity en pruning hebben nog meer data nodig.",
+        featureCleanupPlan.note,
+        learningAttribution.topCategory
+          ? `Trade-attributie ziet nu ${learningAttribution.topCategory} als dominante leerklasse.`
+          : "Trade-attributie warmt nog op.",
+        strategyReweighting.topFamily
+          ? `${strategyReweighting.topFamily.id} krijgt nu bounded weekly bias (${strategyReweighting.topFamily.status}).`
+          : "Weekly strategy reweighting wacht nog op meer recente data.",
+        parameterOptimization.topCandidate
+          ? `${parameterOptimization.topCandidate.id} is de huidige offline parameter-challenger.`
+          : parameterOptimization.note || "Parameter-optimalisatie wacht nog op voldoende dataset.",
         retrainReadiness.note,
         retrainFocusPlan.note,
         retrainExecutionPlan.notes?.[0],
@@ -2320,6 +3024,9 @@ export class OfflineTrainer {
         regimeScorecards[0]
           ? `${regimeScorecards[0].id} is het sterkste regime in offline trainer governance.`
           : "Nog geen duidelijke regime-leider in offline trainer.",
+        symbolScorecards[0]
+          ? `${symbolScorecards[0].id} is momenteel het sterkste symbol-level leeranker (${symbolScorecards[0].trapStatus}).`
+          : "Nog geen duidelijke symbol-level learning leider zichtbaar.",
         strategyScorecards[0]
           ? `${strategyScorecards[0].id} leidt momenteel in offline trainer governance.`
           : "Nog geen duidelijke strategy-leider in offline trainer."

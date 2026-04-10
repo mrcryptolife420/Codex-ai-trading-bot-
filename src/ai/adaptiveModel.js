@@ -277,31 +277,43 @@ function blendModelScores(modelMap, rawFeatures, expertWeights) {
 
 export class AdaptiveTradingModel {
   constructor(state, config) {
-    this.config = config;
-    this.state = normalizeState(state);
-    this.calibrator = new ProbabilityCalibrator(this.state.calibration, config);
+    let resolvedState = state;
+    let resolvedConfig = config;
+    if (
+      config === undefined &&
+      state &&
+      typeof state === "object" &&
+      Object.prototype.hasOwnProperty.call(state, "config") &&
+      !Object.prototype.hasOwnProperty.call(state, "champion")
+    ) {
+      resolvedState = state.state;
+      resolvedConfig = state.config;
+    }
+    this.config = resolvedConfig || {};
+    this.state = normalizeState(resolvedState);
+    this.calibrator = new ProbabilityCalibrator(this.state.calibration, this.config);
     this.models = {
       champion: Object.fromEntries(
-        REGIMES.map((regime) => [regime, new OnlineTradingModel(this.state.champion.specialists[regime], config)])
+        REGIMES.map((regime) => [regime, new OnlineTradingModel(this.state.champion.specialists[regime], this.config)])
       ),
       challenger: Object.fromEntries(
         REGIMES.map((regime) => [
           regime,
           new OnlineTradingModel(this.state.challenger.specialists[regime], {
-            ...config,
-            modelLearningRate: config.challengerLearningRate || config.modelLearningRate * 1.35,
-            modelL2: config.challengerL2 || config.modelL2 * 0.8
+            ...this.config,
+            modelLearningRate: this.config.challengerLearningRate || this.config.modelLearningRate * 1.35,
+            modelL2: this.config.challengerL2 || this.config.modelL2 * 0.8
           })
         ])
       )
     };
-    this.transformer = new TransformerChallenger(this.state.transformer, config);
-    this.sequence = new SequenceChallenger(this.state.sequence, config);
-    this.metaNeural = new MetaNeuralGateModel(this.state.metaNeural, config);
-    this.executionNeural = new ExecutionNeuralAdvisor(this.state.executionNeural, config);
-    this.exitNeural = new ExitNeuralAdvisor(this.state.exitNeural, config);
-    this.strategyMeta = new StrategyMetaSelector(this.state.strategyMeta, config);
-    this.strategyAllocation = new StrategyAllocationBandit(this.state.strategyAllocation, config);
+    this.transformer = new TransformerChallenger(this.state.transformer, this.config);
+    this.sequence = new SequenceChallenger(this.state.sequence, this.config);
+    this.metaNeural = new MetaNeuralGateModel(this.state.metaNeural, this.config);
+    this.executionNeural = new ExecutionNeuralAdvisor(this.state.executionNeural, this.config);
+    this.exitNeural = new ExitNeuralAdvisor(this.state.exitNeural, this.config);
+    this.strategyMeta = new StrategyMetaSelector(this.state.strategyMeta, this.config);
+    this.strategyAllocation = new StrategyAllocationBandit(this.state.strategyAllocation, this.config);
   }
 
   getState() {
@@ -724,8 +736,16 @@ export class AdaptiveTradingModel {
     const label = buildTradeOutcomeLabel(trade);
     const atIso = trade.exitAt || new Date().toISOString();
     const regime = trade.regimeAtEntry || "range";
+    const brokerMode = trade.brokerMode || this.config.botMode || "paper";
     const rawFeatures = trade.rawFeatures || {};
     const expertWeights = trade.entryRationale?.expertMix?.weights || { [regime]: 1 };
+    const coreLearningRate = this.config.adaptiveLearningCoreLearningRate || 0.01;
+    const allowChampionCoreUpdates = brokerMode === "live"
+      ? Boolean(this.config.adaptiveLearningLiveCoreUpdates)
+      : this.config.adaptiveLearningPaperCoreUpdates !== false;
+    const allowChallengerCoreUpdates = brokerMode === "live"
+      ? true
+      : this.config.adaptiveLearningPaperCoreUpdates !== false;
     const championPrediction = blendModelScores(this.models.champion, rawFeatures, expertWeights).probability;
     const challengerPrediction = blendModelScores(this.models.challenger, rawFeatures, expertWeights).probability;
     const transformerLearning = this.transformer.updateFromTrade(trade, label.labelScore);
@@ -736,20 +756,36 @@ export class AdaptiveTradingModel {
     const strategyMetaLearning = this.strategyMeta.updateFromTrade(trade, label);
     const strategyAllocationLearning = this.strategyAllocation.updateFromTrade(trade, label);
 
-    const championLearning = this.models.champion[regime].updateFromTrade(
-      { ...trade, ...label, labelScore: label.labelScore },
-      {
-        learningRate: this.config.modelLearningRate,
-        l2: this.config.modelL2
-      }
-    );
-    const challengerLearning = this.models.challenger[regime].updateFromTrade(
-      { ...trade, ...label, labelScore: label.labelScore },
-      {
-        learningRate: this.config.challengerLearningRate || this.config.modelLearningRate * 1.35,
-        l2: this.config.challengerL2 || this.config.modelL2 * 0.8
-      }
-    );
+    const championLearning = allowChampionCoreUpdates
+      ? this.models.champion[regime].updateFromTrade(
+          { ...trade, ...label, labelScore: label.labelScore },
+          {
+            learningRate: coreLearningRate,
+            l2: this.config.modelL2
+          }
+        )
+      : {
+          skipped: true,
+          reason: "live_core_updates_disabled",
+          predictionBeforeUpdate: championPrediction,
+          sampleWeight: 0,
+          error: 0
+        };
+    const challengerLearning = allowChallengerCoreUpdates
+      ? this.models.challenger[regime].updateFromTrade(
+          { ...trade, ...label, labelScore: label.labelScore },
+          {
+            learningRate: this.config.challengerLearningRate || coreLearningRate * 1.2,
+            l2: this.config.challengerL2 || this.config.modelL2 * 0.8
+          }
+        )
+      : {
+          skipped: true,
+          reason: "core_updates_disabled",
+          predictionBeforeUpdate: challengerPrediction,
+          sampleWeight: 0,
+          error: 0
+        };
 
     const expertLearning = [];
     for (const [expertRegime, weight] of Object.entries(expertWeights)) {
@@ -758,14 +794,18 @@ export class AdaptiveTradingModel {
       }
       const weightFactor = clamp(weight * 0.75, 0.08, 0.42);
       const expertTrade = { ...trade, ...label, labelScore: label.labelScore };
-      const championExpert = this.models.champion[expertRegime].updateFromTrade(expertTrade, {
-        learningRate: (this.config.modelLearningRate || 0.06) * weightFactor,
-        l2: this.config.modelL2
-      });
-      const challengerExpert = this.models.challenger[expertRegime].updateFromTrade(expertTrade, {
-        learningRate: (this.config.challengerLearningRate || this.config.modelLearningRate * 1.35) * weightFactor,
-        l2: this.config.challengerL2 || this.config.modelL2 * 0.8
-      });
+      const championExpert = allowChampionCoreUpdates
+        ? this.models.champion[expertRegime].updateFromTrade(expertTrade, {
+            learningRate: coreLearningRate * weightFactor,
+            l2: this.config.modelL2
+          })
+        : { skipped: true, reason: "live_core_updates_disabled" };
+      const challengerExpert = allowChallengerCoreUpdates
+        ? this.models.challenger[expertRegime].updateFromTrade(expertTrade, {
+            learningRate: (this.config.challengerLearningRate || coreLearningRate * 1.2) * weightFactor,
+            l2: this.config.challengerL2 || this.config.modelL2 * 0.8
+          })
+        : { skipped: true, reason: "core_updates_disabled" };
       expertLearning.push({ regime: expertRegime, weight: num(weight, 4), champion: championExpert, challenger: challengerExpert });
     }
 
@@ -798,6 +838,13 @@ export class AdaptiveTradingModel {
       strategyMetaLearning,
       strategyAllocationLearning,
       expertLearning,
+      coreLearning: {
+        brokerMode,
+        championApplied: allowChampionCoreUpdates,
+        challengerApplied: allowChallengerCoreUpdates,
+        championLearningRate: num(allowChampionCoreUpdates ? coreLearningRate : 0, 4),
+        challengerLearningRate: num(allowChallengerCoreUpdates ? (this.config.challengerLearningRate || coreLearningRate * 1.2) : 0, 4)
+      },
       promotion,
       calibration: this.calibrator.getSummary()
     };

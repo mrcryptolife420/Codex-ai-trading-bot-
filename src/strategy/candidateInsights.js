@@ -154,7 +154,10 @@ export function buildSignalQualitySummary({
     average([
       Math.max(safeValue(trendStateSummary.uptrendScore), safeValue(trendStateSummary.downtrendScore), safeValue(trendStateSummary.rangeScore)),
       safeValue(marketFeatures.trendQualityScore, 0.5),
-      1 - safeValue(marketFeatures.trendExhaustionScore, 0)
+      1 - safeValue(marketFeatures.trendExhaustionScore, 0),
+      safeValue(marketFeatures.bosStrengthScore, 0.45),
+      safeValue(marketFeatures.fvgRespectScore, 0.45),
+      safeValue(marketFeatures.cvdConfirmationScore, 0.45) - safeValue(marketFeatures.cvdDivergenceScore, 0) * 0.35
     ], 0.5),
     0,
     1
@@ -199,7 +202,34 @@ export function buildSignalQualitySummary({
     executionViability,
     newsCleanliness,
     quorumQuality,
-    overallScore
+    overallScore,
+    structureContext: {
+      bos: safeValue(marketFeatures.bullishBosActive) > 0
+        ? "bullish"
+        : safeValue(marketFeatures.bearishBosActive) > 0
+          ? "bearish"
+          : "none",
+      bosStrengthScore: clamp(safeValue(marketFeatures.bosStrengthScore), 0, 1),
+      fvg: safeValue(marketFeatures.bullishFvgActive) > 0
+        ? "bullish"
+        : safeValue(marketFeatures.bearishFvgActive) > 0
+          ? "bearish"
+          : "none",
+      fvgRespectScore: clamp(safeValue(marketFeatures.fvgRespectScore), 0, 1),
+      fvgFillProgress: clamp(safeValue(marketFeatures.fvgFillProgress, 1), 0, 1)
+    },
+    cvdContext: {
+      confirmationScore: clamp(safeValue(marketFeatures.cvdConfirmationScore), 0, 1),
+      divergenceScore: clamp(safeValue(marketFeatures.cvdDivergenceScore), 0, 1),
+      trendAlignment: clamp(safeValue(marketFeatures.cvdTrendAlignment), -1, 1),
+      confidence: clamp(safeValue(marketFeatures.cvdConfidence), 0, 1)
+    },
+    gridContext: {
+      rangeWidthPct: safeValue(marketFeatures.rangeWidthPct),
+      rangeMeanRevertScore: clamp(safeValue(marketFeatures.rangeMeanRevertScore), 0, 1),
+      rangeBoundaryRespectScore: clamp(safeValue(marketFeatures.rangeBoundaryRespectScore), 0, 1),
+      gridEntrySide: marketFeatures.gridEntrySide || "none"
+    }
   };
 }
 

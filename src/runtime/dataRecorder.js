@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendJsonLine, ensureDir, listFiles, removeFile } from "../utils/fs.js";
 
-const FEATURE_STORE_SCHEMA_VERSION = 7;
+const FEATURE_STORE_SCHEMA_VERSION = 8;
 
 function num(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
@@ -1035,7 +1035,10 @@ export class DataRecorder {
         trimBias: num(entryRationale.exitPolicy.trimBias || 0, 4),
         holdTolerance: num(entryRationale.exitPolicy.holdTolerance || 0, 4)
       } : null,
+      learningAttribution: trade.learningAttribution || null,
+      onlineAdaptation: trade.onlineAdaptation || null,
       rawFeatureCount: Object.keys(trade.rawFeatures || {}).length,
+      rawFeatures: normalizeNumericMap(trade.rawFeatures || {}, 4),
       topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 12, 4),
       indicators: makeIndicatorFrame(entryRationale.indicators || {}),
       headlines: (trade.entryRationale?.headlines || []).slice(0, 3).map((item) => item.title || item),
@@ -1127,8 +1130,11 @@ export class DataRecorder {
         exitTarget: num(learning.exitNeuralLearning?.targets?.exit || 0, 4),
         calibrationObservations: learning.calibration?.observations || 0,
         calibrationEce: num(learning.calibration?.expectedCalibrationError || 0, 4),
-        promotion: Boolean(learning.promotion)
+        promotion: Boolean(learning.promotion),
+        coreLearning: learning.coreLearning || null
       },
+      learningAttribution: trade.learningAttribution || learning.learningAttribution || null,
+      onlineAdaptation: trade.onlineAdaptation || learning.onlineAdaptation || null,
       news: {
         providerBreakdown: [...(rationale.providerBreakdown || [])].slice(0, 4),
         headlineTitles: (rationale.headlines || []).slice(0, 4).map((item) => item.title || item),

@@ -4,7 +4,7 @@
   "symbol": "NEARUSDT",
   "interval": "15m",
   "intervalMs": 900000,
-  "updatedAt": "2026-04-09T16:15:02.134Z",
+  "updatedAt": "2026-04-09T17:45:20.459Z",
   "partitionGranularity": "month",
   "partitions": [
     {
@@ -12,14 +12,14 @@
       "startTime": 1774625400000,
       "endTime": 1775000700000,
       "count": 418,
-      "updatedAt": "2026-04-09T16:15:02.131Z"
+      "updatedAt": "2026-04-09T17:45:20.455Z"
     },
     {
       "id": "2026-04",
       "startTime": 1775001600000,
-      "endTime": 1775751300000,
-      "count": 834,
-      "updatedAt": "2026-04-09T16:15:02.134Z"
+      "endTime": 1775756700000,
+      "count": 840,
+      "updatedAt": "2026-04-09T17:45:20.459Z"
     }
   ]
 }

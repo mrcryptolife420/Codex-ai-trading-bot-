@@ -185,6 +185,52 @@ function resolveFactorSet({ family = "", regime = "", marketStructureSummary = {
   return [...factors];
 }
 
+function arr(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function buildBlockerTrustAdjustment({
+  blockerScorecards = [],
+  reasons = [],
+  activeStrategy = "unknown",
+  activeRegime = "unknown"
+} = {}) {
+  const reasonSet = new Set(arr(reasons).filter(Boolean));
+  const matches = arr(blockerScorecards)
+    .filter((item) => item?.id && reasonSet.has(item.id))
+    .map((item) => {
+      const strategyMatch = arr(item.affectedStrategies || []).includes(activeStrategy);
+      const regimeMatch = arr(item.affectedRegimes || []).includes(activeRegime);
+      const contextWeight = clamp(0.72 + (strategyMatch ? 0.18 : 0) + (regimeMatch ? 0.1 : 0), 0.72, 1);
+      const bias = clamp(
+        ((safeValue(item.badVetoRate, 0) - safeValue(item.goodVetoRate, 0)) * 0.11 +
+          (0.5 - safeValue(item.governanceScore, 0.5)) * 0.05) *
+          contextWeight,
+        -0.06,
+        0.06
+      );
+      return {
+        id: item.id,
+        bias: num(bias, 4),
+        contextWeight: num(contextWeight, 4),
+        governanceScore: num(safeValue(item.governanceScore, 0.5), 4),
+        badVetoRate: num(safeValue(item.badVetoRate, 0), 4),
+        goodVetoRate: num(safeValue(item.goodVetoRate, 0), 4)
+      };
+    });
+  const bias = clamp(average(matches.map((item) => item.bias || 0)), -0.06, 0.06);
+  return {
+    bias: num(bias, 4),
+    matchedReasonCount: matches.length,
+    matches: matches.slice(0, 4),
+    status: bias >= 0.02
+      ? "boost"
+      : bias <= -0.02
+        ? "penalty"
+        : "observe"
+  };
+}
+
 function resolveBudgetStateNowIso(journal = {}, config = {}, nowIso = null, runtime = {}) {
   const explicitNowMs = new Date(nowIso || 0).getTime();
   if (Number.isFinite(explicitNowMs) && explicitNowMs > 0) {
@@ -521,7 +567,7 @@ export class PortfolioOptimizer {
       ? clamp(0.84 - Math.min(0.12, sameFamilyPositions.length * 0.04), 0.68, 0.84)
       : 1;
 
-    const sizeMultiplier = clamp(
+    let sizeMultiplier = clamp(
       volatilityTargetFraction *
         regimeExposureMultiplier *
         sameClusterPenalty *
@@ -549,7 +595,7 @@ export class PortfolioOptimizer {
       1.12
     );
 
-    const allocatorScore = clamp(
+    let allocatorScore = clamp(
       0.56 +
         volatilityTargetFraction * 0.08 +
         dailyBudgetFactor * 0.08 +
@@ -663,11 +709,23 @@ export class PortfolioOptimizer {
     if (factorHeat >= 0.28) {
       reasons.push("factor_heat_elevated");
     }
-    if (allocatorScore < 0.42) {
-      reasons.push("portfolio_allocator_score_low");
-    }
     if (correlatedMediocreStack) {
       reasons.push("mediocre_correlation_stack_throttled");
+    }
+
+    const blockerTrustAdjustment = buildBlockerTrustAdjustment({
+      blockerScorecards: runtime?.offlineTrainer?.blockerScorecards || [],
+      reasons,
+      activeStrategy,
+      activeRegime
+    });
+    if (Math.abs(blockerTrustAdjustment.bias || 0) > 0.0001) {
+      allocatorScore = clamp(allocatorScore + blockerTrustAdjustment.bias, 0, 1);
+      sizeMultiplier = clamp(sizeMultiplier * (1 + blockerTrustAdjustment.bias * 0.28), 0.18, 1.12);
+      reasons.push(blockerTrustAdjustment.bias > 0 ? "blocker_trust_boosted" : "blocker_trust_cautioned");
+    }
+    if (allocatorScore < 0.42) {
+      reasons.push("portfolio_allocator_score_low");
     }
 
     const blockingReasons = [...new Set(hardReasons)];
@@ -718,6 +776,9 @@ export class PortfolioOptimizer {
       unknownClusterOverlapIgnored: !hasSpecificCluster,
       unknownSectorOverlapIgnored: !hasSpecificSector,
       allocatorScore,
+      blockerTrustBias: blockerTrustAdjustment.bias,
+      blockerTrustStatus: blockerTrustAdjustment.status,
+      blockerTrustMatches: blockerTrustAdjustment.matches,
       candidateClarityScore,
       correlatedMediocreStack,
       mediocreConcurrencyPenalty,

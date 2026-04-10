@@ -56,6 +56,7 @@ import { buildStrategyRetirementSnapshot } from "./strategyRetirementEngine.js";
 import { buildReplayChaosSummary } from "./replayChaosLab.js";
 import { buildCapitalGovernor } from "./capitalGovernor.js";
 import { buildCapitalPolicySnapshot } from "./capitalPolicyEngine.js";
+import { runMarketScanner as runSharedMarketScanner, summarizeMarketScannerRun } from "./marketScanner.js";
 import { buildFeatureVector } from "../strategy/features.js";
 import { evaluateStrategySet } from "../strategy/strategyRouter.js";
 import { computeMarketFeatures, computeOrderBookFeatures } from "../strategy/indicators.js";
@@ -69,7 +70,21 @@ import { average, clamp } from "../utils/math.js";
 import { getConfiguredTradingSource, matchesTradingSource } from "../utils/tradingSource.js";
 import { resolveStatusTone } from "../shared/statusTone.js";
 import { buildContract, computeOperationalReadiness, requiresOperatorAck } from "./operationalTruth.js";
-import { buildCoreMetricsView } from "./viewMappers.js";
+import { buildTradeLearningAttribution, summarizeLearningAttribution } from "./tradeAttribution.js";
+import {
+  buildOnlineAdaptationGuidance,
+  buildOnlineAdaptationState,
+  summarizeOnlineAdaptation,
+  updateOnlineAdaptationState
+} from "./onlineAdaptationController.js";
+import {
+  buildCoreMetricsView,
+  buildDecisionTruthView,
+  buildExecutionTruthView,
+  buildLearningImpactView,
+  buildScannerPriorityView,
+  buildFeatureUsefulnessView
+} from "./viewMappers.js";
 
 const EMPTY_NEWS = {
   coverage: 0,
@@ -314,6 +329,26 @@ function summarizeBlockedReasonDetails(details = {}, limit = 4) {
 }
 
 function summarizeLastEntryAttempt(attempt = {}) {
+  const decisionTruth = buildDecisionTruthView({
+    allow: attempt.status === "opened" || attempt.status === "attempted",
+    blockerReasons: attempt.blockedReasons || [],
+    reasons: attempt.blockedReasons || [],
+    threshold: attempt.threshold,
+    baseThreshold: attempt.baseThreshold,
+    thresholdAdjustment: attempt.thresholdAdjustment,
+    probability: attempt.probability
+  });
+  const executionTruth = buildExecutionTruthView({
+    sizingSummary: {
+      rawQuoteAmount: attempt.rawQuoteAmount,
+      adjustedQuoteAmount: attempt.adjustedQuoteAmount,
+      cappedQuoteAmount: attempt.cappedQuoteAmount,
+      meaningfulSizeFloor: attempt.meaningfulSizeFloor,
+      invalidQuoteAmount: attempt.invalidQuoteAmount,
+      deservesMeaningfulSize: (attempt.allowedButTinyEffectiveSize || 0) <= 0
+    },
+    quoteAmount: attempt.finalQuoteAmount
+  });
   return {
     status: attempt.status || "idle",
     selectedSymbol: attempt.selectedSymbol || null,
@@ -334,6 +369,9 @@ function summarizeLastEntryAttempt(attempt = {}) {
       symbol: item.symbol || null,
       error: item.error || null
     })),
+    decisionTruth,
+    executionTruth,
+    onlineAdaptation: attempt.onlineAdaptation || null,
     at: attempt.at || null
   };
 }
@@ -572,6 +610,39 @@ function normalizeCounterfactualOutcomeLabel(label = "") {
   return normalized || null;
 }
 
+const DEFAULT_COUNTERFACTUAL_HORIZON_MINUTES = [30, 90, 180];
+
+function buildCounterfactualHorizonPlan(baseLookaheadMinutes = 90) {
+  const normalizedBase = Math.max(30, Math.round(safeNumber(baseLookaheadMinutes, 90) / 15) * 15 || 90);
+  const maxHorizon = Math.max(180, Math.round(normalizedBase * 2 / 15) * 15 || 180);
+  return [...new Set([30, normalizedBase, maxHorizon, ...DEFAULT_COUNTERFACTUAL_HORIZON_MINUTES])]
+    .filter((minutes) => Number.isFinite(minutes) && minutes >= 30)
+    .sort((left, right) => left - right)
+    .map((minutes) => ({
+      id: `t${minutes}m`,
+      minutes,
+      label: `T+${minutes}m`
+    }));
+}
+
+function buildCounterfactualHorizonCompactLabel(horizons = [], plannedHorizons = []) {
+  const resolvedById = new Map(arr(horizons).map((item) => [item.id || `t${item.minutes}m`, item]));
+  return arr(plannedHorizons)
+    .map((plan) => {
+      const resolved = resolvedById.get(plan.id || `t${plan.minutes}m`);
+      const label = resolved?.outcomeLabel || resolved?.outcome || "pending";
+      return `${plan.minutes}m ${label}`;
+    })
+    .join(" | ");
+}
+
+function selectCounterfactualPrimaryHorizon(horizons = []) {
+  const resolved = arr(horizons)
+    .filter((item) => Number.isFinite(item?.resolvedMovePct))
+    .sort((left, right) => (left.minutes || 0) - (right.minutes || 0));
+  return resolved[resolved.length - 1] || null;
+}
+
 function isBadVetoOutcomeLabel(label = "") {
   const normalized = normalizeCounterfactualOutcomeLabel(label);
   return new Set([
@@ -637,6 +708,44 @@ function classifyShadowOutcomeLabel({
     return "near_miss_loser";
   }
   return outcome || "neutral";
+}
+
+function buildResolvedCounterfactualLearningScore({
+  outcomeLabel = "neutral",
+  realizedMovePct = 0,
+  edgeToThreshold = 0,
+  modelConfidence = 0,
+  executionViability = 0,
+  blockerCategory = "other"
+} = {}) {
+  const badVeto = isBadVetoOutcomeLabel(outcomeLabel);
+  const goodVeto = isGoodVetoOutcomeLabel(outcomeLabel);
+  const moveMagnitude = clamp(Math.abs(realizedMovePct || 0) / 0.03, 0, 1);
+  const nearThreshold = clamp(1 - Math.min(1, Math.abs(edgeToThreshold || 0) / 0.045), 0, 1);
+  const uncertainty = clamp(
+    1 - (clamp(modelConfidence || 0, 0, 1) * 0.58 + clamp(executionViability || 0, 0, 1) * 0.42),
+    0,
+    1
+  );
+  const blockerWeight = blockerCategory === "market"
+    ? 1
+    : blockerCategory === "learning"
+      ? 0.9
+      : blockerCategory === "governance"
+        ? 0.84
+        : blockerCategory === "safety"
+          ? 0.78
+          : 0.82;
+  return clamp(
+    0.22 +
+      moveMagnitude * 0.24 +
+      nearThreshold * 0.18 +
+      uncertainty * 0.16 +
+      (badVeto ? 0.2 : goodVeto ? 0.08 : 0.12) +
+      (badVeto ? blockerWeight * 0.1 : 0),
+    0,
+    1
+  );
 }
 
 function isUsableCounterfactual(item = {}) {
@@ -985,6 +1094,10 @@ function summarizeUniverseSelection(universe = {}) {
     })),
     suggestions: [...(universe.suggestions || [])]
   };
+}
+
+function summarizeScannerSelection(scanner = {}) {
+  return summarizeMarketScannerRun(scanner);
 }
 
 function summarizeAttributionAdjustment(adjustment = {}) {
@@ -1650,6 +1763,8 @@ function summarizePortfolio(portfolioSummary = {}) {
     unknownClusterOverlapIgnored: Boolean(portfolioSummary.unknownClusterOverlapIgnored),
     unknownSectorOverlapIgnored: Boolean(portfolioSummary.unknownSectorOverlapIgnored),
     sameFactorCount: portfolioSummary.sameFactorCount || 0,
+    blockerTrustBias: num(portfolioSummary.blockerTrustBias || 0, 4),
+    blockerTrustStatus: portfolioSummary.blockerTrustStatus || "observe",
     candidateFactors: [...(portfolioSummary.candidateFactors || [])],
     reasons: [...(portfolioSummary.reasons || [])],
     hardReasons: [...(portfolioSummary.hardReasons || [])],
@@ -2229,6 +2344,23 @@ function summarizeOfflineTrainer(summary = {}) {
     },
     readinessScore: num(summary.readinessScore || 0, 4),
     status: summary.status || "warmup",
+    runtimeApplied: {
+      thresholdPolicy: summary.runtimeApplied?.thresholdPolicy || null,
+      missedTradeTuning: summary.runtimeApplied?.missedTradeTuning || null,
+      topScope: summary.runtimeApplied?.topScope || null,
+      topFamily: summary.runtimeApplied?.topFamily || null,
+      topSymbol: summary.runtimeApplied?.topSymbol || null,
+      strategyReweighting: summary.runtimeApplied?.strategyReweighting || null
+    },
+    analysisOnly: {
+      topBlockerReview: summary.analysisOnly?.topBlockerReview || null,
+      exitLearning: summary.analysisOnly?.exitLearning || null,
+      featureGovernance: summary.analysisOnly?.featureGovernance || null,
+      historyCoverage: summary.analysisOnly?.historyCoverage || null,
+      featureCleanupPlan: summary.analysisOnly?.featureCleanupPlan || null,
+      parameterOptimization: summary.analysisOnly?.parameterOptimization || null,
+      learningAttribution: summary.analysisOnly?.learningAttribution || null
+    },
     counterfactuals: {
       total: summary.counterfactuals?.total || 0,
       missedWinners: summary.counterfactuals?.missedWinners || 0,
@@ -2248,9 +2380,75 @@ function summarizeOfflineTrainer(summary = {}) {
     },
     falsePositiveTrades: summary.falsePositiveTrades || 0,
     falseNegativeTrades: summary.falseNegativeTrades || 0,
+    learningAttribution: summary.learningAttribution || {
+      status: "warmup",
+      tradeCount: 0,
+      topCategory: null,
+      categoryScorecards: [],
+      topReasons: [],
+      recent: []
+    },
+    featureCleanupPlan: {
+      status: summary.featureCleanupPlan?.status || "healthy",
+      recommendations: arr(summary.featureCleanupPlan?.recommendations || []).slice(0, 12),
+      featureQuarantineCandidates: arr(summary.featureCleanupPlan?.featureQuarantineCandidates || []).slice(0, 8),
+      challengerDisableCandidates: arr(summary.featureCleanupPlan?.challengerDisableCandidates || []).slice(0, 8),
+      offlinePruneRecommendations: arr(summary.featureCleanupPlan?.offlinePruneRecommendations || []).slice(0, 8),
+      scoped: {
+        family: arr(summary.featureCleanupPlan?.scoped?.family || []).slice(0, 6),
+        regime: arr(summary.featureCleanupPlan?.scoped?.regime || []).slice(0, 6),
+        session: arr(summary.featureCleanupPlan?.scoped?.session || []).slice(0, 6),
+        condition: arr(summary.featureCleanupPlan?.scoped?.condition || []).slice(0, 6)
+      },
+      note: summary.featureCleanupPlan?.note || null
+    },
+    featureQuarantineCandidates: arr(summary.featureQuarantineCandidates || []).slice(0, 8),
+    challengerDisableCandidates: arr(summary.challengerDisableCandidates || []).slice(0, 8),
+    offlinePruneRecommendations: arr(summary.offlinePruneRecommendations || []).slice(0, 8),
+    strategyReweighting: {
+      status: summary.strategyReweighting?.status || "warmup",
+      familyCount: summary.strategyReweighting?.familyCount || 0,
+      lookbackHours: summary.strategyReweighting?.lookbackHours || 0,
+      topFamily: summary.strategyReweighting?.topFamily || null,
+      families: arr(summary.strategyReweighting?.families || []).slice(0, 8),
+      note: summary.strategyReweighting?.note || null
+    },
+    parameterOptimization: {
+      status: summary.parameterOptimization?.status || "warmup",
+      candidateCount: summary.parameterOptimization?.candidateCount || 0,
+      autoApply: Boolean(summary.parameterOptimization?.autoApply),
+      livePromotionAllowed: Boolean(summary.parameterOptimization?.livePromotionAllowed),
+      topCandidate: summary.parameterOptimization?.topCandidate || null,
+      candidates: arr(summary.parameterOptimization?.candidates || []).slice(0, 6),
+      walkForward: summary.parameterOptimization?.walkForward || null,
+      note: summary.parameterOptimization?.note || null
+    },
+    analyticsDatasets: summary.analyticsDatasets || {},
     strategies: arr(summary.strategies || []).slice(0, 6),
     regimes: arr(summary.regimes || []).slice(0, 5),
     strategyScorecards: arr(summary.strategyScorecards || []).slice(0, 8).map((item) => ({
+      id: item.id,
+      tradeCount: item.tradeCount || 0,
+      paperTradeCount: item.paperTradeCount || 0,
+      liveTradeCount: item.liveTradeCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+      avgLabelScore: num(item.avgLabelScore || 0, 4),
+      avgMovePct: num(item.avgMovePct || 0, 4),
+      falsePositiveCount: item.falsePositiveCount || 0,
+      falseNegativeCount: item.falseNegativeCount || 0,
+      falsePositiveRate: num(item.falsePositiveRate || 0, 4),
+      falseNegativeRate: num(item.falseNegativeRate || 0, 4),
+      effectiveSampleSize: num(item.effectiveSampleSize || 0, 4),
+      sampleConfidence: num(item.sampleConfidence || 0, 4),
+      freshnessScore: num(item.freshnessScore || 0, 4),
+      latestEvidenceAt: item.latestEvidenceAt || null,
+      governanceScore: num(item.governanceScore || 0, 4),
+      dominantError: item.dominantError || "balanced",
+      status: item.status || "warmup"
+    })),
+    familyScorecards: arr(summary.familyScorecards || []).slice(0, 8).map((item) => ({
       id: item.id,
       tradeCount: item.tradeCount || 0,
       paperTradeCount: item.paperTradeCount || 0,
@@ -2289,6 +2487,30 @@ function summarizeOfflineTrainer(summary = {}) {
       freshnessScore: num(item.freshnessScore || 0, 4),
       latestEvidenceAt: item.latestEvidenceAt || null,
       governanceScore: num(item.governanceScore || 0, 4),
+      status: item.status || "warmup"
+    })),
+    symbolScorecards: arr(summary.symbolScorecards || []).slice(0, 10).map((item) => ({
+      id: item.id || item.symbol || null,
+      symbol: item.symbol || item.id || null,
+      tradeCount: item.tradeCount || 0,
+      paperTradeCount: item.paperTradeCount || 0,
+      liveTradeCount: item.liveTradeCount || 0,
+      winRate: num(item.winRate || 0, 4),
+      realizedPnl: num(item.realizedPnl || 0, 2),
+      avgExecutionQuality: num(item.avgExecutionQuality || 0, 4),
+      avgLabelScore: num(item.avgLabelScore || 0, 4),
+      avgMovePct: num(item.avgMovePct || 0, 4),
+      falsePositiveCount: item.falsePositiveCount || 0,
+      falseNegativeCount: item.falseNegativeCount || 0,
+      falsePositiveRate: num(item.falsePositiveRate || 0, 4),
+      falseNegativeRate: num(item.falseNegativeRate || 0, 4),
+      effectiveSampleSize: num(item.effectiveSampleSize || 0, 4),
+      sampleConfidence: num(item.sampleConfidence || 0, 4),
+      freshnessScore: num(item.freshnessScore || 0, 4),
+      latestEvidenceAt: item.latestEvidenceAt || null,
+      governanceScore: num(item.governanceScore || 0, 4),
+      trapScore: num(item.trapScore || 0, 4),
+      trapStatus: item.trapStatus || "mixed",
       status: item.status || "warmup"
     })),
     conditionScorecards: arr(summary.conditionScorecards || []).slice(0, 6).map((item) => ({
@@ -2781,6 +3003,16 @@ function summarizeOfflineTrainer(summary = {}) {
       direction: item.direction || "pro",
       status: item.status || "watch"
     })),
+    featureUsefulnessGroups: arr(summary.featureUsefulnessGroups || []).length
+      ? arr(summary.featureUsefulnessGroups || []).slice(0, 8).map((item) => ({
+          group: item.group || "context",
+          featureCount: item.featureCount || 0,
+          positiveCount: item.positiveCount || 0,
+          negativeCount: item.negativeCount || 0,
+          averageInfluence: num(item.averageInfluence || 0, 4),
+          topFeature: item.topFeature || null
+        }))
+      : buildFeatureUsefulnessView(summary.featureDecayScorecards || []),
     calibrationGovernance: {
       falsePositiveRate: num(summary.calibrationGovernance?.falsePositiveRate || 0, 4),
       falseNegativeRate: num(summary.calibrationGovernance?.falseNegativeRate || 0, 4),
@@ -3217,10 +3449,13 @@ function summarizePaperLearning(summary = {}) {
       type: item.type || null,
       count: item.count || 0,
       readinessScore: num(item.readinessScore || 0, 4),
+      effectiveReadinessScore: num(item.effectiveReadinessScore || item.readinessScore || 0, 4),
       status: item.status || "warmup",
       goodRate: num(item.goodRate || 0, 4),
       weakRate: num(item.weakRate || 0, 4),
-      source: item.source || "probe_trades",
+      source: item.source || "probe_outcomes",
+      sourceWeight: num(item.sourceWeight || 0, 4),
+      sourceDecay: num(item.sourceDecay || 0, 4),
       latestObservedAt: item.latestObservedAt || null
     })),
     inputHealth: summary.inputHealth ? {
@@ -3271,6 +3506,7 @@ function summarizePaperLearning(summary = {}) {
       blocker: item.blocker || null,
       realizedMovePct: numOrNull(item.realizedMovePct, 4),
       resolvedAt: item.resolvedAt || null,
+      horizonLabel: item.horizonLabel || null,
       bestBranch: item.bestBranch ? {
         id: item.bestBranch.id || null,
         outcome: item.bestBranch.outcome || null,
@@ -3315,7 +3551,18 @@ function summarizePaperLearning(summary = {}) {
       status: summary.paperToLiveReadiness.status || "warmup",
       score: num(summary.paperToLiveReadiness.score || 0, 4),
       topScope: summary.paperToLiveReadiness.topScope || null,
+      topSource: summary.paperToLiveReadiness.topSource || null,
       blocker: summary.paperToLiveReadiness.blocker || null,
+      staleEvidencePenalty: num(summary.paperToLiveReadiness.staleEvidencePenalty || 0, 4),
+      sources: arr(summary.paperToLiveReadiness.sources || []).slice(0, 3).map((item) => ({
+        id: item.id || null,
+        source: item.source || null,
+        scope: item.scope || null,
+        score: num(item.score || 0, 4),
+        weight: num(item.weight || 0, 4),
+        decay: num(item.decay || 0, 4),
+        effectiveScore: num(item.effectiveScore || 0, 4)
+      })),
       note: summary.paperToLiveReadiness.note || null
     } : null,
     counterfactualTuning: summary.counterfactualTuning ? {
@@ -3415,14 +3662,14 @@ function summarizePaperLearning(summary = {}) {
         status: summary.scopeCoaching.strongest.status || "warmup",
         score: num(summary.scopeCoaching.strongest.score || 0, 4),
         action: summary.scopeCoaching.strongest.action || "observe",
-        source: summary.scopeCoaching.strongest.source || "probe_trades"
+      source: summary.scopeCoaching.strongest.source || "probe_outcomes"
       } : null,
       weakest: summary.scopeCoaching.weakest ? {
         id: summary.scopeCoaching.weakest.id || null,
         status: summary.scopeCoaching.weakest.status || "warmup",
         score: num(summary.scopeCoaching.weakest.score || 0, 4),
         action: summary.scopeCoaching.weakest.action || "observe",
-        source: summary.scopeCoaching.weakest.source || "probe_trades"
+      source: summary.scopeCoaching.weakest.source || "probe_outcomes"
       } : null,
       note: summary.scopeCoaching.note || null
     } : null,
@@ -3609,7 +3856,7 @@ function summarizePaperLearning(summary = {}) {
       type: summary.primaryScope.type || null,
       status: summary.primaryScope.status || "warmup",
       score: num(summary.primaryScope.score || 0, 4),
-      source: summary.primaryScope.source || "probe_trades"
+      source: summary.primaryScope.source || "probe_outcomes"
     } : null,
     dailyBudget: summary.dailyBudget || null,
     topFamilies: arr(summary.topFamilies || []).slice(0, 4).map((item) => ({
@@ -3701,6 +3948,8 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
     sourceStatus: guidance.sourceStatus || "warmup",
     thresholdShift: num(guidance.thresholdShift || 0, 4),
     sizeMultiplier: num(guidance.sizeMultiplier || 1, 4),
+    priorityBoost: num(guidance.priorityBoost || 0, 4),
+    confidenceBias: num(guidance.confidenceBias || 0, 4),
     cautionPenalty: num(guidance.cautionPenalty || 0, 4),
     confidence: num(guidance.confidence || 0, 4),
     featurePenalty: num(guidance.featurePenalty || 0, 4),
@@ -3739,6 +3988,8 @@ function summarizeOfflineLearningGuidance(guidance = {}) {
       cautionPenalty: num(item.cautionPenalty || 0, 4),
       note: item.note || null
     })),
+    onlineAdaptation: guidance.onlineAdaptation || null,
+    strategyReweighting: guidance.strategyReweighting || null,
     note: guidance.note || null
   };
 }
@@ -4448,6 +4699,7 @@ function pickCounterfactualBlocker(item = {}) {
 function summarizeCounterfactualReview(item = {}) {
   const branch = arr(item.branches || []).find((entry) => ["winner", "small_winner"].includes(entry.outcome)) || arr(item.branches || [])[0] || null;
   const outcomeLabel = item.outcomeLabel || item.outcome || "neutral";
+  const horizonLabel = item.horizonAggregateLabel || buildCounterfactualHorizonCompactLabel(item.horizons || [], item.horizonPlan || []);
   const lesson = outcomeLabel === "bad_veto" || outcomeLabel === "near_miss_winner" || outcomeLabel === "missed_breakout"
     ? "Deze blokkade lijkt te streng; vergelijkbare setups liepen vaker door."
     : outcomeLabel === "good_veto" || outcomeLabel === "near_miss_loser" || outcomeLabel === "fakeout_avoided"
@@ -4465,6 +4717,7 @@ function summarizeCounterfactualReview(item = {}) {
     blocker: pickCounterfactualBlocker(item),
     realizedMovePct: numOrNull(item.realizedMovePct, 4),
     resolvedAt: item.resolvedAt || null,
+    horizonLabel: horizonLabel || null,
     bestBranch: branch ? {
       id: branch.id || branch.kind || null,
       outcome: branch.outcome || null,
@@ -4482,6 +4735,7 @@ function summarizeQueuedCounterfactualReview(item = {}) {
     || null;
   const branchLabel = branch?.id || branch?.kind || null;
   const blocker = pickCounterfactualBlocker(item);
+  const horizonLabel = buildCounterfactualHorizonCompactLabel(item.horizons || [], item.horizonPlan || buildCounterfactualHorizonPlan(item.adaptiveLookaheadMinutes || 90));
   const lesson = blocker
     ? "Deze geblokkeerde setup wordt nog gevolgd om te zien of de blokkade te streng was."
     : "Deze shadow-case staat nog open en voedt de gemiste-trade analyse zodra de review afrondt.";
@@ -4492,6 +4746,7 @@ function summarizeQueuedCounterfactualReview(item = {}) {
     blocker,
     realizedMovePct: null,
     resolvedAt: item.queuedAt || item.dueAt || null,
+    horizonLabel,
     bestBranch: branchLabel ? {
       id: branchLabel,
       outcome: "pending_review",
@@ -6008,6 +6263,8 @@ export class TradingBot {
 
   buildPublicReportView(report = this.getPerformanceReport()) {
     const coreMetrics = buildCoreMetricsView({ report });
+    const offlineTrainerSummary = summarizeOfflineTrainer(this.runtime.offlineTrainer || {});
+    const onlineAdaptationSummary = summarizeOnlineAdaptation(this.runtime.onlineAdaptation || {});
     const sourceTruth = buildSourceOfTruthPortfolioState({
       runtime: this.runtime,
       journal: this.journal,
@@ -6087,6 +6344,18 @@ export class TradingBot {
       recentScaleOuts: report.recentScaleOuts.map((event) => this.buildScaleOutView(event)),
       recentEvents: report.recentEvents || [],
       recentBlockedSetups: report.recentBlockedSetups || [],
+      scanner: this.buildScannerView(),
+      onlineAdaptation: onlineAdaptationSummary,
+      offlineTrainer: {
+        runtimeApplied: offlineTrainerSummary.runtimeApplied || null,
+        analysisOnly: offlineTrainerSummary.analysisOnly || null,
+        featureUsefulnessGroups: offlineTrainerSummary.featureUsefulnessGroups || [],
+        learningAttribution: offlineTrainerSummary.learningAttribution || null,
+        featureCleanupPlan: offlineTrainerSummary.featureCleanupPlan || null,
+        strategyReweighting: offlineTrainerSummary.strategyReweighting || null,
+        parameterOptimization: offlineTrainerSummary.parameterOptimization || null,
+        analyticsDatasets: offlineTrainerSummary.analyticsDatasets || null
+      },
       recentResearchRuns: report.recentResearchRuns || [],
       recentReviews: report.recentReviews || []
     };
@@ -7183,7 +7452,37 @@ export class TradingBot {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
       return;
     }
-    const dueAt = new Date(new Date(queuedAt).getTime() + Math.max(5, this.config.counterfactualLookaheadMinutes || 90) * 60000).toISOString();
+    const baseLookaheadMinutes = Math.max(5, this.config.counterfactualLookaheadMinutes || 90);
+    const regime = candidate.regimeSummary?.regime || "range";
+    const session = candidate.sessionSummary?.session || "unknown";
+    const executionViability = safeNumber(candidate.signalQualitySummary?.executionViability, 0.5);
+    const qualityScore = safeNumber(candidate.signalQualitySummary?.overallScore, 0.5);
+    const regimeMultiplier = regime === "high_vol" || regime === "breakout"
+      ? 0.72
+      : regime === "trend"
+        ? 0.88
+        : regime === "range"
+          ? 1.05
+          : 1;
+    const sessionMultiplier = session === "us"
+      ? 0.92
+      : session === "asia"
+        ? 1.06
+        : session === "weekend"
+          ? 1.12
+          : 1;
+    const qualityMultiplier = executionViability >= 0.6 && qualityScore >= 0.58
+      ? 0.86
+      : executionViability <= 0.44 || qualityScore <= 0.44
+        ? 1.12
+        : 1;
+    const adaptiveLookaheadMinutes = clamp(
+      baseLookaheadMinutes * regimeMultiplier * sessionMultiplier * qualityMultiplier,
+      5,
+      Math.max(15, baseLookaheadMinutes * 1.3)
+    );
+    const dueAt = new Date(new Date(queuedAt).getTime() + adaptiveLookaheadMinutes * 60000).toISOString();
+    const horizonPlan = buildCounterfactualHorizonPlan(adaptiveLookaheadMinutes);
     const entryStyle = candidate.decision?.executionPlan?.entryStyle || candidate.decision?.executionStyle || null;
     const expectedSlippageBps = num(candidate.decision?.executionPlan?.expectedSlippageBps || 0, 2);
     const counterfactualContext = candidate.decision?.counterfactualContext || buildCandidateCounterfactualContext(candidate);
@@ -7275,6 +7574,8 @@ export class TradingBot {
       executionViability: candidate.signalQualitySummary?.executionViability || 0,
       modelConfidence: candidate.confidenceBreakdown?.modelConfidence || 0,
       expectedSlippageBps,
+      adaptiveLookaheadMinutes: num(adaptiveLookaheadMinutes, 2),
+      horizonPlan,
       branchScenarios
     }].slice(-(this.config.counterfactualQueueLimit || 40));
   }
@@ -7337,43 +7638,155 @@ export class TradingBot {
           this.recordEvent("counterfactual_resolution_failed", { symbol: item.symbol, error: "invalid_counterfactual_snapshot" });
           continue;
         }
-        const realizedMovePct = currentPrice / item.entryPrice - 1;
         const winBar = Math.max(this.config.scaleOutTriggerPct || 0.014, (this.config.takeProfitPct || 0.03) * 0.35);
         const lossBar = -Math.max((this.config.stopLossPct || 0.018) * 0.5, 0.006);
-        const outcome = realizedMovePct >= winBar
-          ? (item.executionViability || 0) < 0.46 || (item.modelConfidence || 0) < 0.5
-            ? "right_direction_wrong_timing"
-            : "bad_veto"
-          : realizedMovePct <= lossBar
-            ? "good_veto"
-            : realizedMovePct > 0 && realizedMovePct < winBar
-              ? "late_veto"
-              : "neutral";
         const blocker = pickCounterfactualBlocker(item);
         const blockerCategory = classifySignalRejectionCategory(blocker || item.dominantBlocker || "");
-        const outcomeLabel = classifyShadowOutcomeLabel({
-          realizedMovePct,
-          outcome,
-          blockerCategory,
-          winBar,
-          lossBar,
-          edgeToThreshold: item.edgeToThreshold || 0,
-          modelConfidence: item.modelConfidence || 0,
-          executionViability: item.executionViability || 0
-        });
-        const vetoVerdict = isBadVetoOutcomeLabel(outcomeLabel)
-          ? "bad_veto"
-          : isGoodVetoOutcomeLabel(outcomeLabel)
-            ? "good_veto"
-            : "mixed";
+        const classifyResolvedMove = (resolvedMovePct) => {
+          const outcome = resolvedMovePct >= winBar
+            ? (item.executionViability || 0) < 0.46 || (item.modelConfidence || 0) < 0.5
+              ? "right_direction_wrong_timing"
+              : "bad_veto"
+            : resolvedMovePct <= lossBar
+              ? "good_veto"
+              : resolvedMovePct > 0 && resolvedMovePct < winBar
+                ? "late_veto"
+                : "neutral";
+          const outcomeLabel = classifyShadowOutcomeLabel({
+            realizedMovePct: resolvedMovePct,
+            outcome,
+            blockerCategory,
+            winBar,
+            lossBar,
+            edgeToThreshold: item.edgeToThreshold || 0,
+            modelConfidence: item.modelConfidence || 0,
+            executionViability: item.executionViability || 0
+          });
+          const vetoVerdict = isBadVetoOutcomeLabel(outcomeLabel)
+            ? "bad_veto"
+            : isGoodVetoOutcomeLabel(outcomeLabel)
+              ? "good_veto"
+              : "mixed";
+          const learningValueScoreResolved = buildResolvedCounterfactualLearningScore({
+            outcomeLabel,
+            realizedMovePct: resolvedMovePct,
+            edgeToThreshold: item.edgeToThreshold || 0,
+            modelConfidence: item.modelConfidence || 0,
+            executionViability: item.executionViability || 0,
+            blockerCategory
+          });
+          return {
+            outcome,
+            outcomeLabel,
+            vetoVerdict,
+            learningValueScoreResolved
+          };
+        };
+        const parseIntervalToMs = (interval = "15m") => {
+          const match = `${interval || ""}`.trim().toLowerCase().match(/^(\d+)(m|h|d)$/);
+          if (!match) {
+            return 15 * 60_000;
+          }
+          const amount = Number(match[1] || 0);
+          const multipliers = { m: 60_000, h: 60 * 60_000, d: 24 * 60 * 60_000 };
+          return amount * (multipliers[match[2]] || 60_000);
+        };
+        const queuedAtMs = new Date(item.queuedAt || item.dueAt || nowAt).getTime();
+        const horizonPlan = arr(item.horizonPlan || buildCounterfactualHorizonPlan(item.adaptiveLookaheadMinutes || this.config.counterfactualLookaheadMinutes || 90));
+        const interval = this.config.klineInterval || "15m";
+        const intervalMs = parseIntervalToMs(interval);
+        const horizons = [];
+        for (const horizon of horizonPlan) {
+          const horizonTargetMs = queuedAtMs + (horizon.minutes || 0) * 60_000;
+          if (!Number.isFinite(horizonTargetMs) || horizonTargetMs > nowMs) {
+            horizons.push({
+              id: horizon.id || `t${horizon.minutes}m`,
+              label: horizon.label || `T+${horizon.minutes}m`,
+              minutes: horizon.minutes || 0,
+              outcome: "pending",
+              outcomeLabel: "pending",
+              vetoVerdict: null,
+              currentPrice: null,
+              resolvedMovePct: null,
+              learningValueScoreResolved: null,
+              sampledAt: null,
+              source: null
+            });
+            continue;
+          }
+          let resolvedPrice = currentPrice;
+          let sampledAt = nowAt;
+          let source = "current_snapshot";
+          if (this.historyStore?.getCandles) {
+            try {
+              const candles = await this.historyStore.getCandles({
+                symbol: item.symbol,
+                interval,
+                startTime: Math.max(0, horizonTargetMs - intervalMs * 2),
+                endTime: horizonTargetMs + intervalMs * 2,
+                limit: 8
+              });
+              const nearest = arr(candles)
+                .filter((candle) => Number.isFinite(Number(candle?.close || 0)))
+                .sort((left, right) => {
+                  const leftTime = Number(left?.closeTime || left?.openTime || 0);
+                  const rightTime = Number(right?.closeTime || right?.openTime || 0);
+                  return Math.abs(leftTime - horizonTargetMs) - Math.abs(rightTime - horizonTargetMs);
+                })[0] || null;
+              if (nearest) {
+                resolvedPrice = Number(nearest.close || 0);
+                sampledAt = new Date(Number(nearest.closeTime || nearest.openTime || horizonTargetMs)).toISOString();
+                source = "market_history";
+              }
+            } catch (error) {
+              this.logger?.warn?.("Counterfactual horizon history lookup failed", {
+                symbol: item.symbol,
+                horizonMinutes: horizon.minutes || 0,
+                error: error.message
+              });
+            }
+          }
+          const resolvedMovePct = Number.isFinite(resolvedPrice) && resolvedPrice > 0
+            ? resolvedPrice / item.entryPrice - 1
+            : currentPrice / item.entryPrice - 1;
+          const resolvedVerdict = classifyResolvedMove(resolvedMovePct);
+          horizons.push({
+            id: horizon.id || `t${horizon.minutes}m`,
+            label: horizon.label || `T+${horizon.minutes}m`,
+            minutes: horizon.minutes || 0,
+            outcome: resolvedVerdict.outcome,
+            outcomeLabel: resolvedVerdict.outcomeLabel,
+            vetoVerdict: resolvedVerdict.vetoVerdict,
+            currentPrice: num(resolvedPrice, 8),
+            resolvedMovePct: num(resolvedMovePct, 4),
+            learningValueScoreResolved: num(resolvedVerdict.learningValueScoreResolved, 4),
+            sampledAt,
+            source
+          });
+        }
+        const primaryHorizon = selectCounterfactualPrimaryHorizon(horizons);
+        const primaryMovePct = primaryHorizon?.resolvedMovePct ?? num(currentPrice / item.entryPrice - 1, 4);
+        const primaryVerdict = primaryHorizon
+          ? {
+              outcome: primaryHorizon.outcome || "neutral",
+              outcomeLabel: primaryHorizon.outcomeLabel || primaryHorizon.outcome || "neutral",
+              vetoVerdict: primaryHorizon.vetoVerdict || "mixed",
+              learningValueScoreResolved: primaryHorizon.learningValueScoreResolved || 0
+            }
+          : classifyResolvedMove(primaryMovePct);
+        const outcome = primaryVerdict.outcome;
+        const outcomeLabel = primaryVerdict.outcomeLabel;
+        const vetoVerdict = primaryVerdict.vetoVerdict;
+        const resolvedLearningValueScore = primaryVerdict.learningValueScoreResolved;
+        const horizonAggregateLabel = buildCounterfactualHorizonCompactLabel(horizons, horizonPlan);
         const branches = arr(item.branchScenarios).map((branch) => {
-          let adjustedMovePct = realizedMovePct;
+          let adjustedMovePct = primaryMovePct;
           if (branch.kind === "size") {
             adjustedMovePct *= branch.sizeMultiplier || 1;
           } else if (branch.kind === "execution") {
             adjustedMovePct += Math.max(0, (item.expectedSlippageBps || 0) - (branch.slippageBps || 0)) / 10000;
           } else if (branch.kind === "exit") {
-            adjustedMovePct = Math.min(realizedMovePct, winBar * (branch.takeProfitFactor || 1));
+            adjustedMovePct = Math.min(primaryMovePct, winBar * (branch.takeProfitFactor || 1));
           } else if (branch.kind === "risk") {
             if (adjustedMovePct < 0) {
               adjustedMovePct = Math.max(adjustedMovePct, lossBar * (branch.stopLossFactor || 1));
@@ -7403,13 +7816,17 @@ export class TradingBot {
         this.journal.counterfactuals.push({
           ...item,
           resolvedAt: nowAt,
-          currentPrice,
-          realizedMovePct: num(realizedMovePct, 4),
+          currentPrice: primaryHorizon?.currentPrice || num(currentPrice, 8),
+          realizedMovePct: num(primaryMovePct, 4),
           outcome,
           outcomeLabel,
           vetoVerdict,
+          learningValueScoreResolved: num(resolvedLearningValueScore, 4),
           dominantBlocker: blocker || item.dominantBlocker || null,
           blockerCategory,
+          horizons,
+          horizonPlan,
+          horizonAggregateLabel,
           branches
         });
         if (item.blockedSetupId) {
@@ -7423,7 +7840,9 @@ export class TradingBot {
               counterfactualOutcomeLabel: outcomeLabel,
               counterfactualVetoVerdict: vetoVerdict,
               counterfactualResolvedAt: nowAt,
-              counterfactualMovePct: num(realizedMovePct, 4),
+              counterfactualLearningValueScore: num(resolvedLearningValueScore, 4),
+              counterfactualMovePct: num(primaryMovePct, 4),
+              counterfactualHorizonLabel: horizonAggregateLabel,
               counterfactualBlocker: blocker || current.counterfactualBlocker || null
             };
           }
@@ -10084,6 +10503,16 @@ export class TradingBot {
         const latestObservedAt = latestTimestamp(items.map((item) => options.evidenceOnly
           ? item.resolvedAt || item.queuedAt || item.generatedAt || null
           : item.exitAt || item.entryAt || null));
+        const latestObservedMs = new Date(latestObservedAt || 0).getTime();
+        const referenceMs = new Date(referenceNow).getTime();
+        const ageHours = Number.isFinite(latestObservedMs) && Number.isFinite(referenceMs)
+          ? Math.max(0, (referenceMs - latestObservedMs) / 3_600_000)
+          : Number.POSITIVE_INFINITY;
+        const sourceWeight = clamp(safeNumber(options.sourceWeight, options.evidenceOnly ? 0.72 : 1), 0.2, 1);
+        const halfLifeHours = Math.max(12, safeNumber(options.halfLifeHours, options.evidenceOnly ? 84 : 96));
+        const sourceDecay = Number.isFinite(ageHours)
+          ? clamp(Math.pow(0.5, ageHours / halfLifeHours), options.minDecay ?? 0.28, 1)
+          : options.minDecay ?? 0.28;
         if (options.evidenceOnly) {
           const avgLearning = average(items.map((item) => item.learningValueScore || 0), 0);
           const avgNovelty = average(items.map((item) => item.paperLearning?.noveltyScore || 0), 0);
@@ -10104,17 +10533,21 @@ export class TradingBot {
             0,
             1
           );
+          const effectiveReadinessScore = clamp(readinessScore * sourceWeight * sourceDecay, 0, 1);
           return {
             id,
             type,
             count: items.length,
             readinessScore,
+            effectiveReadinessScore,
             status: readinessScore >= 0.68 ? "building" : readinessScore >= 0.48 ? "warming" : "warmup",
             goodRate: avgActive,
             weakRate: Math.max(0, 1 - avgLearning),
             freshness,
+            sourceWeight,
+            sourceDecay,
             latestObservedAt,
-            source: options.source || "shadow_learning"
+            source: options.source || "shadow_evidence"
           };
         }
         const goodCount = items.filter((trade) => ["good_trade", "acceptable_trade"].includes(resolvePaperOutcomeBucket(trade))).length;
@@ -10123,25 +10556,32 @@ export class TradingBot {
         const weakRate = weakCount / Math.max(items.length, 1);
         const freshness = weightedAverage(items, () => 1, (trade) => trade.exitAt || trade.entryAt, 0.4);
         const readinessScore = clamp(0.26 + Math.min(0.24, items.length / 10) + goodRate * 0.26 - weakRate * 0.2 + freshness * 0.14, 0, 1);
+        const effectiveReadinessScore = clamp(readinessScore * sourceWeight * sourceDecay, 0, 1);
         return {
           id,
           type,
           count: items.length,
           readinessScore,
+          effectiveReadinessScore,
           status: readinessScore >= 0.72 ? "paper_ready" : readinessScore >= 0.54 ? "building" : "warmup",
           goodRate,
           weakRate,
           freshness,
+          sourceWeight,
+          sourceDecay,
           latestObservedAt,
-          source: options.source || "probe_trades"
+          source: options.source || "probe_outcomes"
         };
       })
-      .sort((left, right) => right.readinessScore - left.readinessScore)
+      .sort((left, right) => {
+        const effectiveDelta = (right.effectiveReadinessScore || 0) - (left.effectiveReadinessScore || 0);
+        return Math.abs(effectiveDelta) > 0.0001 ? effectiveDelta : (right.readinessScore || 0) - (left.readinessScore || 0);
+      })
       .slice(0, 2);
     const probeScopeReadiness = [
-      ...summarizeScopeReadiness(recentProbeTrades, "strategy_family", (trade) => trade.strategyFamily || null),
-      ...summarizeScopeReadiness(recentProbeTrades, "regime", (trade) => trade.regimeAtEntry || null),
-      ...summarizeScopeReadiness(recentProbeTrades, "session", (trade) => trade.sessionAtEntry || null)
+      ...summarizeScopeReadiness(recentProbeTrades, "strategy_family", (trade) => trade.strategyFamily || null, { source: "probe_outcomes", sourceWeight: 1, halfLifeHours: 108 }),
+      ...summarizeScopeReadiness(recentProbeTrades, "regime", (trade) => trade.regimeAtEntry || null, { source: "probe_outcomes", sourceWeight: 1, halfLifeHours: 108 }),
+      ...summarizeScopeReadiness(recentProbeTrades, "session", (trade) => trade.sessionAtEntry || null, { source: "probe_outcomes", sourceWeight: 1, halfLifeHours: 108 })
     ];
     const sandboxStates = learningEntries
       .map((item) => item.paperThresholdSandbox || item.paperLearning?.thresholdSandbox)
@@ -10192,60 +10632,62 @@ export class TradingBot {
         .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
         .map((item) => item.queuedAt || item.generatedAt || null)
     ]);
-    const shadowLearningEvidence = [
-      ...counterfactuals
-        .filter((item) => isShadowReviewCase(item))
-        .slice(-20)
-        .map((item) => ({
-          symbol: item.symbol || null,
-          strategy: {
-            family: item.strategyFamily || null
-          },
-          regime: item.regime || null,
-          session: {
+    const resolvedShadowLearningEvidence = counterfactuals
+      .filter((item) => isShadowReviewCase(item))
+      .slice(-20)
+      .map((item) => ({
+        symbol: item.symbol || null,
+        resolvedAt: item.resolvedAt || null,
+        strategy: {
+          family: item.strategyFamily || null
+        },
+        regime: item.regime || null,
+        session: {
+          session: item.sessionAtEntry || null
+        },
+        learningValueScore: clamp(num(item.learningValueScoreResolved || item.learningValueScore || 0.48, 4), 0, 1),
+        paperLearning: {
+          scope: {
+            family: item.strategyFamily || null,
+            regime: item.regime || null,
             session: item.sessionAtEntry || null
           },
-          learningValueScore: clamp(num(item.learningValueScore || 0.48, 4), 0, 1),
-          paperLearning: {
-            scope: {
-              family: item.strategyFamily || null,
-              regime: item.regime || null,
-              session: item.sessionAtEntry || null
-            },
-            noveltyScore: clamp(num(item.learningValueScore || 0.52, 4), 0.3, 1),
-            activeLearning: {
-              score: clamp(num((item.learningValueScore || 0.42) + Math.min(0.18, arr(item.branches || []).length * 0.06), 4), 0, 1),
-              focusReason: item.outcome ? `${item.outcome}_review` : "shadow_review"
-            }
+          noveltyScore: clamp(num(item.learningValueScoreResolved || item.learningValueScore || 0.52, 4), 0.3, 1),
+          activeLearning: {
+            score: clamp(num((item.learningValueScoreResolved || item.learningValueScore || 0.42) + Math.min(0.18, arr(item.branches || []).length * 0.06), 4), 0, 1),
+            focusReason: item.outcome ? `${item.outcome}_review` : "shadow_review"
           }
-        })),
-      ...arr(this.runtime?.counterfactualQueue || [])
-        .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
-        .slice(-20)
-        .map((item) => ({
-          symbol: item.symbol || null,
-          strategy: {
-            family: item.strategyFamily || null
-          },
-          regime: item.regime || null,
-          session: {
+        }
+      }));
+    const queuedShadowLearningEvidence = arr(this.runtime?.counterfactualQueue || [])
+      .filter((item) => (item.brokerMode || "paper") === "paper" && isShadowReviewCase(item))
+      .slice(-20)
+      .map((item) => ({
+        symbol: item.symbol || null,
+        queuedAt: item.queuedAt || null,
+        generatedAt: item.generatedAt || null,
+        strategy: {
+          family: item.strategyFamily || null
+        },
+        regime: item.regime || null,
+        session: {
+          session: item.sessionAtEntry || null
+        },
+        learningValueScore: clamp(num(item.learningValueScore || 0.46, 4), 0, 1),
+        paperLearning: {
+          scope: {
+            family: item.strategyFamily || null,
+            regime: item.regime || null,
             session: item.sessionAtEntry || null
           },
-          learningValueScore: clamp(num(item.learningValueScore || 0.46, 4), 0, 1),
-          paperLearning: {
-            scope: {
-              family: item.strategyFamily || null,
-              regime: item.regime || null,
-              session: item.sessionAtEntry || null
-            },
-            noveltyScore: clamp(num(item.learningValueScore || 0.5, 4), 0.3, 1),
-            activeLearning: {
-              score: clamp(num((item.learningValueScore || 0.4) + Math.min(0.16, arr(item.branchScenarios || []).length * 0.05), 4), 0, 1),
-              focusReason: "shadow_review"
-            }
+          noveltyScore: clamp(num(item.learningValueScore || 0.5, 4), 0.3, 1),
+          activeLearning: {
+            score: clamp(num((item.learningValueScore || 0.4) + Math.min(0.16, arr(item.branchScenarios || []).length * 0.05), 4), 0, 1),
+            focusReason: "shadow_review"
           }
-        }))
-    ];
+        }
+      }));
+    const shadowLearningEvidence = [...resolvedShadowLearningEvidence, ...queuedShadowLearningEvidence];
     const shadowOutcomeCounts = {};
     for (const item of counterfactuals.filter((entry) => isShadowReviewCase(entry))) {
       const outcomeId = item?.outcomeLabel || item?.outcome;
@@ -10272,12 +10714,15 @@ export class TradingBot {
           total: 0,
           badVetoCount: 0,
           goodVetoCount: 0,
-          averageMovePctSum: 0
+          averageMovePctSum: 0,
+          learningScoreSum: 0
         };
       }
       const stats = shadowBlockerStats[blockerId];
       stats.total += 1;
+      const resolvedLearningScore = clamp(num(item.learningValueScoreResolved || item.learningValueScore || 0, 4), 0, 1);
       stats.averageMovePctSum += Number(item.realizedMovePct || 0);
+      stats.learningScoreSum = (stats.learningScoreSum || 0) + resolvedLearningScore;
       if (isBadVetoOutcomeLabel(outcomeLabel)) {
         stats.badVetoCount += 1;
         badVetoShadowCount += 1;
@@ -10306,6 +10751,7 @@ export class TradingBot {
           goodVetoCount: item.goodVetoCount,
           badVetoRate: num(badRate, 4),
           goodVetoRate: num(goodRate, 4),
+          learningScore: num((item.learningScoreSum || 0) / Math.max(item.total, 1), 4),
           suspicionScore: num(suspicion, 4),
           averageMovePct: num(item.averageMovePctSum / Math.max(item.total, 1), 4),
           status: badRate >= 0.5 && item.total >= 3
@@ -10391,17 +10837,23 @@ export class TradingBot {
       .slice(0, 6)
       .map(([id, count]) => ({ id, count }));
     const evidenceScopeReadiness = [
-      ...summarizeScopeReadiness(shadowLearningEvidence, "strategy_family", (item) => item.paperLearning?.scope?.family || item.strategy?.family || null, { evidenceOnly: true }),
-      ...summarizeScopeReadiness(shadowLearningEvidence, "regime", (item) => item.paperLearning?.scope?.regime || item.regime || null, { evidenceOnly: true }),
-      ...summarizeScopeReadiness(shadowLearningEvidence, "session", (item) => item.paperLearning?.scope?.session || item.session?.session || null, { evidenceOnly: true })
+      ...summarizeScopeReadiness(resolvedShadowLearningEvidence, "strategy_family", (item) => item.paperLearning?.scope?.family || item.strategy?.family || null, { evidenceOnly: true, source: "shadow_evidence", sourceWeight: 0.72, halfLifeHours: 84 }),
+      ...summarizeScopeReadiness(resolvedShadowLearningEvidence, "regime", (item) => item.paperLearning?.scope?.regime || item.regime || null, { evidenceOnly: true, source: "shadow_evidence", sourceWeight: 0.72, halfLifeHours: 84 }),
+      ...summarizeScopeReadiness(resolvedShadowLearningEvidence, "session", (item) => item.paperLearning?.scope?.session || item.session?.session || null, { evidenceOnly: true, source: "shadow_evidence", sourceWeight: 0.72, halfLifeHours: 84 })
     ];
-    const scopeReadiness = [...probeScopeReadiness, ...evidenceScopeReadiness]
+    const queuedScopeReadiness = [
+      ...summarizeScopeReadiness(queuedShadowLearningEvidence, "strategy_family", (item) => item.paperLearning?.scope?.family || item.strategy?.family || null, { evidenceOnly: true, source: "queued_cases", sourceWeight: 0.46, halfLifeHours: 48, minDecay: 0.22 }),
+      ...summarizeScopeReadiness(queuedShadowLearningEvidence, "regime", (item) => item.paperLearning?.scope?.regime || item.regime || null, { evidenceOnly: true, source: "queued_cases", sourceWeight: 0.46, halfLifeHours: 48, minDecay: 0.22 }),
+      ...summarizeScopeReadiness(queuedShadowLearningEvidence, "session", (item) => item.paperLearning?.scope?.session || item.session?.session || null, { evidenceOnly: true, source: "queued_cases", sourceWeight: 0.46, halfLifeHours: 48, minDecay: 0.22 })
+    ];
+    const scopeReadiness = [...probeScopeReadiness, ...evidenceScopeReadiness, ...queuedScopeReadiness]
       .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id && candidate.type === item.type) === index)
       .sort((left, right) => {
-        if ((left.source === "probe_trades") !== (right.source === "probe_trades")) {
-          return left.source === "probe_trades" ? -1 : 1;
+        const effectiveDelta = (right.effectiveReadinessScore || 0) - (left.effectiveReadinessScore || 0);
+        if (Math.abs(effectiveDelta) > 0.0001) {
+          return effectiveDelta;
         }
-        return right.readinessScore - left.readinessScore;
+        return (right.readinessScore || 0) - (left.readinessScore || 0);
       })
       .slice(0, 6);
     const scoredLearningEntries = [...learningEntries, ...shadowLearningEvidence]
@@ -10483,7 +10935,7 @@ export class TradingBot {
     const shadowReviewAgeHours = ageHoursFrom(latestShadowReviewAt);
     const staleClosedLearning = !latestClosedLearningAt || closedLearningAgeHours >= 72;
     const freshestEvidenceScope = evidenceScopeReadiness[0] ||
-      scopeReadiness.find((item) => item.source && item.source !== "probe_trades") ||
+      scopeReadiness.find((item) => item.source && item.source !== "probe_outcomes") ||
       null;
     const displayPrimaryScope = staleClosedLearning && freshestEvidenceScope
       ? freshestEvidenceScope
@@ -10500,31 +10952,77 @@ export class TradingBot {
       shadowReviewAgeHours,
       note: staleClosedLearning
         ? latestClosedLearningAt
-          ? `Geen nieuwe probe/live closed trades sinds ${latestClosedLearningAt}; gebruik daarom ${displayPrimaryScope?.source === "shadow_learning" ? "freshere shadow-learning" : "de laatst beschikbare evidence"} als huidige leerscope.`
-          : `Nog geen probe/live closed trades beschikbaar; gebruik daarom ${displayPrimaryScope?.source === "shadow_learning" ? "shadow-learning" : "active learning"} als tijdelijke leerscope.`
+          ? `Geen nieuwe probe/live closed trades sinds ${latestClosedLearningAt}; gebruik daarom ${displayPrimaryScope?.source === "shadow_evidence" ? "freshere shadow-evidence" : displayPrimaryScope?.source === "queued_cases" ? "queued review-evidence" : "de laatst beschikbare evidence"} als huidige leerscope.`
+          : `Nog geen probe/live closed trades beschikbaar; gebruik daarom ${displayPrimaryScope?.source === "shadow_evidence" ? "shadow-evidence" : displayPrimaryScope?.source === "queued_cases" ? "queued review-cases" : "active learning"} als tijdelijke leerscope.`
         : latestClosedLearningAt
           ? `Laatste probe/live closed trade op ${latestClosedLearningAt}.`
           : "Learning input wordt ververst zodra nieuwe probe/live closes binnenkomen."
     };
-    const promotedScope = probeScopeReadiness[0] || scopeReadiness[0] || null;
+    const readinessSources = [
+      {
+        id: "probe_outcomes",
+        source: "probe_outcomes",
+        scope: probeScopeReadiness[0]?.id || null,
+        score: probeScopeReadiness[0]?.readinessScore || 0,
+        weight: probeScopeReadiness[0]?.sourceWeight || 1,
+        decay: probeScopeReadiness[0]?.sourceDecay || 0,
+        effectiveScore: probeScopeReadiness[0]?.effectiveReadinessScore || 0
+      },
+      {
+        id: "shadow_evidence",
+        source: "shadow_evidence",
+        scope: evidenceScopeReadiness[0]?.id || null,
+        score: evidenceScopeReadiness[0]?.readinessScore || 0,
+        weight: evidenceScopeReadiness[0]?.sourceWeight || 0.72,
+        decay: evidenceScopeReadiness[0]?.sourceDecay || 0,
+        effectiveScore: evidenceScopeReadiness[0]?.effectiveReadinessScore || 0
+      },
+      {
+        id: "queued_cases",
+        source: "queued_cases",
+        scope: queuedScopeReadiness[0]?.id || null,
+        score: queuedScopeReadiness[0]?.readinessScore || 0,
+        weight: queuedScopeReadiness[0]?.sourceWeight || 0.46,
+        decay: queuedScopeReadiness[0]?.sourceDecay || 0,
+        effectiveScore: queuedScopeReadiness[0]?.effectiveReadinessScore || 0
+      }
+    ]
+      .filter((item) => item.scope || item.score > 0)
+      .sort((left, right) => (right.effectiveScore || 0) - (left.effectiveScore || 0));
+    const weightedReadinessEvidence = readinessSources.length
+      ? readinessSources.reduce((total, item) => total + (item.effectiveScore || 0), 0) /
+        Math.max(readinessSources.reduce((total, item) => total + (item.weight || 0), 0), 1)
+      : 0;
+    const topReadinessSource = readinessSources[0] || null;
+    const promotedScope = scopeReadiness[0] || probeScopeReadiness[0] || null;
+    const staleEvidencePenalty = clamp(
+      Math.max(0, closedLearningAgeHours - 72) / 168 * 0.12,
+      0,
+      0.12
+    );
     const paperToLiveReadiness = {
       status: promotedScope?.status || readinessStatus,
       score: clamp(
-        readinessScore * 0.52 +
-        (promotedScope?.readinessScore || 0) * 0.28 +
-        (promotionReady ? 0.12 : 0) -
+        readinessScore * 0.42 +
+        weightedReadinessEvidence * 0.32 +
+        (promotedScope?.effectiveReadinessScore || promotedScope?.readinessScore || 0) * 0.16 +
+        (promotionReady ? 0.1 : 0) -
         Math.min(0.08, probeExecutionDragCount * 0.025) -
         Math.min(0.08, probeQualityTrapCount * 0.03) -
-        ((topBlockers[0]?.count || 0) >= 3 ? 0.08 : 0),
+        ((topBlockers[0]?.count || 0) >= 3 ? 0.08 : 0) -
+        staleEvidencePenalty,
         0,
         1
       ),
       topScope: promotedScope?.id || null,
+      topSource: topReadinessSource?.source || null,
       blocker: dominantProbationWeakness?.[1] ? dominantProbationWeakness[0] : topBlockers[0]?.id || null,
+      staleEvidencePenalty: num(staleEvidencePenalty, 4),
+      sources: readinessSources,
       note: promotedScope
         ? dominantProbationWeakness?.[1]
           ? `${promotedScope.id} is de beste paper-scope, maar ${humanizeReason(dominantProbationWeakness[0])} remt nog de volgende promotion-stap.`
-          : `${promotedScope.id} is momenteel de beste paper-scope voor een volgende probationstap.`
+          : `${promotedScope.id} is momenteel de beste paper-scope voor een volgende probationstap, met ${topReadinessSource?.source || "probe_outcomes"} als zwaarste readiness-bron.`
         : "Nog geen duidelijke paper-scope klaar voor een volgende stap."
     };
     const counterfactualTuning = tuningRecommendation
@@ -10676,7 +11174,7 @@ export class TradingBot {
             status: displayPrimaryScope.status,
             score: displayPrimaryScope.readinessScore || 0,
             action: displayPrimaryScope.status === "paper_ready" ? "probation" : "sandbox",
-            source: displayPrimaryScope.source || "probe_trades"
+            source: displayPrimaryScope.source || "probe_outcomes"
           }
         : null,
       weakest: scopeReadiness.length
@@ -10685,14 +11183,16 @@ export class TradingBot {
             status: scopeReadiness[scopeReadiness.length - 1].status,
             score: scopeReadiness[scopeReadiness.length - 1].readinessScore || 0,
             action: "collect_more_data",
-            source: scopeReadiness[scopeReadiness.length - 1].source || "probe_trades"
+            source: scopeReadiness[scopeReadiness.length - 1].source || "probe_outcomes"
           }
         : null,
       note: displayPrimaryScope
-        ? staleClosedLearning && displayPrimaryScope.source !== "probe_trades"
+        ? staleClosedLearning && displayPrimaryScope.source !== "probe_outcomes"
           ? `${displayPrimaryScope.id} is nu de versere leerscope, omdat probe/live closed trades stilvallen sinds ${latestClosedLearningAt || "de laatste closed learning update"}.`
-          : displayPrimaryScope.source === "shadow_learning"
-            ? `${displayPrimaryScope.id} springt nu uit de shadow-learning data; bevestig dit nog met extra probes.`
+          : displayPrimaryScope.source === "shadow_evidence"
+            ? `${displayPrimaryScope.id} springt nu uit de shadow-evidence; bevestig dit nog met extra probes.`
+            : displayPrimaryScope.source === "queued_cases"
+              ? `${displayPrimaryScope.id} komt nu vooral uit queued shadow-cases; bevestig dit met afgeronde probes of resolved reviews.`
             : `${displayPrimaryScope.id} is nu het sterkst; ${scopeReadiness[scopeReadiness.length - 1]?.id || "andere scopes"} hebben nog meer leerdata nodig.`
         : "Nog geen duidelijke scope-coaching beschikbaar."
     };
@@ -11512,7 +12012,7 @@ export class TradingBot {
             type: displayPrimaryScope.type,
             status: displayPrimaryScope.status,
             score: displayPrimaryScope.readinessScore || 0,
-            source: displayPrimaryScope.source || "probe_trades"
+            source: displayPrimaryScope.source || "probe_outcomes"
           }
         : focusScopes[0]
           ? {
@@ -11563,11 +12063,13 @@ export class TradingBot {
           ? `Paper threshold sandbox ${thresholdSandbox.status} in ${thresholdSandbox.scopeLabel || "scope onbekend"} (${num(thresholdSandbox.thresholdShift * 100, 1)}% shift).`
           : "Geen actieve paper threshold sandbox.",
         inputHealth.status === "stalled"
-          ? `Geen nieuwe probe/live closed trades sinds ${latestClosedLearningAt || "nog geen closed trades"}; leerinput valt nu terug op ${displayPrimaryScope?.source === "shadow_learning" ? "shadow-learning" : "frissere evidence"}.`
+          ? `Geen nieuwe probe/live closed trades sinds ${latestClosedLearningAt || "nog geen closed trades"}; leerinput valt nu terug op ${displayPrimaryScope?.source === "shadow_evidence" ? "shadow-evidence" : displayPrimaryScope?.source === "queued_cases" ? "queued review-cases" : "frissere evidence"}.`
           : inputHealth.note,
         displayPrimaryScope
-          ? displayPrimaryScope.source === "shadow_learning"
-            ? `Sterkste leerscope komt nu uit shadow-learning: ${displayPrimaryScope.id} (${displayPrimaryScope.status}).`
+          ? displayPrimaryScope.source === "shadow_evidence"
+            ? `Sterkste leerscope komt nu uit shadow-evidence: ${displayPrimaryScope.id} (${displayPrimaryScope.status}).`
+            : displayPrimaryScope.source === "queued_cases"
+              ? `Sterkste leerscope komt nu uit queued review-cases: ${displayPrimaryScope.id} (${displayPrimaryScope.status}).`
             : `Sterkste paper-scope: ${displayPrimaryScope.id} (${displayPrimaryScope.status}).`
           : "Nog geen paper-scope readiness zichtbaar.",
         paperToLiveReadiness.topScope
@@ -12085,6 +12587,18 @@ export class TradingBot {
     });
     const learning = this.model.updateFromTrade(trade);
     Object.assign(trade, learning.label, { regimeAtEntry: trade.regimeAtEntry || learning.regime });
+    trade.learningAttribution = buildTradeLearningAttribution(trade);
+    const onlineAdaptation = updateOnlineAdaptationState(this.runtime.onlineAdaptation || {}, {
+      trade,
+      attribution: trade.learningAttribution,
+      config: this.config,
+      nowIso: nowIso()
+    });
+    this.runtime.onlineAdaptation = buildOnlineAdaptationState(onlineAdaptation.state || {});
+    trade.onlineAdaptation = {
+      runtimeApplied: onlineAdaptation.runtimeApplied || [],
+      analysisOnly: onlineAdaptation.analysisOnly || []
+    };
     const rlLearning = this.rlPolicy.updateFromTrade(trade, learning.label.labelScore);
     if (learning.promotion) {
       this.recordEvent("model_promotion", {
@@ -12108,7 +12622,14 @@ export class TradingBot {
 
     await this.safeRecordDataRecorder("trade", async () => this.dataRecorder.recordTrade(trade));
     await this.safeRecordDataRecorder("trade_replay", async () => this.dataRecorder.recordTradeReplaySnapshot(trade));
-    await this.safeRecordDataRecorder("learning_event", async () => this.dataRecorder.recordLearningEvent({ trade, learning }));
+    await this.safeRecordDataRecorder("learning_event", async () => this.dataRecorder.recordLearningEvent({
+      trade,
+      learning: {
+        ...learning,
+        learningAttribution: summarizeLearningAttribution(trade.learningAttribution || {}),
+        onlineAdaptation: trade.onlineAdaptation || null
+      }
+    }));
     this.refreshGovernanceViews(nowIso());
 
     this.logger.info(logLabel, {
@@ -12119,11 +12640,15 @@ export class TradingBot {
       regime: learning.regime,
       labelScore: learning.label.labelScore.toFixed(3),
       promotion: Boolean(learning.promotion),
-      rlAction: trade.executionPolicyDecision?.action || trade.entryRationale?.rlPolicy?.action || null
+      rlAction: trade.executionPolicyDecision?.action || trade.entryRationale?.rlPolicy?.action || null,
+      attribution: trade.learningAttribution?.category || "uncertain",
+      onlineAdaptationApplied: (trade.onlineAdaptation?.runtimeApplied || []).length
     });
     return {
       ...learning,
-      rlLearning
+      rlLearning,
+      learningAttribution: summarizeLearningAttribution(trade.learningAttribution || {}),
+      onlineAdaptation: trade.onlineAdaptation || null
     };
   }
 
@@ -13125,11 +13650,18 @@ export class TradingBot {
     const regime = regimeSummary.regime || null;
     const session = sessionSummary.session || null;
     const conditionId = marketConditionSummary.conditionId || null;
+    const scopeParts = [family, strategyId, regime, session, conditionId].filter(Boolean);
     const benchmarkLead = paperLearning.benchmarkLanes?.bestLane || paperLearning.challengerPolicy?.leadingLane || null;
     const challengerRecommendation = paperLearning.challengerPolicy?.recommendation || null;
     const targetScope = paperLearning.challengerPolicy?.targetScope || paperLearning.paperToLiveReadiness?.topScope || null;
     const focusCandidate = arr(paperLearning.activeLearning?.topCandidates || []).find((item) => item.symbol === symbol) || null;
     const strongestScope = paperLearning.scopeCoaching?.strongest || null;
+    const reviewQueueHit = arr(paperLearning.reviewQueue || []).find((item) =>
+      (symbol && normalize(item.id) === normalize(symbol)) ||
+      scopeParts.some((part) => normalize(item.id).includes(normalize(part)))
+    ) || null;
+    const strongestReview = arr(paperLearning.reviewQueue || [])
+      .sort((left, right) => (right.impactScore || 0) - (left.impactScore || 0))[0] || null;
     const quotaTarget = arr(paperLearningSource.quotaTargets || []).find((item) => {
       if (item.type === "regime_family") {
         return item.scope?.family === family && item.scope?.regime === regime;
@@ -13152,7 +13684,7 @@ export class TradingBot {
     const shadowQuotaMatched = Boolean(shadowQuotaTarget);
     const targetScopeMatched = Boolean(
       targetScope &&
-      [family, regime, session].filter(Boolean).some((part) => normalize(targetScope).includes(normalize(part)))
+      scopeParts.some((part) => normalize(targetScope).includes(normalize(part)))
     );
     const matchedScopes = arr(paperLearning.scopeReadiness || [])
       .map((item) => {
@@ -13184,6 +13716,11 @@ export class TradingBot {
     let cautionPenalty = 0;
     let preferredLane = null;
     const topScope = matchedScopes[0] || null;
+    const topScopeEvidenceScore = clamp(
+      safeNumber(topScope?.effectiveReadinessScore, topScope?.readinessScore || 0) * safeNumber(topScope?.matchScore, 0),
+      0,
+      1
+    );
 
     if (topScope) {
       if (topScope.status === "paper_ready") {
@@ -13204,6 +13741,20 @@ export class TradingBot {
       if (focusCandidate.priorityBand !== "observe") {
         probeBoost += 0.02;
       }
+    }
+
+    if (reviewQueueHit) {
+      priorityBoost += reviewQueueHit.priority === "high" ? 0.03 : 0.015;
+      const reviewImpact = clamp(safeNumber(reviewQueueHit.impactScore, 0), 0, 1);
+      if (reviewQueueHit.type === "shadow_case" || reviewQueueHit.type === "replay_pack") {
+        shadowBoost += 0.012 + reviewImpact * 0.03;
+        preferredLane = preferredLane || "shadow";
+      } else {
+        probeBoost += 0.01 + reviewImpact * 0.028;
+        preferredLane = preferredLane || "probe";
+      }
+    } else if (strongestReview?.priority === "high" && strongestReview?.type === "blocker_quality") {
+      cautionPenalty += 0.015;
     }
 
     if (symbol && symbol === paperLearning.reviewPacks?.topMissedSetup) {
@@ -13260,7 +13811,7 @@ export class TradingBot {
       priorityBoost += 0.02;
       probeBoost += 0.015;
     }
-    if (strongestScope?.id && [family, regime, session].filter(Boolean).some((part) => normalize(strongestScope.id).includes(normalize(part)))) {
+    if (strongestScope?.id && scopeParts.some((part) => normalize(strongestScope.id).includes(normalize(part)))) {
       priorityBoost += 0.015;
     }
     if (quotaTarget?.remaining > 0) {
@@ -13283,8 +13834,16 @@ export class TradingBot {
     probeBoost = clamp(probeBoost, 0, 0.08);
     shadowBoost = clamp(shadowBoost, 0, 0.08);
     cautionPenalty = clamp(cautionPenalty, 0, 0.06);
+    const scopeEvidenceBoost = clamp(topScopeEvidenceScore * 0.07, 0, 0.07);
+    const reviewImpactBoost = clamp(
+      (reviewQueueHit?.priority === "high" ? 0.02 : reviewQueueHit ? 0.01 : 0) +
+        clamp(safeNumber(reviewQueueHit?.impactScore, 0), 0, 1) * 0.03,
+      0,
+      0.05
+    );
     const guidanceStrength = clamp(priorityBoost + probeBoost + shadowBoost - cautionPenalty * 0.6, 0, 1);
     const focusReason = focusCandidate?.reason ||
+      reviewQueueHit?.type ||
       (benchmarkLead === "shadow_take" ? "benchmark_shadow_take_edge" :
         ["always_take", "fixed_threshold"].includes(benchmarkLead) ? "benchmark_threshold_gap" :
           targetScopeMatched ? "scope_readiness_match" :
@@ -13314,6 +13873,9 @@ export class TradingBot {
           : `Shadow quota ${shadowQuotaTarget.id} zit vandaag vol.`
       );
     }
+    if (reviewQueueHit?.note) {
+      noteParts.push(`Review focus: ${reviewQueueHit.note}`);
+    }
 
     return {
       active: guidanceStrength > 0 || cautionPenalty > 0,
@@ -13324,6 +13886,8 @@ export class TradingBot {
       probeBoost,
       shadowBoost,
       cautionPenalty,
+      scopeEvidenceBoost,
+      reviewImpactBoost,
       focusReason,
       benchmarkLead,
       challengerRecommendation,
@@ -13337,6 +13901,12 @@ export class TradingBot {
       shadowQuotaRemaining: shadowQuotaTarget?.remaining ?? null,
       shadowQuotaTarget,
       focusCandidateSymbol: focusCandidate?.symbol || null,
+      reviewQueueHit: reviewQueueHit ? {
+        type: reviewQueueHit.type || null,
+        id: reviewQueueHit.id || null,
+        priority: reviewQueueHit.priority || "normal",
+        impactScore: safeNumber(reviewQueueHit.impactScore, 0)
+      } : null,
       matchedScopes,
       note: noteParts.join(" ") || paperLearning.challengerPolicy?.note || paperLearning.coaching?.nextReview || "Paper learning guidance is actief."
     };
@@ -13352,7 +13922,15 @@ export class TradingBot {
     const offlineTrainer = this.runtime?.offlineTrainer || {};
     const outcomeScopeLearning = offlineTrainer.outcomeScopeScorecards || {};
     const featureGovernance = offlineTrainer.featureGovernance || {};
+    const strategyReweighting = offlineTrainer.strategyReweighting || {};
     const paperLearning = summarizePaperLearning(this.runtime?.ops?.paperLearning || this.runtime?.paperLearning || {});
+    const onlineAdaptation = summarizeOnlineAdaptation(this.runtime?.onlineAdaptation || {});
+    const onlineAdaptationGuidance = buildOnlineAdaptationGuidance(this.runtime?.onlineAdaptation || {}, {
+      strategySummary,
+      regimeSummary,
+      sessionSummary,
+      marketConditionSummary
+    });
     const normalize = (value) => String(value || "").trim().toLowerCase();
     const family = strategySummary.family || null;
     const regime = regimeSummary.regime || null;
@@ -13410,6 +13988,31 @@ export class TradingBot {
       thresholdShift += 0.0015;
       sizeMultiplier *= 0.98;
       cautionPenalty += 0.02;
+    }
+
+    let priorityBoost = 0;
+    let confidenceBias = 0;
+    const matchedStrategyReweighting = arr(strategyReweighting.families || [])
+      .find((item) => normalize(item.id) === normalize(family));
+    if (onlineAdaptationGuidance.active) {
+      thresholdShift += safeNumber(onlineAdaptationGuidance.thresholdShift, 0);
+      sizeMultiplier *= safeNumber(onlineAdaptationGuidance.sizeMultiplier, 1);
+      cautionPenalty += safeNumber(onlineAdaptationGuidance.cautionPenalty, 0) * 0.9;
+      confidenceBias += safeNumber(onlineAdaptationGuidance.confidenceBias, 0);
+      priorityBoost += clamp(
+        Math.max(0, -safeNumber(onlineAdaptationGuidance.thresholdShift, 0)) * 1.8 +
+          Math.max(0, safeNumber(onlineAdaptationGuidance.sizeMultiplier, 1) - 1) * 0.45 -
+          safeNumber(onlineAdaptationGuidance.cautionPenalty, 0) * 0.35,
+        0,
+        0.05
+      );
+    }
+    if (matchedStrategyReweighting) {
+      thresholdShift += safeNumber(matchedStrategyReweighting.thresholdBias, 0);
+      sizeMultiplier *= safeNumber(matchedStrategyReweighting.sizeBias, 1);
+      cautionPenalty += Math.max(0, -safeNumber(matchedStrategyReweighting.weightBias, 0)) * 0.22;
+      confidenceBias += safeNumber(matchedStrategyReweighting.weightBias, 0) * 0.35;
+      priorityBoost += clamp(Math.max(0, safeNumber(matchedStrategyReweighting.weightBias, 0)) * 0.85, 0, 0.05);
     }
 
     const impactedFeatures = [];
@@ -13636,6 +14239,8 @@ export class TradingBot {
 
     thresholdShift = num(clamp(thresholdShift, -0.018, 0.018), 4);
     sizeMultiplier = num(clamp(sizeMultiplier, 0.84, 1.08), 4);
+    priorityBoost = num(clamp(priorityBoost, 0, 0.08), 4);
+    confidenceBias = num(clamp(confidenceBias, -0.03, 0.03), 4);
     cautionPenalty = num(clamp(cautionPenalty, 0, 0.14), 4);
     const confidence = num(clamp(
       weightedConfidence * 0.72 +
@@ -13685,12 +14290,20 @@ export class TradingBot {
     if (executionCaution >= 0.06) {
       noteParts.push("Execution drag of quality traps duwen nu extra cost-caution.");
     }
+    if (onlineAdaptationGuidance.active) {
+      noteParts.push(`Online adaptatie matched ${arr(onlineAdaptationGuidance.reasons || []).slice(0, 2).join(", ")}.`);
+    }
+    if (matchedStrategyReweighting) {
+      noteParts.push(`${matchedStrategyReweighting.id} krijgt nu weekly ${matchedStrategyReweighting.status || "observe"}-bias.`);
+    }
 
     return {
-      active: Boolean(scopeMatches.length || featureTrustPenalty > 0 || executionCaution > 0 || ["always_skip", "simple_exit", "safe_lane"].includes(benchmarkLead || "")),
+      active: Boolean(scopeMatches.length || featureTrustPenalty > 0 || executionCaution > 0 || ["always_skip", "simple_exit", "safe_lane"].includes(benchmarkLead || "") || onlineAdaptationGuidance.active || matchedStrategyReweighting),
       sourceStatus: outcomeScopeLearning.status || featureGovernance.status || "warmup",
       thresholdShift,
       sizeMultiplier,
+      priorityBoost,
+      confidenceBias,
       cautionPenalty,
       confidence,
       featurePenalty: num(featurePenalty, 4),
@@ -13717,6 +14330,27 @@ export class TradingBot {
       paritySampleConfidence: num(paritySampleConfidence, 4),
       impactedFeatureGroups: impactedFeatureGroups.slice(0, 4),
       matchedOutcomeScopes: scopeMatches.slice(0, 4),
+      onlineAdaptation: onlineAdaptationGuidance.active
+        ? {
+            stateStatus: onlineAdaptation.status || "active",
+            thresholdShift: num(onlineAdaptationGuidance.thresholdShift || 0, 4),
+            sizeMultiplier: num(onlineAdaptationGuidance.sizeMultiplier || 1, 4),
+            confidenceBias: num(onlineAdaptationGuidance.confidenceBias || 0, 4),
+            cautionPenalty: num(onlineAdaptationGuidance.cautionPenalty || 0, 4),
+            reasons: arr(onlineAdaptationGuidance.reasons || []).slice(0, 4),
+            matchedScopes: arr(onlineAdaptationGuidance.matchedScopes || []).slice(0, 4)
+          }
+        : null,
+      strategyReweighting: matchedStrategyReweighting
+        ? {
+            id: matchedStrategyReweighting.id || null,
+            status: matchedStrategyReweighting.status || "observe",
+            weightBias: num(matchedStrategyReweighting.weightBias || 0, 4),
+            thresholdBias: num(matchedStrategyReweighting.thresholdBias || 0, 4),
+            sizeBias: num(matchedStrategyReweighting.sizeBias || 1, 4),
+            confidence: num(matchedStrategyReweighting.confidence || 0, 4)
+          }
+        : null,
       note: noteParts.join(" ") || outcomeScopeLearning.notes?.[0] || featureGovernance.notes?.[0] || "Offline learning guidance warmt nog op."
     };
   }
@@ -13858,6 +14492,31 @@ export class TradingBot {
       announcementRisk: num(candidate.exchangeSummary.riskScore || 0, 3),
       announcementFreshnessHours: candidate.exchangeSummary.noticeFreshnessHours == null ? null : num(candidate.exchangeSummary.noticeFreshnessHours, 1),
       marketStructure: summarizeMarketStructureSummary(candidate.marketStructureSummary),
+      structureContext: candidate.signalQualitySummary?.structureContext || {
+        bos: candidate.marketSnapshot.market?.bullishBosActive ? "bullish" : candidate.marketSnapshot.market?.bearishBosActive ? "bearish" : "none",
+        bosStrengthScore: num(candidate.marketSnapshot.market?.bosStrengthScore || 0, 4),
+        fvg: candidate.marketSnapshot.market?.bullishFvgActive ? "bullish" : candidate.marketSnapshot.market?.bearishFvgActive ? "bearish" : "none",
+        fvgRespectScore: num(candidate.marketSnapshot.market?.fvgRespectScore || 0, 4),
+        fvgFillProgress: num(candidate.marketSnapshot.market?.fvgFillProgress || 0, 4)
+      },
+      cvdContext: candidate.signalQualitySummary?.cvdContext || {
+        confirmationScore: num(candidate.marketSnapshot.market?.cvdConfirmationScore || 0, 4),
+        divergenceScore: num(candidate.marketSnapshot.market?.cvdDivergenceScore || 0, 4),
+        trendAlignment: num(candidate.marketSnapshot.market?.cvdTrendAlignment || 0, 4),
+        confidence: num(candidate.marketSnapshot.market?.cvdConfidence || 0, 4)
+      },
+      liquidationContext: {
+        liquidationMagnetDirection: candidate.marketStructureSummary?.liquidationMagnetDirection || "neutral",
+        liquidationMagnetStrength: num(candidate.marketStructureSummary?.liquidationMagnetStrength || 0, 4),
+        liquidationTrapRisk: num(candidate.marketStructureSummary?.liquidationTrapRisk || 0, 4),
+        squeezeContinuationScore: num(candidate.marketStructureSummary?.squeezeContinuationScore || 0, 4)
+      },
+      gridContext: candidate.signalQualitySummary?.gridContext || {
+        gridEntrySide: candidate.marketSnapshot.market?.gridEntrySide || "none",
+        rangeWidthPct: num(candidate.marketSnapshot.market?.rangeWidthPct || 0, 4),
+        rangeMeanRevertScore: num(candidate.marketSnapshot.market?.rangeMeanRevertScore || 0, 4),
+        rangeBoundaryRespectScore: num(candidate.marketSnapshot.market?.rangeBoundaryRespectScore || 0, 4)
+      },
       marketSentiment: summarizeMarketSentiment(candidate.marketSentimentSummary),
       globalMarketContext: candidate.globalMarketContextSummary || null,
       volatility: summarizeVolatility(candidate.volatilitySummary),
@@ -14800,7 +15459,9 @@ export class TradingBot {
     const scanMode = options.mode || (readOnly ? "preview" : "cycle");
     const selfHealStateOverride = options.selfHealState || null;
     const now = new Date();
-    const symbols = [...new Set([...this.config.watchlist, ...this.runtime.openPositions.map((position) => position.symbol)])];
+    const prioritizedWatchlist = this.buildScannerPrioritizedWatchlist(this.config.watchlist);
+    const scannerSeedSymbols = this.getScannerSoftSeedSymbols();
+    const symbols = [...new Set([...prioritizedWatchlist, ...this.runtime.openPositions.map((position) => position.symbol)])];
     const shallowSnapshotMap = Object.fromEntries(symbols.map((symbol) => [
       symbol,
       buildLightweightSnapshot({
@@ -14813,7 +15474,7 @@ export class TradingBot {
     ]));
     const scanPlan = buildDeepScanPlan({
       config: this.config,
-      watchlist: this.config.watchlist,
+      watchlist: prioritizedWatchlist,
       openPositions: this.runtime.openPositions,
       latestDecisions: this.runtime.latestDecisions,
       shallowSnapshotMap,
@@ -14852,7 +15513,7 @@ export class TradingBot {
     );
     const sharedVolatilitySummary = this.config.enableVolatilityContext ? await this.volatility.getSummary() : EMPTY_VOLATILITY_CONTEXT;
     const sharedOnChainLiteSummary = this.config.enableOnChainLiteContext ? await this.onChainLite.getSummary(sharedMarketSentimentSummary) : EMPTY_ONCHAIN;
-    const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: this.config.watchlist, nowIso: now.toISOString() });
+    const pairHealthSnapshot = this.pairHealthMonitor.buildSnapshot({ journal: this.journal, runtime: this.runtime, watchlist: prioritizedWatchlist, nowIso: now.toISOString() });
     const divergenceSummary = this.divergenceMonitor.buildSummary({ journal: this.journal, nowIso: now.toISOString() });
     const offlineTrainerSummary = this.offlineTrainer.buildSummary({ journal: this.journal, dataRecorder: this.dataRecorder.getSummary(), counterfactuals: this.journal.counterfactuals || [], historySummary: this.runtime.marketHistory || {}, nowIso: now.toISOString() });
     const sourceReliabilitySummary = this.buildSourceReliabilitySnapshot();
@@ -14871,7 +15532,12 @@ export class TradingBot {
     }
     const universeSnapshot = scanPlan.universeSnapshot;
     if (!readOnly) {
-      this.runtime.universe = summarizeUniverseSelection(universeSnapshot);
+      this.runtime.universe = summarizeUniverseSelection({
+        ...universeSnapshot,
+        suggestions: scannerSeedSymbols.length
+          ? [`Scanner seeds prioriteren nu ${scannerSeedSymbols.slice(0, 4).join(", ")}.`]
+          : [...arr(universeSnapshot.suggestions || [])]
+      });
       this.journal.universeRuns.push({
         at: now.toISOString(),
         selectedSymbols: [...(universeSnapshot.selectedSymbols || [])],
@@ -14884,7 +15550,7 @@ export class TradingBot {
     const universeEntryMap = Object.fromEntries(
       [...arr(universeSnapshot.selected || []), ...arr(universeSnapshot.skipped || [])].map((entry) => [entry.symbol, entry])
     );
-    const symbolsToEvaluate = (universeSnapshot.selectedSymbols || []).length ? universeSnapshot.selectedSymbols : this.config.watchlist;
+    const symbolsToEvaluate = (universeSnapshot.selectedSymbols || []).length ? universeSnapshot.selectedSymbols : prioritizedWatchlist;
     const candidateEntries = await mapWithConcurrency(
       symbolsToEvaluate.filter((symbol) => this.symbolRules[symbol]),
       Math.max(1, this.config.candidateEvaluationConcurrency || 3),
@@ -14921,20 +15587,22 @@ export class TradingBot {
       candidate.decision = candidate.decision || {};
       candidate.decision.counterfactualContext = buildCandidateCounterfactualContext(candidate);
     }
+    const scannerSummary = this.runtime.scanner?.latestSummary || this.journal?.scannerRuns?.at(-1) || null;
+    const prioritizedCandidates = this.applyScannerShortlistPriority(candidates, scannerSummary);
     if (!readOnly) {
-      for (const candidate of candidates) {
+      for (const candidate of prioritizedCandidates) {
         if (!candidate.decision.allow) {
           this.queueCounterfactualCandidate(candidate, now.toISOString());
         }
       }
-      this.noteCandidateSignalFlow(candidates, now.toISOString(), {
+      this.noteCandidateSignalFlow(prioritizedCandidates, now.toISOString(), {
         symbolsScanned: symbolsToEvaluate.length,
-        candidatesScored: candidates.length
+        candidatesScored: prioritizedCandidates.length
       });
     }
 
-    candidates.sort((left, right) => (right.decision.opportunityScore ?? right.decision.rankScore) - (left.decision.opportunityScore ?? left.decision.rankScore));
-    const rankedCandidates = this.applyFamilyOpportunityBudget(candidates, { readOnly });
+    prioritizedCandidates.sort((left, right) => (right.decision.opportunityScore ?? right.decision.rankScore) - (left.decision.opportunityScore ?? left.decision.rankScore));
+    const rankedCandidates = this.applyFamilyOpportunityBudget(prioritizedCandidates, { readOnly });
     if (!readOnly) {
       this.runtime.pairHealth = summarizePairHealth({ ...pairHealthSnapshot, leadSymbol: rankedCandidates[0]?.symbol || null, leadScore: rankedCandidates[0]?.pairHealthSummary?.score ?? null });
       this.runtime.qualityQuorum = summarizeQualityQuorum(buildRuntimeQualityQuorum(rankedCandidates, now.toISOString()));
@@ -14985,6 +15653,37 @@ export class TradingBot {
       } : null,
       threshold: num(candidate.decision.threshold, 4),
       quoteAmount: num(candidate.decision.quoteAmount, 2),
+      decisionTruth: buildDecisionTruthView({
+        allow: candidate.decision.allow,
+        blockerReasons: candidate.decision.reasons,
+        approvalReasons: candidate.decision.approvalReasons,
+        entryDiagnostics: candidate.decision.entryDiagnostics,
+        probability: candidate.score.probability,
+        baseThreshold: candidate.decision.baseThreshold,
+        effectiveThreshold: candidate.decision.threshold,
+        thresholdAdjustment: candidate.decision.thresholdAdjustment,
+        edgeToThreshold: candidate.score.probability - candidate.decision.threshold
+      }),
+      executionTruth: buildExecutionTruthView({
+        sizingSummary: {
+          rawQuoteAmount: candidate.decision.rawQuoteAmount,
+          adjustedQuoteAmount: candidate.decision.adjustedQuoteAmount,
+          cappedQuoteAmount: candidate.decision.cappedQuoteAmount,
+          meaningfulSizeFloor: candidate.decision.meaningfulSizeFloor,
+          deservesMeaningfulSize: candidate.decision.deservesMeaningfulSize,
+          invalidQuoteAmount: candidate.decision.invalidQuoteAmount
+        },
+        sizeVerdict: candidate.decision.sizeVerdict,
+        quoteAmount: candidate.decision.quoteAmount
+      }),
+      learningImpact: buildLearningImpactView({
+        learningLane: candidate.decision.learningLane,
+        paperLearningGuidance: summarizePaperLearningGuidance(candidate.decision.paperLearningGuidance || {}),
+        offlineLearningGuidance: summarizeOfflineLearningGuidance(candidate.decision.offlineLearningGuidance || {})
+      }),
+      scannerPriority: buildScannerPriorityView({
+        scannerPriority: candidate.decision.scannerPriority || {}
+      }),
       learningLane: candidate.decision.learningLane || null,
       learningValueScore: num(candidate.decision.learningValueScore || 0, 4),
       paperLearningBudget: candidate.decision.paperLearningBudget || null,
@@ -15067,7 +15766,10 @@ export class TradingBot {
         structureQuality: num(candidate.signalQualitySummary.structureQuality || 0, 4),
         executionViability: num(candidate.signalQualitySummary.executionViability || 0, 4),
         newsCleanliness: num(candidate.signalQualitySummary.newsCleanliness || 0, 4),
-        quorumQuality: num(candidate.signalQualitySummary.quorumQuality || 0, 4)
+        quorumQuality: num(candidate.signalQualitySummary.quorumQuality || 0, 4),
+        structureContext: candidate.signalQualitySummary.structureContext || null,
+        cvdContext: candidate.signalQualitySummary.cvdContext || null,
+        gridContext: candidate.signalQualitySummary.gridContext || null
       } : null,
       confidenceBreakdown: candidate.confidenceBreakdown ? {
         marketConfidence: num(candidate.confidenceBreakdown.marketConfidence || 0, 4),
@@ -15641,6 +16343,10 @@ export class TradingBot {
     if (this.journal.universeRuns.length > 1000) {
       this.journal.universeRuns = this.journal.universeRuns.slice(-1000);
     }
+    if (arr(this.journal.scannerRuns).length > 120) {
+      this.journal.scannerRuns = this.journal.scannerRuns.slice(-120);
+      trimmed = true;
+    }
     if (this.journal.researchRuns.length > 120) {
       this.journal.researchRuns = this.journal.researchRuns.slice(-120);
       trimmed = true;
@@ -15730,6 +16436,13 @@ export class TradingBot {
       const balance = await this.broker.getBalance(this.runtime);
       await this.maybeRunExchangeTruthLoop();
       const analysisAt = nowIso();
+      if (this.config.enableScannerSoftSeed || this.config.enableScannerAutoRefresh !== false) {
+        await this.safeRefreshScannerSnapshot({
+          referenceNow: analysisAt,
+          context: "analysis_refresh",
+          persist: false
+        });
+      }
       this.updateSafetyState({ now: new Date(analysisAt), candidateSummaries: arr(this.runtime.latestDecisions) });
       this.refreshGovernanceViews(analysisAt);
       const candidates = await this.scanCandidatesForCycle(balance);
@@ -15803,6 +16516,94 @@ export class TradingBot {
     return result;
   }
 
+  async runMarketScanner(options = {}) {
+    const symbols = (options.symbols || []).map((symbol) => `${symbol}`.trim().toUpperCase()).filter(Boolean);
+    const persist = options.persist !== false;
+    const appendJournal = options.appendJournal !== false;
+    const recordRunEvent = options.recordEvent !== false;
+    const paperLearningSummary = summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {});
+    const result = await runSharedMarketScanner({
+      client: this.client,
+      config: this.config,
+      logger: this.logger,
+      historyStore: this.historyStore,
+      universeSelector: this.universeSelector,
+      offlineTrainer: this.runtime.offlineTrainer || {},
+      paperLearning: paperLearningSummary,
+      journal: this.journal,
+      symbols
+    });
+    this.runtime.scanner = {
+      lastRunAt: result.generatedAt,
+      latestSummary: result
+    };
+    if (appendJournal) {
+      this.journal.scannerRuns = arr(this.journal.scannerRuns);
+      this.journal.scannerRuns.push(result);
+    }
+    if (recordRunEvent) {
+      this.recordEvent("market_scan_completed", {
+        symbolCount: result.universe?.selectedCount || 0,
+        analysisCount: result.universe?.analysisCount || 0,
+        rankedCount: result.rankedCount || result.topCandidates?.length || 0,
+        topSymbol: result.topCandidates?.[0]?.symbol || null,
+        topScore: result.topCandidates?.[0]?.finalScore || null,
+        requestedSymbolCount: symbols.length
+      });
+    }
+    this.markReportDirty();
+    if (persist) {
+      this.trimJournal();
+      await this.persist();
+    }
+    return result;
+  }
+
+  shouldRefreshScannerSnapshot(referenceNow = nowIso()) {
+    if (this.config.enableScannerAutoRefresh === false) {
+      return false;
+    }
+    const scanner = this.runtime.scanner?.latestSummary || this.journal?.scannerRuns?.at(-1) || null;
+    if (!scanner?.generatedAt) {
+      return true;
+    }
+    const ageMs = new Date(referenceNow).getTime() - new Date(scanner.generatedAt).getTime();
+    const refreshMs = Math.max(5, Number(this.config.scannerAutoRefreshMinutes || 20)) * 60_000;
+    return !Number.isFinite(ageMs) || ageMs > refreshMs;
+  }
+
+  async safeRefreshScannerSnapshot({
+    referenceNow = nowIso(),
+    context = "dashboard_snapshot",
+    force = false,
+    persist = false
+  } = {}) {
+    if (!force && !this.shouldRefreshScannerSnapshot(referenceNow)) {
+      return this.buildScannerView();
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await this.runMarketScanner({
+        persist,
+        appendJournal: persist,
+        recordEvent: persist
+      });
+      this.noteDashboardFeedSuccess("scanner", {
+        at: referenceNow,
+        durationMs: Date.now() - startedAt,
+        context
+      });
+      return summarizeScannerSelection(result);
+    } catch (error) {
+      this.noteDashboardFeedFailure("scanner", error, {
+        at: referenceNow,
+        durationMs: Date.now() - startedAt,
+        context
+      });
+      return this.buildScannerView();
+    }
+  }
+
   async runCycleCore() {
     const cycleAt = nowIso();
     this.logger.info("Starting cycle", { mode: this.config.botMode, watchlist: this.config.watchlist.length });
@@ -15817,6 +16618,13 @@ export class TradingBot {
     const markedPrices = await this.manageOpenPositions();
     this.refreshGovernanceViews(cycleAt);
     const balance = await this.broker.getBalance(this.runtime);
+    if (this.config.enableScannerSoftSeed || this.config.enableScannerAutoRefresh !== false) {
+      await this.safeRefreshScannerSnapshot({
+        referenceNow: cycleAt,
+        context: "runtime_cycle",
+        persist: false
+      });
+    }
     const candidates = await this.scanCandidatesForCycle(balance);
     await this.resolveCounterfactualQueue(cycleAt);
     const executionBlockers = this.config.botMode === "live" ? driftIssues : [];
@@ -16232,6 +17040,35 @@ export class TradingBot {
   buildDashboardDecisionView(decision = {}) {
     const strategy = decision.strategy || decision.strategySummary || {};
     const lowConfidencePressure = summarizeLowConfidencePressure(decision.lowConfidencePressure || {});
+    const decisionTruth = buildDecisionTruthView(decision);
+    const executionTruth = buildExecutionTruthView(decision);
+    const learningImpact = buildLearningImpactView(decision);
+    const scannerPriority = buildScannerPriorityView(decision);
+    const structureContext = decision.structureContext || decision.signalQuality?.structureContext || decision.signalQualitySummary?.structureContext || {
+      bos: decision.marketSnapshot?.market?.bullishBosActive ? "bullish" : decision.marketSnapshot?.market?.bearishBosActive ? "bearish" : "none",
+      bosStrengthScore: num(decision.marketSnapshot?.market?.bosStrengthScore || 0, 4),
+      fvg: decision.marketSnapshot?.market?.bullishFvgActive ? "bullish" : decision.marketSnapshot?.market?.bearishFvgActive ? "bearish" : "none",
+      fvgRespectScore: num(decision.marketSnapshot?.market?.fvgRespectScore || 0, 4),
+      fvgFillProgress: num(decision.marketSnapshot?.market?.fvgFillProgress || 0, 4)
+    };
+    const cvdContext = decision.cvdContext || decision.signalQuality?.cvdContext || decision.signalQualitySummary?.cvdContext || {
+      confirmationScore: num(decision.marketSnapshot?.market?.cvdConfirmationScore || 0, 4),
+      divergenceScore: num(decision.marketSnapshot?.market?.cvdDivergenceScore || 0, 4),
+      trendAlignment: num(decision.marketSnapshot?.market?.cvdTrendAlignment || 0, 4),
+      confidence: num(decision.marketSnapshot?.market?.cvdConfidence || 0, 4)
+    };
+    const liquidationContext = decision.liquidationContext || {
+      liquidationMagnetDirection: decision.marketStructure?.liquidationMagnetDirection || decision.marketStructureSummary?.liquidationMagnetDirection || "neutral",
+      liquidationMagnetStrength: num(decision.marketStructure?.liquidationMagnetStrength || decision.marketStructureSummary?.liquidationMagnetStrength || 0, 4),
+      liquidationTrapRisk: num(decision.marketStructure?.liquidationTrapRisk || decision.marketStructureSummary?.liquidationTrapRisk || 0, 4),
+      squeezeContinuationScore: num(decision.marketStructure?.squeezeContinuationScore || decision.marketStructureSummary?.squeezeContinuationScore || 0, 4)
+    };
+    const gridContext = decision.gridContext || decision.signalQuality?.gridContext || decision.signalQualitySummary?.gridContext || {
+      gridEntrySide: decision.marketSnapshot?.market?.gridEntrySide || "none",
+      rangeWidthPct: num(decision.marketSnapshot?.market?.rangeWidthPct || 0, 4),
+      rangeMeanRevertScore: num(decision.marketSnapshot?.market?.rangeMeanRevertScore || 0, 4),
+      rangeBoundaryRespectScore: num(decision.marketSnapshot?.market?.rangeBoundaryRespectScore || 0, 4)
+    };
     const blockerReasons = [
       ...arr(decision.blockerReasons || decision.reasons || []),
       ...arr(decision.sessionBlockers || decision.session?.blockerReasons || []),
@@ -16261,6 +17098,7 @@ export class TradingBot {
           "capital_governor_blocked"
         ].find((reason) => blockerReasons.includes(reason)) || blockerReasons[0]
       : blockerReasons[0];
+    const effectivePrimaryReason = prioritizedPaperBlocker || decisionTruth.primaryReason || blockerReasons[0] || null;
     const operatorAction = incomingOperatorAction || ((prioritizedPaperBlocker === "exchange_truth_freeze")
       ? "Wacht op reconcile en bevestig exchange truth voordat entries terug mogen."
       : prioritizedPaperBlocker === "reconcile_required"
@@ -16281,7 +17119,7 @@ export class TradingBot {
           ? "Execution is nu te duur. Wacht op betere spread/depth of laat alleen lichtere probes door."
         : prioritizedPaperBlocker === "capital_governor_blocked"
           ? "Capital governor houdt entries nu tegen. Laat paper vooral leren via probe/shadow tot de recovery verbetert."
-          : blockerReasons[0] ? titleize(blockerReasons[0]).replace(/_/g, " ") : null);
+          : effectivePrimaryReason ? titleize(effectivePrimaryReason).replace(/_/g, " ") : null);
     const autoRecovery = incomingAutoRecovery || (blockerReasons.some((item) => ["protection_pending", "protect_only"].includes(item))
       ? "Protective herstel of protect-only monitoring kan dit automatisch herstellen."
       : blockerReasons.includes("paper_calibration_probe")
@@ -16289,6 +17127,31 @@ export class TradingBot {
         : degradedSources.length
           ? `Datasources in herstel: ${degradedSources.join(", ")}.`
           : null);
+    const sizeVerdict = decision.sizeVerdict
+      ? {
+          allowTrade: decision.sizeVerdict.allowTrade !== false,
+          deservesMeaningfulSize: decision.sizeVerdict.deservesMeaningfulSize !== false,
+          meaningfulSizeFloor: num(decision.sizeVerdict.meaningfulSizeFloor || 0, 4),
+          riskClarityScore: num(decision.sizeVerdict.riskClarityScore || 0, 4)
+        }
+      : null;
+    const sizingSummary = decision.sizingSummary
+      ? {
+          rawQuoteAmount: num(decision.sizingSummary.rawQuoteAmount || 0, 4),
+          adjustedQuoteAmount: num(decision.sizingSummary.adjustedQuoteAmount || 0, 4),
+          cappedQuoteAmount: num(decision.sizingSummary.cappedQuoteAmount || 0, 4),
+          meaningfulSizeFloor: num(decision.sizingSummary.meaningfulSizeFloor || 0, 4),
+          deservesMeaningfulSize: decision.sizingSummary.deservesMeaningfulSize !== false,
+          invalidQuoteAmount: Boolean(decision.sizingSummary.invalidQuoteAmount)
+        }
+      : null;
+    const paperThresholdSandbox = decision.paperThresholdSandbox
+      ? {
+          status: decision.paperThresholdSandbox.status || null,
+          thresholdBeforeSandbox: num(decision.paperThresholdSandbox.thresholdBeforeSandbox || 0, 4),
+          thresholdAfterSandbox: num(decision.paperThresholdSandbox.thresholdAfterSandbox || 0, 4)
+        }
+      : null;
     return {
       symbol: decision.symbol,
       summary: decision.summary || null,
@@ -16300,8 +17163,12 @@ export class TradingBot {
       entryAttempted: Boolean(decision.entryAttempted),
       executionBlockers: arr(decision.executionBlockers || []).slice(0, 4),
       probability: num(decision.probability || 0, 4),
-      threshold: num(decision.threshold || 0, 4),
-      edgeToThreshold: num(decision.edgeToThreshold ?? ((decision.probability || 0) - (decision.threshold || 0)), 4),
+      baseThreshold: num(decisionTruth.baseThreshold || decision.baseThreshold || decision.threshold || 0, 4),
+      threshold: num(decisionTruth.effectiveThreshold || decision.threshold || 0, 4),
+      effectiveThreshold: num(decisionTruth.effectiveThreshold || decision.threshold || 0, 4),
+      thresholdAdjustment: num(decisionTruth.thresholdAdjustment || decision.thresholdAdjustment || 0, 4),
+      paperThresholdSandbox,
+      edgeToThreshold: num(decisionTruth.thresholdBuffer ?? decision.edgeToThreshold ?? ((decision.probability || 0) - (decision.threshold || 0)), 4),
       opportunityScore: num(decision.opportunityScore || 0, 4),
       executionStyle: decision.executionStyle || decision.executionAttribution?.entryStyle || null,
       freshnessHours: decision.freshnessHours == null ? null : num(decision.freshnessHours, 1),
@@ -16390,8 +17257,15 @@ export class TradingBot {
         structureQuality: num(decision.signalQuality?.structureQuality || decision.signalQualitySummary?.structureQuality || 0, 4),
         executionViability: num(decision.signalQuality?.executionViability || decision.signalQualitySummary?.executionViability || 0, 4),
         newsCleanliness: num(decision.signalQuality?.newsCleanliness || decision.signalQualitySummary?.newsCleanliness || 0, 4),
-        quorumQuality: num(decision.signalQuality?.quorumQuality || decision.signalQualitySummary?.quorumQuality || 0, 4)
+        quorumQuality: num(decision.signalQuality?.quorumQuality || decision.signalQualitySummary?.quorumQuality || 0, 4),
+        structureContext,
+        cvdContext,
+        gridContext
       },
+      structureContext,
+      cvdContext,
+      liquidationContext,
+      gridContext,
       setupQuality: {
         score: num(decision.setupQuality?.score || 0, 4),
         tier: decision.setupQuality?.tier || null,
@@ -16402,6 +17276,12 @@ export class TradingBot {
         executionReadiness: num(decision.setupQuality?.executionReadiness || 0, 4)
       },
       approvalReasons: arr(decision.approvalReasons || []).slice(0, 4),
+      decisionTruth,
+      executionTruth,
+      learningImpact,
+      scannerPriority,
+      sizeVerdict,
+      sizingSummary,
       entryDiagnostics: {
         regime: decision.entryDiagnostics?.regime || null,
         setupFamily: decision.entryDiagnostics?.setupFamily || null,
@@ -16552,6 +17432,8 @@ export class TradingBot {
       exitSource: trade.exitSource || null,
       exitIntelligence: summarizeExitIntelligence(trade.exitIntelligenceSummary || {}),
       review: buildTradeQualityReview(trade),
+      learningAttribution: summarizeLearningAttribution(trade.learningAttribution || {}),
+      onlineAdaptation: trade.onlineAdaptation || null,
       entryRationale: trade.entryRationale || null
     };
   }
@@ -16728,7 +17610,8 @@ export class TradingBot {
   }
 
   buildDecisionExplanationView(decision = {}) {
-    const blockerChain = arr(decision.blockerReasons || []).slice(0, 5);
+    const decisionTruth = buildDecisionTruthView(decision);
+    const blockerChain = arr(decisionTruth.blockerReasonChain || decision.blockerReasons || []).slice(0, 5);
     const explainSteps = [
       {
         label: "Setup",
@@ -16738,7 +17621,7 @@ export class TradingBot {
         label: decision.allow ? "Waarom nu" : "Waarom niet",
         detail: decision.allow
           ? decision.operatorAction || decision.reasons?.[0] || "De setup haalde de huidige gating."
-          : decision.operatorAction || blockerChain[0] || "De setup haalde de gating niet."
+          : decision.operatorAction || decisionTruth.primaryReason || blockerChain[0] || "De setup haalde de gating niet."
       },
       {
         label: "Data & kwaliteit",
@@ -16754,7 +17637,7 @@ export class TradingBot {
       status: decision.allow ? "tradeable" : "blocked",
       headline: decision.allow
         ? `${decision.symbol || "Setup"} is tradebaar binnen ${titleize(decision.marketState?.phase || decision.regime || "huidige regime")}.`
-        : `${decision.symbol || "Setup"} werd geblokkeerd door ${titleize(blockerChain[0] || "onduidelijke gating")}.`,
+        : `${decision.symbol || "Setup"} werd geblokkeerd door ${titleize(decisionTruth.primaryReason || blockerChain[0] || "onduidelijke gating")}.`,
       setup: decision.setupStyle || decision.strategy?.strategyLabel || decision.strategy?.familyLabel || null,
       blockerChain,
       operatorAction: decision.operatorAction || null,
@@ -17351,6 +18234,97 @@ export class TradingBot {
     };
   }
 
+  buildScannerView(summary = this.runtime.scanner?.latestSummary || this.journal?.scannerRuns?.at(-1) || null) {
+    if (!summary) {
+      return null;
+    }
+    return summarizeScannerSelection(summary);
+  }
+
+  buildScannerPriorityIndex(summary = this.runtime.scanner?.latestSummary || this.journal?.scannerRuns?.at(-1) || null) {
+    const scanner = this.buildScannerView(summary);
+    const index = new Map();
+    if (!scanner) {
+      return index;
+    }
+    arr(scanner.topCandidates || []).forEach((item, offset) => {
+      if (!item?.symbol) {
+        return;
+      }
+      index.set(item.symbol, {
+        symbol: item.symbol,
+        rank: offset + 1,
+        finalScore: item.finalScore || 0,
+        recommendedLane: item.recommendedLane || "probe",
+        recommendedAction: item.recommendedAction || "watch",
+        seededByScanner: arr(scanner.softSeedSymbols || []).includes(item.symbol)
+      });
+    });
+    return index;
+  }
+
+  getScannerSoftSeedSymbols(summary = this.runtime.scanner?.latestSummary || this.journal?.scannerRuns?.at(-1) || null) {
+    if (!this.config.enableScannerSoftSeed) {
+      return [];
+    }
+    const scanner = this.buildScannerView(summary);
+    if (!scanner) {
+      return [];
+    }
+    const configuredCount = Math.max(0, Number(this.config.scannerSoftSeedCount || 8));
+    const prioritized = [
+      ...arr(scanner.softSeedSymbols || []),
+      ...arr(scanner.topSafeCandidates || []).map((item) => item.symbol),
+      ...arr(scanner.topProbeCandidates || []).map((item) => item.symbol)
+    ];
+    return [...new Set(prioritized.filter(Boolean))].slice(0, configuredCount);
+  }
+
+  buildScannerPrioritizedWatchlist(baseWatchlist = []) {
+    const watchlist = [...new Set(arr(baseWatchlist).filter(Boolean))];
+    const seedSymbols = this.getScannerSoftSeedSymbols();
+    if (!seedSymbols.length) {
+      return watchlist;
+    }
+    return [...new Set([...seedSymbols, ...watchlist])];
+  }
+
+  applyScannerShortlistPriority(candidates = [], summary = this.runtime.scanner?.latestSummary || this.journal?.scannerRuns?.at(-1) || null) {
+    const scannerPriorityIndex = this.buildScannerPriorityIndex(summary);
+    if (!scannerPriorityIndex.size) {
+      return candidates;
+    }
+    return arr(candidates).map((candidate) => {
+      const scannerEntry = scannerPriorityIndex.get(candidate.symbol) || null;
+      const lane = scannerEntry?.recommendedLane || null;
+      const action = scannerEntry?.recommendedAction || null;
+      const rank = scannerEntry?.rank || null;
+      const priorityApplied = clamp(
+        scannerEntry
+          ? (
+              (lane === "safe" ? 0.024 : lane === "probe" ? 0.016 : 0.006) +
+              (action === "strong_candidate" ? 0.018 : action === "candidate" ? 0.01 : action === "watch" ? 0.004 : 0) +
+              (rank ? Math.max(0, 0.012 - Math.min(rank - 1, 9) * 0.0012) : 0)
+            )
+          : 0,
+        0,
+        0.05
+      );
+      candidate.decision = candidate.decision || {};
+      candidate.decision.scannerPriority = buildScannerPriorityView({
+        scannerPriority: {
+          ...scannerEntry,
+          scannerLane: lane,
+          scannerAction: action,
+          priorityApplied,
+          seededByScanner: Boolean(scannerEntry?.seededByScanner)
+        }
+      });
+      candidate.decision.opportunityScore = safeNumber(candidate.decision.opportunityScore, candidate.decision.rankScore || 0) + priorityApplied;
+      return candidate;
+    });
+  }
+
   buildModelWeightsView() {
     return [...this.model.getWeightView(), ...this.rlPolicy.getWeightView()]
       .sort((left, right) => Math.abs(right.weight) - Math.abs(left.weight))
@@ -17483,6 +18457,7 @@ export class TradingBot {
     const blockerFrictionAudit = summarizeBlockerFrictionAudit(this.buildBlockerFrictionAudit(previewDecisionViews, {
       selfHeal: currentSafety.selfHealState
     }));
+    const onlineAdaptationSummary = summarizeOnlineAdaptation(this.runtime.onlineAdaptation || {});
     return {
       contract: buildContract("doctor", "doctor"),
       mode: sourceTruth.botMode,
@@ -17500,6 +18475,7 @@ export class TradingBot {
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
+      onlineAdaptation: onlineAdaptationSummary,
       offlineTrainer: offlineTrainerSummary,
       marketCondition: marketConditionDigest,
       adaptivePolicy: adaptivePolicyDigest,
@@ -17533,6 +18509,7 @@ export class TradingBot {
         restoredStateInfluence: sourceTruth.restoredStateInfluence
       },
       research: this.buildResearchView(),
+      scanner: this.buildScannerView(),
       explainability: {
         replays: arr(report.recentTrades || []).slice(0, 3).map((trade) => this.buildTradeReplayDigest(this.buildTradeReplayView(trade))),
         replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {})
@@ -17548,6 +18525,7 @@ export class TradingBot {
     const referenceNow = nowIso();
     await this.maybeRunExchangeTruthLoop();
     await this.safeRefreshMarketHistorySnapshot({ referenceNow, context: "dashboard_snapshot" });
+    await this.safeRefreshScannerSnapshot({ referenceNow, context: "dashboard_snapshot", persist: false });
     if (this.shouldRefreshPortfolioSnapshot(referenceNow)) {
       await this.updatePortfolioSnapshot();
     }
@@ -17580,6 +18558,7 @@ export class TradingBot {
     const paperLearningSummary = summarizePaperLearning(this.runtime.ops?.paperLearning || this.runtime.paperLearning || {});
     const adaptationSummary = summarizeAdaptationHealth(this.runtime.adaptation || this.buildAdaptationHealthSnapshot(referenceNow));
     const offlineTrainerSummary = summarizeOfflineTrainer(this.runtime.offlineTrainer || {});
+    const onlineAdaptationSummary = summarizeOnlineAdaptation(this.runtime.onlineAdaptation || {});
     const serviceSummary = summarizeServiceState(this.runtime.service || {}, this.config, referenceNow);
     const currentSafety = this.buildSafetyPreview({ now: new Date(referenceNow), candidateSummaries: fullTopDecisions, report });
     const readinessSummary = this.buildOperationalReadiness(referenceNow, { selfHeal: currentSafety.selfHealState });
@@ -17784,6 +18763,7 @@ export class TradingBot {
         }),
         alertDelivery: summarizeAlertDelivery(this.runtime.ops?.alertDelivery || {}),
         paperLearning: paperLearningSummary,
+        onlineAdaptation: onlineAdaptationSummary,
         lastEntryAttempt: summarizeLastEntryAttempt(this.runtime.lastEntryAttempt || {}),
         adaptation: adaptationSummary,
         marketCondition: marketConditionDigest,
@@ -17811,6 +18791,7 @@ export class TradingBot {
       pairHealth: summarizePairHealth(this.runtime.pairHealth || {}),
       qualityQuorum: summarizeQualityQuorum(this.runtime.qualityQuorum || {}),
       divergence: summarizeDivergenceSummary(this.runtime.divergence || {}),
+      onlineAdaptation: onlineAdaptationSummary,
       offlineTrainer: offlineTrainerSummary,
       marketHistory: marketHistorySummary,
       upcomingEvents: arr(topDecision.calendarEvents || leadPosition?.entryRationale?.calendarEvents || []).slice(0, 4),
@@ -17825,6 +18806,7 @@ export class TradingBot {
       promotionPipeline,
       universe: summarizeUniverseSelection(this.runtime.universe || {}),
       strategyAttribution: summarizeAttributionSnapshot(this.runtime.strategyAttribution || {}),
+      scanner: this.buildScannerView(),
       research: this.buildResearchView(),
       strategyResearch: summarizeStrategyResearch(this.runtime.strategyResearch || {}),
       researchRegistry: summarizeResearchRegistry(this.runtime.researchRegistry || {}),
@@ -17931,9 +18913,11 @@ export class TradingBot {
       exchange: dashboard.exchange,
       marketStructure: dashboard.marketStructure,
       qualityQuorum: dashboard.qualityQuorum,
+      onlineAdaptation: dashboard.onlineAdaptation,
       offlineTrainer: dashboard.offlineTrainer,
       strategyResearch: dashboard.strategyResearch,
       research: dashboard.research,
+      scanner: dashboard.scanner,
       dataRecorder: dashboard.dataRecorder,
       marketHistory: dashboard.marketHistory,
       explainability: dashboard.explainability,
@@ -17955,6 +18939,7 @@ export class TradingBot {
     const referenceNow = nowIso();
     await this.maybeRunExchangeTruthLoop();
     await this.safeRefreshMarketHistorySnapshot({ referenceNow, context: "report" });
+    await this.safeRefreshScannerSnapshot({ referenceNow, context: "report", persist: false });
     if (this.shouldRefreshPortfolioSnapshot(referenceNow)) {
       await this.updatePortfolioSnapshot();
     }

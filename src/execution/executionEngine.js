@@ -20,17 +20,20 @@ function getStrategyProfile(strategySummary = {}) {
     family,
     makerBias:
       family === "mean_reversion" ? 0.12 :
+      family === "range_grid" ? 0.16 :
       family === "breakout" ? -0.08 :
       family === "orderflow" ? -0.02 :
       family === "market_structure" ? -0.04 : 0,
     patienceBias:
       family === "mean_reversion" ? 1.12 :
+      family === "range_grid" ? 1.18 :
       family === "breakout" ? 0.88 :
       family === "orderflow" ? 0.92 :
       family === "trend_following" ? 0.98 : 1,
     trailingBias:
       family === "breakout" ? 1.08 :
       family === "mean_reversion" ? 0.92 :
+      family === "range_grid" ? 0.86 :
       family === "orderflow" ? 0.95 : 1.02
   };
 }

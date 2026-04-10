@@ -259,6 +259,27 @@ export class PaperBroker {
       },
       brokerMode: "paper"
     });
+    const gridContext =
+      decision.gridContext ||
+      entryRationale?.gridContext ||
+      (
+        (strategySummary?.family || decision.strategySummary?.family || entryRationale?.strategy?.family) === "range_grid"
+          ? {
+              gridMode: "bounded_reversion",
+              gridBand: (marketSnapshot.market?.gridEntrySide || "none") === "buy_lower_band" ? "lower" : "upper",
+              gridEntrySide: marketSnapshot.market?.gridEntrySide || "none",
+              rangeMidPrice: (marketSnapshot.market?.donchianUpper && marketSnapshot.market?.donchianLower)
+                ? (marketSnapshot.market.donchianUpper + marketSnapshot.market.donchianLower) / 2
+                : executionPrice,
+              oppositeBandPrice: (marketSnapshot.market?.gridEntrySide || "none") === "buy_lower_band"
+                ? marketSnapshot.market?.donchianUpper || executionPrice * (1 + this.config.takeProfitPct * 0.7)
+                : marketSnapshot.market?.donchianLower || executionPrice * (1 - this.config.stopLossPct * 0.7),
+              gridStepPct: Math.max(0.002, Number(marketSnapshot.market?.rangeWidthPct || 0) / Math.max(1, Number(this.config.maxGridLegs || 3))),
+              gridTakeProfitBands: ["mid", "opposite_band"],
+              gridStopMode: "bos_or_range_break"
+            }
+          : null
+      );
 
     const position = {
       id: crypto.randomUUID(),
@@ -300,7 +321,8 @@ export class PaperBroker {
       executionVenue: "internal",
       learningLane: decision.learningLane || null,
       learningValueScore: Number.isFinite(decision.learningValueScore) ? decision.learningValueScore : null,
-      paperLearningBudget: decision.paperLearningBudget || null
+      paperLearningBudget: decision.paperLearningBudget || null,
+      gridContext
     };
 
     runtime.openPositions.push(position);
@@ -499,6 +521,7 @@ export class PaperBroker {
       learningLane: position.learningLane || null,
       learningValueScore: Number.isFinite(position.learningValueScore) ? position.learningValueScore : null,
       sessionAtEntry: position.sessionAtEntry || null,
+      gridContext: position.gridContext || null,
       paperLearningOutcome: resolvePaperTradeLearningOutcome({
         netPnlPct,
         captureEfficiency,

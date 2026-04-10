@@ -42,6 +42,7 @@ export function buildEntryDiagnosticsSummary({
   threshold,
   candidateApprovalReasons,
   reasons,
+  rankedRejectingFactors = [],
   blockerCategoryCounts,
   reasonSeverityProfile,
   ambiguityScore,
@@ -62,11 +63,11 @@ export function buildEntryDiagnosticsSummary({
     },
     thresholdBuffer: num(score.probability - threshold, 4),
     strongestConfirmingFactors: candidateApprovalReasons.slice(0, 4),
-    strongestRejectingFactors: reasons.slice(0, 4),
+    strongestRejectingFactors: (rankedRejectingFactors.length ? rankedRejectingFactors : reasons).slice(0, 4),
     decision: allow ? "tradeable" : "blocked",
     decisionPrimaryReason: allow
       ? (candidateApprovalReasons[0] || null)
-      : (reasons[0] || null),
+      : ((rankedRejectingFactors[0] || reasons[0]) || null),
     blockerCategoryCounts,
     reasonSeverityProfile,
     ambiguityScore: num(ambiguityScore, 4),
