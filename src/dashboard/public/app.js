@@ -1,184 +1,81 @@
 import { resolveStatusTone as statusTone } from "../../shared/statusTone.js";
 
 const POLL_MS = 15000;
-const SIGNAL_LIMIT = 3;
-const POSITION_LIMIT = 4;
-const TRADE_LIMIT = 6;
-const STORAGE_KEYS = {
-  showAllDecisions: "dashboard.showAllDecisions"
-};
+const DECISION_LIMIT = 6;
+const STORAGE_KEYS = { showAllDecisions: "dashboard.showAllDecisions" };
 
 function createElements(doc) {
-  const query = (selector) => doc?.querySelector?.(selector) || null;
+  const q = (selector) => doc?.querySelector?.(selector) || null;
   return {
-    modeBadge: query("#modeBadge"),
-    runStateBadge: query("#runStateBadge"),
-    healthBadge: query("#healthBadge"),
-    refreshBadge: query("#refreshBadge"),
-    controlHint: query("#controlHint"),
-    operatorSummary: query("#operatorSummary"),
-    startBtn: query("#startBtn"),
-    stopBtn: query("#stopBtn"),
-    paperBtn: query("#paperBtn"),
-    liveBtn: query("#liveBtn"),
-    refreshBtn: query("#refreshBtn"),
-    decisionSearch: query("#decisionSearch"),
-    decisionAllowedOnly: query("#decisionAllowedOnly"),
-    decisionMeta: query("#decisionMeta"),
-    decisionShowMoreBtn: query("#decisionShowMoreBtn"),
-    decisionsList: query("#decisionsList"),
-    positionsList: query("#positionsList"),
-    learningList: query("#learningList"),
-    opsSummary: query("#opsSummary"),
-    opsList: query("#opsList"),
-    missedTradesList: query("#missedTradesList"),
-    tradesBody: query("#tradesBody"),
-    diagnosticsList: query("#diagnosticsList"),
-    explainabilityList: query("#explainabilityList"),
-    promotionList: query("#promotionList"),
-    signalsSection: query("#signalsSection"),
-    positionsSection: query("#positionsSection"),
-    learningSection: query("#learningSection"),
-    missedTradesSection: query("#missedTradesSection"),
-    riskSection: query("#riskSection"),
-    historySection: query("#historySection"),
-    diagnosticsSection: query("#diagnosticsSection"),
-    explainabilitySection: query("#explainabilitySection"),
-    promotionSection: query("#promotionSection"),
-    signalsToggleBtn: query("#signalsToggleBtn"),
-    positionsToggleBtn: query("#positionsToggleBtn"),
-    learningToggleBtn: query("#learningToggleBtn"),
-    missedTradesToggleBtn: query("#missedTradesToggleBtn"),
-    riskToggleBtn: query("#riskToggleBtn"),
-    historyToggleBtn: query("#historyToggleBtn"),
-    diagnosticsToggleBtn: query("#diagnosticsToggleBtn"),
-    explainabilityToggleBtn: query("#explainabilityToggleBtn"),
-    promotionToggleBtn: query("#promotionToggleBtn")
+    modeBadge: q("#modeBadge"),
+    runStateBadge: q("#runStateBadge"),
+    healthBadge: q("#healthBadge"),
+    refreshBadge: q("#refreshBadge"),
+    controlHint: q("#controlHint"),
+    operatorSummary: q("#operatorSummary"),
+    startBtn: q("#startBtn"),
+    stopBtn: q("#stopBtn"),
+    paperBtn: q("#paperBtn"),
+    liveBtn: q("#liveBtn"),
+    refreshBtn: q("#refreshBtn"),
+    decisionSearch: q("#decisionSearch"),
+    decisionAllowedOnly: q("#decisionAllowedOnly"),
+    decisionMeta: q("#decisionMeta"),
+    decisionShowMoreBtn: q("#decisionShowMoreBtn"),
+    overviewCards: q("#overviewCards"),
+    attentionList: q("#attentionList"),
+    actionList: q("#actionList"),
+    focusList: q("#focusList"),
+    positionsList: q("#positionsList"),
+    recentTradesList: q("#recentTradesList"),
+    opportunityList: q("#opportunityList"),
+    healthList: q("#healthList"),
+    learningList: q("#learningList"),
+    diagnosticsList: q("#diagnosticsList"),
+    explainabilityList: q("#explainabilityList"),
+    promotionList: q("#promotionList")
   };
 }
 
 let activeDocument = typeof document !== "undefined" ? document : null;
 let elements = createElements(activeDocument);
-
 let latestSnapshot = null;
 let busy = false;
-let pollTimer = null;
 let requestEpoch = 0;
+let latestAppliedEpoch = 0;
 let searchQuery = "";
 let allowedOnly = false;
 let showAllDecisions = readStoredBoolean(STORAGE_KEYS.showAllDecisions, false);
 let lastSnapshotReceivedAt = null;
-let latestAppliedEpoch = 0;
 const renderFallbackSections = new Set();
-const panelState = {
-  signals: true,
-  positions: true,
-  learning: true,
-  missedTrades: true,
-  risk: true,
-  history: true,
-  diagnostics: true,
-  explainability: true,
-  promotion: true
-};
-
-function makeActionButton({ action, kind = "", id, label, tone = "" }) {
-  return makeNode("button", {
-    className: ["tag", tone].filter(Boolean).join(" "),
-    text: label,
-    attrs: {
-      "data-policy-action": action,
-      "data-transition-id": id,
-      "data-transition-kind": kind || null
-    }
-  });
-}
-
-function makeDiagnosticsActionButton({ action, target = "", label, tone = "" }) {
-  return makeNode("button", {
-    className: ["tag", tone].filter(Boolean).join(" "),
-    text: label,
-    attrs: {
-      "data-diagnostics-action": action,
-      "data-diagnostics-target": target || null
-    }
-  });
-}
-
-function makePromotionActionButton({ action, symbol = "", label, tone = "" }) {
-  return makeNode("button", {
-    className: ["tag", tone].filter(Boolean).join(" "),
-    text: label,
-    attrs: {
-      "data-promotion-action": action,
-      "data-promotion-symbol": symbol || null
-    }
-  });
-}
-
-function makePromotionScopeButton({ action, scope = "", label, tone = "" }) {
-  return makeNode("button", {
-    className: ["tag", tone].filter(Boolean).join(" "),
-    text: label,
-    attrs: {
-      "data-promotion-scope-action": action,
-      "data-promotion-scope": scope || null
-    }
-  });
-}
-
-function makeProbationDecisionButton({ action, key = "", label, tone = "" }) {
-  return makeNode("button", {
-    className: ["tag", tone].filter(Boolean).join(" "),
-    text: label,
-    attrs: {
-      "data-probation-decision": action,
-      "data-probation-key": key || null
-    }
-  });
-}
 
 function makeNode(tag, { className = "", text = "", attrs = {} } = {}) {
   if (!activeDocument?.createElement) {
     throw new Error("dashboard_document_unavailable");
   }
   const node = activeDocument.createElement(tag);
-  if (className) {
-    node.className = className;
-  }
-  if (text) {
-    node.textContent = text;
-  }
+  if (className) node.className = className;
+  if (text) node.textContent = text;
   for (const [name, value] of Object.entries(attrs)) {
-    if (value == null || value === "") {
-      continue;
-    }
-    const attrName = `${name}`.trim();
-    const lowerName = attrName.toLowerCase();
-    const attrValue = `${value}`;
-    if (!attrName || lowerName.startsWith("on") || ["innerhtml", "outerhtml", "srcdoc"].includes(lowerName)) {
-      continue;
-    }
-    if ((lowerName === "href" || lowerName === "src") && /^\s*javascript:/i.test(attrValue)) {
-      continue;
-    }
-    node.setAttribute(attrName, attrValue);
+    if (value == null || value === "") continue;
+    const key = `${name}`.trim();
+    const lower = key.toLowerCase();
+    if (!key || lower.startsWith("on")) continue;
+    node.setAttribute(key, `${value}`);
   }
   return node;
 }
 
-function setStyleProperty(node, name, value) {
-  if (!node?.style || typeof node.style.setProperty !== "function") {
-    return;
+function replaceChildren(element, children = []) {
+  if (element) {
+    element.replaceChildren(...children.filter(Boolean));
   }
-  node.style.setProperty(name, value);
 }
 
-function replaceChildren(element, children = []) {
-  if (!element) {
-    return;
+function setStyleProperty(node, name, value) {
+  if (node?.style?.setProperty) {
+    node.style.setProperty(name, value);
   }
-  element.replaceChildren(...children.filter(Boolean));
 }
 
 function makeTag(text, className = "tag") {
@@ -191,192 +88,57 @@ function makeTagList(items = []) {
   return list;
 }
 
+function makeEmptyState(text) {
+  return makeNode("div", { className: "empty", text });
+}
+
+function makeCard({ title, detail, tone = "neutral", body = null, metrics = [] }, className = "stack-card") {
+  const node = makeNode("article", { className: `${className} ${tone}`.trim() });
+  if (title) node.append(makeNode("h3", { text: title }));
+  if (detail) node.append(makeNode("p", { text: detail }));
+  if (body) node.append(body);
+  if (metrics.length) node.append(makeTagList(metrics));
+  return node;
+}
+
+function makeMetricCard({ label, value, detail, tone = "neutral" }) {
+  const node = makeNode("article", { className: `overview-card ${tone}`.trim() });
+  node.append(
+    makeNode("h3", { text: label }),
+    makeNode("div", { className: "overview-value", text: value || "-" }),
+    makeNode("p", { text: detail || "-" })
+  );
+  return node;
+}
+
+function makeMetricRow(items = []) {
+  const row = makeNode("div", { className: "metric-row" });
+  for (const item of items.filter(Boolean)) {
+    const metric = makeNode("div", { className: "metric" });
+    metric.append(
+      makeNode("span", { className: "metric-label", text: item.label || "-" }),
+      makeNode("strong", { text: item.value || "-" })
+    );
+    if (item.detail) {
+      metric.append(makeNode("span", { className: "metric-foot", text: item.detail }));
+    }
+    row.append(metric);
+  }
+  return row;
+}
+
 function compactJoin(parts = [], separator = " · ") {
   return parts.filter(Boolean).join(separator);
 }
 
 function clamp(value, min = 0, max = 1) {
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return min;
-  }
-  return Math.min(max, Math.max(min, numeric));
-}
-
-function makeEmptyState(text, tag = "div") {
-  return makeNode(tag, { className: "empty", text });
-}
-
-function makeMetricStat(label, value, tone = "") {
-  const stat = makeNode("div", { className: "stat" });
-  stat.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("strong", { className: tone, text: value })
-  );
-  return stat;
-}
-
-function makeSignalMiniChart(decision) {
-  const threshold = Math.max(Number(decision.threshold) || 0, 0.0001);
-  const probability = clamp(decision.probability || 0);
-  const confidence = clamp(decision.confidenceBreakdown?.overallConfidence || 0);
-  const edgeRatio = clamp((decision.probability || 0) / threshold);
-  const setupBias = clamp(decision.allow ? 0.88 : probability * 0.82 + confidence * 0.18);
-  const bars = [probability * 0.72, confidence * 0.58, edgeRatio * 0.9, setupBias, edgeRatio * 0.62, probability * 0.9];
-  const chart = makeNode("div", { className: "signal-mini-chart" });
-  chart.append(...bars.map((value, index) => {
-    const bar = makeNode("span", { className: "signal-mini-bar" });
-    setStyleProperty(bar, "--bar-height", `${Math.round(clamp(value, 0.12, 1) * 100)}%`);
-    setStyleProperty(bar, "--bar-delay", `${index * 24}ms`);
-    return bar;
-  }));
-  return chart;
-}
-
-function makePositionGauge(position) {
-  const pnlPct = Number(position.unrealizedPnlPct) || 0;
-  const normalized = clamp((pnlPct + 0.05) / 0.1);
-  const gauge = makeNode("div", {
-    className: `position-gauge ${pnlPct >= 0 ? "positive" : "negative"}`
-  });
-  setStyleProperty(gauge, "--gauge-fill", `${Math.round(normalized * 100)}%`);
-  gauge.append(
-    makeNode("span", { className: "position-gauge-value", text: formatSignedPct(pnlPct, 1) }),
-    makeNode("span", { className: "position-gauge-label", text: "Open P/L" })
-  );
-  return gauge;
-}
-
-function makeCardHeader({ eyebrow = "", title = "-", pillText = "", pillClassName = "" } = {}) {
-  const header = makeNode("div", { className: "card-header" });
-  const left = makeNode("div");
-  if (eyebrow) {
-    left.append(makeNode("p", { className: "eyebrow", text: eyebrow }));
-  }
-  left.append(makeNode("h3", { text: title }));
-  header.append(left);
-  if (pillText) {
-    header.append(makeNode("span", { className: pillClassName || "pill", text: pillText }));
-  }
-  return header;
-}
-
-function makeReasonRows(rows = []) {
-  const container = makeNode("div", { className: "decision-reasons" });
-  container.append(...rows.map(([label, text]) => {
-    const row = makeNode("div", { className: "reason-row" });
-    row.append(
-      makeNode("strong", { text: label }),
-      makeNode("span", { className: "reason-copy", text })
-    );
-    return row;
-  }));
-  return container;
-}
-
-function makeSectionHead(label, foot) {
-  const head = makeNode("div", { className: "learning-section-head" });
-  head.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("span", { className: "metric-foot", text: foot })
-  );
-  return head;
-}
-
-function makeKeyValueCard({ className = "risk-card", label, value, foot, valueClassName = "" } = {}) {
-  const card = makeNode("article", { className });
-  card.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("strong", { className: ["metric-value", valueClassName].filter(Boolean).join(" "), text: value }),
-    makeNode("span", { className: "metric-foot", text: foot })
-  );
-  return card;
-}
-
-function makeEventRow({ title, detail, tone = "" } = {}) {
-  const row = makeNode("article", { className: ["event-row", tone].filter(Boolean).join(" ") });
-  row.append(
-    makeNode("strong", { text: title }),
-    makeNode("span", { className: "meta", text: truncate(detail, 120) })
-  );
-  return row;
-}
-
-function showDashboardRenderIssue(section, error) {
-  const message = `${section}: ${error?.message || "Onbekende renderfout"}`;
-  console.error("Dashboard render failed", { section, error: error?.message || error });
-  if (elements.controlHint) {
-    elements.controlHint.textContent = `Render issue: ${truncate(message, 160)}`;
-  }
-  if (elements.operatorSummary) {
-    const staleIssues = elements.operatorSummary.querySelectorAll?.("[data-render-issue='1']") || [];
-    staleIssues.forEach((item) => item.remove());
-    const pill = makeNode("span", { className: "hero-pill negative" });
-    pill.setAttribute("data-render-issue", "1");
-    pill.append(
-      makeNode("strong", { text: "Dashboard render" }),
-      makeNode("span", { text: truncate(message, 140) })
-    );
-    elements.operatorSummary.append(pill);
-  }
-}
-
-function syncRenderHealthBanner() {
-  if (!elements.operatorSummary) {
-    return;
-  }
-  const existing = elements.operatorSummary.querySelector?.("[data-render-health='1']");
-  if (!renderFallbackSections.size) {
-    existing?.remove?.();
-    return;
-  }
-  const label = `Render fallback actief: ${[...renderFallbackSections].join(", ")}`;
-  if (existing) {
-    const text = existing.querySelector?.("span");
-    if (text) {
-      text.textContent = label;
-    }
-    return;
-  }
-  const pill = makeNode("span", { className: "hero-pill negative" });
-  pill.setAttribute("data-render-health", "1");
-  pill.append(
-    makeNode("strong", { text: "UI health" }),
-    makeNode("span", { text: label })
-  );
-  elements.operatorSummary.append(pill);
-}
-
-function safeRenderSection(section, renderFn) {
-  try {
-    renderFn();
-    renderFallbackSections.delete(section);
-    return null;
-  } catch (error) {
-    renderFallbackSections.add(section);
-    showDashboardRenderIssue(section, error);
-    if (section === "learning" && elements.learningList) {
-      replaceChildren(elements.learningList, [
-        makeLearningEmptyCard(
-          "Learning en tuning",
-          `Learning renderde niet volledig: ${truncate(error?.message || "onbekende fout", 160)}`
-        )
-      ]);
-    }
-    return {
-      section,
-      message: error?.message || "Onbekende renderfout"
-    };
-  }
+  return Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : min;
 }
 
 function readStoredBoolean(key, fallback = false) {
   try {
-    const raw = window.localStorage.getItem(key);
-    if (raw == null) {
-      return fallback;
-    }
-    return raw === "true";
+    return typeof localStorage === "undefined" ? fallback : localStorage.getItem(key) === "1";
   } catch {
     return fallback;
   }
@@ -384,2728 +146,757 @@ function readStoredBoolean(key, fallback = false) {
 
 function writeStoredBoolean(key, value) {
   try {
-    window.localStorage.setItem(key, value ? "true" : "false");
-  } catch {
-    // ignore storage failures
-  }
-}
-
-function number(value, digits = 2) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric.toFixed(digits) : "0";
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(key, value ? "1" : "0");
+    }
+  } catch {}
 }
 
 function formatNumber(value, digits = 2) {
-  return number(value, digits);
+  return Number.isFinite(Number(value))
+    ? new Intl.NumberFormat("nl-NL", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(value))
+    : "-";
 }
 
 function formatMoney(value) {
-  const numeric = Number(value);
-  return new Intl.NumberFormat("nl-BE", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2
-  }).format(Number.isFinite(numeric) ? numeric : 0);
+  return Number.isFinite(Number(value))
+    ? new Intl.NumberFormat("nl-NL", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: Math.abs(Number(value)) >= 100 ? 0 : 2,
+        maximumFractionDigits: Math.abs(Number(value)) >= 100 ? 0 : 2
+      }).format(Number(value))
+    : "$0";
 }
 
 function formatPct(value, digits = 1) {
-  const numeric = Number(value);
-  return `${(Number.isFinite(numeric) ? numeric * 100 : 0).toFixed(digits)}%`;
+  return Number.isFinite(Number(value)) ? `${formatNumber(Number(value) * 100, digits)}%` : "-";
 }
 
 function formatSignedPct(value, digits = 1) {
+  if (!Number.isFinite(Number(value))) return "-";
   const numeric = Number(value);
-  const safe = Number.isFinite(numeric) ? numeric : 0;
-  const prefix = safe > 0 ? "+" : "";
-  return `${prefix}${(safe * 100).toFixed(digits)}%`;
+  return `${numeric >= 0 ? "+" : ""}${formatNumber(numeric * 100, digits)}%`;
 }
 
 function formatDate(value) {
-  if (!value) {
-    return "-";
-  }
-  return new Intl.DateTimeFormat("nl-BE", {
-    dateStyle: "short",
-    timeStyle: "short"
-  }).format(new Date(value));
-}
-
-function toneClass(value) {
-  const numeric = Number(value);
-  if (numeric > 0) {
-    return "positive";
-  }
-  if (numeric < 0) {
-    return "negative";
-  }
-  return "neutral";
-}
-
-function externalFeedHeadline(snapshot) {
-  const external = snapshot?.dashboard?.sourceReliability?.externalFeeds || {};
-  if ((external.providerCount || 0) === 0) {
-    return {
-      value: "Geen",
-      foot: "Geen externe feed issues",
-      tone: "neutral"
-    };
-  }
-  const lead = (external.providers || [])[0] || null;
-  if ((external.coolingDownCount || 0) > 0) {
-    return {
-      value: `${external.coolingDownCount} cooldown`,
-      foot: lead ? `${titleize(lead.group)} · ${titleize(lead.provider)}` : "Feed cooldown actief",
-      tone: "negative"
-    };
-  }
-  if ((external.degradedCount || 0) > 0) {
-    return {
-      value: `${external.degradedCount} degraded`,
-      foot: lead ? `${titleize(lead.group)} · ${titleize(lead.provider)}` : "Feed quality verlaagd",
-      tone: "neutral"
-    };
-  }
-  return {
-    value: titleize("healthy"),
-    foot: `Avg ${formatPct(external.averageScore || 0, 0)}`,
-    tone: "positive"
-  };
-}
-
-function buildMissedTradeMetricTags(analysis = {}, { compact = false } = {}) {
-  const suffix = compact ? " cases" : " vergelijkbare cases";
-  return [
-    analysis.badVetoRate != null ? makeTag(`Te streng ${formatPct(analysis.badVetoRate, 0)}`, "tag negative") : null,
-    analysis.goodVetoRate != null
-      ? makeTag(`Terecht ${formatPct(analysis.goodVetoRate, 0)}`, `tag ${analysis.goodVetoRate >= (analysis.badVetoRate || 0) ? "positive" : ""}`.trim())
-      : null,
-    analysis.averageMissedMovePct != null ? makeTag(`Gemiste move ${formatPct(analysis.averageMissedMovePct, 1)}`) : null,
-    analysis.recentBadVetoCount ? makeTag(`${analysis.recentBadVetoCount} te streng recent`, "tag negative") : null,
-    analysis.recentGoodVetoCount ? makeTag(`${analysis.recentGoodVetoCount} terecht recent`, "tag positive") : null,
-    analysis.recentLateVetoCount ? makeTag(`${analysis.recentLateVetoCount} timing-case recent`) : null,
-    analysis.recentTimingIssueCount ? makeTag(`${analysis.recentTimingIssueCount} timing issue recent`) : null,
-    analysis.dominantOutcomeLabel ? makeTag(`Patroon ${titleize(analysis.dominantOutcomeLabel)}`) : null,
-    analysis.recentMatches ? makeTag(`${analysis.recentMatches}${suffix}`) : null
-  ].filter(Boolean);
-}
-
-function shadowOutcomeTone(outcome) {
-  if (["bad_veto", "near_miss_winner", "missed_breakout", "bad_countertrend_veto", "quality_trap"].includes(outcome)) {
-    return "negative";
-  }
-  if (["good_veto", "near_miss_loser", "fakeout_avoided", "small_winner"].includes(outcome)) {
-    return "positive";
-  }
-  return "neutral";
-}
-
-function shadowOutcomeText(review = {}) {
-  if (review.bestBranch?.outcome === "pending_review" || !review.resolvedAt) {
-    return "Review loopt nog";
-  }
-  if (review.outcome === "bad_veto") {
-    return "Blokkade te streng";
-  }
-  if (review.outcome === "near_miss_winner") {
-    return "Near-miss winnaar";
-  }
-  if (review.outcome === "missed_breakout") {
-    return "Mogelijke gemiste breakout";
-  }
-  if (review.outcome === "bad_countertrend_veto") {
-    return "Mogelijk te strenge trend-veto";
-  }
-  if (review.outcome === "good_veto") {
-    return "Blokkade terecht";
-  }
-  if (review.outcome === "near_miss_loser" || review.outcome === "fakeout_avoided") {
-    return "Fakeout vermeden";
-  }
-  if (review.outcome === "right_direction_wrong_timing") {
-    return "Richting goed, timing zwak";
-  }
-  if (review.outcome === "quality_trap") {
-    return "Quality trap";
-  }
-  if (review.outcome === "late_veto") {
-    return "Te laat op gang";
-  }
-  return titleize(review.outcome || "observe");
-}
-
-function makeLearningEmptyCard(label, note) {
-  const article = makeNode("article", { className: "learning-review-card" });
-  article.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("p", { className: "learning-note", text: note })
-  );
-  return article;
-}
-
-function resolveLearningTopScope(paperLearning = {}) {
-  return (
-    paperLearning.primaryScope ||
-    paperLearning.scopeReadiness?.[0] ||
-    (paperLearning.activeLearning?.focusScopes?.[0]
-      ? {
-          ...paperLearning.activeLearning.focusScopes[0],
-          status: paperLearning.activeLearning?.status || "observe",
-          source: "active_learning"
-        }
-      : null) ||
-    (paperLearning.experimentScopes?.[0]
-      ? {
-          id: paperLearning.experimentScopes[0].id,
-          status: paperLearning.experimentScopes[0].status || "observe",
-          score: paperLearning.experimentScopes[0].score || 0,
-          source: paperLearning.experimentScopes[0].source || "experiment"
-        }
-      : null)
-  );
-}
-
-function buildLearningDigest(snapshot) {
-  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
-  const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
-  const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
-  const rawModelProbabilityAudit = snapshot?.dashboard?.ops?.rawModelProbabilityAudit || learningInsights.rawModelProbability || {};
-  const blockerFrictionAudit = snapshot?.dashboard?.ops?.blockerFrictionAudit || learningInsights.blockerFriction || {};
-  const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
-  const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
-  const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
-  const exitPolicy = snapshot?.dashboard?.ops?.exitPolicy || {};
-  const promotionByCondition = snapshot?.dashboard?.ops?.promotionByCondition || {};
-  const opportunityRanking = snapshot?.dashboard?.ops?.opportunityRanking || {};
-  const missedTradeDigest = learningInsights.missedTrades || {};
-  const exitDigest = learningInsights.exits || {};
-  const adaptation = snapshot?.dashboard?.ai?.adaptation || snapshot?.dashboard?.ops?.adaptation || {};
-  const report = snapshot?.dashboard?.report || {};
-  const blockedSetupLifecycle = report.blockedSetupLifecycle || {};
-  const strategyAllocation = adaptation.strategyAllocation || snapshot?.dashboard?.ai?.strategyAllocation || {};
-  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
-  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
-  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
-  const inputHealth = paperLearning.inputHealth || {};
-  const topScope = resolveLearningTopScope(paperLearning);
-  const topBlocker = paperLearning.topBlockers?.[0];
-  const shadowCaseSummary = paperLearning.shadowCaseSummary || {};
-  const topOutcome = paperLearning.recentOutcomes?.[0];
-  const blockedByCategoryTrend = blockedSetupLifecycle.blockedByCategoryTrend || {};
-  const topBlockedCategory = (blockedByCategoryTrend.topLast7d || [])[0] || null;
-  const blockedCategoryText = topBlockedCategory?.id
-    ? `${titleize(topBlockedCategory.id)} leidt in geblokkeerde setups (${topBlockedCategory.count} in 7d).`
-    : "Nog geen duidelijke blocker-categorietrend uit report-data.";
-  const latestTrade = latestTradeSummary(snapshot);
-  const learningStatus = titleize(paperLearning.readinessStatus || paperLearning.status || "warmup");
-  const learningScore = formatPct(paperLearning.readinessScore || 0, 1);
-  const laneText = `${paperLearning.safeCount || 0} safe · ${paperLearning.probeCount || 0} probe · ${paperLearning.shadowCount || 0} shadow`;
-  const topBlockerText = titleize(topBlocker?.id || "geen dominante blocker");
-  const reviewQueue = (paperLearning.reviewQueue || []).slice(0, 3);
-  const reviewPriorityPlan = reviewQueue
-    .map((item, index) => {
-      const rank = item.rank || index + 1;
-      return `${rank}) ${titleize(item.type || "review")} · ${titleize(item.id || "case")}`;
-    })
-    .join(" | ");
-  const benchmarkLead = paperLearning.challengerScorecards?.[0] || paperLearning.challengerPolicy || null;
-  const policyCandidates = (paperLearning.policyTransitions?.candidates || []).slice(0, 2);
-  const activeOverrides = (paperLearning.operatorActions?.activeOverrides || []).slice(0, 3);
-  const operatorHistory = (paperLearning.operatorActions?.history || []).slice(0, 3);
-  const operatorGuardrails = (paperLearning.operatorGuardrails?.blockedBy || []).slice(0, 3);
-  const reviewText = reviewQueue[0]?.note ||
-    (shadowCaseSummary.topSuspiciousBlocker
-      ? `${titleize(shadowCaseSummary.topSuspiciousBlocker)} lijkt te streng in shadow-cases; zet deze blocker bovenaan de reviewqueue.`
-      :
-    (paperLearning.reviewPacks?.repeatedBadVetoPattern
-      ? `Herhaald bad-veto patroon: ${paperLearning.reviewPacks.repeatedBadVetoPattern}. Zet dit als eerste replay-pack.`
-      :
-    (paperLearning.reviewPacks?.topMissedSetup
-      ? `Review vooral ${paperLearning.reviewPacks.topMissedSetup} als gemiste setup en ${paperLearning.reviewPacks.weakestProbe || "de zwakste probe"} als leergeval.`
-      : "Nog geen automatische review-pack beschikbaar.")));
-  const blockerMeaning = topBlocker?.id
-    ? `Dit remt nu het vaakst: ${titleize(topBlocker.id)}.`
-    : shadowCaseSummary.topSuspiciousBlocker
-      ? `Shadow-cases tonen nu vooral ${titleize(shadowCaseSummary.topSuspiciousBlocker)} als verdachte blocker.`
-    : missedTradeDigest.topOverblockedScope?.id
-      ? `Overblocked scope: ${titleize(missedTradeDigest.topOverblockedScope.id)}.`
-    : "Er is nog geen dominante rem in de huidige learning-data.";
-  const scopeMeaning = topScope?.id
-    ? inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt && topScope.source !== "probe_outcomes"
-      ? `${titleize(topScope.id)} is nu de versere leerscope, omdat probe/live closes stilvallen sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
-      : topScope.source === "shadow_evidence"
-        ? `${titleize(topScope.id)} springt nu vooral uit blocked/shadow-evidence; bevestig dit nog met extra probes.`
-        : `${titleize(topScope.id)} is nu de sterkste leerscope.`
-    : "De bot zit nog in warmup en heeft nog geen sterke paperscope.";
-  const learningInputTag = inputHealth.status === "stalled"
-    ? makeTag(
-        inputHealth.latestClosedLearningAt
-          ? `Leerinput stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}`
-          : "Leerinput stil",
-        "tag negative"
-      )
-    : makeTag("Leerinput vers", "tag positive");
-  const learningInputNote = inputHealth.note || (
-    inputHealth.status === "stalled"
-      ? "Er zijn geen recente probe/live closes; de kaart valt terug op andere learning-evidence."
-      : topScope?.id
-        ? `${titleize(topScope.id)} blijft de sterkste leerscope.`
-        : "De leerlus bouwt nog basisdata op."
-  );
-  const nextStep =
-    (reviewQueue[0]?.note
-      ? `Do this next: ${reviewQueue[0].note}`
-      : null) ||
-    retrainPlan.operatorAction ||
-    (["priority", "watch"].includes(rawModelProbabilityAudit.status) ? rawModelProbabilityAudit.note : null) ||
-    (["priority", "watch"].includes(lowConfidenceAudit.status) ? lowConfidenceAudit.note : null) ||
-    replayPlan.operatorGoal ||
-    paperLearning.probation?.note ||
-    paperLearning.notes?.[0] ||
-    "Nog geen directe leeractie nodig.";
-  const sourceLabel = topScope?.source
-    ? `via ${learningSourceLabel(topScope.source)}`
-    : "in paper readiness";
-  const focusText = inputHealth.status === "stalled" && inputHealth.latestClosedLearningAt
-    ? retrainPlan.selectedScopes?.[0]?.id
-      ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}, maar probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}.`
-      : `Probe/live leerinput staat stil sinds ${formatDate(inputHealth.latestClosedLearningAt)}; de bot leunt nu op ${learningSourceLabel(topScope?.source || "shadow_evidence")}.`
-    : retrainPlan.selectedScopes?.[0]?.id
-      ? `${titleize(retrainPlan.batchType || "scoped retrain")} rond ${titleize(retrainPlan.selectedScopes[0].id)}.`
-      : topScope?.id
-        ? `Leert nu vooral op ${titleize(topScope.id)} ${sourceLabel}.`
-        : replayPlan.nextPackType
-          ? `Replay-focus ligt op ${titleize(replayPlan.nextPackType)}.`
-          : topBlocker?.id || topOutcome?.id
-            ? `Leert nog vooral uit ${titleize(topBlocker?.id || topOutcome?.id || "recente paper cases")}.`
-            : "De bot bouwt nog basisleerdata op in paper mode.";
-  const adaptationInputs = (adaptation.adaptiveInputs?.items || [])
-    .filter((item) => item.enabled)
-    .slice(0, 3)
-    .map((item) => titleize(item.id))
-    .join(", ");
-  const allocationLead =
-    strategyAllocation.topStrategies?.[0] ||
-    strategyAllocation.topFamilies?.[0] ||
-    null;
-  const adaptationFoot = compactJoin([
-    `${adaptation.learningFrames || 0} learning frames`,
-    `${adaptation.calibrationObservations || 0} calibration obs`,
-    adaptation.offlineReadinessScore != null ? `${formatPct(adaptation.offlineReadinessScore || 0, 1)} offline ready` : null,
-    strategyAllocation.tradeCount != null ? `${strategyAllocation.tradeCount || 0} allocator closes` : null
-  ]);
-  const adaptationNote = adaptation.status === "stalled"
-    ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De bot ziet nu te weinig verse closed trades om de online leerlus actief te houden."
-    : adaptation.status === "warmup"
-      ? adaptation.notes?.[1] || adaptation.notes?.[0] || "De online leerlus warmt nog op totdat de eerste leerbare closed trades binnenkomen."
-      : [
-          adaptation.notes?.[0],
-          adaptation.lastLearningTradeAt ? `Laatste leertrade: ${formatDate(adaptation.lastLearningTradeAt)}.` : null,
-          adaptationInputs ? `Actieve adaptieve inputs: ${adaptationInputs}.` : null,
-          allocationLead?.id
-            ? `Allocator bias nu naar ${titleize(allocationLead.id)}${allocationLead.context ? ` binnen ${titleize(allocationLead.context)}` : ""}.`
-            : null
-        ].filter(Boolean).join(" ");
-  const marketConditionText = marketCondition.conditionId
-    ? `${titleize(marketCondition.conditionId)} · ${formatPct(marketCondition.confidence || 0, 1)} · ${titleize(marketCondition.transitionState || "stable")}`
-    : "Nog geen dominante market condition.";
-  const adaptivePolicyText = adaptivePolicy.favoredFamily || adaptivePolicy.favoredStrategy || adaptivePolicy.cooledStrategy
-    ? compactJoin([
-        adaptivePolicy.favoredFamily ? `${titleize(adaptivePolicy.favoredFamily)} favored` : null,
-        adaptivePolicy.favoredStrategy ? `${titleize(adaptivePolicy.favoredStrategy)} voorop` : null,
-        adaptivePolicy.cooledStrategy ? `${titleize(adaptivePolicy.cooledStrategy)} gekoeld` : null
-      ], " · ")
-    : "Adaptive policy bouwt nog confidence op.";
-  const exitPolicyText = exitPolicy.preferredExitStyle
-    ? `${titleize(exitPolicy.preferredExitStyle)} · trail ${formatSignedPct(exitPolicy.trailBias || 0, 0)} · trim ${formatSignedPct(exitPolicy.trimBias || 0, 0)}`
-    : "Nog geen actieve exit bias.";
-  const opportunityText = opportunityRanking.leader?.symbol
-    ? `${opportunityRanking.leader.symbol} leidt met ${formatPct(opportunityRanking.leader.opportunityScore || 0, 1)}`
-    : "Nog geen dominante opportunity leader.";
-  const promotionByConditionText = promotionByCondition.id
-    ? `${titleize(promotionByCondition.action || "observe")} · ${titleize(promotionByCondition.id)}${promotionByCondition.conditionId ? ` · ${titleize(promotionByCondition.conditionId)}` : ""}`
-    : "Nog geen condition-aware policykandidaat.";
-
-  return {
-    paperLearning,
-    learningInsights,
-    missedTradeDigest,
-    exitDigest,
-    adaptation,
-    marketCondition,
-    adaptivePolicy,
-    missedTradeTuning,
-    exitPolicy,
-    promotionByCondition,
-    opportunityRanking,
-    strategyAllocation,
-    offlineTrainer,
-    retrainPlan,
-    replayPlan,
-    inputHealth,
-    topScope,
-    topBlocker,
-    topOutcome,
-    topBlockedCategory,
-    blockedCategoryText,
-    latestTrade,
-    learningStatus,
-    learningScore,
-    laneText,
-    topBlockerText,
-    reviewQueue,
-    benchmarkLead,
-    policyCandidates,
-    activeOverrides,
-    operatorHistory,
-    operatorGuardrails,
-    reviewText,
-    reviewPriorityPlan,
-    blockerMeaning,
-    scopeMeaning,
-    learningInputTag,
-    learningInputNote,
-    nextStep,
-    focusText,
-    adaptationFoot,
-    adaptationNote,
-    marketConditionText,
-    adaptivePolicyText,
-    exitPolicyText,
-    promotionByConditionText,
-    opportunityText
-  };
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime())
+    ? new Intl.DateTimeFormat("nl-NL", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date)
+    : "-";
 }
 
 function titleize(value) {
-  return `${value || "-"}`
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function isReadableSentence(value) {
-  const text = `${value || ""}`.trim();
-  if (!text) {
-    return false;
-  }
-  return text.includes(" ") || /[.:]/.test(text);
-}
-
-function humanizeReason(value, fallback = "-") {
-  const text = `${value || ""}`.trim();
-  if (!text) {
-    return fallback;
-  }
-  return isReadableSentence(text) ? text : titleize(text);
-}
-
-function canonicalDecisionReason(decision) {
-  return (
-    decision.decisionTruth?.primaryReason ||
-    decision.entryDiagnostics?.decisionPrimaryReason ||
-    decision.blockerReasons?.[0] ||
-    decision.reasons?.[0] ||
-    null
-  );
-}
-
-function learningSourceLabel(source) {
-  if (source === "shadow_evidence") {
-    return "shadow-evidence";
-  }
-  if (source === "probe_outcomes") {
-    return "probe outcomes";
-  }
-  if (source === "queued_cases") {
-    return "queued cases";
-  }
-  if (source === "active_learning") {
-    return "active learning";
-  }
-  return titleize(source || "paper_readiness");
-}
-
-function formatDecisionType(decision) {
-  return titleize(
-    decision.setupStyle ||
-    decision.strategy?.familyLabel ||
-    decision.strategy?.strategyLabel ||
-    decision.marketState?.phase ||
-    "setup"
-  );
-}
-
-function whyTradeable(decision) {
-  if (!decision.allow) {
-    return null;
-  }
-  const style = decision.executionStyle ? titleize(decision.executionStyle) : "Standaard entry";
-  const market = decision.marketState?.phase ? titleize(decision.marketState.phase) : titleize(decision.regime || "regime");
-  const qualityTier = decision.setupQuality?.tier ? titleize(decision.setupQuality.tier) : null;
-  const approvalLead = decision.approvalReasons?.[0] ? titleize(decision.approvalReasons[0]) : null;
-  return [formatDecisionType(decision), "in", market, "met", style.toLowerCase(), qualityTier ? `· ${qualityTier} quality` : "", approvalLead ? `· ${approvalLead}` : ""]
-    .join(" ")
-    .replace(/\s+·/g, " ·")
-    .trim() + ".";
-}
-
-function whyBlocked(decision) {
-  return decision.operatorAction || humanizeReason(canonicalDecisionReason(decision), "Geen directe reden");
-}
-
-function actionText(decision) {
-  return decision.autoRecovery || decision.operatorAction || "Geen directe actie nodig.";
-}
-
-function compactOperatorText(value, fallback = "-") {
-  const text = humanizeReason(value, fallback);
-  return truncate(text, 54);
-}
-
-function compactBodyText(value, max = 120, fallback = "") {
-  const text = `${value || fallback || ""}`.trim();
-  return truncate(text, max);
-}
-
-function signalPrimaryReason(decision) {
-  if (decision.allow) {
-    return decision.summary || whyTradeable(decision) || "Setup is tradebaar volgens de huidige checks.";
-  }
-  return whyBlocked(decision);
-}
-
-function signalStatusText(decision) {
-  const executionTruth = decision.executionTruth || {};
-  if (decision.allow) {
-    if (executionTruth.nonExecutable || decision.sizingSummary?.invalidQuoteAmount) {
-      return "Trade toegestaan, maar broker-size is nu niet uitvoerbaar.";
-    }
-    if (executionTruth.tinySize || (decision.sizeVerdict && decision.sizeVerdict.deservesMeaningfulSize === false)) {
-      return "Tradebaar, maar alleen met kleine of probe-size.";
-    }
-    return `Klaar voor ${titleize(decision.executionStyle || "entry")}.`;
-  }
-  const reason = canonicalDecisionReason(decision);
-  return reason
-    ? `Geblokkeerd door ${humanizeReason(reason)}.`
-    : "Nog niet tradebaar.";
-}
-
-function signalSupportText(decision) {
-  const executionTruth = decision.executionTruth || {};
-  const learningImpact = decision.learningImpact || {};
-  if (decision.allow) {
-    if (executionTruth.nonExecutable || decision.sizingSummary?.invalidQuoteAmount) {
-      return "De policy laat de setup toe, maar de uiteindelijke broker-normalisatie maakt de size nu ongeldig.";
-    }
-    if (executionTruth.tinySize || (decision.sizeVerdict && decision.sizeVerdict.deservesMeaningfulSize === false)) {
-      const floor = Number(
-        executionTruth.meaningfulSizeFloor ||
-        decision.sizeVerdict?.meaningfulSizeFloor ||
-        decision.sizingSummary?.meaningfulSizeFloor ||
-        0
-      );
-      return floor > 0
-        ? `Toegestaan als leer- of probe-case; de setup verdient nog geen meaningful size boven ${formatMoney(floor)}.`
-        : "Toegestaan als leer- of probe-case; de setup verdient nog geen meaningful size.";
-    }
-    if (learningImpact.runtimeApplied && learningImpact.runtimeEvidence?.length) {
-      return `Learning past deze setup actief aan via ${learningImpact.runtimeEvidence.map((reason) => titleize(reason)).join(", ")}.`;
-    }
-    if (decision.entryDiagnostics?.strongestConfirmingFactors?.length) {
-      return `Bevestigd door ${decision.entryDiagnostics.strongestConfirmingFactors.map((reason) => titleize(reason)).join(", ")}.`;
-    }
-    return actionText(decision);
-  }
-  const primaryReason = canonicalDecisionReason(decision);
-  const rejectingFactors = decision.decisionTruth?.blockerReasonChain || decision.entryDiagnostics?.strongestRejectingFactors || [];
-  if (primaryReason && rejectingFactors.length) {
-    return `Afgewezen op ${humanizeReason(primaryReason)}; extra druk van ${rejectingFactors.map((reason) => titleize(reason)).join(", ")}.`;
-  }
-  if (decision.entryDiagnostics?.strongestRejectingFactors?.length) {
-    return `Afgewezen door ${decision.entryDiagnostics.strongestRejectingFactors.map((reason) => titleize(reason)).join(", ")}.`;
-  }
-  return decision.autoRecovery || "Wacht op betere marktdata, minder blokkades of een sterkere score.";
-}
-
-function hypotheticalTradeText(decision) {
-  const analysis = decision.missedTradeAnalysis || {};
-  if (analysis.averageMissedMovePct > 0.015) {
-    return `Vergelijkbare blokkades liepen vaak nog ongeveer ${formatPct(analysis.averageMissedMovePct, 1)} door in jouw richting.`;
-  }
-  if (analysis.averageMissedMovePct > 0.005) {
-    return `Vergelijkbare blokkades gaven vaak nog een kleine move van ongeveer ${formatPct(analysis.averageMissedMovePct, 1)}.`;
-  }
-  if ((analysis.goodVetoRate || 0) > (analysis.badVetoRate || 0)) {
-    return "Historisch was blokkeren hier meestal veiliger dan instappen.";
-  }
-  return "Deze setup is leergevoelig: er is nog geen sterke voorkeur tussen blokkeren of instappen.";
+  return `${value || ""}`
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase()) || "-";
 }
 
 function truncate(text, max = 120) {
   const value = `${text || ""}`.trim();
-  if (!value) {
-    return "";
+  return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}...`;
+}
+
+function humanizeReason(value, fallback = "-") {
+  return value ? titleize(value) : fallback;
+}
+
+function decisionPrimaryReason(decision = {}) {
+  if (!decision || typeof decision !== "object") return null;
+  return decision.decisionTruth?.primaryReason || decision.primaryReason || decision.blockerReasons?.[0] || decision.operatorAction || null;
+}
+
+function showDashboardRenderIssue(section, error) {
+  renderFallbackSections.add(section);
+  console.error?.(`dashboard_render_issue:${section}`, error);
+}
+
+function safeRenderSection(section, renderFn) {
+  try {
+    renderFallbackSections.delete(section);
+    renderFn();
+    return null;
+  } catch (error) {
+    showDashboardRenderIssue(section, error);
+    return { section, error };
   }
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+function syncRenderHealthBanner(snapshot) {
+  if (!elements.controlHint) return;
+  if (renderFallbackSections.size) {
+    elements.controlHint.textContent = `Dashboard rendering deels gedegradeerd: ${[...renderFallbackSections].join(", ")}`;
+    return;
+  }
+  const readiness = snapshot?.dashboard?.ops?.readiness || snapshot?.manager?.readiness || {};
+  const deck = buildOperatorDeckFromSnapshot(snapshot);
+  elements.controlHint.textContent = deck.subline || readiness.note || "Overzicht geladen.";
+}
+
+function makeSignalMiniChart(decision = {}) {
+  const threshold = Math.max(Number(decision.threshold) || 0, 0.0001);
+  const probability = clamp(decision.probability || 0);
+  const confidence = clamp(decision.confidenceBreakdown?.overallConfidence || 0);
+  const edgeRatio = clamp((decision.probability || 0) / threshold);
+  const chart = makeNode("div", { className: "signal-mini-chart" });
+  [probability * 0.7, confidence * 0.58, edgeRatio * 0.9, probability * 0.88, confidence * 0.8].forEach((value) => {
+    const bar = makeNode("span", { className: "signal-mini-bar" });
+    setStyleProperty(bar, "--bar-height", `${Math.round(clamp(value, 0.12, 1) * 100)}%`);
+    chart.append(bar);
+  });
+  return chart;
+}
+
+function makePositionGauge(position = {}) {
+  const pnlPct = Number(position.unrealizedPnlPct) || 0;
+  const gauge = makeNode("div", { className: `position-gauge ${pnlPct >= 0 ? "positive" : "negative"}` });
+  setStyleProperty(gauge, "--gauge-fill", `${Math.round(clamp((pnlPct + 0.05) / 0.1) * 100)}%`);
+  gauge.append(
+    makeNode("span", { className: "position-gauge-value", text: formatSignedPct(pnlPct, 1) }),
+    makeNode("span", { className: "position-gauge-label", text: "Open P/L" })
+  );
+  return gauge;
+}
+
+function buildMissedTradeMetricTags(analysis = {}, { compact = false } = {}) {
+  const tags = [];
+  if (Number.isFinite(analysis.badVetoRate)) tags.push(makeTag(`bad_veto ${formatPct(analysis.badVetoRate, compact ? 0 : 1)}`));
+  if (Number.isFinite(analysis.averageMissedMovePct)) tags.push(makeTag(`avg_move ${formatPct(analysis.averageMissedMovePct, compact ? 0 : 1)}`));
+  if (analysis.topOverblockedScope?.id) tags.push(makeTag(`shadow_evidence ${titleize(analysis.topOverblockedScope.id)}`));
+  if ((analysis.totalCounterfactuals || 0) > 0) tags.push(makeTag(`queued_cases ${analysis.totalCounterfactuals}`));
+  if (analysis.topBlocker?.id) tags.push(makeTag(`blocker ${titleize(analysis.topBlocker.id)}`));
+  return tags;
+}
+
+function buildLearningDigest(snapshot) {
+  const dashboard = snapshot?.dashboard || {};
+  const offlineTrainer = dashboard.offlineTrainer || {};
+  const adaptiveLearning = dashboard.adaptiveLearning || {};
+  const onlineAdaptation = dashboard.onlineAdaptation || dashboard.ops?.onlineAdaptation || {};
+  const missedTradeTuning = dashboard.ops?.missedTradeTuning || {};
+  const missedTrades = dashboard.ops?.learningInsights?.missedTrades || {};
+  const thresholdPolicy = offlineTrainer.thresholdPolicy || {};
+  const topRecommendation = thresholdPolicy.topRecommendation || {};
+  const parameterOptimization = adaptiveLearning.parameterOptimization || offlineTrainer.parameterOptimization || {};
+  const tuningStatus = missedTradeTuning.actionClass || topRecommendation.actionClass || topRecommendation.action || "observe";
+  return [
+    {
+      title: "Adaptive learning",
+      detail: compactJoin([
+        titleize(adaptiveLearning.status || "warmup"),
+        adaptiveLearning.note || null,
+        onlineAdaptation.lastApplied?.symbol ? `laatste ${onlineAdaptation.lastApplied.symbol}` : null
+      ]),
+      tone: adaptiveLearning.status === "active" ? "positive" : "neutral"
+    },
+    {
+      title: "Threshold policy",
+      detail: compactJoin([
+        topRecommendation.id ? `${titleize(topRecommendation.id)} ${titleize(tuningStatus)}` : titleize(thresholdPolicy.status || "stable"),
+        topRecommendation.dominantFeedback ? titleize(topRecommendation.dominantFeedback) : null,
+        Number.isFinite(topRecommendation.adjustment) ? `shift ${formatPct(topRecommendation.adjustment || 0, 1)}` : null
+      ]),
+      tone: ["scoped_harden", "tighten"].includes(tuningStatus) ? "negative" : ["scoped_soften", "paper_only"].includes(tuningStatus) ? "positive" : "neutral"
+    },
+    {
+      title: "Missed trades",
+      detail: compactJoin([
+        missedTradeTuning.topBlocker ? titleize(missedTradeTuning.topBlocker) : null,
+        missedTradeTuning.actionClass ? titleize(missedTradeTuning.actionClass) : null,
+        missedTrades.note || missedTradeTuning.dominantFeedback || null
+      ]),
+      tone: missedTrades.status === "priority" ? "negative" : "neutral",
+      metrics: buildMissedTradeMetricTags(missedTrades, { compact: true })
+    },
+    {
+      title: "Optimization",
+      detail: compactJoin([
+        parameterOptimization.topCandidate ? titleize(parameterOptimization.topCandidate) : null,
+        parameterOptimization.livePromotionAllowed === false ? "live blocked" : null,
+        parameterOptimization.note || null
+      ]),
+      tone: "neutral"
+    }
+  ];
+}
+
+function unresolvedAlerts(snapshot) {
+  return (snapshot?.dashboard?.ops?.alerts?.alerts || []).filter((item) => !item.resolvedAt && !item.muted);
+}
+
+function buildOperatorDeckFromSnapshot(snapshot) {
+  const dashboard = snapshot?.dashboard || {};
+  if (dashboard.operatorDeck) return dashboard.operatorDeck;
+  const overview = dashboard.overview || {};
+  const readiness = dashboard.ops?.readiness || snapshot?.manager?.readiness || {};
+  const signalFlow = dashboard.ops?.signalFlow?.tradingFlowHealth || {};
+  const capitalPolicy = dashboard.ops?.capitalPolicy || {};
+  const executionCost = dashboard.report?.executionCostSummary || {};
+  const tradableDecision = (dashboard.topDecisions || []).find((item) => item.allow) || null;
+  const topBlocked = (dashboard.blockedSetups || [])[0] || null;
+  const urgentAlert = unresolvedAlerts(snapshot)[0] || null;
+  const probeOnly = Boolean(capitalPolicy?.governor?.allowProbeEntries && capitalPolicy?.allowEntries === false);
+  const dominantBlocker = signalFlow.dominantBlocker || decisionPrimaryReason(topBlocked) || (readiness.reasons || [])[0] || null;
+  const cards = [
+    {
+      id: "system",
+      label: "System state",
+      value: titleize(readiness.status || "unknown"),
+      detail: compactJoin([titleize(overview.mode || snapshot?.manager?.currentMode || "paper"), overview.lastCycleAt ? formatDate(overview.lastCycleAt) : null]),
+      tone: readiness.status === "ready" ? "positive" : "negative"
+    },
+    {
+      id: "focus",
+      label: "Focus",
+      value: tradableDecision ? `${tradableDecision.symbol} tradebaar` : titleize(readiness.status === "ready" ? "waiting" : readiness.status || "blocked"),
+      detail: tradableDecision?.summary || tradableDecision?.operatorAction || humanizeReason(dominantBlocker, "Wachten op valide setup."),
+      tone: tradableDecision ? "positive" : dominantBlocker ? "negative" : "neutral"
+    },
+    {
+      id: "capital",
+      label: "Capital",
+      value: formatMoney(overview.equity || 0),
+      detail: compactJoin([
+        `Budget ${formatMoney(overview.effectiveBudget?.deployableBudget || 0)}`,
+        (probeOnly || overview.effectiveBudget?.probeEntriesAllowed) && overview.effectiveBudget?.probeBudget > 0
+          ? `Probe budget ${formatMoney(overview.effectiveBudget.probeBudget)}`
+          : null,
+        (probeOnly || overview.effectiveBudget?.probeEntriesAllowed) && overview.sizingGuide?.paperProbeQuote
+          ? `Probe size ${formatMoney(overview.sizingGuide.paperProbeQuote)}`
+          : null,
+        probeOnly || overview.effectiveBudget?.probeEntriesAllowed ? "Probe only" : null,
+        overview.sizingGuide?.effectivePaperMinTradeUsdt ? `Paper floor ${formatMoney(overview.sizingGuide.effectivePaperMinTradeUsdt)}` : null,
+        Number(overview.openExposure || 0) > 0 ? `Exposure ${formatMoney(overview.openExposure || 0)}` : null
+      ]),
+      tone: (overview.effectiveBudget?.deployableBudget || 0) > 0 ? "positive" : "neutral"
+    },
+    {
+      id: "freshness",
+      label: "Data freshness",
+      value: titleize(dashboard.ops?.service?.status || dashboard.marketHistory?.status || "unknown"),
+      detail: dashboard.marketHistory?.note || "Controleer feed freshness en laatste analyse.",
+      tone: dashboard.ops?.service?.status === "degraded" ? "negative" : "positive"
+    }
+  ];
+  return {
+    headline: cards[1].value,
+    subline: cards[1].detail,
+    dominantBlocker,
+    tradeState: {
+      status: tradableDecision ? "can_trade" : dominantBlocker ? "blocked" : "waiting",
+      headline: cards[1].value,
+      detail: cards[1].detail,
+      symbol: tradableDecision?.symbol || null
+    },
+    cards,
+    attention: [
+      urgentAlert ? { title: urgentAlert.title || "Alert", detail: urgentAlert.action || urgentAlert.reason || "-", tone: "negative" } : null,
+      dominantBlocker ? { title: "Dominant blocker", detail: humanizeReason(dominantBlocker), tone: "negative" } : null,
+      executionCost.reconstructedPaperFeeSample
+        ? {
+            title: "Execution-cost sample",
+            detail: executionCost.reconstructedPaperEntryFeeCount > 0
+              ? `Paper entry-fees werden voor ${executionCost.reconstructedPaperEntryFeeCount} trade(s) uit fee-config gereconstrueerd.`
+              : "Een deel van de paper fee-sample werd uit fee-config gereconstrueerd.",
+            tone: "neutral"
+          }
+        : null
+    ].filter(Boolean),
+    actions: dashboard.operatorDiagnostics?.actionItems || [],
+    advanced: {
+      topDecisionCount: (dashboard.topDecisions || []).length,
+      blockedCount: (dashboard.blockedSetups || []).length,
+      positionCount: (dashboard.positions || []).length,
+      recentTradeCount: (dashboard.report?.recentTrades || []).length
+    }
+  };
 }
 
 function buildMutationHeaders() {
-  return {
-    "Content-Type": "application/json",
-    "X-Dashboard-Request": "1"
-  };
+  return { "content-type": "application/json", "x-dashboard-request": "1" };
 }
 
 async function api(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
     method,
-    headers: method === "POST" ? buildMutationHeaders() : undefined,
-    body: method === "POST" ? JSON.stringify(body || {}) : undefined
+    headers: method === "GET" ? undefined : buildMutationHeaders(),
+    body: method === "GET" ? undefined : JSON.stringify(body || {})
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
-  }
+  if (!response.ok) throw new Error(payload?.error || `Request failed (${response.status})`);
   return payload;
 }
 
 function pickSnapshot(payload) {
-  if (payload?.dashboard && payload?.manager) {
-    return payload;
-  }
-  if (payload?.snapshot?.dashboard) {
-    return payload.snapshot;
-  }
-  return {
-    manager: {},
-    dashboard: {}
-  };
+  return payload?.dashboard ? payload : payload?.payload ? payload.payload : payload;
 }
 
-function unresolvedAlerts(snapshot) {
-  return (snapshot?.dashboard?.ops?.alerts?.alerts || []).filter((item) => !item.resolvedAt);
+function toneClass(value) {
+  return ["positive", "negative", "warning", "neutral"].includes(value) ? value : "neutral";
 }
 
-function pendingActions(snapshot) {
-  return snapshot?.dashboard?.safety?.orderLifecycle?.pendingActions || [];
+function summaryPill(label, value, tone = "neutral") {
+  const pill = makeNode("div", { className: `headline-pill ${toneClass(tone)}` });
+  pill.append(makeNode("strong", { text: label }), makeNode("span", { text: value || "-" }));
+  return pill;
 }
 
-function topBlocker(snapshot) {
-  const blocked = snapshot?.dashboard?.blockedSetups?.[0];
-  if (blocked?.operatorAction) {
-    return blocked.operatorAction;
-  }
-  const readinessReason = snapshot?.dashboard?.ops?.readiness?.reasons?.[0];
-  if (readinessReason) {
-    return readinessReason;
-  }
-  const alert = unresolvedAlerts(snapshot).find((item) => !item.acknowledgedAt);
-  if (alert?.id || alert?.type) {
-    return alert.id || alert.type;
-  }
-  const pending = pendingActions(snapshot).find((item) => ["manual_review", "reconcile_required"].includes(item.state));
-  if (pending?.state) {
-    return pending.state;
-  }
-  return blocked?.operatorAction || blocked?.blockerReasons?.[0] || null;
-}
-
-function buildPerformanceSegmentationView(snapshot) {
-  const performanceDiagnosis = snapshot?.dashboard?.report?.performanceDiagnosis || {};
-  const segmentation = performanceDiagnosis.segmentation || {};
-  const baseline = segmentation.baseline || {};
-  const legacy = segmentation.legacy || {};
-  const baselineTrades = baseline.tradeCount || 0;
-  const legacyTrades = legacy.tradeCount || 0;
-  const dominantLossSegment = segmentation.dominantLossSegment || null;
-  const hasClosedSample = baselineTrades > 0 || legacyTrades > 0;
-  const tone = !hasClosedSample
-    ? "neutral"
-    : dominantLossSegment
-      ? "negative"
-      : baselineTrades > 0 && (baseline.realizedPnl || 0) >= 0
-        ? "positive"
-        : "neutral";
-  const value = !hasClosedSample
-    ? "Nog geen gesloten sample"
-    : dominantLossSegment
-      ? `${titleize(dominantLossSegment)} domineert`
-      : titleize(segmentation.coverageStatus || "mixed");
-  const foot = !hasClosedSample
-    ? "Nog geen baseline-versus-legacy vergelijking beschikbaar."
-    : `Baseline ${baselineTrades} · ${formatMoney(baseline.realizedPnl || 0)} | Legacy ${legacyTrades} · ${formatMoney(legacy.realizedPnl || 0)}`;
-  return {
-    tone,
-    value,
-    foot,
-    note: segmentation.note || null,
-    baselineTrades,
-    legacyTrades
-  };
-}
-
-function buildHeroSummary(snapshot) {
-  const manager = snapshot?.manager || {};
-  const dashboard = snapshot?.dashboard || {};
-  const readiness = dashboard.ops?.readiness || {};
-  const leadDecision = dashboard.topDecisions?.[0] || null;
-  const topReason = topBlocker(snapshot);
-  const performanceSegmentation = buildPerformanceSegmentationView(snapshot);
-  const unresolvedCritical = unresolvedAlerts(snapshot).filter((item) => !item.acknowledgedAt && ["critical", "negative"].includes(item.severity));
-  const freezeEntries = Boolean(dashboard.safety?.exchangeTruth?.freezeEntries);
-  const probeOnly = Boolean(dashboard.safety?.orderLifecycle?.probeOnly?.enabled || dashboard.ops?.readiness?.reasons?.includes("probe_only"));
-  const overview = dashboard.overview || {};
-  const effectiveBudget = overview.effectiveBudget || {};
-  const focusText = leadDecision?.allow
-    ? compactOperatorText(leadDecision?.summary || actionText(leadDecision), "Geen directe focus")
-    : compactOperatorText(leadDecision?.operatorAction || topReason, "Geen directe focus");
-  const recoveryText = compactOperatorText(
-    leadDecision?.autoRecovery || (unresolvedCritical.length ? "Na ack of resolve van kritieke alerts" : "Geen automatische recovery actief"),
-    "Geen automatische recovery actief"
-  );
-
-  const subline = leadDecision?.allow
-    ? `${leadDecision.symbol} is momenteel de beste tradebare setup.`
-    : topReason
-      ? `Geen nieuwe trade: ${humanizeReason(topReason)}.`
-      : "Wachten op een valide setup of nieuwe analyse.";
-
-  const pills = [
-    {
-      label: "Equity",
-      value: formatMoney(overview.equity),
-      tone: "neutral"
-    },
-    {
-      label: "Effectief budget",
-      value: (effectiveBudget.deployableBudget || 0) > 0 || !effectiveBudget.constraintLabel
-        ? formatMoney(effectiveBudget.deployableBudget || 0)
-        : `${formatMoney(effectiveBudget.deployableBudget || 0)} · ${effectiveBudget.constraintLabel}`,
-      tone: (effectiveBudget.deployableBudget || 0) > 0 ? "positive" : "neutral"
-    },
-    performanceSegmentation.baselineTrades || performanceSegmentation.legacyTrades
-      ? {
-          label: "PnL split",
-          value: compactOperatorText(performanceSegmentation.foot, "Nog geen gesloten sample"),
-          tone: performanceSegmentation.tone
-        }
-      : null,
-    {
-      label: "Focus",
-      value: focusText,
-      tone: leadDecision?.allow ? "neutral" : topReason ? "negative" : "positive"
-    },
-    leadDecision?.symbol
-      ? {
-          label: "Setup",
-          value: compactJoin([
-            leadDecision.symbol,
-            leadDecision.allow ? "tradebaar" : null
-          ], " · "),
-          tone: leadDecision.allow ? "positive" : "neutral"
-        }
-      : null,
-    recoveryText && recoveryText !== focusText
-      ? {
-          label: "Herstel",
-          value: recoveryText,
-          tone: leadDecision?.autoRecovery ? "positive" : "neutral"
-        }
-      : null,
-    freezeEntries
-      ? {
-          label: "Guardrail",
-          value: "Entries bevroren tot reconcile klaar is.",
-          tone: "negative"
-        }
-      : probeOnly
-        ? {
-            label: "Guardrail",
-            value: "Alleen probes zijn nu toegestaan.",
-            tone: "neutral"
-          }
-        : null
-  ].filter(Boolean);
-
-  return {
-    subline,
-    pills
-  };
+function setBadge(node, text, tone = "neutral") {
+  if (!node) return;
+  node.textContent = text;
+  node.className = `status-chip ${toneClass(tone)}`.trim();
 }
 
 function renderBadges(snapshot) {
-  const mode = snapshot?.manager?.currentMode || snapshot?.dashboard?.overview?.mode || "paper";
-  const runState = snapshot?.manager?.runState || "stopped";
-  const readiness = snapshot?.manager?.readiness?.status || snapshot?.dashboard?.ops?.readiness?.status || "unknown";
-
-  elements.modeBadge.className = `status-chip ${statusTone(mode)}`;
-  elements.runStateBadge.className = `status-chip ${statusTone(runState)}`;
-  elements.healthBadge.className = `status-chip ${statusTone(readiness)}`;
-
-  elements.modeBadge.textContent = titleize(mode);
-  elements.runStateBadge.textContent = titleize(runState);
-  elements.healthBadge.textContent = titleize(readiness);
-  const updatedAt = snapshot?.dashboard?.generatedAt || snapshot?.dashboard?.ops?.lastUpdatedAt || snapshot?.dashboard?.overview?.lastCycleAt || snapshot?.manager?.lastStartAt || null;
-  const receivedLabel = lastSnapshotReceivedAt ? `Refresh ${formatDate(lastSnapshotReceivedAt)}` : "Refresh -";
-  const dataLabel = updatedAt ? `data ${formatDate(updatedAt)}` : "data -";
-  const pingLabel = `${receivedLabel} · ${dataLabel}`;
-  elements.refreshBadge.textContent = pingLabel;
-  elements.refreshBadge.className = `status-chip muted refresh-chip ${statusTone(runState)}`;
+  const manager = snapshot?.manager || {};
+  const readiness = snapshot?.dashboard?.ops?.readiness || manager.readiness || {};
+  setBadge(elements.modeBadge, titleize(snapshot?.dashboard?.overview?.mode || manager.currentMode || "paper"), "neutral");
+  setBadge(elements.runStateBadge, titleize(manager.runState || "idle"), statusTone(manager.runState || "idle"));
+  setBadge(elements.healthBadge, titleize(readiness.status || "unknown"), statusTone(readiness.status || "unknown"));
+  if (elements.refreshBadge) {
+    elements.refreshBadge.textContent = `Laatste update: ${formatDate(lastSnapshotReceivedAt || snapshot?.generatedAt)}`;
+  }
 }
 
 function renderHero(snapshot) {
-  const summary = buildHeroSummary(snapshot);
-  elements.controlHint.textContent = summary.subline;
-  replaceChildren(elements.operatorSummary, summary.pills.map((item) => {
-    const pill = makeNode("span", { className: ["hero-pill", item.tone].filter(Boolean).join(" ") });
-    pill.append(
-      makeNode("strong", { text: item.label }),
-      makeNode("span", { text: truncate(item.value, 72) })
-    );
-    return pill;
-  }));
+  const deck = buildOperatorDeckFromSnapshot(snapshot);
+  const children = [
+    summaryPill("Status", deck.headline, deck.tradeState?.status === "can_trade" ? "positive" : deck.tradeState?.status === "blocked" ? "negative" : "neutral"),
+    summaryPill("Belangrijkste reden", deck.dominantBlocker ? humanizeReason(deck.dominantBlocker) : "Geen kritieke blocker", deck.dominantBlocker ? "negative" : "positive"),
+    summaryPill("Nu doen", deck.actions?.[0]?.title || "Monitoren", deck.actions?.[0]?.detail || deck.subline || "Geen directe operatoractie nodig.", "neutral")
+  ];
+  replaceChildren(elements.operatorSummary, children);
 }
 
-function filterDecisions(snapshot) {
-  const decisions = (snapshot?.dashboard?.topDecisions || []).slice(0, 24);
-  return decisions.filter((item) => {
-    if (allowedOnly && !item.allow) {
-      return false;
-    }
-    if (!searchQuery) {
-      return true;
-    }
-    const haystack = [
-      item.symbol,
-      item.summary,
-      item.strategy?.strategyLabel,
-      item.marketState?.phase,
-      item.marketState?.direction
-    ].join(" ").toLowerCase();
-    return haystack.includes(searchQuery);
-  });
+function renderOverview(snapshot) {
+  const cards = buildOperatorDeckFromSnapshot(snapshot).cards || [];
+  replaceChildren(elements.overviewCards, cards.map((card) => makeMetricCard(card)));
 }
 
-function signalSummary(decision) {
-  if (decision.allow) {
-    return decision.summary || `${decision.symbol} is tradebaar.`;
-  }
-  return decision.operatorAction || decision.blockerReasons?.[0] || decision.summary || "Nog niet tradebaar.";
+function renderAttention(snapshot) {
+  const deck = buildOperatorDeckFromSnapshot(snapshot);
+  const attention = deck.attention?.length ? deck.attention : [{ title: "Geen urgente alerts", detail: "Het systeem draait zonder directe operator-acties.", tone: "positive" }];
+  const actions = deck.actions?.length
+    ? deck.actions.map((item) => ({
+        title: item.title || "Actie",
+        detail: item.detail || item.reason || "-",
+        tone: item.priority === "high" ? "negative" : item.priority === "medium" ? "warning" : "neutral"
+      }))
+    : [{ title: "Geen open operator tasks", detail: "Alleen blijven monitoren.", tone: "positive" }];
+  replaceChildren(elements.attentionList, attention.map((item) => makeCard(item)));
+  replaceChildren(elements.actionList, actions.map((item) => makeCard(item)));
 }
 
-function structureContextText(decision) {
-  const structure = decision.structureContext || decision.signalQuality?.structureContext || {};
-  const bos = structure.bos && structure.bos !== "none"
-    ? `${titleize(structure.bos)} BOS ${formatPct(structure.bosStrengthScore || 0, 0)}`
-    : null;
-  const fvg = structure.fvg && structure.fvg !== "none"
-    ? `${titleize(structure.fvg)} FVG ${formatPct(structure.fvgRespectScore || 0, 0)}`
-    : null;
-  const fill = Number.isFinite(structure.fvgFillProgress)
-    ? `Fill ${formatPct(structure.fvgFillProgress || 0, 0)}`
-    : null;
-  return compactJoin([bos, fvg, fvg ? fill : null], " · ");
-}
-
-function flowContextText(decision) {
-  const cvd = decision.cvdContext || decision.signalQuality?.cvdContext || {};
-  const liquidation = decision.liquidationContext || {};
-  const cvdLine = Number.isFinite(cvd.confirmationScore) || Number.isFinite(cvd.divergenceScore)
-    ? compactJoin([
-        `CVD conf ${formatPct(cvd.confirmationScore || 0, 0)}`,
-        (cvd.divergenceScore || 0) > 0.2 ? `div ${formatPct(cvd.divergenceScore || 0, 0)}` : null
-      ], " · ")
-    : null;
-  const liqLine = liquidation.liquidationMagnetDirection && liquidation.liquidationMagnetDirection !== "neutral"
-    ? compactJoin([
-        `${titleize(liquidation.liquidationMagnetDirection)} magnet`,
-        formatPct(liquidation.liquidationMagnetStrength || 0, 0),
-        (liquidation.liquidationTrapRisk || 0) > 0.24 ? `trap ${formatPct(liquidation.liquidationTrapRisk || 0, 0)}` : null
-      ], " · ")
-    : null;
-  return compactJoin([cvdLine, liqLine], " | ");
-}
-
-function gridContextText(decision) {
-  const grid = decision.gridContext || decision.signalQuality?.gridContext || {};
-  if (!grid.gridEntrySide || grid.gridEntrySide === "none") {
-    return null;
-  }
-  return compactJoin([
-    titleize(grid.gridEntrySide),
-    Number.isFinite(grid.rangeWidthPct) ? `width ${formatPct(grid.rangeWidthPct || 0, 1)}` : null,
-    Number.isFinite(grid.rangeBoundaryRespectScore) ? `respect ${formatPct(grid.rangeBoundaryRespectScore || 0, 0)}` : null
-  ], " · ");
-}
-
-function makeMissedTradeAnalysisNode(decision) {
-  const analysis = decision.missedTradeAnalysis;
-  if (decision.allow || !analysis?.available) {
-    return null;
-  }
-  const details = makeNode("details", { className: "analysis-box" });
-  details.append(makeNode("summary", { text: "Gemiste trade analyse" }));
-  details.append(makeNode("p", { text: analysis.summary || "Nog geen specifieke analyse beschikbaar." }));
-  const metrics = buildMissedTradeMetricTags(analysis);
-  if (metrics.length) {
-    details.append(makeTagList(metrics));
-  }
-  details.append(makeNode("p", {
-    className: "analysis-note",
-    text: analysis.recommendation || "Gebruik dit als extra context bij geblokkeerde setups."
-  }));
-  return details;
-}
-
-function buildSignalCard(decision) {
-  const article = makeNode("article", { className: "signal-card" });
-  setStyleProperty(article, "--signal-prob", `${Math.round(clamp(decision.probability || 0) * 100)}%`);
-  setStyleProperty(article, "--signal-conf", `${Math.round(clamp(decision.confidenceBreakdown?.overallConfidence || 0) * 100)}%`);
-  const summary = makeNode("div", { className: "card-summary" });
-  const header = makeNode("div", { className: "card-header" });
-  const left = makeNode("div");
-  left.append(
-    makeNode("p", { className: "eyebrow", text: formatDecisionType(decision) }),
-    makeNode("h3", { text: decision.symbol || "-" }),
-    makeNode("p", {
-      className: `signal-status ${decision.allow ? "positive" : "negative"}`,
-      text: signalStatusText(decision)
-    })
-  );
-  header.append(
-    left,
-    makeNode("span", {
-      className: `pill ${decision.allow ? "positive" : "negative"}`,
-      text: decision.allow ? "Tradebaar" : "Geblokkeerd"
-    })
-  );
-
-  const miniRow = makeNode("div", { className: "signal-mini-row" });
-  miniRow.append(
-    makeNode("span", { className: "metric-foot", text: `Gate ${formatPct(decision.threshold || 0, 1)}` }),
-    makeSignalMiniChart(decision)
-  );
-
-  const quickGrid = makeNode("div", { className: "quick-grid" });
-  quickGrid.append(
-    makeMetricStat("Prob", formatPct(decision.probability, 0)),
-    makeMetricStat("Conf", formatPct(decision.confidenceBreakdown?.overallConfidence, 0)),
-    makeMetricStat("Risk", titleize(decision.riskPolicy?.capitalPolicy?.status || decision.qualityQuorum?.status || "normal")),
-    makeMetricStat("Quality", decision.setupQuality?.tier ? titleize(decision.setupQuality.tier) : "-")
-  );
-
-  const overview = makeNode("div", { className: "signal-overview" });
-  const tags = [
-    makeTag(titleize(decision.marketState?.phase || decision.regime || "setup")),
-    decision.entryDiagnostics?.marketCondition?.id ? makeTag(titleize(decision.entryDiagnostics.marketCondition.id)) : null,
-    decision.strategy?.strategyLabel ? makeTag(decision.strategy.strategyLabel) : null,
-    decision.executionStyle ? makeTag(titleize(decision.executionStyle)) : null,
-    decision.scannerPriority?.scannerLane ? makeTag(`Scanner ${titleize(decision.scannerPriority.scannerLane)}`) : null,
-    decision.learningImpact?.runtimeApplied ? makeTag("Learning applied", "tag positive") : null,
-    decision.setupQuality?.tier ? makeTag(`${titleize(decision.setupQuality.tier)} quality`, `tag ${statusTone(decision.setupQuality.tier === "elite" ? "ready" : decision.setupQuality.tier === "good" ? "positive" : decision.setupQuality.tier === "watch" ? "watch" : "negative")}`.trim()) : null,
-    decision.dataQuality?.status ? makeTag(titleize(decision.dataQuality.status), `tag ${statusTone(decision.dataQuality.status)}`.trim()) : null
-  ].filter(Boolean);
-  overview.append(...tags);
-
-  const reasons = makeReasonRows([
-    ["Setup", compactBodyText(whyTradeable(decision) || formatDecisionType(decision), 84, formatDecisionType(decision))],
-    ["Focus", compactBodyText(signalPrimaryReason(decision), 120)],
-    ["Gate", compactBodyText(signalSupportText(decision), 112)],
-    ["Flow", compactBodyText(flowContextText(decision) || structureContextText(decision) || gridContextText(decision) || "Geen extra orderflow- of structure-context.", 112)],
-    ["Next", compactBodyText(actionText(decision), 92)]
-  ]);
-
-  summary.append(
-    header,
-    miniRow,
-    quickGrid,
-    overview,
-    reasons
-  );
-  const analysisNode = makeMissedTradeAnalysisNode(decision);
-  if (analysisNode) {
-    summary.append(analysisNode);
-  }
-  article.append(summary);
-  return article;
-}
-
-function renderSignals(snapshot) {
-  const filtered = filterDecisions(snapshot);
-  const total = snapshot?.dashboard?.topDecisions?.length || 0;
-  const visible = showAllDecisions ? filtered : filtered.slice(0, SIGNAL_LIMIT);
-  elements.decisionMeta.textContent = `${visible.length} van ${total} zichtbaar`;
-  elements.decisionShowMoreBtn.textContent = showAllDecisions ? "Toon minder" : "Toon alles";
-  elements.decisionShowMoreBtn.hidden = filtered.length <= SIGNAL_LIMIT;
-  if (!visible.length) {
-    replaceChildren(elements.decisionsList, [makeEmptyState("Geen signalen passen bij de huidige filter.")]);
-    return;
-  }
-  replaceChildren(elements.decisionsList, visible.map((decision) => buildSignalCard(decision)));
+function renderFocus(snapshot) {
+  const dashboard = snapshot?.dashboard || {};
+  const readiness = dashboard.ops?.readiness || snapshot?.manager?.readiness || {};
+  const topDecisions = dashboard.topDecisions || [];
+  const blockedSetups = dashboard.blockedSetups || [];
+  const tradable = topDecisions.find((item) => item.allow);
+  const blocker = blockedSetups[0];
+  const cards = [
+    makeCard({
+      title: "Can it trade now?",
+      detail: tradable ? `${tradable.symbol} staat klaar om te handelen.` : titleize(readiness.status || "waiting"),
+      tone: tradable ? "positive" : readiness.status === "ready" ? "neutral" : "negative",
+      body: makeMetricRow([
+        { label: "Top setup", value: tradable?.symbol || "-", detail: tradable?.strategy?.strategyLabel || tradable?.strategyLabel || "-" },
+        { label: "Threshold", value: formatPct(tradable?.threshold || 0, 1), detail: `Prob ${formatPct(tradable?.probability || 0, 1)}` },
+        { label: "Confidence", value: formatPct(tradable?.confidenceBreakdown?.overallConfidence || 0, 1), detail: tradable?.setupQuality?.tier || "-" }
+      ])
+    }, "focus-card"),
+    makeCard({
+      title: "Dominant blocker",
+      detail: blocker ? humanizeReason(decisionPrimaryReason(blocker)) : "Geen dominante blocker zichtbaar.",
+      tone: blocker ? "negative" : "positive",
+      body: makeMetricRow([
+        { label: "Blocked setups", value: `${blockedSetups.length}`, detail: "laatste snapshot" },
+        { label: "Readiness", value: titleize(readiness.status || "unknown"), detail: compactJoin((readiness.reasons || []).slice(0, 2).map(humanizeReason)) || "-" },
+        { label: "Top blocked", value: blocker?.symbol || "-", detail: blocker?.strategy?.strategyLabel || blocker?.strategyLabel || "-" }
+      ])
+    }, "focus-card")
+  ];
+  replaceChildren(elements.focusList, cards);
 }
 
 function renderPositions(snapshot) {
-  const positions = (snapshot?.dashboard?.positions || []).slice(0, POSITION_LIMIT);
+  const positions = snapshot?.dashboard?.positions || [];
   if (!positions.length) {
-    replaceChildren(elements.positionsList, [makeEmptyState("Er zijn nu geen open posities.")]);
+    replaceChildren(elements.positionsList, [makeEmptyState("Geen open posities.")]);
     return;
   }
-  replaceChildren(elements.positionsList, positions.map((position) => {
-    const article = makeNode("article", { className: "position-card" });
-    const summary = makeNode("div", { className: "card-summary" });
-    const header = makeCardHeader({
-      eyebrow: position.lifecycle?.state || "Positie",
+  replaceChildren(elements.positionsList, positions.slice(0, 4).map((position) => {
+    const body = makeNode("div");
+    body.append(
+      makeMetricRow([
+        { label: "Entry", value: formatMoney(position.entryPrice || 0) },
+        { label: "Now", value: formatMoney(position.currentPrice || 0) },
+        { label: "Size", value: formatMoney(position.quoteAmount || position.notional || 0) }
+      ]),
+      makePositionGauge(position)
+    );
+    return makeCard({
       title: position.symbol || "-",
-      pillText: formatMoney(position.unrealizedPnl),
-      pillClassName: ["pill", toneClass(position.unrealizedPnl)].filter(Boolean).join(" ")
-    });
-    const overviewRow = makeNode("div", { className: "position-overview-row" });
-    const subgrid = makeNode("div", { className: "subgrid" });
-    const stats = [
-      ["Entry", number(position.entryPrice, 4), ""],
-      ["Nu", number(position.currentPrice, 4), ""],
-      ["Rendement", formatSignedPct(position.unrealizedPnlPct), toneClass(position.unrealizedPnlPct)]
-    ];
-    subgrid.append(...stats.map(([label, value, tone]) => makeMetricStat(label, value, tone)));
-    overviewRow.append(makePositionGauge(position), subgrid);
-    const tags = makeNode("div", { className: "tag-list" });
-    const tagNodes = [
-      position.regimeAtEntry ? makeTag(titleize(position.regimeAtEntry)) : null,
-      position.strategyAtEntry ? makeTag(position.strategyAtEntry) : null,
-      position.gridContext?.gridMode ? makeTag(`Grid ${titleize(position.gridContext.gridBand || position.gridContext.gridMode)}`) : null,
-      position.lifecycle?.manualReviewRequired ? makeTag("Manual review", "tag negative") : null,
-      position.lifecycle?.reconcileRequired ? makeTag("Reconcile", "tag negative") : null
-    ].filter(Boolean);
-    tags.append(...tagNodes);
-    summary.append(header, overviewRow, tags);
-    article.append(summary);
-    return article;
+      detail: compactJoin([position.side ? titleize(position.side) : null, position.gridContext?.gridBand ? titleize(position.gridContext.gridBand) : null]),
+      body,
+      tone: Number(position.unrealizedPnl || 0) >= 0 ? "positive" : "negative"
+    }, "position-card");
   }));
 }
 
-function renderMissedTrades(snapshot) {
-  const missedTradeDigest = snapshot?.dashboard?.ops?.learningInsights?.missedTrades || {};
-  const blocked = (snapshot?.dashboard?.blockedSetups || [])
-    .filter((item) => item?.missedTradeAnalysis?.available)
-    .slice(0, 4);
-  if (!blocked.length) {
-    replaceChildren(elements.missedTradesList, [makeEmptyState(
-      missedTradeDigest.note || "Nog geen duidelijke gemiste-trade analyse beschikbaar voor recente blokkades."
-    )]);
+function renderRecentTrades(snapshot) {
+  const trades = snapshot?.dashboard?.report?.recentTrades || [];
+  if (!trades.length) {
+    replaceChildren(elements.recentTradesList, [makeEmptyState("Nog geen recente trades om te tonen.")]);
     return;
   }
-  replaceChildren(elements.missedTradesList, blocked.map((decision) => {
-    const analysis = decision.missedTradeAnalysis || {};
-    const blockerLabel = analysis.blockerId ? titleize(analysis.blockerId) : "Gemengde blokkade";
-    const article = makeNode("article", { className: "signal-card missed-card" });
-    const summary = makeNode("div", { className: "card-summary" });
-    const header = makeCardHeader({
-      eyebrow: "Gemiste setup",
-      title: decision.symbol || "-",
-      pillText: blockerLabel,
-      pillClassName: "pill negative"
-    });
-    const rows = [
-      ["Setup", compactBodyText(formatDecisionType(decision), 64)],
-      ["Move", compactBodyText(hypotheticalTradeText(decision), 110)],
-      ["Les", compactBodyText(analysis.recommendation || "Gebruik shadow/probe en vergelijkbare counterfactuals als leidraad.", 110)]
-    ];
-    const reasons = makeReasonRows(rows);
-    const tags = makeTagList(buildMissedTradeMetricTags(analysis, { compact: true }));
-    summary.append(
-      header,
-      makeNode("p", { className: "card-copy", text: compactBodyText(analysis.summary || "Nog geen specifieke gemiste-trade analyse beschikbaar.", 132) }),
-      reasons,
-      tags
-    );
-    article.append(summary);
-    return article;
-  }));
+  replaceChildren(elements.recentTradesList, trades.slice(0, 5).map((trade) => makeCard({
+    title: trade.symbol || "-",
+    detail: compactJoin([
+      trade.strategyLabel || trade.strategyAtEntry || null,
+      trade.exitReason ? `exit ${titleize(trade.exitReason)}` : null,
+      trade.exitAt ? formatDate(trade.exitAt) : null
+    ]),
+    body: makeMetricRow([
+      { label: "PnL", value: formatMoney(trade.pnlQuote || 0), detail: formatSignedPct(trade.netPnlPct || 0, 1) },
+      { label: "Entry", value: formatMoney(trade.entryPrice || 0) },
+      { label: "Exit", value: formatMoney(trade.exitPrice || 0) }
+    ]),
+    tone: Number(trade.pnlQuote || 0) >= 0 ? "positive" : "negative"
+  }, "trade-card")));
 }
 
-function learningFocusText(snapshot) {
-  return buildLearningDigest(snapshot).focusText;
-}
-
-function latestTradeSummary(snapshot) {
-  const mode = snapshot?.dashboard?.mode || snapshot?.mode || "paper";
-  const trades = snapshot?.dashboard?.report?.recentTrades || [];
-  const trade = trades.find((item) => (item.brokerMode || mode) === mode) || trades[0];
-  if (!trade) {
-    return {
-      title: "Nog geen recente trade",
-      detail: "Zodra een trade sluit, zie je hier direct wat er gebeurde en wat de bot daarvan leert.",
-      lesson: "Nog geen concrete trade-les beschikbaar."
-    };
-  }
-  const pnl = formatMoney(trade.pnlQuote);
-  const pnlPct = formatSignedPct(trade.netPnlPct);
-  const reason = titleize(trade.reason || "trade");
-  return {
-    title: `${trade.symbol || "-"} · ${reason}`,
-    detail: `${pnl} (${pnlPct}) bij exit op ${formatDate(trade.closedAt || trade.exitAt || trade.updatedAt)}.`,
-    lesson: `${trade.symbol || "Deze trade"} sloot via ${reason.toLowerCase()} en telt mee in de leerlus voor exits, timing en execution-kosten.`
-  };
-}
-
-function makeLearningReviewCard({
-  title,
-  outcome,
-  metrics = [],
-  note,
-  foot
-}) {
-  const article = makeNode("article", { className: "learning-review-card" });
-  if (title) {
-    const head = makeNode("div", { className: "learning-review-head" });
-    head.append(
-      makeNode("strong", { text: title }),
-      makeNode("span", { className: `pill ${statusTone(outcome)}`, text: titleize(outcome || "observe") })
-    );
-    article.append(head);
-  }
-  if (metrics.length) {
-    article.append(makeTagList(metrics.map((item) => makeTag(item.text, item.className || "tag"))));
-  }
-  article.append(makeNode("p", { className: "learning-note", text: note }));
-  if (foot) {
-    article.append(makeNode("span", { className: "metric-foot", text: foot }));
-  }
-  return article;
-}
-
-function renderProbeReviewNodes(reviews = []) {
-  if (!reviews.length) {
-    return [makeLearningEmptyCard("Probe review", "Nog geen recente probe-trades om te tonen.")];
-  }
-  return reviews.map((review) => makeLearningReviewCard({
-    title: review.symbol || "Probe",
-    outcome: review.outcome || "observe",
-    metrics: [
-      { text: formatMoney(review.pnlQuote || 0), className: `tag ${toneClass(review.pnlQuote)}`.trim() },
-      { text: formatSignedPct(review.netPnlPct || 0, 1), className: `tag ${toneClass(review.netPnlPct)}`.trim() },
-      { text: titleize(review.reason || review.learningLane || "probe"), className: "tag" }
-    ],
-    note: review.lesson || "Deze probe voedt de paper-leerlus.",
-    foot: `Gesloten ${formatDate(review.closedAt)}`
-  }));
-}
-
-function renderShadowReviewNodes(reviews = []) {
-  if (!reviews.length) {
-    return [makeLearningEmptyCard("Shadow review", "Nog geen recente shadow-cases om te tonen.")];
-  }
-  return reviews.map((review) => {
-    const branchMoveText = Number.isFinite(review.bestBranch?.adjustedMovePct)
-      ? formatPct(review.bestBranch.adjustedMovePct, 1)
-      : "Nog in review";
-    const branchText = review.bestBranch?.id
-      ? review.bestBranch.outcome === "pending_review"
-        ? `${titleize(review.bestBranch.id)} · Review loopt nog`
-        : `${titleize(review.bestBranch.id)} · ${titleize(review.bestBranch.outcome || "observe")} · ${branchMoveText}`
-      : "Nog geen beste alternatieve branch.";
-    const moveText = Number.isFinite(review.realizedMovePct)
-      ? `Gemist ${formatPct(review.realizedMovePct, 1)}`
-      : "Nog in review";
-    return makeLearningReviewCard({
-      title: review.symbol || "Shadow",
-      outcome: review.outcome || "observe",
-      metrics: [
-        { text: moveText, className: "tag" },
-        { text: shadowOutcomeText(review), className: `tag ${shadowOutcomeTone(review.outcome)}`.trim() },
-        { text: titleize(review.blocker || "geen blocker"), className: "tag" }
-      ],
-      note: review.lesson || "Deze shadow-case blijft bruikbaar als vergelijkingsmateriaal.",
-      foot: branchText
-    });
+function buildOpportunityCards(snapshot) {
+  const topDecisions = (snapshot?.dashboard?.topDecisions || []).map((item) => ({ ...item, _kind: "decision" }));
+  const blockedSetups = (snapshot?.dashboard?.blockedSetups || []).map((item) => ({ ...item, _kind: "blocked" }));
+  const combined = [...topDecisions, ...blockedSetups];
+  const filtered = combined.filter((item) => {
+    if (allowedOnly && !item.allow) return false;
+    if (!searchQuery) return true;
+    const haystack = [
+      item.symbol,
+      item.strategy?.strategyLabel,
+      item.strategyLabel,
+      item.strategy?.family,
+      item.marketState?.phase,
+      decisionPrimaryReason(item)
+    ].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(searchQuery);
   });
+  return filtered.slice(0, showAllDecisions ? Math.max(filtered.length, DECISION_LIMIT) : DECISION_LIMIT);
 }
 
-function makeLearningDetailCard(label, title, foot, note) {
-  const article = makeNode("article", { className: "learning-detail" });
-  article.append(
-    makeNode("span", { className: "metric-label", text: label }),
-    makeNode("strong", { text: title }),
-    makeNode("span", { className: "metric-foot", text: foot }),
-    makeNode("p", { className: "learning-note", text: note })
-  );
-  return article;
+function renderOpportunityBoard(snapshot) {
+  const cards = buildOpportunityCards(snapshot);
+  const total = (snapshot?.dashboard?.topDecisions || []).length + (snapshot?.dashboard?.blockedSetups || []).length;
+  if (elements.decisionMeta) {
+    elements.decisionMeta.textContent = `${cards.length}/${total} zichtbaar`;
+  }
+  if (elements.decisionShowMoreBtn) {
+    elements.decisionShowMoreBtn.textContent = showAllDecisions ? "Toon minder" : "Toon meer";
+  }
+  if (!cards.length) {
+    replaceChildren(elements.opportunityList, [makeEmptyState("Geen kansen of blokkades die aan de filter voldoen.")]);
+    return;
+  }
+  replaceChildren(elements.opportunityList, cards.map((decision) => {
+    const tags = [
+      makeTag(decision.allow ? "tradebaar" : "blocked", decision.allow ? "tag positive" : "tag negative"),
+      decision.strategy?.strategyLabel ? makeTag(decision.strategy.strategyLabel) : null,
+      decision.scannerPriority?.scannerLane ? makeTag(`lane ${decision.scannerPriority.scannerLane}`) : null,
+      decision.gridContext?.gridEntrySide ? makeTag(titleize(decision.gridContext.gridEntrySide)) : null
+    ].filter(Boolean);
+    const body = makeNode("div");
+    body.append(
+      makeMetricRow([
+        { label: "Prob", value: formatPct(decision.probability || 0, 1), detail: `Thr ${formatPct(decision.threshold || 0, 1)}` },
+        { label: "Conf", value: formatPct(decision.confidenceBreakdown?.overallConfidence || 0, 1), detail: decision.setupQuality?.tier || "-" },
+        { label: "Reason", value: humanizeReason(decisionPrimaryReason(decision), "-"), detail: decision.marketState?.phase ? titleize(decision.marketState.phase) : "-" }
+      ]),
+      makeSignalMiniChart(decision),
+      makeTagList(tags)
+    );
+    return makeCard({
+      title: decision.symbol || "-",
+      detail: truncate(decision.summary || decision.operatorAction || decision.executionSummary || "Geen extra samenvatting."),
+      body,
+      tone: decision.allow ? "positive" : "negative"
+    }, "signal-card");
+  }));
 }
 
-function makeLearningListItem(label, paragraphs = [], tagLists = []) {
-  const article = makeNode("article", { className: "learning-list-item" });
-  article.append(makeNode("span", { className: "metric-label", text: label }));
-  for (const list of tagLists.filter(Boolean)) {
-    article.append(list);
-  }
-  for (const paragraph of paragraphs.filter(Boolean)) {
-    article.append(makeNode("p", { text: paragraph }));
-  }
-  return article;
+function renderHealth(snapshot) {
+  const dashboard = snapshot?.dashboard || {};
+  const service = dashboard.ops?.service || {};
+  const history = dashboard.marketHistory || {};
+  const sourceReliability = dashboard.sourceReliability?.externalFeeds || {};
+  const items = [
+    { title: "Dashboard feeds", detail: compactJoin([titleize(service.status || "unknown"), service.note || null]), tone: service.status === "degraded" ? "negative" : "positive" },
+    { title: "Market history", detail: compactJoin([titleize(history.status || "unknown"), history.note || null]), tone: history.status === "degraded" ? "negative" : "neutral" },
+    { title: "External feeds", detail: compactJoin([`${sourceReliability.providerCount || 0} providers`, `avg ${formatPct(sourceReliability.averageScore || 0, 0)}`]), tone: Number(sourceReliability.degradedCount || 0) > 0 ? "warning" : "positive" }
+  ];
+  replaceChildren(elements.healthList, items.map((item) => makeCard(item, "detail-card")));
 }
 
 function renderLearning(snapshot) {
-  if (!elements.learningList) {
-    return;
-  }
-
-  const {
-    paperLearning,
-    missedTradeDigest,
-    exitDigest,
-    adaptation,
-    retrainPlan,
-    replayPlan,
-    topScope,
-    topBlocker,
-    topOutcome,
-    topBlockedCategory,
-    blockedCategoryText,
-    learningStatus,
-    learningScore,
-    laneText,
-    topBlockerText,
-    reviewQueue,
-    benchmarkLead,
-    policyCandidates,
-    activeOverrides,
-    operatorHistory,
-    operatorGuardrails,
-    reviewText,
-    reviewPriorityPlan,
-    blockerMeaning,
-    scopeMeaning,
-    learningInputTag,
-    learningInputNote,
-    nextStep,
-    focusText,
-    latestTrade,
-    adaptationFoot,
-    adaptationNote,
-    marketConditionText,
-    adaptivePolicyText,
-    exitPolicyText,
-    promotionByConditionText,
-    opportunityText,
-    missedTradeTuning,
-    promotionByCondition
-  } = buildLearningDigest(snapshot);
-  const learningBoard = makeNode("article", { className: "learning-board" });
-  const hero = makeNode("section", { className: "learning-hero" });
-  const heroTitle = makeNode("div", { className: "learning-title" });
-  const heroLeft = makeNode("div");
-  heroLeft.append(
-    makeNode("p", { className: "eyebrow", text: "Live learning" }),
-    makeNode("h3", { text: `${learningStatus} · ${learningScore}` })
-  );
-  heroTitle.append(
-    heroLeft,
-    makeNode("span", {
-      className: `pill ${statusTone(paperLearning.readinessStatus || paperLearning.status)}`,
-      text: learningStatus
-    })
-  );
-  const stripGrid = makeTagList([
-    makeTag(laneText),
-    makeTag(`Snapshot: ${formatDate(paperLearning.generatedAt)}`),
-    learningInputTag,
-    makeTag(`Top blocker: ${topBlockerText}`)
-  ]);
-  stripGrid.className = "learning-strip-grid";
-  hero.append(
-    heroTitle,
-    makeNode("p", { className: "learning-copy", text: focusText }),
-    stripGrid
-  );
-
-  const summaryGrid = makeNode("section", { className: "learning-summary-grid" });
-  summaryGrid.append(
-    makeLearningDetailCard(
-      "Focus",
-      topScope?.id ? titleize(topScope.id) : "Warmup dataset",
-      topScope?.status
-        ? `${titleize(topScope.status)} · ${formatPct(topScope.readinessScore || topScope.score || 0, 1)} · ${learningSourceLabel(topScope.source || "probe_outcomes")}`
-        : "Nog geen sterke scope zichtbaar.",
-      [scopeMeaning, learningInputNote, `Markt: ${marketConditionText}.`].filter(Boolean).join(" ")
-    ),
-    makeLearningDetailCard("Laatste trade", latestTrade.title, latestTrade.detail, latestTrade.lesson),
-    makeLearningDetailCard(
-      "Model adaptie",
-      titleize(adaptation.status || "warmup"),
-      adaptationFoot || "Nog geen online adaptie zichtbaar.",
-      [adaptationNote, adaptivePolicyText].filter(Boolean).join(" ")
-    ),
-    makeLearningDetailCard(
-      "Blockers en misses",
-      titleize(missedTradeDigest.topBlocker?.id || topOutcome?.id || topBlocker?.id || "warmup"),
-      missedTradeDigest.totalCounterfactuals
-        ? `${missedTradeDigest.totalCounterfactuals} counterfactuals · ${missedTradeDigest.missedWinners || 0} gemiste winnaars`
-        : topOutcome?.count
-          ? `${topOutcome.count} recente cases van dit type.`
-          : topBlocker?.count
-            ? `${topBlocker.count} blokkades sturen nu de leerlus.`
-            : "Nog geen duidelijke blockertrend zichtbaar.",
-      compactJoin([
-        blockerMeaning,
-        blockedCategoryText,
-        missedTradeDigest.note,
-        missedTradeTuning?.blockerSofteningRecommendation
-          ? `${titleize(missedTradeTuning.blockerSofteningRecommendation)} nu als mogelijke tuning.`
-          : null
-      ], " ")
-    ),
-    makeLearningDetailCard(
-      "Exit AI",
-      exitDigest.leadSignal?.symbol
-        ? `${titleize(exitDigest.leadSignal.action || "hold")} · ${exitDigest.leadSignal.symbol}`
-        : titleize(exitDigest.learning?.status || exitDigest.status || "warmup"),
-      exitDigest.openPositionCount
-        ? `${exitDigest.exitCount || 0} exit · ${exitDigest.trimCount || 0} trim · ${exitDigest.trailCount || 0} trail · conf ${formatPct(exitDigest.averageConfidence || 0, 1)}`
-        : exitDigest.learning?.topReason
-          ? `Top patroon: ${titleize(exitDigest.learning.topReason)}`
-          : "Nog geen open exit-focus zichtbaar.",
-      [exitDigest.note || "Exit intelligence warmt nog op.", `Bias: ${exitPolicyText}.`].filter(Boolean).join(" ")
-    ),
-    makeLearningDetailCard(
-      "Volgende stap",
-      titleize(retrainPlan.batchType || replayPlan.nextPackType || "observe"),
-      nextStep,
-      [reviewText, opportunityText, promotionByConditionText].filter(Boolean).join(" ")
-    )
-  );
-
-  const callouts = makeNode("section", { className: "learning-callouts" });
-  const reviewTags = reviewQueue.length
-    ? reviewQueue.map((item, index) => makeTag(
-      `${item.rank || index + 1}. ${titleize(item.type)} · ${item.id}${
-        item.impactBreakdown
-          ? ` (p ${formatPct(item.impactBreakdown.priorityBase || 0, 0)} · t ${formatPct(item.impactBreakdown.typeBoost || 0, 0)} · s ${formatPct(item.impactBreakdown.strictnessBoost || 0, 0)} · r ${formatPct(item.impactBreakdown.repeatBoost || 0, 0)} · a ${formatPct(item.impactBreakdown.activeBoost || 0, 0)})`
-          : ""
-      }`,
-      item.priority === "high" ? "tag negative" : "tag"
-    ))
-    : [makeTag("Geen review queue")];
-  const policyTags = policyCandidates.length
-    ? policyCandidates.map((item) => makeTag(
-      `${titleize(item.action)} · ${titleize(item.id)}`,
-      item.action.includes("retire") ? "tag negative" : item.action.includes("promote") ? "tag positive" : "tag"
-    ))
-    : [makeTag("Geen policy-wijziging klaar")];
-  const overrideTags = activeOverrides.length
-    ? activeOverrides.map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive"))
-    : [makeTag("Geen actieve override")];
-
-  callouts.append(
-    makeLearningListItem("Nu aan het testen", [
-      paperLearning.probation?.note ||
-        (paperLearning.thresholdSandbox?.status
-          ? `${titleize(paperLearning.probation?.status || "sandbox")} actief: de bot test kleine aanpassingen zonder meteen het hoofdbeleid te wijzigen.`
-          : "De bot vergelijkt recente trades, blokkades en shadow-cases om thresholds en filters te verbeteren."),
-      benchmarkLead?.id
-        ? `${titleize(benchmarkLead.id)} presteert nu het sterkst als challenger of benchmark.`
-        : paperLearning.coaching?.whatWorked || "Nog geen sterke benchmark of coachingregel zichtbaar.",
-      reviewPriorityPlan ? `Prioriteitsplan: ${reviewPriorityPlan}.` : null
-    ], [makeTagList(reviewTags)]),
-    makeLearningListItem(
-      "Misses en exits",
-      [
-        missedTradeDigest.tuning?.blocker
-          ? `Counterfactual tuning kijkt nu vooral naar ${titleize(missedTradeDigest.tuning.blocker)} via ${titleize(missedTradeDigest.tuning.action || "observe")}.`
-          : missedTradeDigest.note || "Counterfactual learning heeft nog geen dominante tuningrichting.",
-        missedTradeTuning?.scope?.conditionId
-          ? `Scope: ${titleize(missedTradeTuning.scope.conditionId)}${missedTradeTuning.scope.familyId ? ` · ${titleize(missedTradeTuning.scope.familyId)}` : ""}.`
-          : null,
-        exitDigest.leadSignal?.reason
-          ? `${exitDigest.leadSignal.symbol} wordt nu vooral gestuurd door ${titleize(exitDigest.leadSignal.reason)}.`
-          : exitDigest.learning?.topReason
-            ? `Offline exit learning ziet nu vooral ${titleize(exitDigest.learning.topReason)} terugkomen.`
-            : exitDigest.note || "Exit intelligence heeft nog geen duidelijke focus.",
-        blockedCategoryText
-      ],
-      [makeTagList([
-        makeTag(`${exitDigest.exitCount || 0} exit`),
-        makeTag(`${exitDigest.trimCount || 0} trim`),
-        makeTag(`${exitDigest.trailCount || 0} trail`),
-        makeTag(`${missedTradeDigest.missedWinners || 0} gemist`),
-        topBlockedCategory?.id ? makeTag(`Top 7d blocker: ${titleize(topBlockedCategory.id)}`) : null
-      ].filter(Boolean))]
-    ),
-    makeLearningListItem(
-      "Policy en operatoracties",
-      [
-        paperLearning.policyTransitions?.note ||
-          promotionByCondition.note ||
-          paperLearning.operatorActions?.note ||
-          "Nog geen policy-wijziging of override die operator-ingreep vraagt."
-      ],
-      [
-        makeTagList(policyTags),
-        makeTagList(overrideTags),
-        operatorGuardrails.length ? makeTagList(operatorGuardrails.map((item) => makeTag(titleize(item), "tag negative"))) : null,
-        policyCandidates.length
-          ? makeTagList(policyCandidates.map((item) => item.approved
-            ? makeTag(`Approved · ${titleize(item.id)}`, "tag positive")
-            : [
-                makeActionButton({ action: "approve", kind: item.action, id: item.id, label: `Approve ${titleize(item.id)}` }),
-                makeActionButton({ action: "reject", kind: item.action, id: item.id, label: "Reject", tone: "negative" })
-              ]).flat())
-          : null,
-        activeOverrides.length
-          ? makeTagList(activeOverrides.map((item) => makeActionButton({
-            action: "revert",
-            id: item.id,
-            label: `Revert ${titleize(item.id)}`,
-            tone: "negative"
-          })))
-          : null
-      ]
-    ),
-    makeLearningListItem(
-      "Laatste operatorlog",
-      [operatorHistory[0]?.note || paperLearning.coaching?.nextReview || "Goedgekeurde, afgewezen en teruggedraaide policy-acties verschijnen hier."],
-      [
-        makeTagList(operatorHistory.length
-          ? operatorHistory.map((item) => makeTag(`${titleize(item.status || item.action || "actie")} · ${titleize(item.id)} · ${formatDate(item.at)}`))
-          : [makeTag("Nog geen operator history")])
-      ]
-    )
-  );
-
-  const reviewGrid = makeNode("section", { className: "learning-review-grid" });
-  const probeColumn = makeNode("article", { className: "learning-review-column" });
-  probeColumn.append(
-    makeSectionHead("Probe trades", "Hoe echte paper-probes liepen"),
-    ...renderProbeReviewNodes(paperLearning.recentProbeReviews || [])
-  );
-  const shadowColumn = makeNode("article", { className: "learning-review-column" });
-  shadowColumn.append(
-    makeSectionHead("Shadow cases", "Wat geblokkeerde setups waarschijnlijk deden"),
-    ...renderShadowReviewNodes(paperLearning.recentShadowReviews || [])
-  );
-  reviewGrid.append(probeColumn, shadowColumn);
-
-  learningBoard.append(hero, summaryGrid, callouts, reviewGrid);
-  replaceChildren(elements.learningList, [learningBoard]);
-}
-
-function buildOpsCards(snapshot) {
-  const readiness = snapshot?.dashboard?.ops?.readiness || {};
-  const signalFlow = snapshot?.dashboard?.ops?.signalFlow || {};
-  const tradingFlowHealth = snapshot?.dashboard?.ops?.tradingFlowHealth || signalFlow.tradingFlowHealth || {};
-  const scanner = snapshot?.dashboard?.scanner || {};
-  const alerts = unresolvedAlerts(snapshot);
-  const exchangeTruth = snapshot?.dashboard?.safety?.exchangeTruth || {};
-  const capitalPolicy = snapshot?.dashboard?.ops?.capitalPolicy || {};
-  const effectiveBudget = capitalPolicy.effectiveBudget || snapshot?.dashboard?.overview?.effectiveBudget || {};
-  const sizingGuide = snapshot?.dashboard?.ops?.sizingGuide || snapshot?.dashboard?.overview?.sizingGuide || {};
-  const strategyAllocation = snapshot?.dashboard?.ai?.strategyAllocation || {};
-  const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
-  const primaryDashboardFeed = dashboardFeeds.degradedFeeds?.[0] || dashboardFeeds.feeds?.[0] || null;
-  const contextHealth = snapshot?.dashboard?.ops?.contextHealth || {};
-  const globalMarket = snapshot?.dashboard?.globalMarketContext || {};
-  const sourceOfTruth = snapshot?.dashboard?.sourceOfTruth || {};
-  const openExposureReview = snapshot?.dashboard?.report?.openExposureReview || {};
-  const performanceSegmentation = buildPerformanceSegmentationView(snapshot);
-  const externalFeeds = externalFeedHeadline(snapshot);
-  const lastEntryAttempt = snapshot?.dashboard?.ops?.lastEntryAttempt || {};
-  const entryBottleneck = compactJoin([
-    lastEntryAttempt.blockedReasonDetails?.featurePressureSources?.[0]
-      ? titleize(lastEntryAttempt.blockedReasonDetails.featurePressureSources[0].id)
-      : null,
-    lastEntryAttempt.blockedReasonDetails?.lowConfidenceDrivers?.[0]
-      ? titleize(lastEntryAttempt.blockedReasonDetails.lowConfidenceDrivers[0].id)
-      : null,
-    lastEntryAttempt.blockedReasonDetails?.strategyBlockers?.[0]
-      ? titleize(lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].id)
-      : null
-  ], " | ");
-  const entrySizingFunnel = compactJoin([
-    (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0
-      ? `${lastEntryAttempt.allowedButZeroEffectiveSize}x zero-size`
-      : null,
-    (lastEntryAttempt.allowedButTinyEffectiveSize || 0) > 0
-      ? `${lastEntryAttempt.allowedButTinyEffectiveSize}x tiny-size`
-      : null,
-    lastEntryAttempt.skipReasonCounts?.[0]
-      ? `${titleize(lastEntryAttempt.skipReasonCounts[0].id)} ${lastEntryAttempt.skipReasonCounts[0].count}x`
-      : null
-  ], " | ");
-  const scannerFoot = compactJoin([
-    scanner.rankedCount ? `${scanner.rankedCount} ranked` : null,
-    scanner.universe?.selectedCount ? `${scanner.universe.selectedCount} tradable` : null,
-    scanner.universe?.analysisCount ? `${scanner.universe.analysisCount} analyzed` : null,
-    scanner.deepBookEnrichedCount ? `${scanner.deepBookEnrichedCount} deep books` : null
-  ], " | ");
-  return [
-    {
-      label: "Trading flow",
-      value: titleize(tradingFlowHealth.status || "idle"),
-      foot: `${signalFlow.lastCycle?.allowedSignals || 0} allow · ${signalFlow.lastCycle?.entriesAttempted || 0} attempt · ${signalFlow.lastCycle?.entriesExecuted || 0} exec · ${signalFlow.lastCycle?.entriesPersisted || 0} persist${tradingFlowHealth.dominantBlocker ? ` | ${titleize(tradingFlowHealth.dominantBlocker)}` : ""}`,
-      tone: tradingFlowHealth.status === "active" ? "positive" : tradingFlowHealth.status === "degraded" || tradingFlowHealth.status === "blocked" ? "negative" : "neutral"
-    },
-    {
-      label: "Readiness",
-      value: titleize(readiness.status || "unknown"),
-      foot: readiness.reasons?.[0] ? titleize(readiness.reasons[0]) : "Geen directe blokkade",
-      tone: statusTone(readiness.status)
-    },
-    {
-      label: "Alerts",
-      value: `${alerts.length}`,
-      foot: alerts.find((item) => !item.acknowledgedAt) ? "Ack nodig" : "Onder controle",
-      tone: alerts.find((item) => !item.acknowledgedAt) ? "negative" : "neutral"
-    },
-    {
-      label: "Exposure",
-      value: `${openExposureReview.unreconciledCount || 0}`,
-      foot: (openExposureReview.unreconciledExposure || 0) > 0
-        ? `${formatNumber(openExposureReview.unreconciledExposure || 0, 2)} USD wacht op reconcile`
-        : "Open exposure in sync",
-      tone: (openExposureReview.unreconciledCount || 0) > 0 ? "negative" : "neutral"
-    },
-    {
-      label: "Capital",
-      value: titleize(capitalPolicy.status || "normal"),
-      foot: exchangeTruth.freezeEntries ? "Entries bevroren" : "Entries toegestaan",
-      tone: exchangeTruth.freezeEntries || capitalPolicy.status === "blocked" ? "negative" : "neutral"
-    },
-    {
-      label: "Effectief budget",
-      value: formatMoney(effectiveBudget.deployableBudget || 0),
-      foot: `${formatMoney(effectiveBudget.policyBudget || 0)} policy · ${formatMoney(effectiveBudget.quoteFree || 0)} vrij · x${formatNumber(effectiveBudget.sizeMultiplier || 0, 2)}`,
-      tone: (effectiveBudget.deployableBudget || 0) > 0 ? (effectiveBudget.cashCapped ? "neutral" : "positive") : "negative"
-    },
-    {
-      label: "Per trade target",
-      value: formatMoney(sizingGuide.targetQuote || 0),
-      foot: `${titleize(strategyAllocation.budgetLane || "standard")} x${formatNumber(strategyAllocation.budgetMultiplier || 1, 2)} · Probe ${formatMoney(sizingGuide.paperProbeQuote || 0)} · ${sizingGuide.idealConcurrentPositions || 0} tegelijk`,
-      tone: (sizingGuide.minTradeDominates || false) ? "neutral" : "positive"
-    },
-    {
-      label: "Entry sizing funnel",
-      value: `${lastEntryAttempt.allowedCandidates || 0} allow · ${lastEntryAttempt.skippedCandidates || 0} skip`,
-      foot: entrySizingFunnel || entryBottleneck || "Geen sizing-frictie zichtbaar",
-      tone: (lastEntryAttempt.allowedButZeroEffectiveSize || 0) > 0 ? "negative" : "neutral"
-    },
-    {
-      label: "Scanner",
-      value: scanner.topCandidates?.[0]?.symbol || `${scanner.rankedCount || 0} ranked`,
-      foot: scanner.topCandidates?.[0]
-        ? compactJoin([
-            `Score ${number(scanner.topCandidates[0].finalScore || 0, 2)}`,
-            titleize(scanner.topCandidates[0].recommendedLane || "probe"),
-            scannerFoot
-          ], " | ")
-        : scannerFoot || "Nog geen recente market scan zichtbaar",
-      tone: scanner.topCandidates?.[0]?.recommendedAction === "strong_candidate"
-        ? "positive"
-        : scanner.rankedCount
-          ? "neutral"
-          : "neutral"
-    },
-    {
-      label: "PnL split",
-      value: performanceSegmentation.value,
-      foot: performanceSegmentation.note || performanceSegmentation.foot,
-      tone: performanceSegmentation.tone
-    },
-    {
-      label: "External feeds",
-      value: externalFeeds.value,
-      foot: externalFeeds.foot,
-      tone: externalFeeds.tone
-    },
-    {
-      label: "Dashboard feed",
-      value: titleize(dashboardFeeds.status || "idle"),
-      foot: primaryDashboardFeed
-        ? `${titleize(primaryDashboardFeed.id)} | ${titleize(primaryDashboardFeed.status)}`
-        : "Geen feed issues zichtbaar",
-      tone: ["failed", "degraded"].includes(dashboardFeeds.status || "") ? "negative" : statusTone(dashboardFeeds.status || "idle")
-    },
-    {
-      label: "Context health",
-      value: titleize(contextHealth.overallStatus || "unknown"),
-      foot: `${contextHealth.staleCount || 0} stale · ${contextHealth.unavailableCount || 0} unavailable`,
-      tone: statusTone(contextHealth.overallStatus || "unknown")
-    },
-    {
-      label: "Account source",
-      value: `${titleize(sourceOfTruth.mode || "paper")} · ${sourceOfTruth.tradingSource || "paper:internal"}`,
-      foot: compactJoin([
-        sourceOfTruth.equitySource ? `Equity: ${sourceOfTruth.equitySource}` : null,
-        sourceOfTruth.openExposureSubtracted ? "Open exposure afgetrokken" : "Geen exposure aftrek",
-        sourceOfTruth.restoredStateInfluence ? "Restore invloed: ja" : "Restore invloed: nee"
-      ], " | "),
-      tone: sourceOfTruth.restoredStateInfluence ? "neutral" : "positive"
-    },
-    {
-      label: "Global context",
-      value: titleize(globalMarket.riskRegime || "unknown"),
-      foot: compactJoin([
-        globalMarket.btcDominance == null ? null : `BTC dom ${formatNumber(globalMarket.btcDominance, 1)}%`,
-        globalMarket.marketMomentum ? titleize(globalMarket.marketMomentum) : null,
-        globalMarket.dataQuality ? titleize(globalMarket.dataQuality) : null
-      ], " | "),
-      tone: globalMarket.riskRegime === "defensive" ? "negative" : globalMarket.riskRegime === "risk_on" ? "positive" : "neutral"
-    }
-  ];
-}
-
-function buildOpsEvents(snapshot) {
-  const readiness = snapshot?.dashboard?.ops?.readiness || {};
-  const signalFlow = snapshot?.dashboard?.ops?.signalFlow || {};
-  const tradingFlowHealth = snapshot?.dashboard?.ops?.tradingFlowHealth || signalFlow.tradingFlowHealth || {};
-  const paperLearning = snapshot?.dashboard?.ops?.paperLearning || {};
-  const learningInsights = snapshot?.dashboard?.ops?.learningInsights || {};
-  const lowConfidenceAudit = snapshot?.dashboard?.ops?.lowConfidenceAudit || learningInsights.confidence || {};
-  const rawModelProbabilityAudit = snapshot?.dashboard?.ops?.rawModelProbabilityAudit || learningInsights.rawModelProbability || {};
-  const blockerFrictionAudit = snapshot?.dashboard?.ops?.blockerFrictionAudit || learningInsights.blockerFriction || {};
-  const marketCondition = snapshot?.dashboard?.ops?.marketCondition || {};
-  const adaptivePolicy = snapshot?.dashboard?.ops?.adaptivePolicy || {};
-  const missedTradeTuning = snapshot?.dashboard?.ops?.missedTradeTuning || {};
-  const exitPolicy = snapshot?.dashboard?.ops?.exitPolicy || {};
-  const promotionByCondition = snapshot?.dashboard?.ops?.promotionByCondition || {};
-  const dashboardFeeds = snapshot?.dashboard?.ops?.service?.dashboardFeeds || {};
-  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
-  const retrainPlan = offlineTrainer.retrainExecutionPlan || {};
-  const replayPlan = snapshot?.dashboard?.ops?.replayChaos?.deterministicReplayPlan || {};
-  const externalFeeds = snapshot?.dashboard?.sourceReliability?.externalFeeds || {};
-  const contextHealth = snapshot?.dashboard?.ops?.contextHealth || {};
-  const contextSources = contextHealth.sources || {};
-  const lastEntryAttempt = snapshot?.dashboard?.ops?.lastEntryAttempt || {};
-  const onlineAdaptation = snapshot?.dashboard?.onlineAdaptation || snapshot?.dashboard?.ops?.onlineAdaptation || {};
-  const alerts = unresolvedAlerts(snapshot).slice(0, 2).map((item) => ({
-    title: titleize(item.type || item.severity || "alert"),
-    detail: item.note || item.message || item.reason || "Alert vereist aandacht.",
-    tone: item.acknowledgedAt ? "neutral" : "negative"
-  }));
-  const lifecycle = pendingActions(snapshot).slice(0, 2).map((item) => ({
-    title: titleize(item.state || "pending_action"),
-    detail: item.symbol ? `${item.symbol} · ${item.action || "actie open"}` : item.action || "Pending action actief.",
-    tone: ["manual_review", "reconcile_required"].includes(item.state) ? "negative" : "neutral"
-  }));
-  const runbooks = (snapshot?.dashboard?.ops?.runbooks || []).slice(0, 2).map((item) => ({
-    title: titleize(item.title || item.type || "runbook"),
-    detail: item.summary || item.action || item.description || "Operatoradvies beschikbaar.",
-    tone: "neutral"
-  }));
-
-  const items = [
-    tradingFlowHealth.headline
-      ? {
-          title: "Trading flow",
-          detail: compactJoin([
-            tradingFlowHealth.headline,
-            `${signalFlow.lastCycle?.generatedSignals || 0} gen`,
-            `${signalFlow.lastCycle?.allowedSignals || 0} allow`,
-            `${signalFlow.lastCycle?.entriesAttempted || 0} attempt`,
-            `${signalFlow.lastCycle?.entriesExecuted || 0} exec`,
-            `${signalFlow.lastCycle?.entriesPersisted || 0} persist`
-          ], " · "),
-          tone: tradingFlowHealth.status === "active" ? "positive" : tradingFlowHealth.status === "degraded" || tradingFlowHealth.status === "blocked" ? "negative" : "neutral"
-        }
-      : null,
-    readiness.reasons?.[0]
-      ? {
-          title: "Belangrijkste blokkade",
-          detail: titleize(readiness.reasons[0]),
-          tone: statusTone(readiness.status)
-        }
-      : null,
-    dashboardFeeds.degradedFeeds?.[0]
-      ? {
-          title: "Dashboard feed",
-          detail: `${titleize(dashboardFeeds.degradedFeeds[0].id)} | ${titleize(dashboardFeeds.degradedFeeds[0].status)}${dashboardFeeds.degradedFeeds[0].lastError ? ` | ${dashboardFeeds.degradedFeeds[0].lastError}` : ""}`,
-          tone: dashboardFeeds.degradedFeeds[0].status === "failed" ? "negative" : "neutral"
-        }
-      : null,
-    contextHealth.overallStatus && contextHealth.overallStatus !== "healthy"
-      ? {
-          title: "Context health",
-          detail: compactJoin([
-            `${contextHealth.staleCount || 0} stale`,
-            `${contextHealth.unavailableCount || 0} unavailable`,
-            contextSources.globalMarket?.status ? `global ${titleize(contextSources.globalMarket.status)}` : null
-          ], " · "),
-          tone: contextHealth.overallStatus === "degraded" ? "negative" : "neutral"
-        }
-      : null,
-    ...alerts,
-    retrainPlan.operatorAction
-      ? {
-          title: "Retrain batch",
-          detail: retrainPlan.operatorAction,
-          tone: retrainPlan.gatingReasons?.length ? "negative" : "neutral"
-        }
-      : null,
-    offlineTrainer.runtimeApplied?.thresholdPolicy?.id || offlineTrainer.runtimeApplied?.topScope?.id
-      ? {
-          title: "Learning applied",
-          detail: compactJoin([
-            offlineTrainer.runtimeApplied?.thresholdPolicy?.id
-              ? `${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.id)} ${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.action || "observe")}`
-              : null,
-            offlineTrainer.runtimeApplied?.topScope?.id
-              ? `${titleize(offlineTrainer.runtimeApplied.topScope.type || "scope")} ${titleize(offlineTrainer.runtimeApplied.topScope.id)}`
-              : null
-          ], " Â· "),
-          tone: "positive"
-        }
-      : null,
-    onlineAdaptation.lastApplied?.symbol
-      ? {
-          title: "Online adaptatie",
-          detail: compactJoin([
-            onlineAdaptation.lastApplied.symbol,
-            titleize(onlineAdaptation.lastApplied.category || "uncertain"),
-            `${onlineAdaptation.lastApplied.runtimeApplied?.length || 0} runtime`
-          ], " | "),
-          tone: onlineAdaptation.lastApplied.runtimeApplied?.length ? "positive" : "neutral"
-        }
-      : null,
-    replayPlan.operatorGoal
-      ? {
-          title: "Replay prioriteit",
-          detail: replayPlan.operatorGoal,
-          tone: replayPlan.status === "priority" ? "negative" : "neutral"
-        }
-      : null,
-    learningInsights.missedTrades?.status === "priority"
-      ? {
-          title: "Missed-trade learning",
-          detail: learningInsights.missedTrades.note || "Counterfactual learning ziet nu een te strenge blocker.",
-          tone: "negative"
-        }
-      : null,
-    ["priority", "watch"].includes(lowConfidenceAudit.status)
-      ? {
-          title: "Confidence bottleneck",
-          detail: lowConfidenceAudit.note || "High-quality near misses vallen nu te vaak onder de confidence-threshold.",
-          tone: lowConfidenceAudit.status === "priority" ? "negative" : "neutral"
-        }
-      : null,
-    ["priority", "watch"].includes(rawModelProbabilityAudit.status)
-      ? {
-          title: "Raw model edge",
-          detail: rawModelProbabilityAudit.note || "De champion-score blijft in een paar families/regimes structureel te laag.",
-          tone: rawModelProbabilityAudit.status === "priority" ? "negative" : "neutral"
-        }
-      : null,
-    ["priority", "watch"].includes(blockerFrictionAudit.status)
-      ? {
-          title: "Guardrail friction",
-          detail: blockerFrictionAudit.note || "Cooldowns, timeframe-conflicten of self-heal drukken nu de flow.",
-          tone: blockerFrictionAudit.status === "priority" ? "negative" : "neutral"
-        }
-      : null,
-    lastEntryAttempt.status === "no_allowed_candidates"
-      ? {
-          title: "Entry bottleneck",
-          detail: compactJoin([
-            lastEntryAttempt.blockedReasonDetails?.featurePressureSources?.[0]
-              ? `${titleize(lastEntryAttempt.blockedReasonDetails.featurePressureSources[0].id)} ${lastEntryAttempt.blockedReasonDetails.featurePressureSources[0].count}x`
-              : null,
-            lastEntryAttempt.blockedReasonDetails?.lowConfidenceDrivers?.[0]
-              ? `${titleize(lastEntryAttempt.blockedReasonDetails.lowConfidenceDrivers[0].id)} ${lastEntryAttempt.blockedReasonDetails.lowConfidenceDrivers[0].count}x`
-              : null,
-            lastEntryAttempt.blockedReasonDetails?.strategyBlockers?.[0]
-              ? `${titleize(lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].id)} ${lastEntryAttempt.blockedReasonDetails.strategyBlockers[0].count}x`
-              : null
-          ], " Â· ") || "De laatste entry-poging liep vast zonder extra detail.",
-          tone: "negative"
-        }
-      : null,
-    marketCondition.conditionId
-      ? {
-          title: "Market condition",
-          detail: `${titleize(marketCondition.conditionId)} · ${formatPct(marketCondition.confidence || 0, 1)} · ${titleize(marketCondition.transitionState || "stable")}`,
-          tone: (marketCondition.risk || 0) >= 0.58 ? "negative" : "neutral"
-        }
-      : null,
-    adaptivePolicy.favoredFamily || adaptivePolicy.cooledStrategy
-      ? {
-          title: "Adaptive policy",
-          detail: compactJoin([
-            adaptivePolicy.favoredFamily ? `${titleize(adaptivePolicy.favoredFamily)} favored` : null,
-            adaptivePolicy.favoredStrategy ? `${titleize(adaptivePolicy.favoredStrategy)} voorop` : null,
-            adaptivePolicy.cooledStrategy ? `${titleize(adaptivePolicy.cooledStrategy)} gekoeld` : null
-          ], " · "),
-          tone: adaptivePolicy.cooledStrategy ? "neutral" : "positive"
-        }
-      : null,
-    missedTradeTuning.topBlocker
-      ? {
-          title: "Tuning scope",
-          detail: `${titleize(missedTradeTuning.topBlocker)} · ${titleize(missedTradeTuning.action || "observe")} · ${formatPct(missedTradeTuning.confidence || 0, 1)}`,
-          tone: missedTradeTuning.action === "soften_blocker" ? "positive" : missedTradeTuning.action === "harden_blocker" ? "negative" : "neutral"
-        }
-      : null,
-    promotionByCondition.id
-      ? {
-          title: "Promotion by condition",
-          detail: compactJoin([
-            titleize(promotionByCondition.action || "observe"),
-            titleize(promotionByCondition.id),
-            promotionByCondition.conditionId ? titleize(promotionByCondition.conditionId) : null,
-            promotionByCondition.blockers?.[0] ? `Wacht op ${titleize(promotionByCondition.blockers[0])}` : null
-          ], " · "),
-          tone: promotionByCondition.status === "positive" ? "positive" : promotionByCondition.status === "negative" ? "negative" : "neutral"
-        }
-      : null,
-    ["urgent", "watch"].includes(learningInsights.exits?.status)
-      ? {
-          title: "Exit AI",
-          detail: compactJoin([
-            learningInsights.exits.note || "Exit intelligence vraagt nu extra aandacht.",
-            exitPolicy.preferredExitStyle ? `Bias ${titleize(exitPolicy.preferredExitStyle)}` : null
-          ], " · "),
-          tone: learningInsights.exits.status === "urgent" ? "negative" : "neutral"
-        }
-      : null,
-    (externalFeeds.coolingDownCount || externalFeeds.degradedCount)
-      ? {
-          title: "External feeds",
-          detail: externalFeeds.providers?.[0]
-            ? `${titleize(externalFeeds.providers[0].group)} · ${titleize(externalFeeds.providers[0].provider)} ${externalFeeds.providers[0].coolingDown ? "cooldown" : "degraded"}`
-            : `${externalFeeds.coolingDownCount || 0} cooldown · ${externalFeeds.degradedCount || 0} degraded`,
-          tone: externalFeeds.coolingDownCount ? "negative" : "neutral"
-        }
-      : null,
-    ...lifecycle,
-    ...runbooks
-  ].filter(Boolean).slice(0, 5);
-
-  return items;
-}
-
-function renderOps(snapshot) {
-  const cards = buildOpsCards(snapshot);
-  replaceChildren(elements.opsSummary, cards.map((item) => makeKeyValueCard({
-    className: "risk-card",
-    label: item.label,
-    value: item.value,
-    foot: item.foot,
-    valueClassName: item.tone || ""
-  })));
-  const events = buildOpsEvents(snapshot);
-  if (!events.length) {
-    replaceChildren(elements.opsList, [makeEmptyState("Geen operationele aandachtspunten.")]);
-    return;
-  }
-  replaceChildren(elements.opsList, events.map((item) => makeEventRow(item)));
-}
-
-function renderTrades(snapshot) {
-  const trades = (snapshot?.dashboard?.report?.recentTrades || []).slice(0, TRADE_LIMIT);
-  if (!trades.length) {
-    const emptyRow = makeNode("tr");
-    emptyRow.append(makeNode("td", {
-      className: "empty",
-      text: "Nog geen recente trades beschikbaar.",
-      attrs: { colspan: "6" }
-    }));
-    replaceChildren(elements.tradesBody, [emptyRow]);
-    return;
-  }
-  replaceChildren(elements.tradesBody, trades.map((trade) => {
-    const row = makeNode("tr");
-    const reasonCell = makeNode("td", {
-      attrs: {
-        title: trade.reasonNote || ""
-      }
-    });
-    reasonCell.append(makeNode("span", { text: titleize(trade.reasonLabel || trade.reason || "-") }));
-    const pnlCell = makeNode("td", { className: toneClass(trade.pnlQuote) });
-    pnlCell.append(makeNode("span", { text: formatMoney(trade.pnlQuote) }));
-    const fields = [
-      makeNode("td", { text: trade.symbol || "-" }),
-      makeNode("td", { text: number(trade.entryPrice, 4) }),
-      makeNode("td", { text: number(trade.exitPrice, 4) }),
-      reasonCell,
-      pnlCell,
-      makeNode("td", { className: toneClass(trade.netPnlPct), text: formatSignedPct(trade.netPnlPct) })
-    ];
-    row.append(...fields);
-    return row;
-  }));
-}
-
-function renderDiagnostics(snapshot) {
+  const digest = buildLearningDigest(snapshot);
+  replaceChildren(elements.learningList, digest.map((item) => makeCard(item, "detail-card")));
   const diagnostics = snapshot?.dashboard?.operatorDiagnostics || {};
-  const blockers = diagnostics.dominantBlockers || [];
-  const actions = diagnostics.actionItems || [];
-  const quickActions = diagnostics.quickActions || [];
-  const recentActions = diagnostics.recentActions || [];
-  if (!elements.diagnosticsList) {
-    return;
-  }
   const cards = [
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Status",
-      value: titleize(diagnostics.status || "unknown"),
-      foot: diagnostics.headline || "Nog geen diagnostiek beschikbaar.",
-      valueClassName: statusTone(diagnostics.status || "unknown")
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Tradebaar",
-      value: `${diagnostics.counts?.tradeable || 0}`,
-      foot: `${diagnostics.counts?.blocked || 0} geblokkeerd`,
-      valueClassName: (diagnostics.counts?.tradeable || 0) > 0 ? "positive" : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Alerts",
-      value: `${diagnostics.counts?.alerts || 0}`,
-      foot: diagnostics.nextOperatorFocus || "Geen directe operatorfocus.",
-      valueClassName: (diagnostics.counts?.alerts || 0) > 0 ? "negative" : "neutral"
-    })
+    { title: "Action items", detail: diagnostics.actionItems?.length ? diagnostics.actionItems.map((item) => item.title).slice(0, 2).join(" · ") : "Geen extra operator-diagnostiek." },
+    { title: "Readiness", detail: compactJoin([titleize(snapshot?.dashboard?.ops?.readiness?.status || "unknown"), snapshot?.dashboard?.ops?.missedTradeTuning?.actionClass ? titleize(snapshot.dashboard.ops.missedTradeTuning.actionClass) : null]) }
   ];
-  const blockerRows = blockers.length
-    ? blockers.map((item) => makeEventRow({
-      title: `${titleize(item.id)} · ${item.count}x`,
-      detail: `${titleize(item.category)} blocker`,
-      tone: item.category === "infra" || item.category === "safety" ? "negative" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen dominante blockers zichtbaar.")];
-  const actionRows = actions.length
-    ? actions.map((item) => makeEventRow(item))
-    : [makeEmptyState("Nog geen operatoracties voorgesteld.")];
-  const quickActionNodes = quickActions.length
-    ? makeTagList(quickActions.map((item) => makeDiagnosticsActionButton({
-      action: item.action,
-      target: item.target || "",
-      label: item.label || titleize(item.action || "actie"),
-      tone: item.tone || ""
-    })))
-    : makeTagList([makeTag("Geen snelle actie klaar")]);
-  const recentActionRows = recentActions.length
-    ? recentActions.map((item) => makeEventRow({
-      title: titleize(item.action || "actie"),
-      detail: item.detail || item.note || titleize(item.target || "operator update"),
-      meta: [item.target ? `Target ${item.target}` : null, formatDate(item.at)].filter(Boolean).join(" · "),
-      tone: item.status === "completed" ? "neutral" : item.status === "failed" ? "negative" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen diagnostics acties uitgevoerd.")];
-  replaceChildren(elements.diagnosticsList, [
-    (() => {
-      const grid = makeNode("div", { className: "risk-grid" });
-      grid.append(...cards);
-      return grid;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Dominante blockers", "Geaggregeerd uit readiness, alerts en blocked setups"), ...blockerRows);
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Operatorfocus", "Wat nu eerst aandacht vraagt"), ...actionRows);
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Snelle acties", "Veilige operatoracties direct vanuit diagnostics"),
-        quickActionNodes
-      );
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Actiehistorie", "Laatste diagnostics acties en resets"),
-        ...recentActionRows
-      );
-      return section;
-    })()
-  ]);
+  replaceChildren(elements.diagnosticsList, cards.map((item) => makeCard(item, "detail-card")));
 }
 
 function renderExplainability(snapshot) {
   const explainability = snapshot?.dashboard?.explainability || {};
-  const replayChaos = snapshot?.dashboard?.ops?.replayChaos || explainability.replayChaos || {};
-  const replayPlan = replayChaos.deterministicReplayPlan || {};
-  const dataRecorder = snapshot?.dashboard?.dataRecorder || {};
-  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
-  const research = snapshot?.dashboard?.research || {};
-  const scanner = snapshot?.dashboard?.scanner || {};
-  const onlineAdaptation = snapshot?.dashboard?.onlineAdaptation || snapshot?.dashboard?.ops?.onlineAdaptation || {};
-  const decisions = explainability.decisions || [];
   const replays = explainability.replays || [];
-  if (!elements.explainabilityList) {
-    return;
-  }
-  const recorderQuality = dataRecorder.latestRecordQuality || {};
-  const recorderFoot = [
-    `${dataRecorder.replayFrames || 0} replays`,
-    `${dataRecorder.snapshotManifestFrames || 0} manifests`,
-    dataRecorder.lastRecordAt ? formatDate(dataRecorder.lastRecordAt) : null
-  ].filter(Boolean).join(" | ");
-  const researchFoot = [
-    `${research.totalTrades || 0} trades`,
-    research.averageSharpe != null ? `Sharpe ${number(research.averageSharpe, 2)}` : null,
-    research.generatedAt ? formatDate(research.generatedAt) : null
-  ].filter(Boolean).join(" | ");
-  const scannerFoot = [
-    scanner.rankedCount ? `${scanner.rankedCount} ranked` : null,
-    scanner.universe?.selectedCount ? `${scanner.universe.selectedCount} tradable` : null,
-    scanner.universe?.analysisCount ? `${scanner.universe.analysisCount} analyzed` : null,
-    scanner.deepBookEnrichedCount ? `${scanner.deepBookEnrichedCount} deep books` : null,
-    scanner.generatedAt ? formatDate(scanner.generatedAt) : null
-  ].filter(Boolean).join(" | ");
-  const scannerLaneFoot = (items = [], fallback = "Nog geen kandidaten.") => items.length
-    ? items.slice(0, 3).map((item) => `${item.symbol} ${number(item.finalScore || 0, 2)}`).join(" | ")
-    : fallback;
-  const learningImpactFoot = compactJoin([
-    offlineTrainer.runtimeApplied?.thresholdPolicy?.id
-      ? `${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.id)} ${titleize(offlineTrainer.runtimeApplied.thresholdPolicy.action || "observe")}`
-      : null,
-    offlineTrainer.runtimeApplied?.topScope?.id
-      ? `${titleize(offlineTrainer.runtimeApplied.topScope.type || "scope")} ${titleize(offlineTrainer.runtimeApplied.topScope.id)}`
-      : null,
-    offlineTrainer.runtimeApplied?.topSymbol?.id
-      ? `${offlineTrainer.runtimeApplied.topSymbol.id} ${titleize(offlineTrainer.runtimeApplied.topSymbol.trapStatus || offlineTrainer.runtimeApplied.topSymbol.status || "observe")}`
-      : null
-  ]);
-  const adaptiveLearningFoot = compactJoin([
-    offlineTrainer.runtimeApplied?.strategyReweighting?.id
-      ? `${titleize(offlineTrainer.runtimeApplied.strategyReweighting.id)} ${titleize(offlineTrainer.runtimeApplied.strategyReweighting.status || "observe")}`
-      : null,
-    offlineTrainer.analysisOnly?.parameterOptimization?.topCandidate
-      ? `Opt ${titleize(offlineTrainer.analysisOnly.parameterOptimization.topCandidate)}`
-      : null,
-    onlineAdaptation.lastApplied?.category
-      ? `Online ${titleize(onlineAdaptation.lastApplied.category)}`
-      : null
-  ]);
-  const items = [
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Explainability",
-      value: `${decisions.length} decisions`,
-      foot: explainability.note || "Nog geen explainability-data.",
-      valueClassName: decisions.length ? "positive" : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Replay chaos",
-      value: titleize(replayChaos.status || replayPlan.status || "idle"),
-      foot: replayPlan.operatorGoal
-        || [
-          replayChaos.replayCoverage != null ? `Coverage ${formatPct(replayChaos.replayCoverage, 0)}` : null,
-          replayPlan.nextPackType ? `Next ${titleize(replayPlan.nextPackType)}` : null
-        ].filter(Boolean).join(" | ")
-        || "Nog geen replay-prioriteit actief.",
-      valueClassName: statusTone(replayChaos.status || replayPlan.status || "idle")
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Recorder",
-      value: dataRecorder.enabled === false
-        ? "Uit"
-        : `${dataRecorder.replayFrames || 0} replays`,
-      foot: recorderFoot || "Nog geen recorder-activiteit zichtbaar.",
-      valueClassName: dataRecorder.enabled === false
-        ? "neutral"
-        : statusTone(recorderQuality.tier || (dataRecorder.averageRecordQuality >= 0.7 ? "ready" : "watch"))
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Research",
-      value: research.bestSymbol || `${research.symbolCount || 0} symbols`,
-      foot: researchFoot || "Nog geen recente research-run zichtbaar.",
-      valueClassName: research.bestSymbol || research.symbolCount ? "positive" : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Learning impact",
-      value: offlineTrainer.runtimeApplied?.thresholdPolicy?.id
-        || offlineTrainer.runtimeApplied?.topScope?.id
-        || offlineTrainer.runtimeApplied?.topSymbol?.id
-        || "-",
-      foot: compactJoin([learningImpactFoot, adaptiveLearningFoot]) || "Nog geen learning-signal dat runtime beleid zichtbaar aanpast.",
-      valueClassName: learningImpactFoot ? "positive" : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Scanner",
-      value: scanner.topCandidates?.[0]?.symbol || `${scanner.universe?.selectedCount || 0} symbols`,
-      foot: scanner.topCandidates?.[0]
-        ? [
-            `Score ${number(scanner.topCandidates[0].finalScore || 0, 2)}`,
-            titleize(scanner.topCandidates[0].recommendedLane || "probe"),
-            scannerFoot
-          ].filter(Boolean).join(" | ")
-        : scannerFoot || "Nog geen recente market scan zichtbaar.",
-      valueClassName: scanner.topCandidates?.[0]?.recommendedAction === "strong_candidate"
-        ? "positive"
-        : scanner.topCandidates?.[0]
-          ? "neutral"
-          : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Top safe",
-      value: scanner.topSafeCandidates?.[0]?.symbol || "-",
-      foot: scannerLaneFoot(scanner.topSafeCandidates, "Nog geen safe-lane leaders."),
-      valueClassName: scanner.topSafeCandidates?.length ? "positive" : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Top probe",
-      value: scanner.topProbeCandidates?.[0]?.symbol || "-",
-      foot: scannerLaneFoot(scanner.topProbeCandidates, "Nog geen probe-lane leaders."),
-      valueClassName: scanner.topProbeCandidates?.length ? "neutral" : "neutral"
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Top shadow",
-      value: scanner.topShadowCandidates?.[0]?.symbol || "-",
-      foot: scanner.topShadowCandidates?.[0]?.historicalTrapWarning
-        ? compactBodyText(scanner.topShadowCandidates[0].historicalTrapWarning, 78)
-        : scannerLaneFoot(scanner.topShadowCandidates, "Nog geen shadow-lane leaders."),
-      valueClassName: scanner.topShadowCandidates?.length ? "negative" : "neutral"
-    })
-  ];
-  const decisionCards = decisions.length
-    ? decisions.map((item) => {
-      const card = makeNode("article", { className: "signal-card" });
-      const summary = makeNode("div", { className: "card-summary" });
-      summary.append(
-        makeCardHeader({
-          eyebrow: "Decision explainer",
-          title: item.symbol || "-",
-          pillText: titleize(item.status || "observe"),
-          pillClassName: `pill ${item.status === "tradeable" ? "positive" : "negative"}`
-        }),
-        makeNode("p", { className: "card-copy", text: compactBodyText(item.headline || "Geen explainability headline.", 140) }),
-        makeReasonRows((item.explainSteps || []).slice(0, 3).map((step) => [step.label, compactBodyText(step.detail, 92)])),
-        makeReasonRows((item.inputs || []).slice(0, 3).map((step) => [step.label, compactBodyText(step.detail, 88)])),
-        makeTagList((item.guardrails || item.blockerChain || []).slice(0, 4).map((blocker) => makeTag(titleize(blocker), "tag negative")))
-      );
-      card.append(summary);
-      return card;
-    })
-    : [makeEmptyState("Nog geen decision explainers beschikbaar.")];
-  const replayCards = replays.length
-    ? replays.map((item) => {
-      const card = makeNode("article", { className: "signal-card" });
-      const summary = makeNode("div", { className: "card-summary" });
-      const compareRows = makeReasonRows((item.outcomeCompare || []).map((entry) => [
-        entry.label,
-        `${entry.baseline || "-"} -> ${entry.challenger || "-"}${entry.delta != null ? ` (${entry.delta > 0 ? "+" : ""}${number(entry.delta, 1)})` : ""}`
-      ]));
-      const timelineRows = (item.fullTimeline || []).length
-        ? makeNode("div", { className: "list-stack compact-list" })
-        : null;
-      if (timelineRows) {
-        timelineRows.append(
-          ...item.fullTimeline.slice(0, 5).map((stage) => makeEventRow({
-            title: `${titleize(stage.label || stage.type || "step")} · ${formatDate(stage.at)}`,
-            detail: stage.detail || "Geen detail."
-          }))
-        );
-      }
-      summary.append(
-        makeCardHeader({
-          eyebrow: "Trade replay",
-          title: item.symbol || "-",
-          pillText: formatMoney(item.pnlQuote || 0),
-          pillClassName: `pill ${toneClass(item.pnlQuote)}`
-        }),
-        makeNode("p", { className: "card-copy", text: compactBodyText(item.keyTakeaway || "Replay beschikbaar.", 140) }),
-        makeReasonRows([
-          ["Open", compactBodyText(item.whyOpened || "Onbekend.", 90)],
-          ["Sluit", compactBodyText(item.whyClosed || "Onbekend.", 90)],
-          ["Strategie", titleize(item.strategy || "unknown")],
-          ["Gate", item.gateSnapshot ? `p ${formatPct(item.gateSnapshot.probability || 0, 1)} · gate ${formatPct(item.gateSnapshot.threshold || 0, 1)}` : "Onbekend."]
-        ]),
-        makeReasonRows((item.decisionInputs || []).slice(0, 3).map((entry) => [entry.label, compactBodyText(entry.detail, 86)])),
-        compareRows,
-        makeTagList((item.keyStages || []).slice(0, 4).map((stage) => makeTag(`${titleize(stage.label || stage.type || "step")} · ${truncate(stage.detail || "", 48)}`))),
-        timelineRows
-      );
-      card.append(summary);
-      return card;
-    })
-    : [makeEmptyState("Nog geen trade replays beschikbaar.")];
-  replaceChildren(elements.explainabilityList, [
-    (() => {
-      const grid = makeNode("div", { className: "risk-grid" });
-      grid.append(...items);
-      return grid;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Decision chain", "Waarom setups door of niet door de gating kwamen"), ...decisionCards);
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Replay digest", "Wat de bot zag bij recente trades"), ...replayCards);
-      return section;
-    })()
-  ]);
+  const cards = replays.length
+    ? replays.slice(0, 3).map((item) => makeCard({
+        title: item.symbol || "Replay",
+        detail: compactJoin([
+          item.learningAttribution?.category ? titleize(item.learningAttribution.category) : null,
+          item.attributionEvidence?.reasons?.[0] ? humanizeReason(item.attributionEvidence.reasons[0]) : null,
+          item.exitReason ? `exit ${titleize(item.exitReason)}` : null
+        ])
+      }, "detail-card"))
+    : [makeEmptyState("Nog geen replay of explainability-items.")];
+  replaceChildren(elements.explainabilityList, cards);
 }
 
 function renderPromotion(snapshot) {
-  const pipeline = snapshot?.dashboard?.promotionPipeline || {};
-  if (!elements.promotionList) {
-    return;
-  }
-  const topCards = [
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Promotion",
-      value: titleize(pipeline.status || "observe"),
-      foot: pipeline.note || "Nog geen promotion pipeline beschikbaar.",
-      valueClassName: pipeline.allowPromotion ? "positive" : statusTone(pipeline.status || "unknown")
-    }),
-    makeKeyValueCard({
-      className: "risk-card",
-      label: "Next gate",
-      value: titleize(pipeline.nextGate || "observe"),
-      foot: (pipeline.blockerReasons || [])[0] ? titleize(pipeline.blockerReasons[0]) : "Geen blocker",
-      valueClassName: pipeline.allowPromotion ? "positive" : "neutral"
-    })
+  const adaptiveLearning = snapshot?.dashboard?.adaptiveLearning || {};
+  const offlineTrainer = snapshot?.dashboard?.offlineTrainer || {};
+  const parameterOptimization = adaptiveLearning.parameterOptimization || offlineTrainer.parameterOptimization || {};
+  const cards = [
+    makeCard({
+      title: "Promotion",
+      detail: compactJoin([
+        adaptiveLearning.modelRegistry?.status ? titleize(adaptiveLearning.modelRegistry.status) : null,
+        adaptiveLearning.modelRegistry?.probationRequired ? "probation required" : null,
+        adaptiveLearning.modelRegistry?.offlineTrainerReadiness ? titleize(adaptiveLearning.modelRegistry.offlineTrainerReadiness) : null
+      ]) || "Geen promotion-signaal beschikbaar."
+    }, "detail-card"),
+    makeCard({
+      title: "Parameter optimization",
+      detail: compactJoin([
+        parameterOptimization.topCandidate ? titleize(parameterOptimization.topCandidate) : null,
+        parameterOptimization.livePromotionAllowed === false ? "live blocked" : null,
+        parameterOptimization.note || null
+      ]) || "Nog geen optimizer-kandidaat."
+    }, "detail-card")
   ];
-  const transitionRows = (pipeline.candidateTransitions || []).length
-    ? pipeline.candidateTransitions.slice(0, 5).map((item) => makeEventRow({
-      title: `${titleize(item.action || "review")} · ${titleize(item.id || "-")}`,
-      detail: item.reason || item.scope || "Policy-transitie kandidaat",
-      tone: item.approved ? "positive" : item.blocker ? "negative" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen policytransities klaar.")];
-  const candidateRows = (pipeline.guardedLiveCandidates || []).length
-    ? pipeline.guardedLiveCandidates.map((item) => makeEventRow({
-      title: `${item.symbol || "-"} · ${titleize(item.status || "observe")}`,
-      detail: `Governance ${formatPct(item.governanceScore || 0, 0)}`,
-      tone: item.status === "promote" ? "positive" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen guarded-live kandidaten zichtbaar.")];
-  const candidateActions = (pipeline.guardedLiveCandidates || []).length
-    ? makeTagList((pipeline.guardedLiveCandidates || []).map((item) => item.approved
-      ? makeTag(`Approved · ${item.symbol}`, "tag positive")
-      : makePromotionActionButton({
-        action: "approve",
-        symbol: item.symbol || "",
-        label: `Approve ${item.symbol || "-"}`,
-        tone: item.status === "promote" ? "positive" : ""
-      })))
-    : null;
-  const rolloutRows = (pipeline.rolloutCandidates || []).length
-    ? pipeline.rolloutCandidates.map((item) => makeEventRow({
-      title: `${titleize(item.action || "observe")} · ${titleize(item.scope || item.id || "-")}`,
-      detail: item.reason || item.scope || "Scope rollout kandidaat",
-      tone: item.approved ? "positive" : item.blocker ? "negative" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen scope-rollouts klaar.")];
-  const rolloutActions = (pipeline.rolloutCandidates || []).length
-    ? makeTagList((pipeline.rolloutCandidates || []).map((item) => item.approved
-      ? makeTag(`Approved scope · ${titleize(item.scope || item.id || "-")}`, "tag positive")
-      : makePromotionScopeButton({
-        action: "approve",
-        scope: item.scope || item.id || "",
-        label: `Approve ${titleize(item.scope || item.id || "-")}`,
-        tone: item.action === "promote_candidate" ? "positive" : ""
-      })))
-    : null;
-  const activePromotionRows = (pipeline.activePromotions || []).length
-    ? pipeline.activePromotions.map((item) => makeEventRow({
-      title: `${item.symbol || titleize(item.scope || item.id || "-")} · ${titleize(item.stage || "guarded_live_probation")}`,
-      detail: item.note || `Governance ${formatPct(item.governanceScore || 0, 0)} · ${item.completedTrades || 0}/${item.targetSampleCount || 0} trades · expiry ${formatDate(item.expiresAt)}`,
-      tone: item.rollbackRecommended || item.expired ? "negative" : item.status === "ready_for_review" ? "positive" : "positive"
-    }))
-    : [makeEmptyState("Nog geen actieve guarded-live probation.")];
-  const rollbackActions = (pipeline.activePromotions || []).length
-    ? makeTagList((pipeline.activePromotions || []).map((item) => item.symbol
-      ? makePromotionActionButton({
-        action: "rollback",
-        symbol: item.symbol || "",
-        label: `Rollback ${item.symbol || "-"}`,
-        tone: "negative"
-      })
-      : makePromotionScopeButton({
-        action: "rollback",
-        scope: item.scope || item.id || "",
-        label: `Rollback ${titleize(item.scope || item.id || "-")}`,
-        tone: "negative"
-      })))
-    : null;
-  const historyRows = (pipeline.promotionHistory || []).length
-    ? pipeline.promotionHistory.map((item) => makeEventRow({
-      title: `${titleize(item.action || "actie")} · ${item.symbol || "-"}`,
-      detail: item.note || `${titleize(item.stage || "stage")} · ${titleize(item.status || "done")}${item.verdict ? ` · ${titleize(item.verdict)}` : ""}`,
-      tone: item.status === "rolled_back" ? "negative" : item.status === "approved" ? "positive" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen promotion history.")];
-  const probationRows = (pipeline.probationGuardrails || []).length
-    ? pipeline.probationGuardrails.map((item) => makeEventRow({
-      title: `${titleize(item.label || "-")} · ${titleize(item.status || "active")}`,
-      detail: item.detail || "Probation guardrail actief.",
-      tone: item.status === "rollback_recommended" || item.status === "expired" ? "negative" : item.status === "ready_for_review" ? "positive" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen probation guardrails actief.")];
-  const scorecardRows = (pipeline.readinessScorecards || []).length
-    ? pipeline.readinessScorecards.map((item) => makeEventRow({
-      title: `${titleize(item.label || "-")} · ${titleize(item.verdict || "hold")}`,
-      detail: `${item.completedTrades || 0}/${item.targetSampleCount || 0} trades · good ${item.goodTrades || 0} · weak ${item.weakTrades || 0} · exec ${formatPct(item.avgExecutionQuality || 0, 0)} · pnl ${formatSignedPct(item.avgNetPnlPct || 0)}`,
-      tone: item.verdict === "go" ? "positive" : item.verdict === "rollback" ? "negative" : "neutral"
-    }))
-    : [makeEmptyState("Nog geen readiness scorecards beschikbaar.")];
-  const probationDecisionActions = (pipeline.readinessScorecards || []).length
-    ? makeTagList((pipeline.readinessScorecards || []).flatMap((item) => [
-      makeProbationDecisionButton({
-        action: "promote",
-        key: item.key || "",
-        label: `Promote ${titleize(item.label || "-")}`,
-        tone: item.verdict === "go" ? "positive" : ""
-      }),
-      makeProbationDecisionButton({
-        action: "hold",
-        key: item.key || "",
-        label: `Hold ${titleize(item.label || "-")}`
-      }),
-      makeProbationDecisionButton({
-        action: "close",
-        key: item.key || "",
-        label: `Close ${titleize(item.label || "-")}`,
-        tone: "negative"
-      })
-    ]))
-    : null;
-  const guardrailTags = [
-    ...(pipeline.guardrails || []).map((item) => makeTag(titleize(item), "tag negative")),
-    ...((pipeline.activeOverrides || []).map((item) => makeTag(`${titleize(item.id)} · ${titleize(item.status || "override")}`, "tag positive")))
-  ];
-  replaceChildren(elements.promotionList, [
-    (() => {
-      const grid = makeNode("div", { className: "risk-grid" });
-      grid.append(...topCards);
-      return grid;
-    })(),
-    guardrailTags.length ? makeTagList(guardrailTags) : makeEmptyState("Geen actieve guardrails of overrides."),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(makeSectionHead("Pipeline actions", "Welke promotie- of cooldownstappen klaarstaan"), ...transitionRows);
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Guarded live", "Kandidaten richting guarded live probation"),
-        ...candidateRows,
-        candidateActions || makeEmptyState("Geen guarded-live approve actions klaar.")
-      );
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Scope rollouts", "Staged probation per strategy, lane of scope"),
-        ...rolloutRows,
-        rolloutActions || makeEmptyState("Geen scope-rollout actions klaar.")
-      );
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Actieve probation", "Operator-goedgekeurde guarded-live overrides"),
-        ...activePromotionRows,
-        rollbackActions || makeEmptyState("Geen rollback acties actief.")
-      );
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Probation guardrails", "Sample targets, expiry en rollback-triggers"),
-        ...probationRows
-      );
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Readiness scorecards", "Go, hold of rollback per actieve probation"),
-        ...scorecardRows,
-        probationDecisionActions || makeEmptyState("Geen probation decisions beschikbaar.")
-      );
-      return section;
-    })(),
-    (() => {
-      const section = makeNode("div", { className: "list-stack" });
-      section.append(
-        makeSectionHead("Promotion history", "Laatste approve en rollback acties"),
-        ...historyRows
-      );
-      return section;
-    })()
-  ]);
+  replaceChildren(elements.promotionList, cards);
 }
 
 function render(snapshot) {
-  latestSnapshot = snapshot;
-  lastSnapshotReceivedAt = new Date().toISOString();
-  const renderErrors = [];
-  for (const [section, renderFn] of [
-    ["badges", () => renderBadges(snapshot)],
-    ["hero", () => renderHero(snapshot)],
-    ["signals", () => renderSignals(snapshot)],
-    ["positions", () => renderPositions(snapshot)],
-    ["learning", () => renderLearning(snapshot)],
-    ["missed_trades", () => renderMissedTrades(snapshot)],
-    ["ops", () => renderOps(snapshot)],
-    ["trades", () => renderTrades(snapshot)],
-    ["diagnostics", () => renderDiagnostics(snapshot)],
-    ["explainability", () => renderExplainability(snapshot)],
-    ["promotion", () => renderPromotion(snapshot)],
-    ["controls", () => syncControls(snapshot)],
-    ["panels", () => syncPanels()]
-  ]) {
-    const issue = safeRenderSection(section, renderFn);
-    if (issue) {
-      renderErrors.push(issue);
-    }
-  }
-  syncRenderHealthBanner();
-  if (!renderErrors.length && elements.controlHint) {
-    elements.controlHint.textContent = buildHeroSummary(snapshot).subline;
-  }
+  renderBadges(snapshot);
+  safeRenderSection("hero", () => renderHero(snapshot));
+  safeRenderSection("overview", () => renderOverview(snapshot));
+  safeRenderSection("attention", () => renderAttention(snapshot));
+  safeRenderSection("focus", () => renderFocus(snapshot));
+  safeRenderSection("positions", () => renderPositions(snapshot));
+  safeRenderSection("recentTrades", () => renderRecentTrades(snapshot));
+  safeRenderSection("opportunityBoard", () => renderOpportunityBoard(snapshot));
+  safeRenderSection("health", () => renderHealth(snapshot));
+  safeRenderSection("learning", () => renderLearning(snapshot));
+  safeRenderSection("explainability", () => renderExplainability(snapshot));
+  safeRenderSection("promotion", () => renderPromotion(snapshot));
+  syncRenderHealthBanner(snapshot);
 }
 
-function syncControls(snapshot) {
-  const runState = snapshot?.manager?.runState || "stopped";
-  const mode = snapshot?.manager?.currentMode || "paper";
-  const running = runState === "running";
-  elements.startBtn.disabled = busy || running;
-  elements.stopBtn.disabled = busy || runState === "stopped";
-  elements.refreshBtn.disabled = busy || running;
-  elements.paperBtn.disabled = busy || mode === "paper";
-  elements.liveBtn.disabled = busy || mode === "live";
-}
-
-async function refreshSnapshot() {
+async function fetchSnapshot() {
   const epoch = ++requestEpoch;
-  try {
-    const payload = await api("/api/snapshot");
-    if (epoch < requestEpoch || epoch < latestAppliedEpoch) {
-      return;
-    }
-    latestAppliedEpoch = epoch;
-    render(pickSnapshot(payload));
-  } catch (error) {
-    elements.controlHint.textContent = error.message;
-    if (!latestSnapshot) {
-      replaceChildren(elements.operatorSummary, [
-        (() => {
-          const pill = makeNode("span", { className: "hero-pill negative" });
-          pill.append(
-            makeNode("strong", { text: "Dashboard" }),
-            makeNode("span", {
-              text: error?.message
-                ? `Snapshot mislukt: ${truncate(error.message, 140)}`
-                : "Controleer of de dashboardserver nog draait."
-            })
-          );
-          return pill;
-        })()
-      ]);
-    }
-  }
+  const payload = await api("/api/snapshot");
+  if (epoch < latestAppliedEpoch) return;
+  latestAppliedEpoch = epoch;
+  latestSnapshot = pickSnapshot(payload);
+  lastSnapshotReceivedAt = latestSnapshot?.generatedAt || new Date().toISOString();
+  render(latestSnapshot);
 }
 
-async function runAction(path, body = {}) {
-  const epoch = ++requestEpoch;
+async function mutateAndRefresh(path, body = {}) {
+  if (busy) return;
   busy = true;
-  syncControls(latestSnapshot || {});
   try {
-    const payload = await api(path, { method: "POST", body });
-    if (epoch < requestEpoch || epoch < latestAppliedEpoch) {
-      return;
-    }
-    latestAppliedEpoch = epoch;
-    render(pickSnapshot(payload));
+    await api(path, { method: "POST", body });
+    await fetchSnapshot();
   } catch (error) {
-    elements.controlHint.textContent = error.message;
+    console.error?.("dashboard_mutation_failed", error);
+    if (elements.controlHint) {
+      elements.controlHint.textContent = `Actie mislukt: ${error?.message || "unknown error"}`;
+    }
   } finally {
     busy = false;
-    syncControls(latestSnapshot || {});
   }
 }
 
-function bindEvents() {
-  elements.startBtn?.addEventListener("click", () => runAction("/api/start"));
-  elements.stopBtn?.addEventListener("click", () => runAction("/api/stop"));
-  elements.refreshBtn?.addEventListener("click", () => runAction("/api/refresh"));
-  elements.paperBtn?.addEventListener("click", () => runAction("/api/mode", { mode: "paper" }));
-  elements.liveBtn?.addEventListener("click", () => runAction("/api/mode", { mode: "live" }));
-
-  elements.decisionSearch?.addEventListener("input", (event) => {
-    searchQuery = `${event.target.value || ""}`.trim().toLowerCase();
-    if (latestSnapshot) {
-      renderSignals(latestSnapshot);
-    }
+function bindUi() {
+  elements.refreshBtn?.addEventListener?.("click", () => fetchSnapshot().catch((error) => showDashboardRenderIssue("refresh", error)));
+  elements.startBtn?.addEventListener?.("click", () => mutateAndRefresh("/api/start"));
+  elements.stopBtn?.addEventListener?.("click", () => mutateAndRefresh("/api/stop"));
+  elements.paperBtn?.addEventListener?.("click", () => mutateAndRefresh("/api/mode", { mode: "paper" }));
+  elements.liveBtn?.addEventListener?.("click", () => mutateAndRefresh("/api/mode", { mode: "live" }));
+  elements.decisionSearch?.addEventListener?.("input", (event) => {
+    searchQuery = `${event?.target?.value || ""}`.trim().toLowerCase();
+    if (latestSnapshot) render(latestSnapshot);
   });
-
-  elements.decisionAllowedOnly?.addEventListener("change", (event) => {
-    allowedOnly = Boolean(event.target.checked);
-    if (latestSnapshot) {
-      renderSignals(latestSnapshot);
-    }
+  elements.decisionAllowedOnly?.addEventListener?.("change", (event) => {
+    allowedOnly = Boolean(event?.target?.checked);
+    if (latestSnapshot) render(latestSnapshot);
   });
-
-  elements.decisionShowMoreBtn?.addEventListener("click", () => {
+  elements.decisionShowMoreBtn?.addEventListener?.("click", () => {
     showAllDecisions = !showAllDecisions;
     writeStoredBoolean(STORAGE_KEYS.showAllDecisions, showAllDecisions);
-    if (latestSnapshot) {
-      renderSignals(latestSnapshot);
-    }
-  });
-
-  elements.diagnosticsList?.addEventListener("click", async (event) => {
-    const target = event.target.closest("[data-diagnostics-action]");
-    if (!target) {
-      return;
-    }
-    const diagnosticsAction = `${target.getAttribute("data-diagnostics-action") || ""}`.trim();
-    const diagnosticsTarget = `${target.getAttribute("data-diagnostics-target") || ""}`.trim();
-    if (!diagnosticsAction) {
-      return;
-    }
-    const note = window.prompt(`Optionele notitie voor ${diagnosticsAction}${diagnosticsTarget ? ` ${diagnosticsTarget}` : ""}:`, "") || null;
-    await runAction("/api/diagnostics/action", {
-      action: diagnosticsAction,
-      target: diagnosticsTarget || null,
-      note
-    });
-  });
-
-  elements.promotionList?.addEventListener("click", async (event) => {
-    const target = event.target.closest("[data-promotion-action]");
-    if (target) {
-      const promotionAction = `${target.getAttribute("data-promotion-action") || ""}`.trim();
-      const symbol = `${target.getAttribute("data-promotion-symbol") || ""}`.trim();
-      if (!promotionAction || !symbol) {
-        return;
-      }
-      const note = window.prompt(`Optionele notitie voor ${promotionAction} ${symbol}:`, "") || null;
-      if (promotionAction === "approve") {
-        await runAction("/api/promotion/approve", { symbol, note });
-        return;
-      }
-      if (promotionAction === "rollback") {
-        await runAction("/api/promotion/rollback", { symbol, note });
-      }
-      return;
-    }
-    const scopeTarget = event.target.closest("[data-promotion-scope-action]");
-    if (!scopeTarget) {
-      return;
-    }
-    const scopeAction = `${scopeTarget.getAttribute("data-promotion-scope-action") || ""}`.trim();
-    const scope = `${scopeTarget.getAttribute("data-promotion-scope") || ""}`.trim();
-    if (!scopeAction || !scope) {
-      return;
-    }
-    const note = window.prompt(`Optionele notitie voor ${scopeAction} ${scope}:`, "") || null;
-    if (scopeAction === "approve") {
-      await runAction("/api/promotion/scope/approve", { scope, note });
-      return;
-    }
-    if (scopeAction === "rollback") {
-      await runAction("/api/promotion/scope/rollback", { scope, note });
-    }
-  });
-
-  elements.promotionList?.addEventListener("click", async (event) => {
-    const target = event.target.closest("[data-probation-decision]");
-    if (!target) {
-      return;
-    }
-    const decision = `${target.getAttribute("data-probation-decision") || ""}`.trim();
-    const key = `${target.getAttribute("data-probation-key") || ""}`.trim();
-    if (!decision || !key) {
-      return;
-    }
-    const note = window.prompt(`Optionele notitie voor ${decision} ${key}:`, "") || null;
-    await runAction("/api/promotion/probation/decide", { key, decision, note });
-  });
-
-  elements.learningList?.addEventListener("click", async (event) => {
-    const target = event.target.closest("[data-policy-action]");
-    if (!target) {
-      return;
-    }
-    const policyAction = `${target.getAttribute("data-policy-action") || ""}`.trim();
-    const id = `${target.getAttribute("data-transition-id") || ""}`.trim();
-    const action = `${target.getAttribute("data-transition-kind") || ""}`.trim();
-    if (!policyAction || !id || !action) {
-      if (policyAction !== "revert" || !id) {
-        return;
-      }
-    }
-    const note = window.prompt(`Optionele notitie voor ${policyAction} ${id}:`, "") || null;
-    if (policyAction === "approve") {
-      await runAction("/api/policies/approve", { id, action, note });
-      return;
-    }
-    if (policyAction === "reject") {
-      await runAction("/api/policies/reject", { id, action, note });
-      return;
-    }
-    if (policyAction === "revert") {
-      await runAction("/api/policies/revert", { id, note });
-    }
-  });
-
-  bindPanelToggle("signals", elements.signalsSection, elements.signalsToggleBtn);
-  bindPanelToggle("positions", elements.positionsSection, elements.positionsToggleBtn);
-  bindPanelToggle("learning", elements.learningSection, elements.learningToggleBtn);
-  bindPanelToggle("missedTrades", elements.missedTradesSection, elements.missedTradesToggleBtn);
-  bindPanelToggle("risk", elements.riskSection, elements.riskToggleBtn);
-  bindPanelToggle("history", elements.historySection, elements.historyToggleBtn);
-  bindPanelToggle("diagnostics", elements.diagnosticsSection, elements.diagnosticsToggleBtn);
-  bindPanelToggle("explainability", elements.explainabilitySection, elements.explainabilityToggleBtn);
-  bindPanelToggle("promotion", elements.promotionSection, elements.promotionToggleBtn);
-}
-
-function bindPanelToggle(key, section, button) {
-  button?.addEventListener("click", () => {
-    panelState[key] = !panelState[key];
-    syncPanel(section, button, panelState[key]);
+    if (latestSnapshot) render(latestSnapshot);
   });
 }
 
-function syncPanel(section, button, expanded) {
-  section?.classList.toggle("is-collapsed", !expanded);
-  if (button) {
-    button.setAttribute("aria-expanded", String(expanded));
-    button.textContent = expanded ? "Inklappen" : "Uitklappen";
+function initDashboard() {
+  if (!activeDocument) return;
+  elements = createElements(activeDocument);
+  bindUi();
+  fetchSnapshot().catch((error) => showDashboardRenderIssue("bootstrap", error));
+  if (typeof window !== "undefined" && window?.setInterval) {
+    window.setInterval(() => {
+      fetchSnapshot().catch((error) => showDashboardRenderIssue("poll", error));
+    }, POLL_MS);
   }
 }
 
-function syncPanels() {
-  syncPanel(elements.signalsSection, elements.signalsToggleBtn, panelState.signals);
-  syncPanel(elements.positionsSection, elements.positionsToggleBtn, panelState.positions);
-  syncPanel(elements.learningSection, elements.learningToggleBtn, panelState.learning);
-  syncPanel(elements.missedTradesSection, elements.missedTradesToggleBtn, panelState.missedTrades);
-  syncPanel(elements.riskSection, elements.riskToggleBtn, panelState.risk);
-  syncPanel(elements.historySection, elements.historyToggleBtn, panelState.history);
-  syncPanel(elements.diagnosticsSection, elements.diagnosticsToggleBtn, panelState.diagnostics);
-  syncPanel(elements.explainabilitySection, elements.explainabilityToggleBtn, panelState.explainability);
-  syncPanel(elements.promotionSection, elements.promotionToggleBtn, panelState.promotion);
+class FakeNode {
+  constructor(tagName, ownerDocument) {
+    this.tagName = tagName;
+    this.ownerDocument = ownerDocument;
+    this.children = [];
+    this.attributes = {};
+    this.className = "";
+    this.textContent = "";
+    this.checked = false;
+    this.value = "";
+    this.listeners = {};
+    this.styleMap = {};
+    this.style = {
+      setProperty: (name, value) => {
+        this.styleMap[name] = value;
+      }
+    };
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = `${value}`;
+    if (name === "id") {
+      this.id = `${value}`;
+      this.ownerDocument.register(this);
+    }
+  }
+
+  append(...children) {
+    this.children.push(...children.filter(Boolean));
+  }
+
+  replaceChildren(...children) {
+    this.children = children.filter(Boolean);
+  }
+
+  addEventListener(type, handler) {
+    this.listeners[type] = handler;
+  }
+}
+
+class FakeDocument {
+  constructor() {
+    this.nodes = new Map();
+  }
+
+  createElement(tagName) {
+    return new FakeNode(tagName, this);
+  }
+
+  register(node) {
+    if (node?.id) this.nodes.set(node.id, node);
+  }
+
+  querySelector(selector) {
+    if (!selector || !selector.startsWith("#")) return null;
+    return this.nodes.get(selector.slice(1)) || null;
+  }
 }
 
 function createFakeDashboardDocument() {
-  class FakeClassList {
-    constructor(node) {
-      this.node = node;
-      this.tokens = new Set();
-    }
-    toggle(token, force) {
-      if (force === undefined) {
-        if (this.tokens.has(token)) {
-          this.tokens.delete(token);
-        } else {
-          this.tokens.add(token);
-        }
-      } else if (force) {
-        this.tokens.add(token);
-      } else {
-        this.tokens.delete(token);
-      }
-      this.node.className = [...this.tokens].join(" ");
-    }
-  }
-
-  class FakeNode {
-    constructor(tagName = "div") {
-      this.tagName = tagName.toUpperCase();
-      this.children = [];
-      this.attributes = {};
-      this.className = "";
-      this.textContent = "";
-      this.hidden = false;
-      this.disabled = false;
-      this.checked = false;
-      this.value = "";
-      this.classList = new FakeClassList(this);
-    }
-    append(...children) {
-      this.children.push(...children.filter(Boolean));
-    }
-    replaceChildren(...children) {
-      this.children = children.filter(Boolean);
-    }
-    setAttribute(name, value) {
-      this.attributes[name] = `${value}`;
-    }
-    getAttribute(name) {
-      return this.attributes[name] ?? null;
-    }
-    addEventListener() {}
-    remove() {
-      this.removed = true;
-    }
-    closest() {
-      return null;
-    }
-    querySelectorAll(selector) {
-      if (selector === "[data-render-issue='1']") {
-        return this.children.filter((child) => child?.attributes?.["data-render-issue"] === "1");
-      }
-      return [];
-    }
-  }
-
-  const selectorMap = new Map();
-  const documentStub = {
-    createElement(tag) {
-      return new FakeNode(tag);
-    },
-    querySelector(selector) {
-      if (!selectorMap.has(selector)) {
-        selectorMap.set(selector, new FakeNode("div"));
-      }
-      return selectorMap.get(selector);
-    }
-  };
-  return {
-    document: documentStub,
-    selectors: selectorMap
-  };
+  const doc = new FakeDocument();
+  [
+    "modeBadge",
+    "runStateBadge",
+    "healthBadge",
+    "refreshBadge",
+    "controlHint",
+    "operatorSummary",
+    "startBtn",
+    "stopBtn",
+    "paperBtn",
+    "liveBtn",
+    "refreshBtn",
+    "decisionSearch",
+    "decisionAllowedOnly",
+    "decisionMeta",
+    "decisionShowMoreBtn",
+    "overviewCards",
+    "attentionList",
+    "actionList",
+    "focusList",
+    "positionsList",
+    "recentTradesList",
+    "opportunityList",
+    "healthList",
+    "learningList",
+    "diagnosticsList",
+    "explainabilityList",
+    "promotionList"
+  ].forEach((id) => {
+    const node = doc.createElement("div");
+    node.setAttribute("id", id);
+    if (id === "decisionAllowedOnly") node.checked = false;
+  });
+  return doc;
 }
 
 export function __dashboardSmokeRender(snapshot) {
   const previousDocument = activeDocument;
   const previousElements = elements;
-  const fake = createFakeDashboardDocument();
+  const previousSnapshot = latestSnapshot;
+  const previousSearch = searchQuery;
+  const previousAllowed = allowedOnly;
+  const previousShowAll = showAllDecisions;
+  renderFallbackSections.clear();
   try {
-    activeDocument = fake.document;
+    activeDocument = createFakeDashboardDocument();
     elements = createElements(activeDocument);
+    latestSnapshot = snapshot;
+    searchQuery = "";
+    allowedOnly = false;
+    showAllDecisions = false;
     render(snapshot);
     return {
-      controlHint: elements.controlHint?.textContent || "",
+      renderIssueCount: renderFallbackSections.size,
       operatorSummaryChildren: elements.operatorSummary?.children?.length || 0,
-      renderIssueCount: elements.operatorSummary?.querySelectorAll?.("[data-render-issue='1']")?.length || 0
+      overviewCardCount: elements.overviewCards?.children?.length || 0,
+      opportunityCount: elements.opportunityList?.children?.length || 0
     };
   } finally {
+    renderFallbackSections.clear();
     activeDocument = previousDocument;
     elements = previousElements;
+    latestSnapshot = previousSnapshot;
+    searchQuery = previousSearch;
+    allowedOnly = previousAllowed;
+    showAllDecisions = previousShowAll;
   }
 }
 
-async function init() {
-  bindEvents();
-  await refreshSnapshot();
-  pollTimer = window.setInterval(refreshSnapshot, POLL_MS);
-}
-
-if (activeDocument) {
-  init();
+if (typeof document !== "undefined") {
+  initDashboard();
 }

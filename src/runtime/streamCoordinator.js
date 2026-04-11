@@ -211,6 +211,38 @@ export class StreamCoordinator {
       listenKey: null,
       userStreamTransport: null,
       userStreamSubscriptionId: null,
+      restartHealth: {
+        public: {
+          attempts: 0,
+          failures: 0,
+          lastReason: null,
+          lastAttemptAt: null,
+          lastRestartAt: null,
+          lastFailureAt: null,
+          lastError: null,
+          stalled: false
+        },
+        futures: {
+          attempts: 0,
+          failures: 0,
+          lastReason: null,
+          lastAttemptAt: null,
+          lastRestartAt: null,
+          lastFailureAt: null,
+          lastError: null,
+          stalled: false
+        },
+        user: {
+          attempts: 0,
+          failures: 0,
+          lastReason: null,
+          lastAttemptAt: null,
+          lastRestartAt: null,
+          lastFailureAt: null,
+          lastError: null,
+          stalled: false
+        }
+      },
       localBook: this.orderBook.getSummary(),
       symbols: {}
     };
@@ -337,6 +369,7 @@ export class StreamCoordinator {
       lastError: this.state.lastError,
       userStreamSessionActive: Boolean(this.state.listenKey || this.state.userStreamSubscriptionId != null),
       userStreamTransport: this.state.userStreamTransport,
+      restartHealth: this.state.restartHealth,
       localBook: this.state.localBook
     };
   }
@@ -470,6 +503,49 @@ export class StreamCoordinator {
     }
   }
 
+  ensureRestartHealth(kind) {
+    this.state.restartHealth = this.state.restartHealth || {};
+    this.state.restartHealth[kind] = this.state.restartHealth[kind] || {
+      attempts: 0,
+      failures: 0,
+      lastReason: null,
+      lastAttemptAt: null,
+      lastRestartAt: null,
+      lastFailureAt: null,
+      lastError: null,
+      stalled: false
+    };
+    return this.state.restartHealth[kind];
+  }
+
+  noteRestartAttempt(kind, reason) {
+    const health = this.ensureRestartHealth(kind);
+    health.attempts = (health.attempts || 0) + 1;
+    health.lastReason = reason || null;
+    health.lastAttemptAt = new Date().toISOString();
+    health.stalled = false;
+    return health;
+  }
+
+  noteRestartSuccess(kind, reason) {
+    const health = this.ensureRestartHealth(kind);
+    health.lastReason = reason || health.lastReason || null;
+    health.lastRestartAt = new Date().toISOString();
+    health.lastError = null;
+    health.stalled = false;
+    return health;
+  }
+
+  noteRestartFailure(kind, reason, error) {
+    const health = this.ensureRestartHealth(kind);
+    health.failures = (health.failures || 0) + 1;
+    health.lastReason = reason || health.lastReason || null;
+    health.lastFailureAt = new Date().toISOString();
+    health.lastError = error?.message || `${error || "unknown_restart_error"}`;
+    health.stalled = true;
+    return health;
+  }
+
   scheduleRestart(kind, restart, reason) {
     if (this.isClosing || !this.state.enabled || typeof WebSocket === "undefined") {
       return Promise.resolve();
@@ -482,12 +558,23 @@ export class StreamCoordinator {
       .then(() => new Promise((resolve) => {
         this.restartTimers[kind] = setTimeout(async () => {
           this.restartTimers[kind] = null;
+          this.noteRestartAttempt(kind, reason);
           try {
             await restart();
+            this.noteRestartSuccess(kind, reason);
             this.logger?.info?.(`${kind} stream restarted`, { reason, delayMs });
           } catch (error) {
             this.state.lastError = error.message;
-            this.logger?.warn?.(`${kind} stream restart failed`, { reason, error: error.message });
+            this.noteRestartFailure(kind, reason, error);
+            const retryScheduled = !this.isClosing && this.state.enabled && typeof WebSocket !== "undefined";
+            this.logger?.warn?.(`${kind} stream restart failed`, {
+              reason,
+              error: error.message,
+              retryScheduled
+            });
+            if (retryScheduled) {
+              void this.scheduleRestart(kind, restart, `${reason}_retry`);
+            }
           } finally {
             resolve();
           }
@@ -978,5 +1065,3 @@ export class StreamCoordinator {
     }
   }
 }
-
-

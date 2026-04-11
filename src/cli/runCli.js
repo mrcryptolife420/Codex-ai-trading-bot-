@@ -4,10 +4,10 @@ import { TradingBot } from "../runtime/tradingBot.js";
 import { BotManager } from "../runtime/botManager.js";
 
 function shouldUseReadOnlyInit(command) {
-  return ["status", "doctor", "report"].includes(command);
+  return ["status", "doctor", "report", "learning"].includes(command);
 }
 
-const BOT_COMMANDS = new Set(["run", "once", "status", "doctor", "report", "research", "scan"]);
+const BOT_COMMANDS = new Set(["run", "once", "status", "doctor", "report", "learning", "research", "scan"]);
 
 async function runContinuousManagedBot({ config, logger, signalSource = process }) {
   const manager = new BotManager({ projectRoot: config.projectRoot, logger });
@@ -155,6 +155,12 @@ export default async function runCli({
     if (command === "report") {
       const report = await bot.getReport();
       console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    if (command === "learning") {
+      const learning = await bot.getAdaptiveLearningStatus();
+      console.log(JSON.stringify(learning, null, 2));
       return;
     }
 

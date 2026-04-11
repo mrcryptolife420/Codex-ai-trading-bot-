@@ -133,6 +133,7 @@ function summarizeCandidateSnapshot(candidate = {}) {
       ? {
           blocker: candidate.decision.missedTradeTuningApplied.blocker || null,
           action: candidate.decision.missedTradeTuningApplied.action || "observe",
+          actionClass: candidate.decision.missedTradeTuningApplied.actionClass || "no_action",
           thresholdShift: num(candidate.decision.missedTradeTuningApplied.thresholdShift || 0, 4)
         }
       : null,
@@ -611,6 +612,7 @@ function makeDecisionFrame(candidate = {}) {
     missedTradeTuning: candidate.decision?.missedTradeTuningApplied ? {
       blocker: candidate.decision.missedTradeTuningApplied.blocker || null,
       action: candidate.decision.missedTradeTuningApplied.action || "observe",
+      actionClass: candidate.decision.missedTradeTuningApplied.actionClass || "no_action",
       confidence: num(candidate.decision.missedTradeTuningApplied.confidence || 0, 4),
       thresholdShift: num(candidate.decision.missedTradeTuningApplied.thresholdShift || 0, 4)
     } : null,
@@ -1026,6 +1028,7 @@ export class DataRecorder {
       missedTradeTuningApplied: entryRationale.missedTradeTuning ? {
         blocker: entryRationale.missedTradeTuning.topBlocker || entryRationale.missedTradeTuning.blocker || null,
         action: entryRationale.missedTradeTuning.action || "observe",
+        actionClass: entryRationale.missedTradeTuning.actionClass || "no_action",
         confidence: num(entryRationale.missedTradeTuning.confidence || 0, 4),
         thresholdShift: num(entryRationale.missedTradeTuning.thresholdShift || 0, 4)
       } : null,
@@ -1107,6 +1110,7 @@ export class DataRecorder {
       missedTradeTuningApplied: rationale.missedTradeTuning ? {
         blocker: rationale.missedTradeTuning.topBlocker || rationale.missedTradeTuning.blocker || null,
         action: rationale.missedTradeTuning.action || "observe",
+        actionClass: rationale.missedTradeTuning.actionClass || "no_action",
         confidence: num(rationale.missedTradeTuning.confidence || 0, 4)
       } : null,
       exitPolicyApplied: rationale.exitPolicy ? {
@@ -1297,7 +1301,14 @@ export class DataRecorder {
         kind: "trade_replay"
       }),
       replayCheckpoints: (trade.replayCheckpoints || []).slice(-12),
-      topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 10, 4)
+      topRawFeatures: pickTopNumericMap(trade.rawFeatures || {}, 10, 4),
+      learningAttribution: trade.learningAttribution ? {
+        category: trade.learningAttribution.category || "uncertain",
+        confidence: num(trade.learningAttribution.confidence || 0, 4),
+        reasons: arr(trade.learningAttribution.reasons || []).slice(0, 6),
+        featureGroups: arr(trade.learningAttribution.featureGroups || []).slice(0, 4),
+        scope: trade.learningAttribution.scope || {}
+      } : null
     };
     await this.write("snapshots", at, payload);
     this.state.snapshotFrames += 1;

@@ -307,6 +307,7 @@ export function buildAdaptiveParameterOptimization({
     generatedAt: nowIso,
     status: topCandidate ? "active" : "warmup",
     tradeCount: trades.length,
+    candidateCount: candidates.length,
     autoApply: false,
     livePromotionAllowed: false,
     topCandidate: topCandidate ? {

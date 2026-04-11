@@ -12,6 +12,13 @@ function safeValue(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function resolveEffectiveMinTradeUsdt(config = {}, symbolRules = null, botMode = "paper") {
+  const configuredFloor = botMode === "paper"
+    ? safeValue(config.paperMinTradeUsdt, safeValue(config.minTradeUsdt, 0))
+    : safeValue(config.minTradeUsdt, 0);
+  return Math.max(configuredFloor, safeValue(symbolRules?.minNotional, 0));
+}
+
 function num(value, digits = 4) {
   return Number(safeValue(value, 0).toFixed(digits));
 }
@@ -180,6 +187,20 @@ function isPaperLeniencyReason(reason, selfHealState = {}) {
     return canRelaxPaperSelfHeal(selfHealState);
   }
   return isSoftPaperReason(reason);
+}
+
+function isPaperExplorationProbeReason(reason, selfHealState = {}) {
+  if (isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) {
+    return true;
+  }
+  const calibrationProbeActive = selfHealState.mode === "paper_calibration_probe" && canRelaxPaperSelfHeal(selfHealState);
+  if (calibrationProbeActive && ["meta_gate_caution", "meta_neural_caution"].includes(reason)) {
+    return true;
+  }
+  return [
+    "model_confidence_too_low",
+    "trade_size_below_minimum"
+  ].includes(reason);
 }
 
 function usesWeekendHighRiskStrategyGate(strategySummary = {}) {
@@ -1294,6 +1315,9 @@ function applyOfflineLearningGuidance({
       adjacentFeaturePressure: 0,
       featurePressureSources: [],
       impactedFeatureGroups: [],
+      staleClosedLearning: false,
+      staleLearningPressureDampened: false,
+      benchmarkPenaltyScale: 1,
       opportunityShift: 0,
       learningValueScore,
       activeLearningState,
@@ -1372,6 +1396,9 @@ function applyOfflineLearningGuidance({
     adjacentFeaturePressure: num(adjacentFeaturePressure, 4),
     featurePressureSources: featurePressureSources.slice(0, 4),
     impactedFeatureGroups: impactedFeatureGroups.slice(0, 4),
+    staleClosedLearning: Boolean(guidance.staleClosedLearning),
+    staleLearningPressureDampened: Boolean(guidance.staleLearningPressureDampened),
+    benchmarkPenaltyScale: num(safeValue(guidance.benchmarkPenaltyScale, 1), 4),
     opportunityShift,
     learningValueScore: nextLearningValueScore,
     activeLearningState: {
@@ -1885,17 +1912,22 @@ export class RiskManager {
     const conditionId = marketConditionSummary?.conditionId || null;
     const familyId = strategySummary?.family || null;
     const strategyId = strategySummary?.activeStrategy || null;
+    const actionClass = missedTradeTuningSummary?.actionClass || "no_action";
     const inScope =
       (!scope.conditionId || scope.conditionId === conditionId) &&
       (!scope.familyId || scope.familyId === familyId) &&
       (!scope.strategyId || scope.strategyId === strategyId);
-    if (!inScope || !["priority", "guarded", "observe"].includes(missedTradeTuningSummary?.status || "")) {
+    const actionable =
+      ["scoped_soften", "scoped_harden"].includes(actionClass) ||
+      (actionClass === "paper_only" && this.config.botMode === "paper");
+    if (!inScope || !["priority", "guarded", "observe"].includes(missedTradeTuningSummary?.status || "") || !actionable) {
       return {
         active: false,
         thresholdShift: 0,
         paperProbeEligible: false,
         shadowPriority: false,
         action: "observe",
+        actionClass,
         confidence: 0,
         blocker: null,
         note: null
@@ -1907,6 +1939,7 @@ export class RiskManager {
       paperProbeEligible: Boolean(missedTradeTuningSummary.paperProbeEligible),
       shadowPriority: Boolean(missedTradeTuningSummary.shadowPriority),
       action: missedTradeTuningSummary.action || "observe",
+      actionClass,
       confidence: safeValue(missedTradeTuningSummary.confidence, 0),
       blocker: missedTradeTuningSummary.topBlocker || null,
       blockerSofteningRecommendation: missedTradeTuningSummary.blockerSofteningRecommendation || null,
@@ -2158,7 +2191,8 @@ export class RiskManager {
     baselineCoreSummary = {},
     paperLearningGuidance = {},
     offlineLearningGuidance = {},
-    exchangeCapabilitiesSummary = {}
+    exchangeCapabilitiesSummary = {},
+    symbolRules = null
   }) {
     const reasons = [];
     const openPositions = runtime.openPositions || [];
@@ -2541,8 +2575,23 @@ export class RiskManager {
     if ((driftSummary.blockerReasons || []).length) {
       reasons.push(...driftSummary.blockerReasons);
     }
+    const softMetaCalibrationProbeBlock =
+      this.config.botMode === "paper" &&
+      selfHealState.mode === "paper_calibration_probe" &&
+      canRelaxPaperSelfHeal(selfHealState) &&
+      metaSummary.action === "block" &&
+      safeValue(metaSummary.score, 1) >= this.config.metaBlockScore - 0.04 &&
+      (metaSummary.reasons || []).length > 0 &&
+      (metaSummary.reasons || []).every((reason) =>
+        ["meta_gate_reject", "meta_neural_caution", "trade_quality_caution"].includes(reason)
+      );
     if (metaSummary.action === "block") {
-      reasons.push(...(metaSummary.reasons || []));
+      if (softMetaCalibrationProbeBlock) {
+        reasons.push("meta_gate_caution");
+        reasons.push(...getMetaCautionReasons(metaSummary));
+      } else {
+        reasons.push(...(metaSummary.reasons || []));
+      }
     }
     if (pairHealthSummary.quarantined) {
       reasons.push("pair_health_quarantine");
@@ -3173,6 +3222,7 @@ export class RiskManager {
       spotDowntrendPenalty *
       parameterGovernorAdjustment.executionAggressivenessBias;
     const adjustedQuoteAmount = quoteAmount * trendStateTuning.sizeMultiplier * offlineLearningGuidanceApplied.sizeMultiplier;
+    const effectiveMinTradeUsdt = resolveEffectiveMinTradeUsdt(this.config, symbolRules, this.config.botMode);
     const invalidQuoteAmount =
       !Number.isFinite(quoteAmount) ||
       !Number.isFinite(adjustedQuoteAmount) ||
@@ -3187,14 +3237,13 @@ export class RiskManager {
 
     const confidenceBreakdown = preliminaryConfidenceBreakdown;
 
-    if (!invalidQuoteAmount && adjustedQuoteAmount < this.config.minTradeUsdt) {
-      reasons.push("trade_size_below_minimum");
-    }
-
     const cappedQuoteAmount = invalidQuoteAmount
       ? 0
       : Math.min(adjustedQuoteAmount, maxByPosition, maxByRisk, remainingExposureBudget);
-    const meaningfulSizeFloor = Math.max(this.config.minTradeUsdt * 1.4, Math.min(45, this.config.minTradeUsdt + 20));
+    if (!invalidQuoteAmount && cappedQuoteAmount < effectiveMinTradeUsdt) {
+      reasons.push("trade_size_below_minimum");
+    }
+    const meaningfulSizeFloor = Math.max(effectiveMinTradeUsdt * 1.4, Math.min(45, effectiveMinTradeUsdt + 20));
     const deservesMeaningfulSize = !invalidQuoteAmount && cappedQuoteAmount >= meaningfulSizeFloor;
 
     const normalizedReasons = normalizeDecisionReasons(reasons);
@@ -3247,9 +3296,16 @@ export class RiskManager {
       0.03
     );
 
+    const paperCalibrationProbeActive =
+      this.config.botMode === "paper" &&
+      selfHealState.mode === "paper_calibration_probe" &&
+      canRelaxPaperSelfHeal(selfHealState);
+    const paperExplorationEligibleReasonsOnly =
+      reasons.length > 0 &&
+      reasons.every((reason) => isPaperExplorationProbeReason(reason, selfHealState));
     const mildPaperQualityOnly =
       reasons.some((reason) => isMildPaperQualityReason(reason)) &&
-      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason));
+      paperExplorationEligibleReasonsOnly;
 
     const softPaperOnlyReasons = reasons.length > 0 && reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState));
     const highQualitySoftPaperProbeCandidate =
@@ -3286,7 +3342,7 @@ export class RiskManager {
       this.config.botMode === "paper" &&
       lowConfidencePressure.reliefEligible &&
       reasons.includes("model_confidence_too_low") &&
-      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
+      paperExplorationEligibleReasonsOnly &&
       !["always_skip", "simple_exit", "safe_lane"].includes(paperLearningGuidance?.benchmarkLead || "") &&
       safeValue(offlineLearningGuidance.executionCaution, 0) <= 0.08 &&
       safeValue(offlineLearningGuidance.featureTrustPenalty, offlineLearningGuidance.featurePenalty || 0) <= 0.08
@@ -3319,8 +3375,9 @@ export class RiskManager {
           )
         : 0;
     const rawProbabilityProbeRelief =
-      this.config.botMode === "paper" &&
+      paperCalibrationProbeActive &&
       reasons.includes("model_confidence_too_low") &&
+      paperExplorationEligibleReasonsOnly &&
       !score.shouldAbstain &&
       Number.isFinite(score.rawProbability) &&
       safeValue(score.rawProbability, 0) > safeValue(score.probability, 0) &&
@@ -3349,11 +3406,124 @@ export class RiskManager {
       rawProbabilityProbeRelief +
       (highQualitySoftPaperProbeCandidate ? 0.03 : 0) +
       (missedTradeTuningApplied.paperProbeEligible ? 0.012 : 0);
+    const calibrationProbeConfidenceRescue =
+      paperCalibrationProbeActive &&
+      reasons.length > 0 &&
+      reasons.every((reason) => [
+        "meta_gate_caution",
+        "meta_neural_caution",
+        "execution_cost_budget_exceeded",
+        "model_confidence_too_low",
+        "trade_size_below_minimum"
+      ].includes(reason)) &&
+      safeValue(signalQualitySummary.overallScore, 0) >= 0.68 &&
+      safeValue(dataQualitySummary.overallScore, 0) >= 0.64 &&
+      safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.75 &&
+      safeValue(confidenceBreakdown.executionConfidence, 0) >= 0.68 &&
+      safeValue(setupQuality.score, 0) >= 0.63 &&
+      safeValue(score.rawProbability, safeValue(score.probability, 0)) >= 0.18 &&
+      ["feature_trust", "threshold_penalty_stack", "model_disagreement", "calibration_confidence"].includes(lowConfidencePressure.primaryDriver) &&
+      safeValue(lowConfidencePressure.featureTrustPenalty, 0) <= 0.12 &&
+      safeValue(lowConfidencePressure.executionCaution, 0) <= 0.03;
+      const calibrationProbeQuotaRescue =
+        paperCalibrationProbeActive &&
+        reasons.length > 0 &&
+        reasons.every((reason) => [
+        "meta_gate_caution",
+        "meta_neural_caution",
+        "execution_cost_budget_exceeded",
+        "model_confidence_too_low",
+        "trade_size_below_minimum"
+      ].includes(reason)) &&
+      paperLearningGuidance?.active &&
+      paperLearningGuidance.preferredLane === "probe" &&
+      paperLearningGuidance.quotaMatched !== false &&
+      (paperLearningGuidance.quotaRemaining == null || safeValue(paperLearningGuidance.quotaRemaining, 0) > 0) &&
+      safeValue(paperLearningGuidance.guidanceStrength, 0) >= 0.16 &&
+      safeValue(signalQualitySummary.overallScore, 0) >= 0.66 &&
+      safeValue(dataQualitySummary.overallScore, 0) >= 0.64 &&
+      safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.76 &&
+      safeValue(confidenceBreakdown.executionConfidence, 0) >= 0.72 &&
+      safeValue(setupQuality.score, 0) >= 0.6 &&
+      safeValue(score.probability, 0) >= 0.2 &&
+      safeValue(score.rawProbability, safeValue(score.probability, 0)) >= Math.max(0.2, safeValue(baseThreshold, 0) - 0.32) &&
+      ["feature_trust", "threshold_penalty_stack", "model_disagreement", "calibration_confidence"].includes(lowConfidencePressure.primaryDriver) &&
+      safeValue(lowConfidencePressure.featureTrustPenalty, 0) <= 0.12 &&
+        safeValue(lowConfidencePressure.executionCaution, 0) <= 0.03 &&
+        (
+          offlineLearningGuidanceApplied.staleLearningPressureDampened ||
+          safeValue(paperLearningGuidance.probeBoost, 0) >= 0.07
+        );
+      const calibrationProbeStrongSignalRescue =
+        paperCalibrationProbeActive &&
+        reasons.length > 0 &&
+        reasons.every((reason) => [
+          "meta_gate_caution",
+          "meta_neural_caution",
+          "execution_cost_budget_exceeded",
+          "model_confidence_too_low",
+          "trade_size_below_minimum"
+        ].includes(reason)) &&
+        paperLearningGuidance?.active &&
+        paperLearningGuidance.preferredLane === "probe" &&
+        paperLearningGuidance.quotaMatched !== false &&
+        (paperLearningGuidance.quotaRemaining == null || safeValue(paperLearningGuidance.quotaRemaining, 0) > 0) &&
+        safeValue(paperLearningGuidance.guidanceStrength, 0) >= 0.16 &&
+        safeValue(signalQualitySummary.overallScore, 0) >= 0.68 &&
+        safeValue(dataQualitySummary.overallScore, 0) >= 0.5 &&
+        safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.76 &&
+        safeValue(confidenceBreakdown.executionConfidence, 0) >= 0.58 &&
+        safeValue(setupQuality.score, 0) >= 0.64 &&
+        safeValue(score.probability, 0) >= 0.22 &&
+        safeValue(score.rawProbability, safeValue(score.probability, 0)) >= 0.24 &&
+        ["feature_trust", "threshold_penalty_stack", "model_disagreement", "calibration_confidence"].includes(lowConfidencePressure.primaryDriver) &&
+        safeValue(lowConfidencePressure.featureTrustPenalty, 0) <= 0.08 &&
+        safeValue(lowConfidencePressure.executionCaution, 0) <= 0.03 &&
+        !invalidQuoteAmount &&
+        safeValue(cappedQuoteAmount, 0) > 0 &&
+        safeValue(marketSnapshot.book.depthConfidence, 0) >= 0.7 &&
+        safeValue(marketSnapshot.book.spreadBps, 0) <= Math.min(this.config.maxSpreadBps * 0.25, 4) &&
+        safeValue(marketSnapshot.market.realizedVolPct, 0) <= this.config.maxRealizedVolPct * 0.45 &&
+        safeValue(marketStructureSummary.riskScore, 0) <= 0.18 &&
+        safeValue(newsSummary.riskScore, 0) <= 0.18 &&
+        safeValue(announcementSummary.riskScore, 0) <= 0.08 &&
+        safeValue(calendarSummary.riskScore, 0) <= 0.14 &&
+        !(sessionSummary.blockerReasons || []).length &&
+        !(driftSummary.blockerReasons || []).length &&
+        (
+          executionCostBudget.blocked ||
+          safeValue(executionCostBudget.averageTotalCostBps, 0) >= Math.max(12, safeValue(this.config.paperFeeBps, 0) * 1.2)
+        ) &&
+        (
+          offlineLearningGuidanceApplied.staleLearningPressureDampened ||
+          safeValue(paperLearningGuidance.probeBoost, 0) >= 0.07
+        );
+      const useRawProbabilityForPaperProbe =
+        paperCalibrationProbeActive &&
+        reasons.includes("model_confidence_too_low") &&
+      paperExplorationEligibleReasonsOnly &&
+      !score.shouldAbstain &&
+      Number.isFinite(score.rawProbability) &&
+      safeValue(score.rawProbability, 0) > safeValue(score.probability, 0) &&
+      safeValue(signalQualitySummary.overallScore, 0) >= 0.66 &&
+      safeValue(confidenceBreakdown.overallConfidence, 0) >= 0.62 &&
+      safeValue(dataQualitySummary.overallScore, 0) >= 0.46 &&
+      safeValue(newsSummary.riskScore, 0) <= 0.12 &&
+      safeValue(announcementSummary.riskScore, 0) <= 0.08 &&
+      safeValue(volatilitySummary.riskScore, 0) <= 0.46;
+    const paperProbeProbability = useRawProbabilityForPaperProbe
+      ? Math.max(safeValue(score.probability, 0), safeValue(score.rawProbability, 0))
+      : safeValue(score.probability, 0);
+      const paperProbeThresholdSatisfied =
+        paperProbeProbability >= threshold - paperProbeThresholdBuffer ||
+        calibrationProbeConfidenceRescue ||
+        calibrationProbeQuotaRescue ||
+        calibrationProbeStrongSignalRescue;
     const targetedLowConfidenceDriver = ["feature_trust", "model_disagreement", "auxiliary_blend_drag"].includes(lowConfidencePressure.primaryDriver);
     const untargetedLowConfidenceNearMiss =
       reasons.includes("model_confidence_too_low") &&
       !reasons.includes("trade_size_below_minimum") &&
-      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
+      paperExplorationEligibleReasonsOnly &&
       targetedLowConfidenceDriver &&
       paperGuardrailThresholdRelief === 0 &&
       paperGuidanceProbeRelief === 0 &&
@@ -3369,17 +3539,21 @@ export class RiskManager {
       !allow &&
       !invalidQuoteAmount &&
       this.config.botMode === "paper" &&
-      this.config.paperExplorationEnabled &&
-      canOpenAnotherPaperLearningPosition &&
-      minutesSincePortfolioTrade >= effectivePaperExplorationCooldownMinutes &&
-      reasons.length > 0 &&
-      !reasons.includes("capital_governor_recovery") &&
-      !untargetedLowConfidenceNearMiss &&
-      reasons.every((reason) => isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
-      score.probability >= threshold - paperProbeThresholdBuffer &&
-      (marketSnapshot.book.bookPressure || 0) >= paperProbeBookPressureFloor &&
-      (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.4, 8) &&
-      (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
+        this.config.paperExplorationEnabled &&
+        canOpenAnotherPaperLearningPosition &&
+        minutesSincePortfolioTrade >= effectivePaperExplorationCooldownMinutes &&
+        reasons.length > 0 &&
+        !reasons.includes("capital_governor_recovery") &&
+        !untargetedLowConfidenceNearMiss &&
+        paperExplorationEligibleReasonsOnly &&
+        paperProbeThresholdSatisfied &&
+          (
+          calibrationProbeQuotaRescue ||
+          calibrationProbeStrongSignalRescue ||
+            (marketSnapshot.book.bookPressure || 0) >= paperProbeBookPressureFloor
+          ) &&
+        (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.4, 8) &&
+        (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.75 &&
       (newsSummary.riskScore || 0) <= 0.32 &&
       (announcementSummary.riskScore || 0) <= 0.2 &&
       (calendarSummary.riskScore || 0) <= 0.28 &&
@@ -3396,37 +3570,55 @@ export class RiskManager {
         !mildPaperQualityOnly ||
         safeValue(signalQualitySummary.executionViability, 0) >= 0.52 ||
         safeValue(dataQualitySummary.overallScore, 0) >= 0.54
-      ) &&
-      canRelaxPaperSelfHeal(selfHealState)
-    ) {
-      const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
-      const explorationQuoteAmount = Math.min(
-        explorationBudget,
-        Math.max(this.config.minTradeUsdt, adjustedQuoteAmount * this.config.paperExplorationSizeMultiplier)
-      );
-      if (explorationQuoteAmount >= this.config.minTradeUsdt) {
-        allow = true;
-        entryMode = "paper_exploration";
-        suppressedReasons = [...reasons];
+        ) &&
+        canRelaxPaperSelfHeal(selfHealState)
+      ) {
+        const allowCalibrationProbeMinTradeOverride =
+          paperCalibrationProbeActive &&
+          reasons.includes("trade_size_below_minimum") &&
+          !reasons.includes("trade_size_invalid");
+        const paperCalibrationProbeFloor = allowCalibrationProbeMinTradeOverride
+          ? Math.max(
+              safeValue(symbolRules?.minNotional, 0),
+              5,
+              effectiveMinTradeUsdt * Math.max(this.config.selfHealPaperCalibrationProbeSizeMultiplier || 0.22, 0.2)
+            )
+          : effectiveMinTradeUsdt;
+        const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
+        const explorationQuoteAmount = Math.min(
+          explorationBudget,
+          Math.max(paperCalibrationProbeFloor, adjustedQuoteAmount * this.config.paperExplorationSizeMultiplier)
+        );
+        if (explorationQuoteAmount > 0 && (allowCalibrationProbeMinTradeOverride || explorationQuoteAmount >= effectiveMinTradeUsdt)) {
+          allow = true;
+          entryMode = "paper_exploration";
+          suppressedReasons = [...reasons];
         paperGuardrailRelief = paperGuardrailReasons;
         finalQuoteAmount = explorationQuoteAmount;
         paperExploration = {
           mode: "paper_exploration",
           thresholdBuffer: paperProbeThresholdBuffer,
           sizeMultiplier: this.config.paperExplorationSizeMultiplier,
+          effectiveMinTradeUsdt: num(effectiveMinTradeUsdt, 2),
           minBookPressure: paperProbeBookPressureFloor,
           minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
           warmupProgress: calibrationWarmup,
           suppressedReasons,
           guardrailReliefReasons: paperGuardrailRelief,
-          adaptiveThresholdRelief: clamp(paperProbeThresholdBuffer - this.config.paperExplorationThresholdBuffer, 0, 0.05),
-          guidanceThresholdRelief: num(paperGuidanceProbeRelief, 4),
-          confidenceThresholdRelief: num(lowConfidenceProbeRelief, 4),
-          thresholdPenaltyStackRelief: num(thresholdPenaltyStackProbeRelief, 4),
-          rawProbabilityThresholdRelief: num(rawProbabilityProbeRelief, 4),
-          confidencePrimaryDriver: lowConfidencePressure.primaryDriver || null,
-          confidenceDriverSource: lowConfidencePressure.dominantFeaturePressureSource || null,
-          confidenceDriverGroup: lowConfidencePressure.dominantFeaturePressureGroup || null,
+            adaptiveThresholdRelief: clamp(paperProbeThresholdBuffer - this.config.paperExplorationThresholdBuffer, 0, 0.05),
+            guidanceThresholdRelief: num(paperGuidanceProbeRelief, 4),
+            confidenceThresholdRelief: num(lowConfidenceProbeRelief, 4),
+            thresholdPenaltyStackRelief: num(thresholdPenaltyStackProbeRelief, 4),
+              rawProbabilityThresholdRelief: num(rawProbabilityProbeRelief, 4),
+              probeProbabilityUsed: num(paperProbeProbability, 4),
+              rawProbabilityUsed: useRawProbabilityForPaperProbe ? num(score.rawProbability, 4) : null,
+              allowMinTradeOverride: allowCalibrationProbeMinTradeOverride,
+              calibrationConfidenceRescue: calibrationProbeConfidenceRescue,
+              calibrationQuotaRescue: calibrationProbeQuotaRescue,
+              calibrationStrongSignalRescue: calibrationProbeStrongSignalRescue,
+              confidencePrimaryDriver: lowConfidencePressure.primaryDriver || null,
+              confidenceDriverSource: lowConfidencePressure.dominantFeaturePressureSource || null,
+              confidenceDriverGroup: lowConfidencePressure.dominantFeaturePressureGroup || null,
           selfHealRelaxed: suppressedReasons.includes("self_heal_pause_entries"),
           selfHealIssues: [...(selfHealState.issues || [])]
         };
@@ -3444,6 +3636,17 @@ export class RiskManager {
       ].includes(reason)
     );
 
+    const recoveryModelConfidenceSlack =
+      reasons.includes("model_confidence_too_low") && this.config.botMode === "paper"
+        ? clamp(
+            Math.max(0, standardConfidenceThreshold - threshold) * 0.5 + 0.012,
+            0.012,
+            0.04
+          )
+        : 0;
+    const recoveryProbeProbabilityFloor =
+      threshold - this.config.paperRecoveryProbeThresholdBuffer - recoveryModelConfidenceSlack;
+
     if (
       !allow &&
       !invalidQuoteAmount &&
@@ -3453,7 +3656,7 @@ export class RiskManager {
       minutesSincePortfolioTrade >= effectivePaperRecoveryCooldownMinutes &&
       reasons.some((reason) => ["capital_governor_blocked", "capital_governor_recovery"].includes(reason)) &&
       reasons.every((reason) => isPaperRecoveryProbeReason(reason) || isPaperLeniencyReason(reason, selfHealState) || isMildPaperQualityReason(reason)) &&
-      score.probability >= threshold - this.config.paperRecoveryProbeThresholdBuffer &&
+      score.probability >= recoveryProbeProbabilityFloor &&
       (marketSnapshot.book.bookPressure || 0) >= this.config.paperRecoveryProbeMinBookPressure &&
       (marketSnapshot.book.spreadBps || 0) <= Math.min(this.config.maxSpreadBps * 0.5, 10) &&
       (marketSnapshot.market.realizedVolPct || 0) <= this.config.maxRealizedVolPct * 0.82 &&
@@ -3476,15 +3679,24 @@ export class RiskManager {
       canRelaxPaperSelfHeal(selfHealState)
     ) {
       const recoveryBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
+      const recoveryProbeScaledTarget = Math.max(
+        effectiveMinTradeUsdt * this.config.paperRecoveryProbeSizeMultiplier,
+        adjustedQuoteAmount * this.config.paperRecoveryProbeSizeMultiplier
+      );
       const recoveryProbeFloor = this.config.paperRecoveryProbeAllowMinTradeOverride
-        ? Math.max(5, this.config.minTradeUsdt * this.config.paperRecoveryProbeSizeMultiplier)
-        : this.config.minTradeUsdt;
+        ? Math.max(
+            safeValue(symbolRules?.minNotional, 0),
+            5,
+            Math.min(effectiveMinTradeUsdt, recoveryBudget),
+            recoveryProbeScaledTarget
+          )
+        : effectiveMinTradeUsdt;
       const recoveryProbeQuoteAmount = Math.min(
         recoveryBudget,
-        Math.max(recoveryProbeFloor, adjustedQuoteAmount * this.config.paperRecoveryProbeSizeMultiplier)
+        Math.max(recoveryProbeFloor, recoveryProbeScaledTarget)
       );
-      if (recoveryProbeQuoteAmount > 0 && (this.config.paperRecoveryProbeAllowMinTradeOverride || recoveryProbeQuoteAmount >= this.config.minTradeUsdt)) {
-        allow = true;
+        if (recoveryProbeQuoteAmount > 0 && (this.config.paperRecoveryProbeAllowMinTradeOverride || recoveryProbeQuoteAmount >= effectiveMinTradeUsdt)) {
+          allow = true;
         entryMode = "paper_recovery_probe";
         suppressedReasons = [...reasons];
         paperGuardrailRelief = recoveryProbeGuardrailReasons;
@@ -3492,6 +3704,11 @@ export class RiskManager {
         paperExploration = {
           mode: "paper_recovery_probe",
           thresholdBuffer: this.config.paperRecoveryProbeThresholdBuffer,
+          probabilityFloor: num(recoveryProbeProbabilityFloor, 4),
+          modelConfidenceSlack: num(recoveryModelConfidenceSlack, 4),
+          quoteFloor: num(recoveryProbeFloor, 2),
+          scaledQuoteTarget: num(recoveryProbeScaledTarget, 2),
+          recoveryBudget: num(recoveryBudget, 2),
           sizeMultiplier: this.config.paperRecoveryProbeSizeMultiplier,
           minBookPressure: this.config.paperRecoveryProbeMinBookPressure,
           minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,

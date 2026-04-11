@@ -16,7 +16,7 @@
               <div class="brand-block">
                 <p class="eyebrow">Codex AI Crypto Trading Bot</p>
                 <h1>Trading Desk</h1>
-                <p id="controlHint" class="topbar-copy">Status wordt geladen...</p>
+                <p id="controlHint" class="topbar-copy">Dashboard wordt geladen...</p>
               </div>
             </div>
 
@@ -38,152 +38,128 @@
             </div>
           </div>
 
-          <div id="operatorSummary" class="status-summary" aria-label="Belangrijkste samenvatting"></div>
+          <div id="operatorSummary" class="headline-strip" aria-label="Belangrijkste samenvatting"></div>
         </header>
 
-        <section class="main-grid overview-stage">
-          <article class="panel panel-primary collapsible-panel" id="signalsSection">
-              <div class="panel-head panel-head-split">
-                <div>
-                  <p class="eyebrow">Beste kansen</p>
-                  <h3>Top signalen</h3>
-                </div>
-                <div class="toolbar">
-                  <input id="decisionSearch" type="search" placeholder="Zoek symbol of strategie" />
-                  <label class="toggle">
-                    <input id="decisionAllowedOnly" type="checkbox" />
-                    Alleen tradebaar
-                  </label>
-                  <span id="decisionMeta" class="panel-meta"></span>
-                  <button id="decisionShowMoreBtn" class="ghost ghost-small" type="button">Toon alles</button>
-                  <button id="signalsToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="signalsBody">Inklappen</button>
-                </div>
+        <section class="overview-layout">
+          <article class="panel panel-primary">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">System overview</p>
+                <h2>Wat telt nu het meest?</h2>
               </div>
-              <div id="signalsBody" class="panel-body">
-                <div id="decisionsList" class="list-stack"></div>
-              </div>
+            </div>
+            <div id="overviewCards" class="overview-card-grid"></div>
           </article>
 
-          <article class="panel panel-side collapsible-panel" id="positionsSection">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Actieve exposure</p>
-                  <h3>Open posities</h3>
-                </div>
-                <button id="positionsToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="positionsBody">Inklappen</button>
+          <article class="panel panel-side">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Attention</p>
+                <h2>Nu bekijken</h2>
               </div>
-              <div id="positionsBody" class="panel-body">
-                <div id="positionsList" class="list-stack"></div>
-              </div>
+            </div>
+            <div id="attentionList" class="stack-list"></div>
+            <div class="subsection-head">
+              <p class="eyebrow">Operator focus</p>
+            </div>
+            <div id="actionList" class="stack-list compact-list"></div>
           </article>
         </section>
 
-        <section class="bottom-grid analytics-grid">
-          <article class="panel panel-side collapsible-panel" id="riskSection">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Risico en herstel</p>
-                  <h3>Systeem en risico</h3>
-                </div>
-                <button id="riskToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="riskBody">Inklappen</button>
-              </div>
-              <div id="riskBody" class="panel-body">
-                <div id="opsSummary" class="risk-grid"></div>
-                <div id="opsList" class="list-stack compact-list"></div>
-              </div>
-          </article>
-
-          <article class="panel panel-primary collapsible-panel" id="learningSection">
+        <section class="primary-layout">
+          <article class="panel panel-primary">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Learning en adaptie</p>
+                <p class="eyebrow">Can it trade now?</p>
+                <h2>Focus en blockers</h2>
+              </div>
+            </div>
+            <div id="focusList" class="focus-grid"></div>
+          </article>
+
+          <article class="panel panel-side">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Open positions</p>
+                <h2>Actieve exposure</h2>
+              </div>
+            </div>
+            <div id="positionsList" class="stack-list"></div>
+          </article>
+        </section>
+
+        <section class="activity-layout">
+          <article class="panel panel-primary">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Recent activity</p>
+                <h2>Laatste trades</h2>
+              </div>
+            </div>
+            <div id="recentTradesList" class="stack-list"></div>
+          </article>
+        </section>
+
+        <section class="advanced-layout">
+          <details class="panel detail-panel" open>
+            <summary class="panel-summary">
+              <div>
+                <p class="eyebrow">Opportunity board</p>
+                <h3>Top kansen en blokkades</h3>
+              </div>
+              <span id="decisionMeta" class="panel-meta"></span>
+            </summary>
+            <div class="detail-body">
+              <div class="toolbar">
+                <input id="decisionSearch" type="search" placeholder="Zoek symbol of strategie" />
+                <label class="toggle">
+                  <input id="decisionAllowedOnly" type="checkbox" />
+                  Alleen tradebaar
+                </label>
+                <button id="decisionShowMoreBtn" class="ghost ghost-small" type="button">Toon meer</button>
+              </div>
+              <div id="opportunityList" class="stack-list"></div>
+            </div>
+          </details>
+
+          <details class="panel detail-panel">
+            <summary class="panel-summary">
+              <div>
+                <p class="eyebrow">Health</p>
+                <h3>Freshness en systeemstatus</h3>
+              </div>
+            </summary>
+            <div class="detail-body">
+              <div id="healthList" class="stack-list"></div>
+            </div>
+          </details>
+
+          <details class="panel detail-panel">
+            <summary class="panel-summary">
+              <div>
+                <p class="eyebrow">Learning</p>
                 <h3>Learning en tuning</h3>
               </div>
-              <button id="learningToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="learningBody">Inklappen</button>
+            </summary>
+            <div class="detail-body detail-grid">
+              <div id="learningList" class="stack-list"></div>
+              <div id="diagnosticsList" class="stack-list"></div>
             </div>
-              <div id="learningBody" class="panel-body">
-                <div id="learningList" class="list-stack"></div>
-              </div>
-          </article>
+          </details>
 
-          <article class="panel panel-primary collapsible-panel" id="historySection">
-            <div class="panel-head">
+          <details class="panel detail-panel">
+            <summary class="panel-summary">
               <div>
-                <p class="eyebrow">Laatste afsluitingen</p>
-                <h3>Recente trades</h3>
+                <p class="eyebrow">Explainability</p>
+                <h3>Replay, explainers en promotion</h3>
               </div>
-              <button id="historyToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="historyBody">Inklappen</button>
+            </summary>
+            <div class="detail-body detail-grid">
+              <div id="explainabilityList" class="stack-list"></div>
+              <div id="promotionList" class="stack-list"></div>
             </div>
-            <div id="historyBody" class="panel-body">
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Coin</th>
-                      <th>Open</th>
-                      <th>Sluit</th>
-                      <th>Reden</th>
-                      <th>P/L</th>
-                      <th>Rendement</th>
-                    </tr>
-                  </thead>
-                  <tbody id="tradesBody"></tbody>
-                </table>
-              </div>
-              </div>
-          </article>
-
-          <article class="panel panel-side collapsible-panel" id="diagnosticsSection">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Waarom trade de bot wel of niet</p>
-                <h3>Diagnostiek</h3>
-              </div>
-              <button id="diagnosticsToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="diagnosticsBody">Inklappen</button>
-            </div>
-              <div id="diagnosticsBody" class="panel-body">
-                <div id="diagnosticsList" class="list-stack"></div>
-              </div>
-          </article>
-
-          <article class="panel panel-primary collapsible-panel" id="missedTradesSection">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Leren van blokkades</p>
-                <h3>Gemiste setups</h3>
-              </div>
-              <button id="missedTradesToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="missedTradesBody">Inklappen</button>
-            </div>
-              <div id="missedTradesBody" class="panel-body">
-                <div id="missedTradesList" class="list-stack"></div>
-              </div>
-          </article>
-
-          <article class="panel panel-side collapsible-panel" id="explainabilitySection">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Beslisketen en replay</p>
-                <h3>Explainability</h3>
-              </div>
-              <button id="explainabilityToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="explainabilityBody">Inklappen</button>
-            </div>
-              <div id="explainabilityBody" class="panel-body">
-                <div id="explainabilityList" class="list-stack"></div>
-              </div>
-          </article>
-
-          <article class="panel panel-wide collapsible-panel" id="promotionSection">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Paper naar guarded live</p>
-                <h3>Promotion pipeline</h3>
-              </div>
-              <button id="promotionToggleBtn" class="ghost ghost-small collapse-btn" type="button" aria-expanded="true" aria-controls="promotionBody">Inklappen</button>
-            </div>
-            <div id="promotionBody" class="panel-body">
-              <div id="promotionList" class="list-stack"></div>
-            </div>
-          </article>
+          </details>
         </section>
       </main>
     </div>

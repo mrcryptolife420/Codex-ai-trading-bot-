@@ -193,6 +193,7 @@ export function buildSimulationEntryDecision({
     strategyRetirementSummary: overrides.strategyRetirementSummary || {},
     timeframeSummary: overrides.timeframeSummary || { alignmentScore: 0, higherBias: 0, blockerReasons: [] },
     pairHealthSummary: overrides.pairHealthSummary || { score: 1, quarantined: false, reasons: [] },
+    symbolRules: overrides.symbolRules || null,
     onChainLiteSummary: overrides.onChainLiteSummary || { liquidityScore: 0.5, stressScore: 0, riskOffScore: 0, marketBreadthScore: 0.5, trendingScore: 0, majorsMomentumScore: 0 },
     qualityQuorumSummary,
     divergenceSummary: overrides.divergenceSummary || { averageScore: 0, blockerReasons: [] },

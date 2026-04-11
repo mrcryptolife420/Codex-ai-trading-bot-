@@ -700,10 +700,17 @@ function resolveExpectedPaperFeeQuote(trade = {}, config = {}, side = "entry") {
     return 0;
   }
   const feeRate = Math.max(0, safeNumber(config.paperFeeBps, 0)) / 10_000;
+  if (side === "entry") {
+    const attribution = trade.entryExecutionAttribution || {};
+    const executedQuote = Math.max(0, safeNumber(attribution.executedQuote, 0));
+    const executedQuantity = Math.max(0, safeNumber(attribution.executedQuantity, 0));
+    const closedQuantity = Math.max(0, safeNumber(trade.quantity, 0));
+    if (executedQuote > 0 && executedQuantity > 0 && closedQuantity > 0) {
+      return Math.max(0, executedQuote * Math.min(1, closedQuantity / executedQuantity) * feeRate);
+    }
+  }
   const quantity = Math.max(0, safeNumber(trade.quantity, 0));
-  const price = side === "exit"
-    ? safeNumber(trade.exitPrice, 0)
-    : safeNumber(trade.entryPrice, 0);
+  const price = side === "exit" ? safeNumber(trade.exitPrice, 0) : safeNumber(trade.entryPrice, 0);
   return Math.max(0, quantity * price * feeRate);
 }
 
@@ -714,11 +721,13 @@ export function buildExecutionCostBreakdown(trade = {}, config = {}) {
   const brokerMode = trade.brokerMode || config.botMode || "paper";
   const observedEntryFee = estimateEntryFee(trade);
   const observedExitFee = estimateExitFee(trade);
+  const expectedEntryFee = resolveExpectedPaperFeeQuote(trade, config, "entry");
+  const expectedExitFee = resolveExpectedPaperFeeQuote(trade, config, "exit");
   const entryFee = brokerMode === "paper"
-    ? Math.max(observedEntryFee, resolveExpectedPaperFeeQuote(trade, config, "entry"))
+    ? (Number.isFinite(trade.entryFee) ? Math.max(observedEntryFee, expectedEntryFee) : expectedEntryFee)
     : observedEntryFee;
   const exitFee = brokerMode === "paper"
-    ? Math.max(observedExitFee, resolveExpectedPaperFeeQuote(trade, config, "exit"))
+    ? (Number.isFinite(trade.exitFee) ? Math.max(observedExitFee, expectedExitFee) : Math.max(observedExitFee, expectedExitFee))
     : observedExitFee;
   const feeBps = safeDivide(entryFee + exitFee, notional) * 10_000;
   const feeBudgetBps = resolveExpectedRoundTripFeeBps(trade, config);
@@ -743,7 +752,13 @@ export function buildExecutionCostBreakdown(trade = {}, config = {}) {
     spreadShockBps,
     liquidityShockBps,
     totalCostBps: feeBps + touchSlippageBps,
-    budgetCostBps: excessFeeBps + touchSlippageBps
+    budgetCostBps: excessFeeBps + touchSlippageBps,
+    feeInference: brokerMode === "paper"
+      ? {
+          entry: Number.isFinite(trade.entryFee) ? "observed" : "expected_from_config",
+          exit: Number.isFinite(trade.exitFee) ? "observed" : "expected_or_observed_residual"
+        }
+      : null
   };
 }
 
@@ -824,6 +839,7 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
   const averageExcessFeeBps = average(costs.map((item) => item.excessFeeBps || 0));
   const averageTouchSlippageBps = average(costs.map((item) => item.touchSlippageBps || 0));
   const averageSlippageDeltaBps = average(costs.map((item) => item.slippageDeltaBps || 0));
+  const reconstructedPaperEntryFeeCount = costs.filter((item) => item.feeInference?.entry === "expected_from_config").length;
   const matureStyles = styles.filter((item) => item.sampleReady);
   const matureStrategies = strategies.filter((item) => item.sampleReady);
   const worstStyle = matureStyles[0] || styles[0] || null;
@@ -860,6 +876,8 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
     averageExcessFeeBps,
     averageTouchSlippageBps,
     averageSlippageDeltaBps,
+    reconstructedPaperFeeSample: reconstructedPaperEntryFeeCount > 0,
+    reconstructedPaperEntryFeeCount,
     worstStyle: worstStyle?.id || null,
     worstStrategy: worstStrategy?.id || null,
     styles,
@@ -882,7 +900,10 @@ function buildExecutionCostSummary(trades = [], config = {}, nowIso = new Date()
         : "Fee-impact valt binnen het verwachte budget.",
       averageTouchSlippageBps
         ? `Gemiddelde touch slippage: ${averageTouchSlippageBps.toFixed(2)} bps.`
-        : "Touch slippage is nog niet zichtbaar in de huidige sample."
+        : "Touch slippage is nog niet zichtbaar in de huidige sample.",
+      costs.some((item) => item.feeInference?.entry === "expected_from_config")
+        ? "Een deel van de paper entry-fees werd gereconstrueerd uit de actieve fee-config omdat oudere trades geen entryFee opsloegen."
+        : null
     ].filter(Boolean)
   };
 }

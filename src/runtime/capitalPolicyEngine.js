@@ -65,6 +65,7 @@ export function buildCapitalPolicySnapshot({
     worstRegimes[0] ? `Regimebudget onder druk: ${worstRegimes[0].id} x${worstRegimes[0].multiplier}.` : null,
     familyKillSwitches[0] ? `Strategy-family cooldown: ${familyKillSwitches[0].id}.` : null,
     (capitalGovernor.status || "") === "blocked" ? "Capital governor blokkeert nieuwe entries." : null,
+    (capitalGovernor.watchReasons || []).length ? "Capital governor houdt alleen een recovery-watch actief; normale entries mogen beperkt doorgaan." : null,
     (capitalLadder.allowEntries === false) ? "Capital ladder houdt deployment in shadow/probation." : null,
     Number.isFinite(capitalGovernor.monthlyLossFraction) ? null : "Monthly capital-governor budget nog niet beschikbaar in runtime snapshot."
   ].filter(Boolean);

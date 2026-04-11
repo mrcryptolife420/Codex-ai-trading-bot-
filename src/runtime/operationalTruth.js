@@ -113,19 +113,21 @@ export function buildContract(kind, shape = null) {
   };
 }
 
-export function buildApiEnvelope({ kind, manager, status = null, doctor = null, report = null, snapshot = null }) {
+export function buildApiEnvelope({ kind, manager, status = null, doctor = null, report = null, snapshot = null, learning = null }) {
   return {
     contract: buildContract(kind),
     manager,
     ...(kind === "status" ? { status } : {}),
     ...(kind === "doctor" ? { doctor } : {}),
     ...(kind === "report" ? { report } : {}),
+    ...(kind === "learning" ? { learning } : {}),
     ...(kind === "snapshot" ? { dashboard: snapshot?.dashboard || null } : {}),
     payload: {
       snapshot: kind === "snapshot" ? snapshot : null,
       status: kind === "status" ? status : null,
       doctor: kind === "doctor" ? doctor : null,
-      report: kind === "report" ? report : null
+      report: kind === "report" ? report : null,
+      learning: kind === "learning" ? learning : null
     }
   };
 }

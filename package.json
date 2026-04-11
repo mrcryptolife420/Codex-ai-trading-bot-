@@ -7,6 +7,7 @@
     "start": "node src/cli.js run",
     "once": "node src/cli.js once",
     "status": "node src/cli.js status",
+    "learning": "node src/cli.js learning",
     "doctor": "node src/cli.js doctor",
     "report": "node src/cli.js report",
     "download-history": "node src/cli.js download-history",

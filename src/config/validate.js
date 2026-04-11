@@ -37,6 +37,7 @@ export function validateConfig(config) {
   assertRange("PAPER_LATENCY_MS", config.paperLatencyMs, 0, 5000, errors);
   assertRange("PAPER_MAKER_FILL_FLOOR", config.paperMakerFillFloor, 0, 1, errors);
   assertRange("PAPER_PARTIAL_FILL_MIN_RATIO", config.paperPartialFillMinRatio, 0, 1, errors);
+  assertRange("PAPER_MIN_TRADE_USDT", config.paperMinTradeUsdt, 1, 100000, errors);
   assertRange("BACKTEST_LATENCY_MS", config.backtestLatencyMs, 0, 5000, errors);
   assertRange("BACKTEST_SYNTHETIC_DEPTH_USD", config.backtestSyntheticDepthUsd, 1000, 500000000, errors);
   assertRange("MAX_SERVER_TIME_DRIFT_MS", config.maxServerTimeDriftMs, 50, 60_000, errors);
@@ -257,6 +258,7 @@ export function validateConfig(config) {
   assertRange("CAPITAL_LADDER_MIN_APPROVED_CANDIDATES", config.capitalLadderMinApprovedCandidates, 0, 20, errors);
   assertRange("CAPITAL_GOVERNOR_WEEKLY_DRAWDOWN_PCT", config.capitalGovernorWeeklyDrawdownPct, 0.005, 0.5, errors);
   assertRange("CAPITAL_GOVERNOR_BAD_DAY_STREAK", config.capitalGovernorBadDayStreak, 1, 10, errors);
+  assertRange("CAPITAL_GOVERNOR_BAD_DAY_STREAK_MIN_LOSS_FRACTION", config.capitalGovernorBadDayStreakMinLossFraction, 0, 0.1, errors);
   assertRange("CAPITAL_GOVERNOR_RECOVERY_TRADES", config.capitalGovernorRecoveryTrades, 1, 50, errors);
   assertRange("CAPITAL_GOVERNOR_RECOVERY_MIN_WIN_RATE", config.capitalGovernorRecoveryMinWinRate, 0, 1, errors);
   assertRange("CAPITAL_GOVERNOR_MIN_SIZE_MULTIPLIER", config.capitalGovernorMinSizeMultiplier, 0.05, 1, errors);

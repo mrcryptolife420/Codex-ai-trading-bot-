@@ -523,6 +523,20 @@ export class BotManager {
     });
   }
 
+  async getLearning() {
+    await this.ensureBotReady();
+    const learning = await this.bot.getAdaptiveLearningStatus();
+    return buildApiEnvelope({
+      kind: "learning",
+      manager: {
+        runState: this.runState,
+        currentMode: learning?.mode || this.config?.botMode || "paper",
+        lastError: publicError(this.lastError)
+      },
+      learning
+    });
+  }
+
   async acknowledgeAlert(id, acknowledged = true, note = null) {
     return this.withLock(async () => {
       await this.ensureBotReady();

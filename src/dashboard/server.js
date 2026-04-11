@@ -136,6 +136,9 @@ async function handleApi(request, response, manager) {
   if (request.method === "GET" && url.pathname === "/api/report") {
     return sendJson(response, 200, await manager.getReport());
   }
+  if (request.method === "GET" && url.pathname === "/api/learning") {
+    return sendJson(response, 200, await manager.getLearning());
+  }
 
   if (request.method !== "POST") {
     return sendJson(response, 405, { error: "Method not allowed" });
@@ -249,10 +252,30 @@ export async function startDashboardServer({
     }
   });
 
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(listenPort, "127.0.0.1", resolve);
-  });
+  const shutdown = async () => {
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+    try {
+      await manager.stop("dashboard_shutdown");
+    } catch {
+      // ignore shutdown failures
+    }
+    await new Promise((resolve) => server.close(resolve));
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(listenPort, "127.0.0.1", resolve);
+    });
+  } catch (error) {
+    try {
+      await manager.stop("dashboard_listen_failed");
+    } catch {
+      // ignore cleanup failures after listen failure
+    }
+    throw error;
+  }
   const waitUntilClosed = new Promise((resolve) => {
     server.once("close", resolve);
   });
@@ -261,15 +284,6 @@ export async function startDashboardServer({
   logger?.info?.("Dashboard server started", {
     url: dashboardUrl
   });
-
-  const shutdown = async () => {
-    try {
-      await manager.stop("dashboard_shutdown");
-    } catch {
-      // ignore shutdown failures
-    }
-    await new Promise((resolve) => server.close(resolve));
-  };
 
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

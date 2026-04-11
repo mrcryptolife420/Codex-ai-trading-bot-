@@ -16,6 +16,12 @@ function topCountKey(counter = {}) {
     })[0]?.[0] || null;
 }
 
+function isExchangeReconcileAction(item = {}) {
+  return item.reason === "unmatched_open_orders"
+    || item.action === "resolve_unmatched_orders"
+    || item.id === "exchange-truth-unmatched-orders";
+}
+
 function makeAlert(id, severity, title, reason, action, extra = {}) {
   return {
     id,
@@ -75,9 +81,13 @@ export function buildOperatorAlerts({
   const selfHeal = runtime.selfHeal || {};
   const thresholdTuning = runtime.thresholdTuning || {};
   const signalFlow = runtime.signalFlow || {};
+  const exchangeTruth = runtime.exchangeTruth || {};
   const alertState = runtime.ops?.alertState || {};
   const botMode = `${config.botMode || runtime.botMode || "paper"}`.toLowerCase();
   const paperMode = botMode === "paper";
+  const lifecyclePendingActions = arr(lifecycle.pendingActions);
+  const exchangeReconcileActions = lifecyclePendingActions.filter((item) => isExchangeReconcileAction(item));
+  const positionAttentionActions = lifecyclePendingActions.filter((item) => ["manual_review", "reconcile_required"].includes(item.state) && !isExchangeReconcileAction(item));
 
   if (health.circuitOpen) {
     rawAlerts.push(makeAlert(
@@ -97,13 +107,31 @@ export function buildOperatorAlerts({
       (exchangeSafety.actions || [])[0] || "Draai eerst een reconcile-pass."
     ));
   }
-  if (arr(lifecycle.pendingActions).some((item) => ["manual_review", "reconcile_required"].includes(item.state))) {
+  if (positionAttentionActions.length) {
     rawAlerts.push(makeAlert(
       "lifecycle_attention_required",
       "high",
       "Positie vraagt operator aandacht",
       "Een open positie staat in manual review of reconcile_required.",
       "Controleer quantity, protective state en recente exchange actions."
+    ));
+  }
+  if (exchangeReconcileActions.length || arr(exchangeTruth.unmatchedOrderSymbols).length) {
+    const unresolvedSymbol = exchangeReconcileActions[0]?.symbol
+      || arr(exchangeTruth.unmatchedOrderSymbols)[0]
+      || null;
+    rawAlerts.push(makeAlert(
+      "exchange_reconcile_required",
+      "high",
+      "Exchange reconcile vraagt operator aandacht",
+      unresolvedSymbol
+        ? `Er staan open exchange-orders zonder runtime-positie voor ${unresolvedSymbol}.`
+        : "Er staan open exchange-orders zonder runtime-positie die eerst gereconciled moeten worden.",
+      "Controleer unmatched exchange-orders, cancel of reconcile ze en bevestig daarna de lifecycle-truth.",
+      {
+        symbol: unresolvedSymbol,
+        source: "exchange_truth"
+      }
     ));
   }
   if ((strategyRetirement.retireCount || 0) > 0) {

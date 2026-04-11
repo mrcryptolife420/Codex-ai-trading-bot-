@@ -413,11 +413,66 @@ function buildWeeklyStrategyReweighting(trades = [], config = {}, nowIso = new D
   };
 }
 
+function buildAdaptiveThresholdTuningPlan({
+  trades = [],
+  featureCleanupPlan = {},
+  strategyReweighting = {},
+  config = {}
+} = {}) {
+  const tradeCount = arr(trades).length;
+  const currentQuarantineEvidence = clamp(safeNumber(config.adaptiveLearningMinQuarantineEvidence, 0.62), 0.45, 0.9);
+  const currentStrategyReweightMaxBias = clamp(safeNumber(config.adaptiveLearningStrategyReweightMaxBias, 0.08), 0.02, 0.16);
+  if (!tradeCount) {
+    return {
+      status: "warmup",
+      tradeCount,
+      currentQuarantineEvidence: num(currentQuarantineEvidence),
+      currentStrategyReweightMaxBias: num(currentStrategyReweightMaxBias),
+      recommendedQuarantineEvidence: num(currentQuarantineEvidence),
+      recommendedStrategyReweightMaxBias: num(currentStrategyReweightMaxBias),
+      ready: false,
+      note: "Nog geen gesloten trades voor adaptive threshold tuning."
+    };
+  }
+  const quarantineCount = arr(featureCleanupPlan.featureQuarantineCandidates || []).length;
+  const reweightFamilies = arr(strategyReweighting.families || []);
+  const averageConfidence = average(reweightFamilies.map((item) => safeNumber(item.confidence, 0)), 0);
+  const enoughVolume = tradeCount >= 80;
+  const strongVolume = tradeCount >= 140;
+  const quarantineBias = quarantineCount >= 2 ? -0.03 : quarantineCount ? -0.015 : 0;
+  const familyBias = averageConfidence >= 0.58 && reweightFamilies.length >= 3
+    ? 0.012
+    : averageConfidence < 0.42
+      ? -0.012
+      : 0;
+  return {
+    status: enoughVolume ? "ready" : "observe",
+    tradeCount,
+    currentQuarantineEvidence: num(currentQuarantineEvidence),
+    currentStrategyReweightMaxBias: num(currentStrategyReweightMaxBias),
+    recommendedQuarantineEvidence: num(clamp(
+      currentQuarantineEvidence + (strongVolume ? quarantineBias : quarantineBias * 0.5),
+      0.5,
+      0.82
+    )),
+    recommendedStrategyReweightMaxBias: num(clamp(
+      currentStrategyReweightMaxBias + (enoughVolume ? familyBias : familyBias * 0.5),
+      0.03,
+      0.14
+    )),
+    ready: enoughVolume,
+    note: enoughVolume
+      ? "Tradevolume is groot genoeg om quarantine-evidence en strategy reweight bounds gericht te tunen."
+      : `Nog ${Math.max(0, 80 - tradeCount)} closed trades nodig voordat adaptive threshold tuning overtuigend wordt.`
+  };
+}
+
 function buildAnalyticsDatasets({
   learningAttribution = {},
   featureCleanupPlan = {},
   strategyReweighting = {},
-  parameterOptimization = {}
+  parameterOptimization = {},
+  adaptiveThresholdTuning = {}
 } = {}) {
   return {
     attributedTrades: {
@@ -444,6 +499,11 @@ function buildAnalyticsDatasets({
       candidateCount: parameterOptimization.candidateCount || 0,
       status: parameterOptimization.status || "warmup",
       topCandidate: parameterOptimization.topCandidate?.id || null
+    },
+    adaptiveThresholdTuning: {
+      status: adaptiveThresholdTuning.status || "warmup",
+      tradeCount: adaptiveThresholdTuning.tradeCount || 0,
+      ready: Boolean(adaptiveThresholdTuning.ready)
     }
   };
 }
@@ -836,7 +896,7 @@ function resolveCounterfactualSymbol(item = {}) {
 }
 
 function resolveCounterfactualBlockerReasons(item = {}) {
-  const reasons = arr(item.blockerReasons || []).filter(Boolean);
+  const reasons = uniqueDefined(item.blockerReasons || []);
   if (reasons.length) {
     return reasons.slice(0, 4);
   }
@@ -1015,17 +1075,135 @@ const GOOD_VETO_OUTCOMES = new Set([
   "fakeout_avoided"
 ]);
 
+function uniqueDefined(values = []) {
+  return [...new Set(arr(values).filter(Boolean))];
+}
+
+function incrementCountMap(map, id, amount = 1) {
+  if (!id) {
+    return;
+  }
+  map.set(id, (map.get(id) || 0) + amount);
+}
+
+function topCountMapEntries(map, limit = 3) {
+  return [...map.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit)
+    .map(([id, count]) => ({ id, count }));
+}
+
+function buildScopeSpecificityScore({
+  conditionId = null,
+  familyId = null,
+  strategyId = null,
+  regimeId = null,
+  sessionId = null
+} = {}) {
+  return (
+    (conditionId ? 1.2 : 0) +
+    (familyId ? 0.55 : 0) +
+    (strategyId ? 0.85 : 0) +
+    (regimeId ? 0.4 : 0) +
+    (sessionId ? 0.2 : 0)
+  );
+}
+
+function resolveSafeTuningActionClass({
+  direction = "observe",
+  hardBlocker = false,
+  sampleConfidence = 0,
+  freshnessScore = 0,
+  evidenceConfidence = 0,
+  weightedCount = 0,
+  scopeSpecificity = 0
+} = {}) {
+  if (direction === "observe") {
+    return "no_action";
+  }
+  if (weightedCount < 2.2 || sampleConfidence < 0.34) {
+    return "observe_only";
+  }
+  const maturity = clamp(
+    sampleConfidence * 0.48 +
+      freshnessScore * 0.22 +
+      evidenceConfidence * 0.3,
+    0,
+    1
+  );
+  if (direction === "soften" && hardBlocker) {
+    return maturity >= 0.7 ? "challenger_only" : "observe_only";
+  }
+  if (maturity < 0.5) {
+    return "observe_only";
+  }
+  if (maturity < 0.64) {
+    return "challenger_only";
+  }
+  if (direction === "soften") {
+    return scopeSpecificity >= 2.15 && freshnessScore >= 0.52
+      ? "scoped_soften"
+      : "paper_only";
+  }
+  if (direction === "harden") {
+    return scopeSpecificity >= 1.35 && evidenceConfidence >= 0.62
+      ? "scoped_harden"
+      : freshnessScore >= 0.48
+        ? "paper_only"
+        : "challenger_only";
+  }
+  return "no_action";
+}
+
+function toLegacyBlockerAction(direction = "observe") {
+  return direction === "soften"
+    ? "soften_blocker"
+    : direction === "harden"
+      ? "harden_blocker"
+      : "observe";
+}
+
+function toLegacyThresholdAction(direction = "observe") {
+  return direction === "soften"
+    ? "relax"
+    : direction === "harden"
+      ? "tighten"
+      : "observe";
+}
+
+function describeSafeTuningAction(actionClass = "no_action") {
+  switch (actionClass) {
+    case "observe_only":
+      return "observe_only";
+    case "challenger_only":
+      return "challenger_only";
+    case "paper_only":
+      return "paper_only";
+    case "scoped_soften":
+      return "scoped_soften";
+    case "scoped_harden":
+      return "scoped_harden";
+    default:
+      return "no_action";
+  }
+}
+
 function resolveCounterfactualOutcomeLabel(item = {}) {
   return `${item?.outcomeLabel || item?.outcome || ""}`.trim().toLowerCase();
 }
 
-function buildBlockerConditionScorecards(counterfactuals = []) {
+function buildBlockerConditionScorecards(counterfactuals = [], config = {}, nowIso = new Date().toISOString()) {
   const buckets = new Map();
+  const halfLifeHours = safeNumber(config.offlineTrainerBlockerHalfLifeHours, 24 * 7);
   for (const item of counterfactuals || []) {
-    const reasons = resolveCounterfactualBlockerReasons(item);
+    const reasons = uniqueDefined(resolveCounterfactualBlockerReasons(item));
     const conditionId = resolveCounterfactualConditionId(item);
     const familyId = resolveCounterfactualStrategyFamily(item);
     const strategyId = resolveCounterfactualStrategyId(item);
+    const regimeId = item.regime || item.regimeAtEntry || null;
+    const sessionId = item.sessionAtEntry || item.paperLearning?.scope?.session || null;
+    const evidenceWeight = computeEvidenceWeight(item, { nowIso, halfLifeHours });
+    const evidenceMs = resolveEvidenceTimestampMs(item);
     for (const blockerId of reasons) {
       const key = `${blockerId}::${conditionId}::${familyId}::${strategyId}`;
       if (!buckets.has(key)) {
@@ -1044,11 +1222,22 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
           marginalGoodVetoCount: 0,
           sharedGoodVetoCount: 0,
           lateVetoCount: 0,
-          averageMovePctSum: 0
+          averageMovePctSum: 0,
+          weightedCountRaw: 0,
+          weightedMissedWinnerCount: 0,
+          weightedGoodVetoCount: 0,
+          weightedLateVetoCount: 0,
+          evidenceWeightSum: 0,
+          evidenceCount: 0,
+          latestEvidenceMs: Number.NaN,
+          strategyCounts: new Map(),
+          regimeCounts: new Map(),
+          sessionCounts: new Map()
         });
       }
       const bucket = buckets.get(key);
       const blockerMode = resolveCounterfactualBlockerMode(item, blockerId);
+      const blockerModeWeight = blockerMode === "marginal" ? 1 : blockerMode === "shared" ? 0.55 : 0.35;
       bucket.count += 1;
       if (blockerMode === "marginal") {
         bucket.marginalCount += 1;
@@ -1056,8 +1245,20 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
         bucket.sharedCount += 1;
       }
       bucket.averageMovePctSum += item.realizedMovePct || item.bestBranch?.adjustedMovePct || 0;
+      bucket.weightedCountRaw += evidenceWeight * blockerModeWeight;
+      bucket.evidenceWeightSum += evidenceWeight;
+      bucket.evidenceCount += 1;
+      incrementCountMap(bucket.strategyCounts, strategyId, evidenceWeight * blockerModeWeight);
+      incrementCountMap(bucket.regimeCounts, regimeId, evidenceWeight * blockerModeWeight);
+      incrementCountMap(bucket.sessionCounts, sessionId, evidenceWeight * blockerModeWeight);
+      if (Number.isFinite(evidenceMs)) {
+        bucket.latestEvidenceMs = Number.isFinite(bucket.latestEvidenceMs)
+          ? Math.max(bucket.latestEvidenceMs, evidenceMs)
+          : evidenceMs;
+      }
       if (BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.missedWinnerCount += 1;
+        bucket.weightedMissedWinnerCount += evidenceWeight * blockerModeWeight;
         if (blockerMode === "marginal") {
           bucket.marginalMissedWinnerCount += 1;
         } else if (blockerMode === "shared") {
@@ -1066,6 +1267,7 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
       }
       if (GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.goodVetoCount += 1;
+        bucket.weightedGoodVetoCount += evidenceWeight * blockerModeWeight;
         if (blockerMode === "marginal") {
           bucket.marginalGoodVetoCount += 1;
         } else if (blockerMode === "shared") {
@@ -1074,28 +1276,59 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
       }
       if (resolveCounterfactualOutcomeLabel(item) === "late_veto") {
         bucket.lateVetoCount += 1;
+        bucket.weightedLateVetoCount += evidenceWeight * blockerModeWeight;
       }
     }
   }
   return [...buckets.values()]
     .map((bucket) => {
-      const weightedCount = bucket.marginalCount + bucket.sharedCount * 0.55;
-      const weightedMissedWinnerCount = bucket.marginalMissedWinnerCount + bucket.sharedMissedWinnerCount * 0.45;
-      const weightedGoodVetoCount = bucket.marginalGoodVetoCount + bucket.sharedGoodVetoCount * 0.65;
+      const weightedCount = bucket.weightedCountRaw || 0;
+      const weightedMissedWinnerCount = bucket.weightedMissedWinnerCount || 0;
+      const weightedGoodVetoCount = bucket.weightedGoodVetoCount || 0;
       const missedWinnerRate = weightedCount ? weightedMissedWinnerCount / weightedCount : 0;
       const goodVetoRate = weightedCount ? weightedGoodVetoCount / weightedCount : 0;
-      const lateVetoRate = bucket.count ? bucket.lateVetoCount / bucket.count : 0;
+      const lateVetoRate = weightedCount ? (bucket.weightedLateVetoCount || 0) / weightedCount : 0;
       const averageMovePct = bucket.count ? bucket.averageMovePctSum / bucket.count : 0;
+      const sampleConfidence = buildSampleConfidence(weightedCount, 3);
+      const freshnessScore = bucket.evidenceCount ? bucket.evidenceWeightSum / bucket.evidenceCount : 0;
       const confidence = clamp(
-        Math.min(0.68, weightedCount / 10) +
+        sampleConfidence * 0.5 +
+        freshnessScore * 0.18 +
         Math.abs(missedWinnerRate - goodVetoRate) * 0.26 +
         lateVetoRate * 0.06,
         0,
         1
       );
-      const soften = !HARD_TUNING_BLOCKERS.has(bucket.id) && bucket.count >= 3 && missedWinnerRate >= 0.5 && goodVetoRate <= 0.35;
-      const harden = bucket.count >= 3 && goodVetoRate >= 0.62 && missedWinnerRate <= 0.2;
-      const action = soften ? "soften" : harden ? "harden" : "observe";
+      const hardBlocker = HARD_TUNING_BLOCKERS.has(bucket.id);
+      const soften = !hardBlocker && weightedCount >= 2.2 && missedWinnerRate >= 0.52 && goodVetoRate <= 0.32 && (missedWinnerRate - goodVetoRate) >= 0.18;
+      const harden = weightedCount >= 2.2 && goodVetoRate >= 0.62 && missedWinnerRate <= 0.18 && (goodVetoRate - missedWinnerRate) >= 0.22;
+      const direction = soften ? "soften" : harden ? "harden" : "observe";
+      const dominantRegime = topCountMapEntries(bucket.regimeCounts, 1)[0]?.id || null;
+      const dominantSession = topCountMapEntries(bucket.sessionCounts, 1)[0]?.id || null;
+      const dominantStrategy = topCountMapEntries(bucket.strategyCounts, 1)[0]?.id || null;
+      const scopeSpecificity = buildScopeSpecificityScore({
+        conditionId: bucket.conditionId,
+        familyId: bucket.familyId,
+        strategyId: bucket.strategyId,
+        regimeId: dominantRegime,
+        sessionId: dominantSession
+      });
+      const actionClass = resolveSafeTuningActionClass({
+        direction,
+        hardBlocker,
+        sampleConfidence,
+        freshnessScore,
+        evidenceConfidence: confidence,
+        weightedCount,
+        scopeSpecificity
+      });
+      const effectMultiplier = actionClass === "scoped_soften" || actionClass === "scoped_harden"
+        ? 1
+        : actionClass === "paper_only"
+          ? 0.72
+          : actionClass === "challenger_only"
+            ? 0.42
+            : 0;
       return {
         id: bucket.id,
         conditionId: bucket.conditionId,
@@ -1116,20 +1349,32 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
         goodVetoRate: num(goodVetoRate),
         lateVetoRate: num(lateVetoRate),
         averageMovePct: num(averageMovePct),
+        sampleConfidence: num(sampleConfidence),
+        freshnessScore: num(freshnessScore),
         confidence: num(confidence),
-        action,
-        thresholdShift: soften
-          ? num(clamp(-0.004 - (missedWinnerRate - 0.5) * 0.018, -0.016, -0.004))
-          : harden
-            ? num(clamp(0.004 + (goodVetoRate - 0.62) * 0.02, 0.004, 0.016))
+        direction,
+        action: direction,
+        actionClass,
+        thresholdShift: direction === "soften"
+          ? num(clamp((-0.004 - (missedWinnerRate - 0.5) * 0.018) * effectMultiplier, -0.016, 0))
+          : direction === "harden"
+            ? num(clamp((0.004 + (goodVetoRate - 0.62) * 0.02) * effectMultiplier, 0, 0.016))
             : 0,
-        paperProbeEligible: soften,
-        shadowPriority: soften && bucket.missedWinnerCount >= 2,
-        blockerSofteningRecommendation: soften ? bucket.id : null,
-        blockerHardeningRecommendation: harden ? bucket.id : null,
-        status: action === "soften"
+        paperProbeEligible: ["paper_only", "scoped_soften"].includes(actionClass),
+        shadowPriority: ["challenger_only", "paper_only", "scoped_soften"].includes(actionClass) && bucket.missedWinnerCount >= 2,
+        blockerSofteningRecommendation: direction === "soften" ? bucket.id : null,
+        blockerHardeningRecommendation: direction === "harden" ? bucket.id : null,
+        dominantStrategy,
+        dominantRegime,
+        dominantSession,
+        dominantFeedback: direction === "soften"
+          ? "bad_veto_dominant"
+          : direction === "harden"
+            ? "good_veto_dominant"
+            : "mixed_feedback",
+        status: actionClass === "scoped_soften"
           ? "priority"
-          : action === "harden"
+          : actionClass === "scoped_harden"
             ? "guarded"
             : bucket.count >= 3
               ? "observe"
@@ -1140,8 +1385,9 @@ function buildBlockerConditionScorecards(counterfactuals = []) {
     .slice(0, 12);
 }
 
-function buildBlockerScorecards(counterfactuals = []) {
+function buildBlockerScorecards(counterfactuals = [], config = {}, nowIso = new Date().toISOString()) {
   const map = new Map();
+  const halfLifeHours = safeNumber(config.offlineTrainerBlockerHalfLifeHours, 24 * 7);
   const getBucket = (id) => {
     const key = id || "no_explicit_blocker";
     if (!map.has(key)) {
@@ -1158,20 +1404,34 @@ function buildBlockerScorecards(counterfactuals = []) {
         sharedBadVetoCount: 0,
         lateVetoCount: 0,
         timingIssueCount: 0,
+        weightedTotal: 0,
+        weightedGoodVetoCount: 0,
+        weightedBadVetoCount: 0,
+        weightedLateVetoCount: 0,
+        weightedTimingIssueCount: 0,
         moveSum: 0,
         strategyIds: new Set(),
         regimeIds: new Set(),
-        phaseIds: new Set()
+        phaseIds: new Set(),
+        strategyCounts: new Map(),
+        regimeCounts: new Map(),
+        phaseCounts: new Map(),
+        evidenceWeightSum: 0,
+        evidenceCount: 0,
+        latestEvidenceMs: Number.NaN
       });
     }
     return map.get(key);
   };
 
   for (const item of counterfactuals || []) {
-    const reasons = resolveCounterfactualBlockerReasons(item);
+    const reasons = uniqueDefined(resolveCounterfactualBlockerReasons(item));
+    const evidenceWeight = computeEvidenceWeight(item, { nowIso, halfLifeHours });
+    const evidenceMs = resolveEvidenceTimestampMs(item);
     for (const reason of reasons) {
       const bucket = getBucket(reason);
       const blockerMode = resolveCounterfactualBlockerMode(item, reason);
+      const blockerModeWeight = blockerMode === "marginal" ? 1 : blockerMode === "shared" ? 0.55 : 0.35;
       bucket.total += 1;
       if (blockerMode === "marginal") {
         bucket.marginalCount += 1;
@@ -1179,8 +1439,12 @@ function buildBlockerScorecards(counterfactuals = []) {
         bucket.sharedCount += 1;
       }
       bucket.moveSum += item.realizedMovePct || 0;
+      bucket.weightedTotal += evidenceWeight * blockerModeWeight;
+      bucket.evidenceWeightSum += evidenceWeight;
+      bucket.evidenceCount += 1;
       if (GOOD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.goodVetoCount += 1;
+        bucket.weightedGoodVetoCount += evidenceWeight * blockerModeWeight;
         if (blockerMode === "marginal") {
           bucket.marginalGoodVetoCount += 1;
         } else if (blockerMode === "shared") {
@@ -1188,6 +1452,7 @@ function buildBlockerScorecards(counterfactuals = []) {
         }
       } else if (BAD_VETO_OUTCOMES.has(resolveCounterfactualOutcomeLabel(item))) {
         bucket.badVetoCount += 1;
+        bucket.weightedBadVetoCount += evidenceWeight * blockerModeWeight;
         if (blockerMode === "marginal") {
           bucket.marginalBadVetoCount += 1;
         } else if (blockerMode === "shared") {
@@ -1195,43 +1460,77 @@ function buildBlockerScorecards(counterfactuals = []) {
         }
       } else if (resolveCounterfactualOutcomeLabel(item) === "late_veto") {
         bucket.lateVetoCount += 1;
+        bucket.weightedLateVetoCount += evidenceWeight * blockerModeWeight;
       } else if (["right_direction_wrong_timing", "quality_trap"].includes(resolveCounterfactualOutcomeLabel(item))) {
         bucket.timingIssueCount += 1;
+        bucket.weightedTimingIssueCount += evidenceWeight * blockerModeWeight;
       }
       if (item.strategy || item.strategyAtEntry) {
         bucket.strategyIds.add(item.strategy || item.strategyAtEntry);
+        incrementCountMap(bucket.strategyCounts, item.strategy || item.strategyAtEntry, evidenceWeight * blockerModeWeight);
       }
       if (item.regime || item.regimeAtEntry) {
         bucket.regimeIds.add(item.regime || item.regimeAtEntry);
+        incrementCountMap(bucket.regimeCounts, item.regime || item.regimeAtEntry, evidenceWeight * blockerModeWeight);
       }
       if (item.marketPhase) {
         bucket.phaseIds.add(item.marketPhase);
+        incrementCountMap(bucket.phaseCounts, item.marketPhase, evidenceWeight * blockerModeWeight);
+      }
+      if (Number.isFinite(evidenceMs)) {
+        bucket.latestEvidenceMs = Number.isFinite(bucket.latestEvidenceMs)
+          ? Math.max(bucket.latestEvidenceMs, evidenceMs)
+          : evidenceMs;
       }
     }
   }
 
   return [...map.values()]
     .map((bucket) => {
-      const weightedTotal = bucket.marginalCount + bucket.sharedCount * 0.55;
-      const weightedGoodVetoCount = bucket.marginalGoodVetoCount + bucket.sharedGoodVetoCount * 0.65;
-      const weightedBadVetoCount = bucket.marginalBadVetoCount + bucket.sharedBadVetoCount * 0.45;
+      const weightedTotal = bucket.weightedTotal || 0;
+      const weightedGoodVetoCount = bucket.weightedGoodVetoCount || 0;
+      const weightedBadVetoCount = bucket.weightedBadVetoCount || 0;
       const goodVetoRate = bucket.total ? bucket.goodVetoCount / bucket.total : 0;
       const badVetoRate = bucket.total ? bucket.badVetoCount / bucket.total : 0;
       const weightedGoodVetoRate = weightedTotal ? weightedGoodVetoCount / weightedTotal : goodVetoRate;
       const weightedBadVetoRate = weightedTotal ? weightedBadVetoCount / weightedTotal : badVetoRate;
-      const lateVetoRate = bucket.total ? bucket.lateVetoCount / bucket.total : 0;
-      const timingIssueRate = bucket.total ? bucket.timingIssueCount / bucket.total : 0;
+      const lateVetoRate = weightedTotal ? (bucket.weightedLateVetoCount || 0) / weightedTotal : 0;
+      const timingIssueRate = weightedTotal ? (bucket.weightedTimingIssueCount || 0) / weightedTotal : 0;
       const averageMovePct = bucket.total ? bucket.moveSum / bucket.total : 0;
+      const sampleConfidence = buildSampleConfidence(weightedTotal, 3);
+      const freshnessScore = bucket.evidenceCount ? bucket.evidenceWeightSum / bucket.evidenceCount : 0;
       const governanceScore = clamp(
         0.5 +
           weightedGoodVetoRate * 0.24 -
           weightedBadVetoRate * 0.28 -
           lateVetoRate * 0.12 -
           timingIssueRate * 0.08 -
-          Math.max(0, averageMovePct) * 4.5,
+          Math.max(0, averageMovePct) * 4.5 +
+          (freshnessScore - 0.5) * 0.06 +
+          sampleConfidence * 0.04,
         0,
         1
       );
+      const direction = weightedBadVetoRate >= 0.45 && weightedBadVetoCount >= 1.6 && sampleConfidence >= 0.42
+        ? "soften"
+        : weightedGoodVetoRate >= 0.55 && weightedGoodVetoCount >= 1.8 && sampleConfidence >= 0.42
+          ? "harden"
+          : "observe";
+      const actionClass = resolveSafeTuningActionClass({
+        direction,
+        hardBlocker: HARD_TUNING_BLOCKERS.has(bucket.id),
+        sampleConfidence,
+        freshnessScore,
+        evidenceConfidence: governanceScore,
+        weightedCount: weightedTotal,
+        scopeSpecificity: buildScopeSpecificityScore({
+          familyId: topCountMapEntries(bucket.strategyCounts, 1)[0]?.id ? "strategy_present" : null,
+          regimeId: topCountMapEntries(bucket.regimeCounts, 1)[0]?.id || null
+        })
+      });
+      const dominantStrategy = topCountMapEntries(bucket.strategyCounts, 1)[0]?.id || null;
+      const dominantRegime = topCountMapEntries(bucket.regimeCounts, 1)[0]?.id || null;
+      const dominantPhase = topCountMapEntries(bucket.phaseCounts, 1)[0]?.id || null;
       return {
         id: bucket.id,
         total: bucket.total,
@@ -1253,19 +1552,35 @@ function buildBlockerScorecards(counterfactuals = []) {
         timingIssueRate: num(timingIssueRate),
         averageMovePct: num(averageMovePct),
         governanceScore: num(governanceScore),
+        sampleConfidence: num(sampleConfidence),
+        freshnessScore: num(freshnessScore),
+        direction,
+        actionClass,
         affectedStrategies: [...bucket.strategyIds].slice(0, 4),
         affectedRegimes: [...bucket.regimeIds].slice(0, 4),
         affectedPhases: [...bucket.phaseIds].slice(0, 4),
-        status: weightedBadVetoRate >= 0.45 && weightedBadVetoCount >= 2
+        dominantStrategy,
+        dominantRegime,
+        dominantPhase,
+        dominantFeedback: direction === "soften"
+          ? "bad_veto_dominant"
+          : direction === "harden"
+            ? "good_veto_dominant"
+            : "mixed_feedback",
+        status: direction === "soften"
           ? "relax"
-          : weightedGoodVetoRate >= 0.55 && weightedGoodVetoCount >= 2
+          : direction === "harden"
             ? "keep"
             : "observe"
       };
     })
     .sort((left, right) => {
-      const badEdge = (right.weightedBadVetoRate || 0) - (left.weightedBadVetoRate || 0);
-      return Math.abs(badEdge) > 0.001 ? badEdge : right.total - left.total;
+      const severityDelta =
+        Math.abs((right.weightedBadVetoRate || 0) - (right.weightedGoodVetoRate || 0)) -
+        Math.abs((left.weightedBadVetoRate || 0) - (left.weightedGoodVetoRate || 0));
+      return Math.abs(severityDelta) > 0.001
+        ? severityDelta
+        : (right.weightedTotal || 0) - (left.weightedTotal || 0);
     })
     .slice(0, 10);
 }
@@ -1301,40 +1616,65 @@ function buildThresholdPolicy(blockerScorecards = [], config = {}) {
     .map((item) => {
       const relaxSignal = item.weightedBadVetoRate ?? item.badVetoRate ?? 0;
       const tightenSignal = item.weightedGoodVetoRate ?? item.goodVetoRate ?? 0;
-      const action = item.status === "relax"
-        ? "relax"
+      const direction = item.status === "relax"
+        ? "soften"
         : item.status === "keep" && tightenSignal >= 0.58
-          ? "tighten"
+          ? "harden"
           : "observe";
-      const baseStep = action === "relax"
+      const actionClass = resolveSafeTuningActionClass({
+        direction,
+        hardBlocker: HARD_TUNING_BLOCKERS.has(item.id),
+        sampleConfidence: safeNumber(item.sampleConfidence, 0),
+        freshnessScore: safeNumber(item.freshnessScore, 0),
+        evidenceConfidence: safeNumber(item.governanceScore, 0),
+        weightedCount: safeNumber(item.weightedTotal, item.total || 0),
+        scopeSpecificity: (
+          (arr(item.affectedStrategies || []).length <= 1 ? 1 : 0) +
+          (arr(item.affectedRegimes || []).length <= 1 ? 0.85 : 0)
+        )
+      });
+      const baseStep = direction === "soften"
         ? config.thresholdRelaxStep || 0.012
         : config.thresholdTightenStep || 0.01;
       const signalStrength = Math.max(relaxSignal, tightenSignal);
-      const adjustment = action === "observe"
+      const actionMultiplier = actionClass === "scoped_soften" || actionClass === "scoped_harden"
+        ? 1
+        : actionClass === "paper_only"
+          ? 0.7
+          : actionClass === "challenger_only"
+            ? 0.4
+            : 0;
+      const adjustment = direction === "observe"
         ? 0
-        : (action === "relax" ? -1 : 1) * Math.min(baseStep, Math.max(baseStep * 0.4, signalStrength * baseStep));
+        : (direction === "soften" ? -1 : 1) * Math.min(baseStep, Math.max(baseStep * 0.4, signalStrength * baseStep)) * actionMultiplier;
       const confidence = clamp(
-        Math.min(1, (item.total || 0) / 8) * 0.44 +
-          Math.abs(relaxSignal - tightenSignal) * 0.56,
+        safeNumber(item.sampleConfidence, 0) * 0.32 +
+          safeNumber(item.freshnessScore, 0) * 0.18 +
+          Math.abs(relaxSignal - tightenSignal) * 0.5,
         0,
         1
       );
       return {
         id: item.id,
-        action,
+        direction,
+        action: toLegacyThresholdAction(direction),
+        actionClass,
         adjustment: num(adjustment),
         confidence: num(confidence),
         total: item.total || 0,
         affectedStrategies: [...(item.affectedStrategies || [])].slice(0, 4),
         affectedRegimes: [...(item.affectedRegimes || [])].slice(0, 4),
-        rationale: action === "relax"
-          ? `${item.id} blokkeert te vaak gemiste winnaars.`
-          : action === "tighten"
-            ? `${item.id} veto is meestal correct en mag iets zwaarder wegen.`
+        dominantFeedback: item.dominantFeedback || "mixed_feedback",
+        sampleConfidence: num(item.sampleConfidence || 0),
+        freshnessScore: num(item.freshnessScore || 0),
+        rationale: direction === "soften"
+          ? `${item.id} blokkeert te vaak gemiste winnaars; advies ${describeSafeTuningAction(actionClass)}.`
+          : direction === "harden"
+            ? `${item.id} veto is meestal correct; advies ${describeSafeTuningAction(actionClass)}.`
             : `${item.id} heeft nog te weinig overtuigende feedback voor een threshold-wijziging.`
       };
     })
-    .filter((item) => item.action !== "observe")
+    .filter((item) => item.actionClass !== "no_action")
     .sort((left, right) => {
       const confidenceDelta = (right.confidence || 0) - (left.confidence || 0);
       return Math.abs(confidenceDelta) > 0.001
@@ -1369,7 +1709,7 @@ function buildThresholdPolicy(blockerScorecards = [], config = {}) {
     recommendations,
     notes: [
       recommendations[0]
-        ? `${recommendations[0].id} is de sterkste threshold-kandidaat (${recommendations[0].action}).`
+        ? `${recommendations[0].id} is de sterkste threshold-kandidaat (${recommendations[0].actionClass}).`
         : "Thresholds blijven stabiel; er is nog geen duidelijke veto-aanpassing nodig.",
       relaxCount
         ? `${relaxCount} veto-blokkers vragen een lossere gate.`
@@ -1850,7 +2190,14 @@ function buildExitConditionScorecards(trades = []) {
 
 function buildMissedTradeTuning(blockerConditionScorecards = []) {
   const ranked = [...blockerConditionScorecards].sort((left, right) => {
-    const actionDelta = Number(right.action !== "observe") - Number(left.action !== "observe");
+    const actionPriority = (item) => (
+      item.actionClass === "scoped_soften" ? 5 :
+      item.actionClass === "scoped_harden" ? 4 :
+      item.actionClass === "paper_only" ? 3 :
+      item.actionClass === "challenger_only" ? 2 :
+      item.actionClass === "observe_only" ? 1 : 0
+    );
+    const actionDelta = actionPriority(right) - actionPriority(left);
     if (actionDelta !== 0) {
       return actionDelta;
     }
@@ -1871,15 +2218,23 @@ function buildMissedTradeTuning(blockerConditionScorecards = []) {
       thresholdShift: 0,
       paperProbeEligible: false,
       shadowPriority: false,
+      actionClass: "no_action",
+      dominantFeedback: null,
       blockerSofteningRecommendation: null,
       blockerHardeningRecommendation: null,
       note: "Nog geen condition-specifieke missed-trade tuning zichtbaar."
     };
   }
+  const actionClass = top.actionClass || "no_action";
   return {
-    status: top.action === "soften" ? "priority" : top.action === "harden" ? "guarded" : "observe",
+    status: actionClass === "scoped_soften" || actionClass === "paper_only"
+      ? "priority"
+      : actionClass === "scoped_harden"
+        ? "guarded"
+        : "observe",
     topBlocker: top.id,
-    action: top.action,
+    action: toLegacyBlockerAction(top.action),
+    actionClass,
     confidence: num(top.confidence || 0, 4),
     scope: {
       conditionId: top.conditionId || null,
@@ -1889,12 +2244,13 @@ function buildMissedTradeTuning(blockerConditionScorecards = []) {
     thresholdShift: num(top.thresholdShift || 0, 4),
     paperProbeEligible: Boolean(top.paperProbeEligible),
     shadowPriority: Boolean(top.shadowPriority),
+    dominantFeedback: top.dominantFeedback || null,
     blockerSofteningRecommendation: top.blockerSofteningRecommendation || null,
     blockerHardeningRecommendation: top.blockerHardeningRecommendation || null,
     note: top.action === "soften"
-      ? `${top.id} lijkt te streng binnen ${top.conditionId}/${top.familyId}${top.strategyId ? `/${top.strategyId}` : ""}.`
+      ? `${top.id} lijkt te streng binnen ${top.conditionId}/${top.familyId}${top.strategyId ? `/${top.strategyId}` : ""}; advies ${describeSafeTuningAction(actionClass)}.`
       : top.action === "harden"
-        ? `${top.id} blokkeert meestal terecht binnen ${top.conditionId}/${top.familyId}${top.strategyId ? `/${top.strategyId}` : ""}.`
+        ? `${top.id} blokkeert meestal terecht binnen ${top.conditionId}/${top.familyId}${top.strategyId ? `/${top.strategyId}` : ""}; advies ${describeSafeTuningAction(actionClass)}.`
         : `${top.id} wordt gevolgd binnen ${top.conditionId}/${top.familyId}${top.strategyId ? `/${top.strategyId}` : ""}.`
   };
 }
@@ -2711,8 +3067,8 @@ export class OfflineTrainer {
     const conditionStrategyScorecards = buildConditionStrategyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
     const conditionFamilyScorecards = buildConditionFamilyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
     const conditionSessionFamilyScorecards = buildConditionSessionFamilyScorecards(modeScopedTrades, falsePositives, falseNegatives, this.config, nowIso);
-    const blockerScorecards = buildBlockerScorecards(modeScopedCounterfactuals);
-    const blockerConditionScorecards = buildBlockerConditionScorecards(modeScopedCounterfactuals);
+    const blockerScorecards = buildBlockerScorecards(modeScopedCounterfactuals, this.config, nowIso);
+    const blockerConditionScorecards = buildBlockerConditionScorecards(modeScopedCounterfactuals, this.config, nowIso);
     const readinessScore = clamp(
       0.24 +
         Math.min(0.3, modeScopedTrades.length / 80) +
@@ -2798,17 +3154,24 @@ export class OfflineTrainer {
       calibrationGovernance,
       regimeDeployment
     });
-    const parameterOptimization = buildAdaptiveParameterOptimization({
-      journal,
-      config: this.config,
-      nowIso
-    });
-    const analyticsDatasets = buildAnalyticsDatasets({
-      learningAttribution,
-      featureCleanupPlan,
-      strategyReweighting,
-      parameterOptimization
-    });
+      const parameterOptimization = buildAdaptiveParameterOptimization({
+        journal,
+        config: this.config,
+        nowIso
+      });
+      const adaptiveThresholdTuning = buildAdaptiveThresholdTuningPlan({
+        trades: modeScopedTrades,
+        featureCleanupPlan,
+        strategyReweighting,
+        config: this.config
+      });
+      const analyticsDatasets = buildAnalyticsDatasets({
+        learningAttribution,
+        featureCleanupPlan,
+        strategyReweighting,
+        parameterOptimization,
+        adaptiveThresholdTuning
+      });
 
     const summary = {
       generatedAt: nowIso,
@@ -2870,9 +3233,10 @@ export class OfflineTrainer {
       featureQuarantineCandidates: featureCleanupPlan.featureQuarantineCandidates || [],
       challengerDisableCandidates: featureCleanupPlan.challengerDisableCandidates || [],
       offlinePruneRecommendations: featureCleanupPlan.offlinePruneRecommendations || [],
-      strategyReweighting,
-      parameterOptimization,
-      analyticsDatasets,
+        strategyReweighting,
+        parameterOptimization,
+        adaptiveThresholdTuning,
+        analyticsDatasets,
       scopeRetrainReadiness,
       retrainReadiness,
       retrainFocusPlan,
@@ -2885,21 +3249,23 @@ export class OfflineTrainer {
       falseNegativeByStrategy: falseNegativeByStrategy.slice(0, 6),
       readinessScore: num(readinessScore),
       status: readinessScore >= 0.72 ? "ready" : readinessScore >= 0.52 ? "building" : "warmup",
-      runtimeApplied: {
-        thresholdPolicy: thresholdPolicy.topRecommendation
-          ? {
+        runtimeApplied: {
+          thresholdPolicy: thresholdPolicy.topRecommendation
+            ? {
               id: thresholdPolicy.topRecommendation.id || null,
               action: thresholdPolicy.topRecommendation.action || null,
+              actionClass: thresholdPolicy.topRecommendation.actionClass || "no_action",
               status: thresholdPolicy.status || "observe"
             }
-          : null,
-        missedTradeTuning: missedTradeTuning.topBlocker
-          ? {
+            : null,
+          missedTradeTuning: missedTradeTuning.topBlocker
+            ? {
               blockerId: missedTradeTuning.topBlocker,
               action: missedTradeTuning.action || null,
+              actionClass: missedTradeTuning.actionClass || "no_action",
               scope: missedTradeTuning.scope || null
             }
-          : null,
+            : null,
         topScope: scopeRetrainReadiness[0]
           ? {
               type: scopeRetrainReadiness[0].type || null,
@@ -2958,17 +3324,23 @@ export class OfflineTrainer {
           topCandidate: featureCleanupPlan.recommendations?.[0]?.id || null,
           quarantineCount: featureCleanupPlan.featureQuarantineCandidates?.length || 0
         },
-        parameterOptimization: {
-          status: parameterOptimization.status || "warmup",
-          topCandidate: parameterOptimization.topCandidate?.id || null,
-          candidateCount: parameterOptimization.candidateCount || 0
-        },
-        learningAttribution: {
-          topCategory: learningAttribution.topCategory || null,
-          tradeCount: learningAttribution.tradeCount || 0
+          parameterOptimization: {
+            status: parameterOptimization.status || "warmup",
+            topCandidate: parameterOptimization.topCandidate?.id || null,
+            candidateCount: parameterOptimization.candidateCount || 0
+          },
+          adaptiveThresholdTuning: {
+            status: adaptiveThresholdTuning.status || "warmup",
+            ready: Boolean(adaptiveThresholdTuning.ready),
+            recommendedQuarantineEvidence: num(adaptiveThresholdTuning.recommendedQuarantineEvidence || 0),
+            recommendedStrategyReweightMaxBias: num(adaptiveThresholdTuning.recommendedStrategyReweightMaxBias || 0)
+          },
+          learningAttribution: {
+            topCategory: learningAttribution.topCategory || null,
+            tradeCount: learningAttribution.tradeCount || 0
         }
       },
-      notes: [
+        notes: [
         modeScopedTrades.length >= 20
           ? "Er is genoeg gesloten trade-data voor regelmatige offline evaluatie."
           : "Nog extra gesloten trades verzamelen voor sterkere offline training.",
@@ -2981,15 +3353,15 @@ export class OfflineTrainer {
         falsePositives.length
           ? `${falsePositives.length} false positives tonen waar de meta-gate strenger mag worden.`
           : "False positive set is nog klein; dat is positief voor de huidige gating.",
-        blockerScorecards[0]
-          ? `${blockerScorecards[0].id} vraagt momenteel veto-aandacht (${blockerScorecards[0].status}).`
-          : "Nog geen veto-feedback met duidelijke blocker-patronen.",
-        missedTradeTuning.topBlocker
-          ? `${missedTradeTuning.topBlocker} krijgt nu ${missedTradeTuning.action}-tuning binnen ${missedTradeTuning.scope?.conditionId || "onbekende conditie"}.`
-          : "Nog geen condition-aware missed-trade tuning actief.",
-        thresholdPolicy.topRecommendation
-          ? `${thresholdPolicy.topRecommendation.id} geeft threshold-advies: ${thresholdPolicy.topRecommendation.action}.`
-          : "Threshold-tuning ziet momenteel geen harde aanpassing nodig.",
+          blockerScorecards[0]
+            ? `${blockerScorecards[0].id} vraagt momenteel veto-aandacht (${blockerScorecards[0].dominantFeedback || blockerScorecards[0].status}).`
+            : "Nog geen veto-feedback met duidelijke blocker-patronen.",
+          missedTradeTuning.topBlocker
+            ? `${missedTradeTuning.topBlocker} krijgt nu ${missedTradeTuning.actionClass || missedTradeTuning.action}-tuning binnen ${missedTradeTuning.scope?.conditionId || "onbekende conditie"}.`
+            : "Nog geen condition-aware missed-trade tuning actief.",
+          thresholdPolicy.topRecommendation
+            ? `${thresholdPolicy.topRecommendation.id} geeft threshold-advies: ${thresholdPolicy.topRecommendation.actionClass || thresholdPolicy.topRecommendation.action}.`
+            : "Threshold-tuning ziet momenteel geen harde aanpassing nodig.",
         outcomeScopeScorecards.topActionable
           ? `outcome-scope ${outcomeScopeScorecards.topActionable.scopeType}:${outcomeScopeScorecards.topActionable.id} stuurt nu direct threshold- en sizing-bias.`
           : "outcome-scope scorecards bouwen nog op.",
@@ -3011,6 +3383,7 @@ export class OfflineTrainer {
         parameterOptimization.topCandidate
           ? `${parameterOptimization.topCandidate.id} is de huidige offline parameter-challenger.`
           : parameterOptimization.note || "Parameter-optimalisatie wacht nog op voldoende dataset.",
+        adaptiveThresholdTuning.note,
         retrainReadiness.note,
         retrainFocusPlan.note,
         retrainExecutionPlan.notes?.[0],

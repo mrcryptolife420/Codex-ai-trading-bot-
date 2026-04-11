@@ -117,6 +117,30 @@ function computeRedDayStreak(dailyLedger = [], nowIso = new Date().toISOString()
   return streak;
 }
 
+function computeRedDayStreakLoss(dailyLedger = [], nowIso = new Date().toISOString()) {
+  let lossQuote = 0;
+  let streak = 0;
+  for (let index = dailyLedger.length - 1; index >= 0; index -= 1) {
+    const item = dailyLedger[index] || {};
+    if (!item.traded) {
+      if (sameUtcDay(item.day, nowIso)) {
+        continue;
+      }
+      break;
+    }
+    if ((item.pnlQuote || 0) < 0) {
+      streak += 1;
+      lossQuote += Math.abs(safeNumber(item.pnlQuote, 0));
+      continue;
+    }
+    break;
+  }
+  return {
+    streak,
+    lossQuote: num(lossQuote, 2)
+  };
+}
+
 function resolveLatestClosedTradeAt(journal = {}, botMode = "paper", tradingSource = null) {
   const timestamps = [
     ...(journal.trades || [])
@@ -150,7 +174,10 @@ export function buildCapitalGovernor({
   const dailyLossFraction = todayPnl < 0 ? Math.abs(todayPnl) / startingCash : 0;
   const weeklyLossFraction = weeklyPnl < 0 ? Math.abs(weeklyPnl) / startingCash : 0;
   const drawdownPct = computeDrawdownPct((journal.equitySnapshots || []).slice(-240), botMode, tradingSource);
-  const redDayStreak = computeRedDayStreak(recentDays, nowIso);
+  const redDayStreakSummary = computeRedDayStreakLoss(recentDays, nowIso);
+  const redDayStreak = redDayStreakSummary.streak;
+  const redDayStreakLossQuote = safeNumber(redDayStreakSummary.lossQuote, 0);
+  const redDayStreakLossFraction = redDayStreakLossQuote / startingCash;
   const latestTradeAt = resolveLatestClosedTradeAt(journal, botMode, tradingSource);
   const lastClosedTradeAgeHours = latestTradeAt
     ? (new Date(nowIso).getTime() - new Date(latestTradeAt).getTime()) / 3_600_000
@@ -168,10 +195,16 @@ export function buildCapitalGovernor({
     : 0;
   const recoveryAveragePnl = average(recoveryTrades.map((trade) => safeNumber(trade.netPnlPct, 0)), 0);
   const weeklyBlock = weeklyLossFraction >= safeNumber(config.capitalGovernorWeeklyDrawdownPct, 0.08);
-  const streakBlock = redDayStreak >= safeNumber(config.capitalGovernorBadDayStreak, 3);
+  const redDayStreakMinLossFraction = Math.max(
+    safeNumber(config.capitalGovernorBadDayStreakMinLossFraction, 0.003),
+    Math.max(safeNumber(config.maxDailyDrawdown, 0.04) * 0.08, 0.0005)
+  );
+  const streakThresholdReached = redDayStreak >= safeNumber(config.capitalGovernorBadDayStreak, 3);
+  const streakBlock = streakThresholdReached && redDayStreakLossFraction >= redDayStreakMinLossFraction;
+  const streakWatch = streakThresholdReached && !streakBlock;
   const drawdownWatch = recoveryContextFresh && drawdownPct >= safeNumber(config.portfolioDrawdownBudgetPct, 0.05) * 0.85;
   const dailyBlock = dailyLossFraction >= safeNumber(config.maxDailyDrawdown, 0.04);
-  const recoveryMode = dailyBlock || weeklyBlock || streakBlock || drawdownWatch;
+  const recoveryMode = dailyBlock || weeklyBlock || streakBlock || streakWatch || drawdownWatch;
   const allowProbeEntries = botMode === "paper" && recoveryMode;
   const releaseReady = recoveryTrades.length >= safeNumber(config.capitalGovernorRecoveryTrades, 4) &&
     recoveryWinRate >= safeNumber(config.capitalGovernorRecoveryMinWinRate, 0.55) &&
@@ -205,6 +238,10 @@ export function buildCapitalGovernor({
     weeklyLossFraction: num(weeklyLossFraction),
     drawdownPct: num(drawdownPct),
     redDayStreak,
+    redDayStreakLossQuote: num(redDayStreakLossQuote, 2),
+    redDayStreakLossFraction: num(redDayStreakLossFraction),
+    streakBlockActive: Boolean(streakBlock),
+    streakWatchActive: Boolean(streakWatch),
     recentDayCount: recentDays.filter((item) => item.traded).length,
     latestTradeAt,
     lastClosedTradeAgeHours: Number.isFinite(lastClosedTradeAgeHours) ? num(lastClosedTradeAgeHours, 1) : null,
@@ -217,6 +254,9 @@ export function buildCapitalGovernor({
       ...(weeklyBlock ? ["capital_governor_weekly_drawdown_limit"] : []),
       ...(streakBlock ? ["capital_governor_red_day_streak"] : [])
     ],
+    watchReasons: [
+      ...(streakWatch ? ["capital_governor_red_day_streak_watch"] : [])
+    ],
     notes: [
       allowEntries
         ? recoveryMode
@@ -227,7 +267,9 @@ export function buildCapitalGovernor({
           : "Capital governor blokkeert nieuwe entries tot het verliesritme afneemt.",
       `Vandaag ${num(dailyLossFraction * 100, 2)}% verliesbudget gebruikt, 7d ${num(weeklyLossFraction * 100, 2)}%.`,
       redDayStreak
-        ? `${redDayStreak} opeenvolgende rode dag(en) sturen de recovery-logica aan.`
+        ? streakBlock
+          ? `${redDayStreak} opeenvolgende rode dag(en) met ${num(redDayStreakLossFraction * 100, 2)}% cumulatief verlies blokkeren normale entries.`
+          : `${redDayStreak} opeenvolgende rode dag(en) met slechts ${num(redDayStreakLossFraction * 100, 2)}% cumulatief verlies houden de governor in recovery, maar niet in hard block.`
         : "Geen actuele rode-dagen-streak zichtbaar.",
       latestTradeAt
         ? `Laatste gesloten trade ${num(lastClosedTradeAgeHours, 1)} uur geleden (${latestTradeAt}).`
