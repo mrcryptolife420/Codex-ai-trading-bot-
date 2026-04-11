@@ -15029,6 +15029,58 @@ await runCheck("exchange safety audit blocks stale live reconciliation", async (
   assert.ok(audit.reasons.includes("exchange_truth_mismatch"));
 });
 
+await runCheck("exchange safety audit ignores stale freeze flag on paper", async () => {
+  const audit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: {
+        mismatchCount: 0,
+        freezeEntries: true,
+        lastReconciledAt: "2026-03-09T09:00:00.000Z"
+      },
+      orderLifecycle: { pendingActions: [] }
+    },
+    report: { recentEvents: [] },
+    config: makeConfig({ botMode: "paper" }),
+    streamStatus: { lastPublicMessageAt: "2026-03-09T09:55:00.000Z" },
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(audit.freezeEntries, false);
+  assert.equal(audit.status, "ready");
+});
+
+await runCheck("exchange safety audit still blocks paper on mismatch or critical lifecycle", async () => {
+  const mismatchAudit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: { mismatchCount: 1, freezeEntries: false },
+      orderLifecycle: { pendingActions: [] }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper" }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(mismatchAudit.freezeEntries, true);
+  assert.equal(mismatchAudit.status, "blocked");
+
+  const lifecycleAudit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: { mismatchCount: 0, freezeEntries: false },
+      orderLifecycle: {
+        pendingActions: [{ state: "manual_review", updatedAt: "2026-03-09T09:00:00.000Z" }]
+      }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper" }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(lifecycleAudit.freezeEntries, true);
+  assert.equal(lifecycleAudit.status, "blocked");
+});
+
 await runCheck("operator alerts surface critical safety issues", async () => {
   const alerts = buildOperatorAlerts({
     runtime: {

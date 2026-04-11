@@ -12619,6 +12619,20 @@ export class TradingBot {
       config: this.config,
       nowIso: referenceNow
     });
+    if ((this.config.botMode || "paper") !== "live") {
+      const et = this.runtime.exchangeTruth || {};
+      const mismatch = Number(et.mismatchCount) || 0;
+      const criticalPending = arr(this.runtime.orderLifecycle?.pendingActions || []).filter((item) =>
+        ["manual_review", "reconcile_required", "protection_pending"].includes(item.state)
+      );
+      if (et.freezeEntries && mismatch === 0 && criticalPending.length === 0) {
+        this.runtime.exchangeTruth = {
+          ...et,
+          freezeEntries: false
+        };
+        this.recordEvent("paper_cleared_stale_exchange_freeze", { mismatchCount: mismatch });
+      }
+    }
     const exchangeSafety = summarizeExchangeSafety(buildExchangeSafetyAudit({
       runtime: this.runtime,
       report: evaluation,

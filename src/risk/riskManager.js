@@ -3001,7 +3001,19 @@ export class RiskManager {
     ) {
       reasons.push("trend_exhausted_execution_fragile");
     }
-    if (capitalGovernor.recoveryMode && score.probability < threshold + 0.025) {
+    // Paper + entries still allowed: recovery is already expressed via sizeMultiplier and
+    // governor notes. A hard "capital_governor_recovery" reason blocks paper_exploration
+    // (which excludes this reason) and over-vetoes watch-only recovery (streak/drawdown watch).
+    const paperRecoveryWatchOnly =
+      this.config.botMode === "paper" &&
+      capitalGovernor.recoveryMode &&
+      capitalGovernor.allowEntries &&
+      !capitalGovernor.blocked;
+    if (
+      capitalGovernor.recoveryMode &&
+      score.probability < threshold + 0.025 &&
+      !paperRecoveryWatchOnly
+    ) {
       reasons.push("capital_governor_recovery");
     }
     if ((driftSummary.severity || 0) >= 0.45 && (score.calibrationConfidence || 0) < this.config.minCalibrationConfidence + 0.05) {

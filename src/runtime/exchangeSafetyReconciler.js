@@ -90,15 +90,22 @@ export function buildExchangeSafetyAudit({
     reasons.push("live_positions_need_attention");
   }
 
+  const isLive = (config.botMode || "paper") === "live";
   const derivedFreezeEntries =
-    (config.botMode || "paper") === "live" &&
+    isLive &&
     (
       mismatchCount > 0 ||
       criticalPending.length > 0 ||
       staleReconcile ||
       stalePending.length > 0
     );
-  const freezeEntries = Boolean(exchangeTruth.freezeEntries || derivedFreezeEntries);
+  // Paper: ignore stale exchangeTruth.freezeEntries from persisted/live-only state; only hard material risk freezes entries.
+  const paperMaterialFreeze =
+    !isLive &&
+    (mismatchCount > 0 || criticalPending.length > 0);
+  const freezeEntries = isLive
+    ? Boolean(exchangeTruth.freezeEntries || derivedFreezeEntries)
+    : paperMaterialFreeze;
   const riskScore = clamp(
     mismatchCount * 0.18 +
       criticalPending.length * 0.16 +
