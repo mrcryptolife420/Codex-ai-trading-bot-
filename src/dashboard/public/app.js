@@ -528,12 +528,25 @@ function renderPositions(snapshot) {
     return;
   }
   replaceChildren(elements.positionsList, positions.slice(0, 4).map((position) => {
+    const entryCapital = Number(position.totalCost) || Number(position.notional) || 0;
     const body = makeNode("div");
     body.append(
       makeMetricRow([
-        { label: "Entry", value: formatMoney(position.entryPrice || 0) },
-        { label: "Now", value: formatMoney(position.currentPrice || 0) },
-        { label: "Size", value: formatMoney(position.quoteAmount || position.notional || 0) }
+        {
+          label: "PnL",
+          value: formatMoney(position.unrealizedPnl || 0),
+          detail: formatSignedPct(position.unrealizedPnlPct || 0, 1)
+        },
+        {
+          label: "Ingezet",
+          value: formatMoney(entryCapital),
+          detail: entryCapital ? `nu ${formatMoney(position.marketValue || 0)}` : "-"
+        },
+        {
+          label: "Entry → nu",
+          value: formatMoney(position.entryPrice || 0),
+          detail: formatMoney(position.currentPrice || 0)
+        }
       ]),
       makePositionGauge(position)
     );

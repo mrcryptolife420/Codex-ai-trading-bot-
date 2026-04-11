@@ -211,14 +211,24 @@ export function buildCapitalGovernor({
     recoveryAveragePnl >= -0.0015;
   const allowEntries = !(dailyBlock || weeklyBlock || streakBlock);
   const minSizeMultiplier = clamp(safeNumber(config.capitalGovernorMinSizeMultiplier, 0.25), 0.05, 1);
+  const isDemoPaperSpot =
+    botMode === "paper" &&
+    String(config.paperExecutionVenue || "").toLowerCase() === "binance_demo_spot";
   const pressurePenalty =
     dailyLossFraction / Math.max(safeNumber(config.maxDailyDrawdown, 0.04), 0.0001) * 0.28 +
     weeklyLossFraction / Math.max(safeNumber(config.capitalGovernorWeeklyDrawdownPct, 0.08), 0.0001) * 0.36 +
     Math.max(0, redDayStreak - 1) * 0.08 +
     drawdownPct / Math.max(safeNumber(config.portfolioDrawdownBudgetPct, 0.05), 0.0001) * 0.18;
+  const penaltyScale = isDemoPaperSpot ? 0.22 : 1;
+  const scaledPenalty = pressurePenalty * penaltyScale;
   const recoveryBonus = releaseReady ? 0.18 : 0;
+  const healthyFloor = isDemoPaperSpot ? 0.94 : 0.58;
   const sizeMultiplier = allowEntries
-    ? clamp(1 - pressurePenalty + recoveryBonus, recoveryMode ? minSizeMultiplier : 0.58, 1)
+    ? clamp(
+        1 - scaledPenalty + recoveryBonus,
+        recoveryMode ? minSizeMultiplier : healthyFloor,
+        1
+      )
     : 0;
   const status = !allowEntries
     ? "blocked"

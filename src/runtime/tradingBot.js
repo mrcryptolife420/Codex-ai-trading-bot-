@@ -49,7 +49,7 @@ import { CapitalLadder } from "./capitalLadder.js";
 import { buildSessionSummary } from "./sessionManager.js";
 import { buildTimeframeConsensus } from "./timeframeConsensus.js";
 import { buildMarketConditionSummary } from "./marketConditionController.js";
-import { buildExchangeSafetyAudit } from "./exchangeSafetyReconciler.js";
+import { buildExchangeSafetyAudit, sanitizeStaleLiveExchangeTruthFlagsOnPurePaper } from "./exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "./operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts as deliverOperatorAlerts } from "./operatorAlertDispatcher.js";
 import { buildStrategyRetirementSnapshot } from "./strategyRetirementEngine.js";
@@ -6002,7 +6002,12 @@ function summarizeSizingGuide({ config = {}, effectiveBudget = {}, mode = "paper
   const maxPositionFraction = Math.max(0, safeNumber(config.maxPositionFraction, 0.15));
   const maxTotalExposureFraction = Math.max(0, safeNumber(config.maxTotalExposureFraction, 0.6));
   const riskPerTrade = Math.max(0, safeNumber(config.riskPerTrade, 0.01));
-  const configuredPaperMinTradeUsdt = Math.max(0, safeNumber(config.paperMinTradeUsdt, safeNumber(config.minTradeUsdt, 25)));
+  const isDemoPaperSpot =
+    mode === "paper" && String(config.paperExecutionVenue || "").toLowerCase() === "binance_demo_spot";
+  let configuredPaperMinTradeUsdt = Math.max(0, safeNumber(config.paperMinTradeUsdt, safeNumber(config.minTradeUsdt, 25)));
+  if (isDemoPaperSpot) {
+    configuredPaperMinTradeUsdt = Math.max(configuredPaperMinTradeUsdt, 20);
+  }
   const minTradeUsdt = mode === "paper"
     ? configuredPaperMinTradeUsdt
     : Math.max(0, safeNumber(config.minTradeUsdt, 25));
@@ -6010,10 +6015,12 @@ function summarizeSizingGuide({ config = {}, effectiveBudget = {}, mode = "paper
   const perTradeCapByRisk = stopLossPct > 0 ? (deployableBudget * riskPerTrade) / stopLossPct : perTradeCapByPosition;
   const targetQuote = Math.max(minTradeUsdt, Math.min(perTradeCapByPosition, perTradeCapByRisk));
   const exposureCap = deployableBudget * maxTotalExposureFraction;
-  const paperProbeMultiplier = Math.max(0, safeNumber(config.paperExplorationSizeMultiplier, 0.45));
-  const paperRecoveryMultiplier = Math.max(0, safeNumber(config.paperRecoveryProbeSizeMultiplier, 0.22));
+  const basePaperProbe = Math.max(0, safeNumber(config.paperExplorationSizeMultiplier, 0.45));
+  const paperProbeMultiplier = isDemoPaperSpot ? Math.max(basePaperProbe, 0.82) : basePaperProbe;
+  const basePaperRecovery = Math.max(0, safeNumber(config.paperRecoveryProbeSizeMultiplier, 0.22));
+  const paperRecoveryMultiplier = isDemoPaperSpot ? Math.max(basePaperRecovery, 0.5) : basePaperRecovery;
   const paperProbeQuote = Math.max(minTradeUsdt, targetQuote * paperProbeMultiplier);
-  const paperRecoveryQuote = Math.max(5, minTradeUsdt * paperRecoveryMultiplier);
+  const paperRecoveryQuote = Math.max(isDemoPaperSpot ? 22 : 5, minTradeUsdt * paperRecoveryMultiplier);
   const idealConcurrentPositions = targetQuote > 0
     ? Math.max(1, Math.min(safeNumber(config.maxOpenPositions, 1), Math.floor(exposureCap / targetQuote) || 1))
     : 0;
@@ -9718,7 +9725,26 @@ export class TradingBot {
     return this.getDashboardSnapshot();
   }
 
+  sanitizePurePaperExchangeTruth() {
+    const prev = this.runtime.exchangeTruth || {};
+    const next = sanitizeStaleLiveExchangeTruthFlagsOnPurePaper(prev, this.config);
+    const cleared =
+      arr(prev.unmatchedOrderSymbols).length + arr(prev.orphanedSymbols).length + arr(prev.manualInterferenceSymbols).length >
+      arr(next.unmatchedOrderSymbols).length + arr(next.orphanedSymbols).length + arr(next.manualInterferenceSymbols).length;
+    if (cleared) {
+      this.runtime.exchangeTruth = next;
+      if (Array.isArray(this.journal?.events)) {
+        this.recordEvent("paper_cleared_stale_exchange_truth_flags", {
+          hadUnmatched: arr(prev.unmatchedOrderSymbols).length,
+          hadOrphaned: arr(prev.orphanedSymbols).length,
+          hadManual: arr(prev.manualInterferenceSymbols).length
+        });
+      }
+    }
+  }
+
   syncOrderLifecycleState(reason = "runtime_sync") {
+    this.sanitizePurePaperExchangeTruth();
     const lifecycle = this.runtime.orderLifecycle || { lastUpdatedAt: null, positions: {}, recentTransitions: [], pendingActions: [], activeActions: {}, actionJournal: [] };
     const previousPositions = lifecycle.positions && typeof lifecycle.positions === "object" ? lifecycle.positions : {};
     const nextPositions = {};
@@ -12608,7 +12634,7 @@ export class TradingBot {
     };
   }
 
-  refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso() } = {}) {
+  refreshOperationalViews({ report = null, nowIso: referenceNow = nowIso(), skipLearningSnapshotRebuild = false } = {}) {
     const evaluation = report || this.getPerformanceReport();
     const existingOps = this.runtime.ops || {};
     this.runtime.capitalPolicy = buildCapitalPolicySnapshot({
@@ -12630,7 +12656,9 @@ export class TradingBot {
           ...et,
           freezeEntries: false
         };
-        this.recordEvent("paper_cleared_stale_exchange_freeze", { mismatchCount: mismatch });
+        if (Array.isArray(this.journal?.events)) {
+          this.recordEvent("paper_cleared_stale_exchange_freeze", { mismatchCount: mismatch });
+        }
       }
     }
     const exchangeSafety = summarizeExchangeSafety(buildExchangeSafetyAudit({
@@ -12644,12 +12672,13 @@ export class TradingBot {
     if ((this.config.botMode || "paper") === "live") {
       const previousFreeze = Boolean(this.runtime.exchangeTruth?.freezeEntries);
       const nextFreeze = Boolean(exchangeSafety.freezeEntries);
+      const prevEt = this.runtime.exchangeTruth || {};
       this.runtime.exchangeTruth = {
-        ...(this.runtime.exchangeTruth || {}),
+        ...prevEt,
         freezeEntries: nextFreeze,
         notes: nextFreeze
-          ? [...new Set([...(this.runtime.exchangeTruth?.notes || []), ...(exchangeSafety.notes || [])])].slice(0, 6)
-          : []
+          ? [...new Set([...(prevEt.notes || []), ...(exchangeSafety.notes || [])])].slice(0, 6)
+          : (prevEt.notes || []).slice(0, 6)
       };
       if (previousFreeze !== nextFreeze) {
         this.recordEvent("exchange_truth_freeze_toggled", {
@@ -12659,10 +12688,17 @@ export class TradingBot {
         });
       }
     }
-    this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
-    this.runtime.paperLearning = this.buildPaperLearningSummary(arr(this.runtime.latestDecisions), referenceNow);
-    this.runtime.adaptation = summarizeAdaptationHealth(this.buildAdaptationHealthSnapshot(referenceNow));
-    const promotionState = this.evaluatePromotionProbations(referenceNow);
+    if (!skipLearningSnapshotRebuild) {
+      this.runtime.shadowTrading = this.buildShadowTradingView(arr(this.runtime.latestDecisions), referenceNow);
+      this.runtime.paperLearning = this.buildPaperLearningSummary(arr(this.runtime.latestDecisions), referenceNow);
+      this.runtime.adaptation = summarizeAdaptationHealth(this.buildAdaptationHealthSnapshot(referenceNow));
+    }
+    const promotionState =
+      skipLearningSnapshotRebuild &&
+      existingOps.promotionState &&
+      Object.keys(existingOps.promotionState).length
+        ? existingOps.promotionState
+        : this.evaluatePromotionProbations(referenceNow);
     const readiness = this.buildOperationalReadiness(referenceNow);
     const alerts = summarizeOperatorAlerts(buildOperatorAlerts({
       runtime: this.runtime,
@@ -12707,8 +12743,16 @@ export class TradingBot {
       alertState: existingOps.alertState || { acknowledgedAtById: {}, silencedUntilById: {}, resolvedAtById: {}, notesById: {}, delivery: { lastDeliveryAt: null, lastError: null, lastDeliveredAtById: {} } },
       alertDelivery,
       replayChaos: summarizeReplayChaos(this.runtime.replayChaos || {}),
-      paperLearning: summarizePaperLearning(this.runtime.paperLearning || {}),
-      adaptation: summarizeAdaptationHealth(this.runtime.adaptation || {}),
+      paperLearning: summarizePaperLearning(
+        skipLearningSnapshotRebuild
+          ? (this.runtime.paperLearning || this.runtime.ops?.paperLearning || {})
+          : (this.runtime.paperLearning || {})
+      ),
+      adaptation: summarizeAdaptationHealth(
+        skipLearningSnapshotRebuild
+          ? (this.runtime.adaptation || this.runtime.ops?.adaptation || {})
+          : (this.runtime.adaptation || {})
+      ),
       signalFlow: signalFlowSummary,
       tradingFlowHealth: signalFlowSummary.tradingFlowHealth,
       readinessState: {
@@ -12733,7 +12777,6 @@ export class TradingBot {
     };
     this.runtime.service = {
       ...(this.runtime.service || {}),
-      lastHeartbeatAt: referenceNow,
       watchdogStatus: this.runtime.lifecycle?.activeRun ? "running" : (this.runtime.service?.watchdogStatus || "idle")
     };
     return this.runtime.ops;
@@ -17383,6 +17426,11 @@ export class TradingBot {
       ageMinutes: positionView.ageMinutes,
       entryPrice: positionView.entryPrice,
       currentPrice: positionView.currentPrice,
+      quantity: positionView.quantity,
+      notional: positionView.notional,
+      totalCost: positionView.totalCost,
+      marketValue: positionView.marketValue,
+      entryFee: positionView.entryFee,
       stopLossPrice: positionView.stopLossPrice,
       unrealizedPnl: positionView.unrealizedPnl,
       unrealizedPnlPct: positionView.unrealizedPnlPct,
@@ -19014,6 +19062,10 @@ export class TradingBot {
       await this.updatePortfolioSnapshot();
     }
 
+    const report = this.getPerformanceReport();
+    this.syncOrderLifecycleState("dashboard_snapshot");
+    this.refreshOperationalViews({ report, nowIso: referenceNow, skipLearningSnapshotRebuild: true });
+
     const sourceTruth = buildSourceOfTruthPortfolioState({
       runtime: this.runtime,
       journal: this.journal,
@@ -19022,7 +19074,6 @@ export class TradingBot {
     const fullPositions = sourceTruth.sourceScopedPositions.map((position) => this.buildPositionView(position));
     const positions = fullPositions.map((position) => this.buildDashboardPositionView(position));
     const totalUnrealizedPnl = fullPositions.reduce((total, position) => total + position.unrealizedPnl, 0);
-    const report = this.getPerformanceReport();
     const fullTopDecisions = arr(this.runtime.latestDecisions).slice(0, this.config.dashboardDecisionLimit || 12);
     const fullBlockedSetups = arr(this.runtime.latestBlockedSetups).slice(0, this.config.dashboardDecisionLimit || 12);
     const topDecision = fullTopDecisions[0] || {};

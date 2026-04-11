@@ -12,11 +12,26 @@ function safeValue(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function isBinanceDemoPaperConfig(config = {}) {
+  return (config.botMode || "paper") === "paper" && String(config.paperExecutionVenue || "").toLowerCase() === "binance_demo_spot";
+}
+
 function resolveEffectiveMinTradeUsdt(config = {}, symbolRules = null, botMode = "paper") {
   const configuredFloor = botMode === "paper"
     ? safeValue(config.paperMinTradeUsdt, safeValue(config.minTradeUsdt, 0))
     : safeValue(config.minTradeUsdt, 0);
-  return Math.max(configuredFloor, safeValue(symbolRules?.minNotional, 0));
+  const demoFloor = botMode === "paper" && isBinanceDemoPaperConfig(config) ? 20 : 0;
+  return Math.max(configuredFloor, demoFloor, safeValue(symbolRules?.minNotional, 0));
+}
+
+function resolvePaperExplorationSizeMultiplier(config = {}) {
+  const base = safeValue(config.paperExplorationSizeMultiplier, 0.45);
+  return isBinanceDemoPaperConfig(config) ? Math.max(base, 0.82) : base;
+}
+
+function resolvePaperRecoveryProbeSizeMultiplier(config = {}) {
+  const base = safeValue(config.paperRecoveryProbeSizeMultiplier, 0.22);
+  return isBinanceDemoPaperConfig(config) ? Math.max(base, 0.5) : base;
 }
 
 function num(value, digits = 4) {
@@ -3597,9 +3612,10 @@ export class RiskManager {
             )
           : effectiveMinTradeUsdt;
         const explorationBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
+        const paperExplorationMult = resolvePaperExplorationSizeMultiplier(this.config);
         const explorationQuoteAmount = Math.min(
           explorationBudget,
-          Math.max(paperCalibrationProbeFloor, adjustedQuoteAmount * this.config.paperExplorationSizeMultiplier)
+          Math.max(paperCalibrationProbeFloor, adjustedQuoteAmount * paperExplorationMult)
         );
         if (explorationQuoteAmount > 0 && (allowCalibrationProbeMinTradeOverride || explorationQuoteAmount >= effectiveMinTradeUsdt)) {
           allow = true;
@@ -3610,7 +3626,7 @@ export class RiskManager {
         paperExploration = {
           mode: "paper_exploration",
           thresholdBuffer: paperProbeThresholdBuffer,
-          sizeMultiplier: this.config.paperExplorationSizeMultiplier,
+          sizeMultiplier: paperExplorationMult,
           effectiveMinTradeUsdt: num(effectiveMinTradeUsdt, 2),
           minBookPressure: paperProbeBookPressureFloor,
           minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
@@ -3691,9 +3707,10 @@ export class RiskManager {
       canRelaxPaperSelfHeal(selfHealState)
     ) {
       const recoveryBudget = Math.min(maxByPosition, maxByRisk, remainingExposureBudget);
+      const paperRecoveryMult = resolvePaperRecoveryProbeSizeMultiplier(this.config);
       const recoveryProbeScaledTarget = Math.max(
-        effectiveMinTradeUsdt * this.config.paperRecoveryProbeSizeMultiplier,
-        adjustedQuoteAmount * this.config.paperRecoveryProbeSizeMultiplier
+        effectiveMinTradeUsdt * paperRecoveryMult,
+        adjustedQuoteAmount * paperRecoveryMult
       );
       const recoveryProbeFloor = this.config.paperRecoveryProbeAllowMinTradeOverride
         ? Math.max(
@@ -3721,7 +3738,7 @@ export class RiskManager {
           quoteFloor: num(recoveryProbeFloor, 2),
           scaledQuoteTarget: num(recoveryProbeScaledTarget, 2),
           recoveryBudget: num(recoveryBudget, 2),
-          sizeMultiplier: this.config.paperRecoveryProbeSizeMultiplier,
+          sizeMultiplier: paperRecoveryMult,
           minBookPressure: this.config.paperRecoveryProbeMinBookPressure,
           minutesSincePortfolioTrade: Number.isFinite(minutesSincePortfolioTrade) ? minutesSincePortfolioTrade : null,
           warmupProgress: calibrationWarmup,

@@ -98,7 +98,7 @@ import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { buildMarketConditionSummary } from "../src/runtime/marketConditionController.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
-import { buildExchangeSafetyAudit } from "../src/runtime/exchangeSafetyReconciler.js";
+import { buildExchangeSafetyAudit, sanitizeStaleLiveExchangeTruthFlagsOnPurePaper } from "../src/runtime/exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/runtime/operatorAlertDispatcher.js";
 import { __dashboardSmokeRender } from "../src/dashboard/public/app.js";
@@ -3882,6 +3882,8 @@ await runCheck("operator diagnostics snapshot stays server-safe when readiness i
 
 await runCheck("syncOrderLifecycleState surfaces manual exchange interference as manual review", async () => {
   const bot = Object.create(TradingBot.prototype);
+  bot.config = makeConfig({ botMode: "live" });
+  bot.journal = { events: [] };
   bot.runtime = {
     orderLifecycle: { positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
     exchangeTruth: {
@@ -15081,6 +15083,50 @@ await runCheck("exchange safety audit still blocks paper on mismatch or critical
   assert.equal(lifecycleAudit.status, "blocked");
 });
 
+await runCheck("exchange safety demo paper ignores protection_pending for entry freeze", async () => {
+  const audit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [{ symbol: "BTCUSDT", brokerMode: "paper", quantity: 0.01 }],
+      exchangeTruth: { mismatchCount: 0, freezeEntries: false },
+      orderLifecycle: {
+        pendingActions: [{ state: "protection_pending", id: "x", symbol: "BTCUSDT", updatedAt: "2026-03-09T10:00:00.000Z" }]
+      }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot" }),
+    streamStatus: { lastPublicMessageAt: "2026-03-09T10:00:00.000Z" },
+    nowIso: "2026-03-09T10:05:00.000Z"
+  });
+  assert.equal(audit.freezeEntries, false);
+  assert.equal(audit.status, "ready");
+  assert.ok(!audit.reasons.includes("critical_lifecycle_pending"));
+});
+
+await runCheck("pure paper sanitizes stale live exchange truth symbol lists", async () => {
+  const cleaned = sanitizeStaleLiveExchangeTruthFlagsOnPurePaper(
+    {
+      mismatchCount: 0,
+      unmatchedOrderSymbols: ["BTCUSDT"],
+      orphanedSymbols: ["ETHUSDT"],
+      manualInterferenceSymbols: []
+    },
+    makeConfig({ botMode: "paper" })
+  );
+  assert.deepEqual(cleaned.unmatchedOrderSymbols, []);
+  assert.deepEqual(cleaned.orphanedSymbols, []);
+});
+
+await runCheck("binance demo paper clears stale exchange truth lists when mismatch is zero", async () => {
+  const cleaned = sanitizeStaleLiveExchangeTruthFlagsOnPurePaper(
+    {
+      mismatchCount: 0,
+      unmatchedOrderSymbols: ["BTCUSDT"]
+    },
+    makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot" })
+  );
+  assert.deepEqual(cleaned.unmatchedOrderSymbols, []);
+});
+
 await runCheck("operator alerts surface critical safety issues", async () => {
   const alerts = buildOperatorAlerts({
     runtime: {
@@ -19517,7 +19563,17 @@ await runCheck("dashboard snapshot exposes lifecycle invariants, tuning governan
     modelRegistry: { promotionPolicy: { readyLevel: "paper", allowPromotion: false, blockerReasons: ["sample_size_low"] } },
     offlineTrainer: { thresholdPolicy: { status: "observe" } },
     exchangeTruth: { freezeEntries: true, mismatchCount: 2 },
-    orderLifecycle: { pendingActions: [{ state: "manual_review" }], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
+    openPositions: [
+      {
+        id: "pos-manual-review",
+        symbol: "BTCUSDT",
+        quantity: 0.01,
+        entryPrice: 50000,
+        entryAt: "2026-03-12T08:00:00.000Z",
+        manualReviewRequired: true
+      }
+    ],
+    orderLifecycle: { pendingActions: [], positions: {}, activeActions: {}, recentTransitions: [], actionJournal: [] },
     exchangeSafety: {},
     marketSentiment: {},
     onChainLite: {},

@@ -12,6 +12,38 @@ function arr(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function isPaperMode(config = {}) {
+  return (config.botMode || "paper") === "paper";
+}
+
+function isBinanceDemoPaper(config = {}) {
+  return isPaperMode(config) && String(config.paperExecutionVenue || "").toLowerCase() === "binance_demo_spot";
+}
+
+/**
+ * Wist unmatched/orphaned/manual-lijsten als reconcile **geen mismatch** meldt — voorkomt phantom lifecycle-pending
+ * (ook op Binance demo-spot na schone reconcile).
+ */
+export function sanitizeStaleLiveExchangeTruthFlagsOnPurePaper(exchangeTruth = {}, config = {}) {
+  const et = { ...exchangeTruth };
+  if (!isPaperMode(config)) {
+    return et;
+  }
+  const mismatch = Number(et.mismatchCount) || 0;
+  if (mismatch !== 0) {
+    return et;
+  }
+  if (!arr(et.unmatchedOrderSymbols).length && !arr(et.orphanedSymbols).length && !arr(et.manualInterferenceSymbols).length) {
+    return et;
+  }
+  return {
+    ...et,
+    unmatchedOrderSymbols: [],
+    orphanedSymbols: [],
+    manualInterferenceSymbols: []
+  };
+}
+
 function minutesSince(at, nowIso) {
   const atMs = new Date(at || 0).getTime();
   const nowMs = new Date(nowIso || Date.now()).getTime();
@@ -45,7 +77,17 @@ export function buildExchangeSafetyAudit({
   const reconcileAgeMinutes = minutesSince(lastReconciledAt, nowIso);
   const streamAgeMinutes = minutesSince(latestStreamMessageAt(streamStatus), nowIso);
   const criticalPendingStates = new Set(["manual_review", "reconcile_required", "protection_pending"]);
-  const criticalPending = pendingActions.filter((item) => criticalPendingStates.has(item.state));
+  const demoPaper = isBinanceDemoPaper(config);
+  const criticalPending = pendingActions.filter((item) => {
+    if (!criticalPendingStates.has(item.state)) {
+      return false;
+    }
+    // Demo spot: protection_pending is vaak kortstondige list-sync-lag; niet meteen entries hard bevriezen.
+    if (demoPaper && item.state === "protection_pending") {
+      return false;
+    }
+    return true;
+  });
   const stalePendingMinutes = safeNumber(config.exchangeSafetyCriticalPendingAgeMinutes, 18);
   const stalePending = pendingActions.filter((item) => {
     const ageMinutes = minutesSince(item.updatedAt || item.startedAt || item.completedAt, nowIso);
