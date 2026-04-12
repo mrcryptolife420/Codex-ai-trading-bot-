@@ -25,6 +25,7 @@ function createElements(doc) {
     overviewCards: q("#overviewCards"),
     attentionList: q("#attentionList"),
     actionList: q("#actionList"),
+    quickActionsList: q("#quickActionsList"),
     focusList: q("#focusList"),
     positionsList: q("#positionsList"),
     recentTradesList: q("#recentTradesList"),
@@ -529,6 +530,13 @@ function renderPositions(snapshot) {
   }
   replaceChildren(elements.positionsList, positions.slice(0, 4).map((position) => {
     const entryCapital = Number(position.totalCost) || Number(position.notional) || 0;
+    const lc = position.lifecycle || {};
+    const lifecycleLabel = compactJoin([
+      lc.state ? `lifecycle: ${titleize(lc.state)}` : null,
+      lc.operatorMode && lc.operatorMode !== "normal" ? titleize(lc.operatorMode) : null
+    ]);
+    const needsManualReview = Boolean(lc.manualReviewRequired || lc.state === "manual_review");
+    const needsReconcile = Boolean(lc.reconcileRequired || lc.state === "reconcile_required");
     const body = makeNode("div");
     body.append(
       makeMetricRow([
@@ -550,6 +558,31 @@ function renderPositions(snapshot) {
       ]),
       makePositionGauge(position)
     );
+    if (lifecycleLabel) {
+      body.append(makeNode("p", { className: "position-lifecycle-hint", text: lifecycleLabel }));
+    }
+    if (needsReconcile) {
+      body.append(
+        makeNode("p", {
+          className: "position-lifecycle-hint",
+          text: "Reconcile vereist: gebruik Force reconcile in Snelle acties na controle op de exchange."
+        })
+      );
+    }
+    if (needsManualReview && position.id) {
+      const row = makeNode("div", { className: "position-actions" });
+      const reviewBtn = makeNode("button", { className: "ghost ghost-small", type: "button", text: "Markeer als beoordeeld" });
+      reviewBtn.addEventListener("click", () =>
+        mutateAndRefresh("/api/positions/review", { id: position.id, note: "dashboard manual review" }).catch((error) =>
+          console.error?.("position_review_failed", error)
+        )
+      );
+      row.append(
+        reviewBtn,
+        makeNode("span", { className: "position-id-hint", text: `id ${truncate(position.id, 36)}` })
+      );
+      body.append(row);
+    }
     return makeCard({
       title: position.symbol || "-",
       detail: compactJoin([position.side ? titleize(position.side) : null, position.gridContext?.gridBand ? titleize(position.gridContext.gridBand) : null]),
@@ -710,6 +743,7 @@ function render(snapshot) {
   safeRenderSection("hero", () => renderHero(snapshot));
   safeRenderSection("overview", () => renderOverview(snapshot));
   safeRenderSection("attention", () => renderAttention(snapshot));
+  safeRenderSection("quickActions", () => renderQuickActions(snapshot));
   safeRenderSection("focus", () => renderFocus(snapshot));
   safeRenderSection("positions", () => renderPositions(snapshot));
   safeRenderSection("recentTrades", () => renderRecentTrades(snapshot));
@@ -731,11 +765,101 @@ async function fetchSnapshot() {
   render(latestSnapshot);
 }
 
+async function dispatchQuickAction(action, target) {
+  const normalized = `${action || ""}`.trim().toLowerCase();
+  if (!normalized) return;
+  const note = "dashboard quick action";
+  if (normalized === "ack_alert") {
+    await mutateAndRefresh("/api/alerts/ack", { id: target, note });
+    return;
+  }
+  if (normalized === "force_reconcile") {
+    await mutateAndRefresh("/api/ops/force-reconcile", { note: target ? `${note} (${target})` : note });
+    return;
+  }
+  if (normalized === "reset_external_feeds") {
+    await mutateAndRefresh("/api/diagnostics/action", { action: "reset_external_feeds", target, note });
+    return;
+  }
+  if (normalized === "research_focus_symbol") {
+    const symbol = `${target || ""}`.trim();
+    await mutateAndRefresh("/api/research", { symbols: symbol ? [symbol] : [] });
+    return;
+  }
+  if (normalized === "enable_probe_only") {
+    await mutateAndRefresh("/api/ops/probe-only", { enabled: true, minutes: 90, note });
+    return;
+  }
+  if (normalized === "refresh_analysis") {
+    await mutateAndRefresh("/api/refresh", {});
+    return;
+  }
+  console.warn?.("dashboard_unknown_quick_action", action);
+}
+
+function buildQuickActionRows(snapshot) {
+  const fromSnapshot = arr(snapshot?.dashboard?.operatorDiagnostics?.quickActions);
+  const hasForce = fromSnapshot.some((item) => item.action === "force_reconcile");
+  const hasRefresh = fromSnapshot.some((item) => item.action === "refresh_analysis");
+  const extras = [];
+  if (!hasForce) {
+    extras.push({
+      action: "force_reconcile",
+      target: null,
+      label: "Force reconcile",
+      detail: "Zet exchange truth op freeze en start lifecycle-reconcile (bij mismatch).",
+      tone: "warning"
+    });
+  }
+  if (!hasRefresh) {
+    extras.push({
+      action: "refresh_analysis",
+      target: null,
+      label: "Analyse verversen",
+      detail: "Herbouw analyse-snapshot. Alleen als de bot gestopt is.",
+      tone: "neutral"
+    });
+  }
+  return [...fromSnapshot, ...extras];
+}
+
+function arr(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function renderQuickActions(snapshot) {
+  if (!elements.quickActionsList) return;
+  const rows = buildQuickActionRows(snapshot);
+  if (!rows.length) {
+    replaceChildren(elements.quickActionsList, [makeEmptyState("Geen snelle acties beschikbaar.")]);
+    return;
+  }
+  replaceChildren(
+    elements.quickActionsList,
+    rows.map((item) => {
+      const tone = item.tone || "neutral";
+      const article = makeNode("article", { className: `quick-action ${toneClass(tone)}` });
+      const head = makeNode("div", { className: "quick-action-text" });
+      head.append(
+        makeNode("h3", { text: item.label || titleize(item.action) || "Actie" }),
+        item.detail ? makeNode("p", { text: item.detail }) : null
+      );
+      const btn = makeNode("button", { className: "ghost ghost-small", type: "button", text: "Uitvoeren" });
+      btn.addEventListener("click", () => dispatchQuickAction(item.action, item.target).catch((error) => console.error?.("quick_action_failed", error)));
+      article.append(head, btn);
+      return article;
+    })
+  );
+}
+
 async function mutateAndRefresh(path, body = {}) {
   if (busy) return;
   busy = true;
   try {
     await api(path, { method: "POST", body });
+    if (elements.controlHint) {
+      elements.controlHint.textContent = "Actie uitgevoerd. Snapshot vernieuwd.";
+    }
     await fetchSnapshot();
   } catch (error) {
     console.error?.("dashboard_mutation_failed", error);
@@ -860,6 +984,7 @@ function createFakeDashboardDocument() {
     "overviewCards",
     "attentionList",
     "actionList",
+    "quickActionsList",
     "focusList",
     "positionsList",
     "recentTradesList",

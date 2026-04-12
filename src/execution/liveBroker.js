@@ -1812,7 +1812,11 @@ export class LiveBroker {
           .map((warning) => warning.symbol)
           .filter(Boolean)
       ])].length;
-      const freezeEntries = mismatchCount >= (this.config.exchangeTruthFreezeMismatchCount || 2);
+      const binanceDemoPaper =
+        this.config.botMode === "paper" && String(this.config.paperExecutionVenue || "").toLowerCase() === "binance_demo_spot";
+      const freezeEntries = binanceDemoPaper
+        ? false
+        : mismatchCount >= (this.config.exchangeTruthFreezeMismatchCount || 2);
       const truthAt = nowIso();
       const exchangeTruth = {
         status: freezeEntries ? "blocked" : mismatchCount ? "degraded" : "healthy",

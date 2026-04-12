@@ -98,7 +98,11 @@ import { buildTimeframeConsensus } from "../src/runtime/timeframeConsensus.js";
 import { buildMarketConditionSummary } from "../src/runtime/marketConditionController.js";
 import { SourceReliabilityEngine } from "../src/news/sourceReliabilityEngine.js";
 import { OnChainLiteService } from "../src/market/onChainLiteService.js";
-import { buildExchangeSafetyAudit, sanitizeStaleLiveExchangeTruthFlagsOnPurePaper } from "../src/runtime/exchangeSafetyReconciler.js";
+import {
+  buildBinanceDemoPaperMismatchSymbolCount,
+  buildExchangeSafetyAudit,
+  sanitizeStaleLiveExchangeTruthFlagsOnPurePaper
+} from "../src/runtime/exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "../src/runtime/operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts } from "../src/runtime/operatorAlertDispatcher.js";
 import { __dashboardSmokeRender } from "../src/dashboard/public/app.js";
@@ -15100,6 +15104,125 @@ await runCheck("exchange safety demo paper ignores protection_pending for entry 
   assert.equal(audit.freezeEntries, false);
   assert.equal(audit.status, "ready");
   assert.ok(!audit.reasons.includes("critical_lifecycle_pending"));
+});
+
+await runCheck("exchange safety demo paper does not freeze on reconcile_required alone", async () => {
+  const audit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: { mismatchCount: 0, freezeEntries: false },
+      orderLifecycle: {
+        pendingActions: [{ state: "reconcile_required", id: "r1", symbol: "ETHUSDT", updatedAt: "2026-03-09T10:00:00.000Z" }]
+      }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot" }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:05:00.000Z"
+  });
+  assert.equal(audit.freezeEntries, false);
+  assert.equal(audit.status, "watch");
+  assert.ok(audit.reasons.includes("critical_lifecycle_pending"));
+});
+
+await runCheck("exchange safety internal paper still freezes on reconcile_required", async () => {
+  const audit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: { mismatchCount: 0 },
+      orderLifecycle: {
+        pendingActions: [{ state: "reconcile_required", symbol: "BTCUSDT" }]
+      }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper" }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(audit.freezeEntries, true);
+  assert.equal(audit.status, "blocked");
+});
+
+await runCheck("exchange safety demo paper freezes at configured mismatch threshold", async () => {
+  const audit = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: { mismatchCount: 1 },
+      orderLifecycle: { pendingActions: [] }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot", exchangeTruthFreezeMismatchCount: 2 }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(audit.freezeEntries, false);
+  const bareHighCount = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: { mismatchCount: 4 },
+      orderLifecycle: { pendingActions: [] }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot", exchangeTruthFreezeMismatchCount: 2 }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(bareHighCount.freezeEntries, false);
+  const blockedBySymbols = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: {
+        mismatchCount: 3,
+        warnings: [
+          { symbol: "BNBUSDT", issue: "protective_order_rebuild_failed" },
+          { symbol: "GNOUSDT", issue: "protective_order_rebuild_failed" },
+          { symbol: "ETHUSDT", issue: "protective_order_rebuild_failed" }
+        ]
+      },
+      orderLifecycle: { pendingActions: [] }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot", exchangeTruthFreezeMismatchCount: 2 }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(blockedBySymbols.freezeEntries, true);
+  const blockedByHardDrift = buildExchangeSafetyAudit({
+    runtime: {
+      openPositions: [],
+      exchangeTruth: {
+        mismatchCount: 1,
+        orphanedSymbols: ["XRPUSDT"]
+      },
+      orderLifecycle: { pendingActions: [] }
+    },
+    report: {},
+    config: makeConfig({ botMode: "paper", paperExecutionVenue: "binance_demo_spot", exchangeTruthFreezeMismatchCount: 5 }),
+    streamStatus: {},
+    nowIso: "2026-03-09T10:00:00.000Z"
+  });
+  assert.equal(blockedByHardDrift.freezeEntries, true);
+});
+
+await runCheck("binance demo paper mismatch symbol count ignores bare mismatchCount and recent fills", async () => {
+  assert.equal(
+    buildBinanceDemoPaperMismatchSymbolCount({
+      mismatchCount: 2,
+      recentFillSymbols: ["BTCUSDT", "ETHUSDT"],
+      warnings: []
+    }),
+    0
+  );
+  assert.equal(
+    buildBinanceDemoPaperMismatchSymbolCount({
+      mismatchCount: 2,
+      warnings: [
+        { symbol: "BNBUSDT", issue: "protective_order_rebuild_failed" },
+        { symbol: "GNOUSDT", issue: "protective_order_rebuild_failed" }
+      ]
+    }),
+    2
+  );
 });
 
 await runCheck("pure paper sanitizes stale live exchange truth symbol lists", async () => {

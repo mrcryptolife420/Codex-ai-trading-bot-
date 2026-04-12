@@ -49,7 +49,11 @@ import { CapitalLadder } from "./capitalLadder.js";
 import { buildSessionSummary } from "./sessionManager.js";
 import { buildTimeframeConsensus } from "./timeframeConsensus.js";
 import { buildMarketConditionSummary } from "./marketConditionController.js";
-import { buildExchangeSafetyAudit, sanitizeStaleLiveExchangeTruthFlagsOnPurePaper } from "./exchangeSafetyReconciler.js";
+import {
+  buildExchangeSafetyAudit,
+  materialPaperLifecyclePendingForEntryFreeze,
+  sanitizeStaleLiveExchangeTruthFlagsOnPurePaper
+} from "./exchangeSafetyReconciler.js";
 import { buildOperatorAlerts } from "./operatorAlertEngine.js";
 import { buildOperatorAlertDispatchPlan, dispatchOperatorAlerts as deliverOperatorAlerts } from "./operatorAlertDispatcher.js";
 import { buildStrategyRetirementSnapshot } from "./strategyRetirementEngine.js";
@@ -12648,8 +12652,9 @@ export class TradingBot {
     if ((this.config.botMode || "paper") !== "live") {
       const et = this.runtime.exchangeTruth || {};
       const mismatch = Number(et.mismatchCount) || 0;
-      const criticalPending = arr(this.runtime.orderLifecycle?.pendingActions || []).filter((item) =>
-        ["manual_review", "reconcile_required", "protection_pending"].includes(item.state)
+      const criticalPending = materialPaperLifecyclePendingForEntryFreeze(
+        this.runtime.orderLifecycle?.pendingActions || [],
+        this.config
       );
       if (et.freezeEntries && mismatch === 0 && criticalPending.length === 0) {
         this.runtime.exchangeTruth = {

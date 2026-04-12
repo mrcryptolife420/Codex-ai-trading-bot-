@@ -20,10 +20,70 @@ function isBinanceDemoPaper(config = {}) {
   return isPaperMode(config) && String(config.paperExecutionVenue || "").toLowerCase() === "binance_demo_spot";
 }
 
+/** Zelfde issue-set als liveBroker.reconcileRuntime bij mismatch-union (minus recentFillSymbols). */
+const EXCHANGE_TRUTH_WARNING_SYMBOL_ISSUES = new Set([
+  "protective_order_rebuild_failed",
+  "protective_order_for_recovered_position_failed",
+  "protective_order_state_stale",
+  "position_sync_failed",
+  "unmanaged_balance_detected",
+  "position_quantity_mismatch",
+  "position_quantity_reduced_to_exchange_balance",
+  "stale_untracked_entry_order_cancel_failed",
+  "stale_untracked_exit_order_cancel_failed",
+  "multiple_protective_order_lists_detected",
+  "orphaned_exit_order_with_balance",
+  "unexpected_open_order_for_managed_position"
+]);
+
+/**
+ * Aantal unieke symbolen dat telt voor entry-freeze op Binance demo-paper.
+ * Sluit `recentFillSymbols` impliciet uit (die zitten niet in deze union).
+ */
+export function buildBinanceDemoPaperMismatchSymbolCount(exchangeTruth = {}) {
+  const fromWarnings = arr(exchangeTruth.warnings)
+    .filter((w) => EXCHANGE_TRUTH_WARNING_SYMBOL_ISSUES.has(w.issue))
+    .map((w) => w.symbol)
+    .filter(Boolean);
+  return new Set([
+    ...arr(exchangeTruth.orphanedSymbols),
+    ...arr(exchangeTruth.missingRuntimeSymbols),
+    ...arr(exchangeTruth.unmatchedOrderSymbols),
+    ...arr(exchangeTruth.staleProtectiveSymbols),
+    ...fromWarnings
+  ]).size;
+}
+
+export function binanceDemoPaperHardInventoryDrift(exchangeTruth = {}) {
+  return (
+    arr(exchangeTruth.orphanedSymbols).length > 0 ||
+    arr(exchangeTruth.missingRuntimeSymbols).length > 0 ||
+    arr(exchangeTruth.unmatchedOrderSymbols).length > 0 ||
+    arr(exchangeTruth.manualInterferenceSymbols).length > 0
+  );
+}
+
 /**
  * Wist unmatched/orphaned/manual-lijsten als reconcile **geen mismatch** meldt — voorkomt phantom lifecycle-pending
  * (ook op Binance demo-spot na schone reconcile).
  */
+/**
+ * Pending actions die op paper entries mogen bevriezen (gelijk aan audit `criticalPendingForEntryFreeze`).
+ */
+export function materialPaperLifecyclePendingForEntryFreeze(pendingActions = [], config = {}) {
+  const demoPaper = isBinanceDemoPaper(config);
+  const materialStates = new Set(["manual_review", "reconcile_required", "protection_pending"]);
+  return arr(pendingActions).filter((item) => {
+    if (!materialStates.has(item.state)) {
+      return false;
+    }
+    if (demoPaper && (item.state === "protection_pending" || item.state === "reconcile_required")) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export function sanitizeStaleLiveExchangeTruthFlagsOnPurePaper(exchangeTruth = {}, config = {}) {
   const et = { ...exchangeTruth };
   if (!isPaperMode(config)) {
@@ -78,16 +138,18 @@ export function buildExchangeSafetyAudit({
   const streamAgeMinutes = minutesSince(latestStreamMessageAt(streamStatus), nowIso);
   const criticalPendingStates = new Set(["manual_review", "reconcile_required", "protection_pending"]);
   const demoPaper = isBinanceDemoPaper(config);
+  const freezeMismatchThreshold = safeNumber(config.exchangeTruthFreezeMismatchCount, 2);
+  // Lifecycle-signalen voor risico-/watch (dashboard, reasons)
   const criticalPending = pendingActions.filter((item) => {
     if (!criticalPendingStates.has(item.state)) {
       return false;
     }
-    // Demo spot: protection_pending is vaak kortstondige list-sync-lag; niet meteen entries hard bevriezen.
     if (demoPaper && item.state === "protection_pending") {
       return false;
     }
     return true;
   });
+  const criticalPendingForEntryFreeze = materialPaperLifecyclePendingForEntryFreeze(pendingActions, config);
   const stalePendingMinutes = safeNumber(config.exchangeSafetyCriticalPendingAgeMinutes, 18);
   const stalePending = pendingActions.filter((item) => {
     const ageMinutes = minutesSince(item.updatedAt || item.startedAt || item.completedAt, nowIso);
@@ -137,20 +199,30 @@ export function buildExchangeSafetyAudit({
     isLive &&
     (
       mismatchCount > 0 ||
-      criticalPending.length > 0 ||
+      criticalPendingForEntryFreeze.length > 0 ||
       staleReconcile ||
       stalePending.length > 0
     );
-  // Paper: ignore stale exchangeTruth.freezeEntries from persisted/live-only state; only hard material risk freezes entries.
+  // Paper: geen stale exchangeTruth.freezeEntries; alleen harde risico's bevriezen entries.
+  // Demo spot: geen entry-freeze op enkel reconcile_required (zie materialPaperLifecyclePendingForEntryFreeze).
+  // Ruwe mismatchCount bevat o.a. recentFillSymbols — te gevoelig voor 30m-blokkades. Harde inventory-drift
+  // (orphan/unmatched/missing/manual) blokkeert direct; overige scenario's pas vanaf max(threshold, 3) symbolen.
+  const demoPaperHardDrift = demoPaper && binanceDemoPaperHardInventoryDrift(exchangeTruth);
+  const demoPaperSymbolFreezeCount = demoPaper ? buildBinanceDemoPaperMismatchSymbolCount(exchangeTruth) : mismatchCount;
+  const demoPaperFreezeThreshold = Math.max(freezeMismatchThreshold, 3);
+  const paperMismatchFreezes = demoPaper
+    ? demoPaperHardDrift || demoPaperSymbolFreezeCount >= demoPaperFreezeThreshold
+    : mismatchCount > 0;
   const paperMaterialFreeze =
     !isLive &&
-    (mismatchCount > 0 || criticalPending.length > 0);
+    (paperMismatchFreezes || criticalPendingForEntryFreeze.length > 0);
   const freezeEntries = isLive
     ? Boolean(exchangeTruth.freezeEntries || derivedFreezeEntries)
     : paperMaterialFreeze;
   const riskScore = clamp(
     mismatchCount * 0.18 +
-      criticalPending.length * 0.16 +
+      criticalPending.length * 0.14 +
+      criticalPendingForEntryFreeze.length * 0.04 +
       stalePending.length * 0.08 +
       (staleReconcile ? 0.28 : 0) +
       (staleStream ? 0.12 : 0) +
